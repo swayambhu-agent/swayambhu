@@ -52,6 +52,28 @@ class Brainstem {
     this.lastWorkingSnapshotted = false; // Only snapshot provider once per session
   }
 
+  static SYSTEM_KEY_PREFIXES = [
+    'prompt:', 'config:', 'functions:', 'secret:',
+    'mutation_staged:', 'mutation_candidate:',
+  ];
+  static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'wisdom'];
+
+  static isSystemKey(key) {
+    if (Brainstem.SYSTEM_KEY_EXACT.includes(key)) return true;
+    return Brainstem.SYSTEM_KEY_PREFIXES.some(p => key.startsWith(p));
+  }
+
+  generateMutationId() {
+    return `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async isKeyProtected(key) {
+    if (key === "soul") return true;
+    if (Brainstem.isSystemKey(key)) return true;
+    const { metadata } = await this.kvGetWithMeta(key);
+    return !metadata?.unprotected;
+  }
+
   // ── Karma log ────────────────────────────────────────────────
 
   async karmaRecord(entry) {
@@ -77,6 +99,9 @@ class Brainstem {
 
       // 1. Crash detection — check if previous session died mid-flight
       const crashData = await this.detectCrash();
+
+      // 1b. Circuit breaker — auto-rollback candidates if system is unstable
+      await this.runCircuitBreaker();
 
       // 1a. Mark this session as in-progress (crash breadcrumb for next wake)
       await this.kvPut("session", this.sessionId);
@@ -548,12 +573,20 @@ class Brainstem {
 
   async executeReflect(step) {
     const reflectPrompt = await this.kvGet("prompt:reflect");
+    const stagedMutations = await this.loadStagedMutations();
+
+    const systemKeyPatterns = {
+      prefixes: Brainstem.SYSTEM_KEY_PREFIXES,
+      exact: Brainstem.SYSTEM_KEY_EXACT,
+    };
 
     const prompt = this.buildPrompt(reflectPrompt || this.defaultReflectPrompt(), {
       soul: this.soul,
       karma: this.karma,
       sessionCost: this.sessionCost,
       results: this.results,
+      stagedMutations,
+      systemKeyPatterns,
     });
 
     const model = this.resolveModel(
@@ -575,10 +608,22 @@ class Brainstem {
         session_id: this.sessionId,
       });
 
-      // Apply any KV operations the reflection requests
+      // Apply any KV operations the reflection requests (gated by protection)
       if (reflection.kv_operations) {
         for (const op of reflection.kv_operations) {
           await this.applyKVOperation(op);
+        }
+      }
+
+      // Process mutation verdicts (withdraw/modify only)
+      if (reflection.mutation_verdicts) {
+        await this.processReflectVerdicts(reflection.mutation_verdicts);
+      }
+
+      // Stage new mutation requests
+      if (reflection.mutation_requests) {
+        for (const req of reflection.mutation_requests) {
+          await this.stageMutation(req, this.sessionId);
         }
       }
 
@@ -617,6 +662,14 @@ class Brainstem {
       .map(k => k.key);
     const recentKarma = await this.loadKeys(karmaKeys);
 
+    // Load mutation state for context
+    const stagedMutations = await this.loadStagedMutations();
+    const candidateMutations = await this.loadCandidateMutations();
+    const systemKeyPatterns = {
+      prefixes: Brainstem.SYSTEM_KEY_PREFIXES,
+      exact: Brainstem.SYSTEM_KEY_EXACT,
+    };
+
     const prompt = this.buildPrompt(deepPrompt, {
       soul: this.soul,
       models: this.modelsConfig,
@@ -626,6 +679,9 @@ class Brainstem {
       currentDefaults: this.defaults,
       sessionHistory,
       context,
+      stagedMutations,
+      candidateMutations,
+      systemKeyPatterns,
     });
 
     const deepConfig = this.defaults.deep_reflect || {};
@@ -642,35 +698,25 @@ class Brainstem {
     try {
       const reflection = JSON.parse(result.content);
 
-      if (reflection.updated_wisdom !== undefined) {
-        await this.kvPut("wisdom", reflection.updated_wisdom);
-      }
+      // KV operations (gated by protection)
       if (reflection.kv_operations) {
         for (const op of reflection.kv_operations) {
           await this.applyKVOperation(op);
         }
       }
-      if (reflection.updated_defaults) {
-        const merged = { ...this.defaults };
-        for (const [k, v] of Object.entries(reflection.updated_defaults)) {
-          merged[k] = (v && typeof v === "object" && !Array.isArray(v))
-            ? { ...merged[k], ...v }
-            : v;
+
+      // Process verdicts BEFORE new requests — clears conflicts first
+      if (reflection.mutation_verdicts) {
+        await this.processDeepReflectVerdicts(reflection.mutation_verdicts);
+      }
+
+      // Process new mutation requests — applied directly as candidates
+      if (reflection.mutation_requests) {
+        for (const req of reflection.mutation_requests) {
+          await this.applyDirectAsCandidate(req, this.sessionId);
         }
-        await this.kvPut("config:defaults", merged);
       }
-      if (reflection.updated_model_details) {
-        await this.applyModelUpdates(reflection.updated_model_details, this.modelsConfig);
-      }
-      if (reflection.orient_prompt_proposals) {
-        let updatedPrompt = orientPrompt;
-        for (const proposal of reflection.orient_prompt_proposals) {
-          if (proposal.proposed_text) {
-            updatedPrompt = proposal.proposed_text;
-          }
-        }
-        await this.kvPut("prompt:orient", updatedPrompt);
-      }
+
       if (reflection.next_deep_reflect) {
         await this.kvPut("deep_reflect_schedule", {
           ...reflection.next_deep_reflect,
@@ -870,6 +916,346 @@ class Brainstem {
     };
   }
 
+  // ── Mutation protocol ──────────────────────────────────────
+
+  evaluatePredicate(value, predicate, expected) {
+    switch (predicate) {
+      case "exists": return value !== null && value !== undefined;
+      case "equals": return value === expected;
+      case "gt": return typeof value === "number" && value > expected;
+      case "lt": return typeof value === "number" && value < expected;
+      case "matches": return typeof value === "string" && new RegExp(expected).test(value);
+      case "type": return typeof value === expected;
+      default: return false; // Unknown predicates fail closed
+    }
+  }
+
+  async evaluateCheck(check) {
+    try {
+      switch (check.type) {
+        case "kv_assert": {
+          let value = await this.kvGet(check.key);
+          if (check.path && value != null) {
+            value = check.path.split(".").reduce((o, k) => o?.[k], value);
+          }
+          const passed = this.evaluatePredicate(value, check.predicate, check.expected);
+          return { passed, detail: `${check.key}${check.path ? '.' + check.path : ''} ${check.predicate} ${JSON.stringify(check.expected)} → actual: ${JSON.stringify(value)}` };
+        }
+        case "tool_call": {
+          const result = await this.executeAction({
+            tool: check.tool,
+            input: check.input || {},
+            id: `check_${check.tool}`,
+          });
+          if (check.assert) {
+            const passed = this.evaluatePredicate(result, check.assert.predicate, check.assert.expected);
+            return { passed, detail: `${check.tool} result ${check.assert.predicate} ${JSON.stringify(check.assert.expected)} → actual: ${JSON.stringify(result)}` };
+          }
+          return { passed: true, detail: `${check.tool} executed successfully` };
+        }
+        default:
+          return { passed: false, detail: `unknown check type: ${check.type}` };
+      }
+    } catch (err) {
+      return { passed: false, detail: `check error: ${err.message}` };
+    }
+  }
+
+  async evaluateChecks(checks) {
+    const results = [];
+    for (const check of checks) {
+      results.push(await this.evaluateCheck(check));
+    }
+    return {
+      all_passed: results.every(r => r.passed),
+      results,
+    };
+  }
+
+  async stageMutation(request, sessionId) {
+    if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
+      await this.karmaRecord({ event: "mutation_invalid", reason: "missing required fields (claims, ops, checks)" });
+      return null;
+    }
+    const id = this.generateMutationId();
+    await this.kvPut(`mutation_staged:${id}`, {
+      id,
+      claims: request.claims,
+      ops: request.ops,
+      checks: request.checks,
+      staged_at: new Date().toISOString(),
+      staged_by_session: sessionId,
+    });
+    await this.karmaRecord({ event: "mutation_staged", mutation_id: id, claims: request.claims });
+    return id;
+  }
+
+  async applyStagedAsCandidate(mutationId) {
+    const record = await this.kvGet(`mutation_staged:${mutationId}`);
+    if (!record) throw new Error(`No staged mutation: ${mutationId}`);
+
+    const targetKeys = record.ops.map(op => op.key);
+    const conflict = await this.findCandidateConflict(targetKeys);
+    if (conflict) {
+      await this.karmaRecord({ event: "mutation_conflict", mutation_id: mutationId, conflicting_mutation: conflict.id, overlapping_keys: conflict.keys });
+      throw new Error(`Conflict with candidate ${conflict.id} on keys: ${conflict.keys.join(", ")}`);
+    }
+
+    // Snapshot current values before applying
+    const snapshots = {};
+    for (const key of targetKeys) {
+      const { value, metadata } = await this.kvGetWithMeta(key);
+      snapshots[key] = { value: value !== null ? value : null, metadata };
+    }
+
+    // Apply ops
+    for (const op of record.ops) {
+      await this.applyKVOperationDirect(op);
+    }
+
+    // Write candidate record
+    await this.kvPut(`mutation_candidate:${mutationId}`, {
+      ...record,
+      snapshots,
+      activated_at: new Date().toISOString(),
+    });
+    await this.kv.delete(`mutation_staged:${mutationId}`);
+
+    // Refresh defaults if ops touch config:defaults
+    if (targetKeys.some(k => k === "config:defaults")) {
+      this.defaults = await this.kvGet("config:defaults");
+    }
+
+    await this.karmaRecord({ event: "mutation_applied", mutation_id: mutationId, target_keys: targetKeys });
+    return mutationId;
+  }
+
+  async applyDirectAsCandidate(request, sessionId) {
+    if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
+      await this.karmaRecord({ event: "mutation_invalid", reason: "missing required fields (claims, ops, checks)" });
+      return null;
+    }
+    const id = this.generateMutationId();
+    const targetKeys = request.ops.map(op => op.key);
+
+    const conflict = await this.findCandidateConflict(targetKeys);
+    if (conflict) {
+      await this.karmaRecord({ event: "mutation_conflict", mutation_id: id, conflicting_mutation: conflict.id, overlapping_keys: conflict.keys });
+      return null;
+    }
+
+    const snapshots = {};
+    for (const key of targetKeys) {
+      const { value, metadata } = await this.kvGetWithMeta(key);
+      snapshots[key] = { value: value !== null ? value : null, metadata };
+    }
+
+    for (const op of request.ops) {
+      await this.applyKVOperationDirect(op);
+    }
+
+    await this.kvPut(`mutation_candidate:${id}`, {
+      id,
+      claims: request.claims,
+      ops: request.ops,
+      checks: request.checks,
+      snapshots,
+      staged_by_session: sessionId,
+      activated_at: new Date().toISOString(),
+    });
+
+    if (targetKeys.some(k => k === "config:defaults")) {
+      this.defaults = await this.kvGet("config:defaults");
+    }
+
+    await this.karmaRecord({ event: "mutation_applied", mutation_id: id, target_keys: targetKeys });
+    return id;
+  }
+
+  async promoteCandidate(mutationId) {
+    await this.kv.delete(`mutation_candidate:${mutationId}`);
+    await this.karmaRecord({ event: "mutation_promoted", mutation_id: mutationId });
+  }
+
+  async rollbackCandidate(mutationId, reason) {
+    const record = await this.kvGet(`mutation_candidate:${mutationId}`);
+    if (!record) return;
+
+    // Restore snapshotted values
+    for (const [key, snapshot] of Object.entries(record.snapshots || {})) {
+      if (snapshot.value === null) {
+        await this.kv.delete(key);
+      } else {
+        await this.kvPut(key, snapshot.value, snapshot.metadata || {});
+      }
+    }
+
+    // Refresh defaults if applicable
+    const targetKeys = Object.keys(record.snapshots || {});
+    if (targetKeys.some(k => k === "config:defaults")) {
+      this.defaults = await this.kvGet("config:defaults");
+    }
+
+    await this.kv.delete(`mutation_candidate:${mutationId}`);
+    await this.karmaRecord({ event: "mutation_rolled_back", mutation_id: mutationId, reason });
+  }
+
+  async findCandidateConflict(targetKeys) {
+    const kvIndex = await this.listKVKeys();
+    const candidateKeys = kvIndex
+      .filter(k => k.key.startsWith("mutation_candidate:"))
+      .map(k => k.key);
+
+    for (const ck of candidateKeys) {
+      const record = await this.kvGet(ck);
+      if (!record?.snapshots) continue;
+      const overlap = targetKeys.filter(k => k in record.snapshots);
+      if (overlap.length > 0) {
+        return { id: record.id, keys: overlap };
+      }
+    }
+    return null;
+  }
+
+  async loadStagedMutations() {
+    const kvIndex = await this.listKVKeys();
+    const stagedKeys = kvIndex
+      .filter(k => k.key.startsWith("mutation_staged:"))
+      .map(k => k.key);
+
+    const result = {};
+    for (const key of stagedKeys) {
+      const record = await this.kvGet(key);
+      if (!record) continue;
+      const checkResults = await this.evaluateChecks(record.checks || []);
+      result[record.id] = { record, check_results: checkResults };
+    }
+    return result;
+  }
+
+  async processReflectVerdicts(verdicts) {
+    for (const v of verdicts || []) {
+      switch (v.verdict) {
+        case "withdraw":
+          await this.kv.delete(`mutation_staged:${v.mutation_id}`);
+          await this.karmaRecord({ event: "mutation_withdrawn", mutation_id: v.mutation_id });
+          break;
+        case "modify": {
+          const record = await this.kvGet(`mutation_staged:${v.mutation_id}`);
+          if (record) {
+            await this.kvPut(`mutation_staged:${v.mutation_id}`, {
+              ...record,
+              ...(v.updated_ops ? { ops: v.updated_ops } : {}),
+              ...(v.updated_checks ? { checks: v.updated_checks } : {}),
+              ...(v.updated_claims ? { claims: v.updated_claims } : {}),
+              modified_at: new Date().toISOString(),
+            });
+            await this.karmaRecord({ event: "mutation_modified", mutation_id: v.mutation_id });
+          }
+          break;
+        }
+        // Other verdict types silently ignored by reflect
+      }
+    }
+  }
+
+  async processDeepReflectVerdicts(verdicts) {
+    for (const v of verdicts || []) {
+      switch (v.verdict) {
+        // Staged mutation verdicts
+        case "apply":
+          try { await this.applyStagedAsCandidate(v.mutation_id); }
+          catch (err) { await this.karmaRecord({ event: "mutation_apply_failed", mutation_id: v.mutation_id, error: err.message }); }
+          break;
+        case "reject":
+          await this.kv.delete(`mutation_staged:${v.mutation_id}`);
+          await this.karmaRecord({ event: "mutation_rejected", mutation_id: v.mutation_id, reason: v.reason });
+          break;
+        case "withdraw":
+          await this.kv.delete(`mutation_staged:${v.mutation_id}`);
+          await this.karmaRecord({ event: "mutation_withdrawn", mutation_id: v.mutation_id });
+          break;
+        case "modify": {
+          const record = await this.kvGet(`mutation_staged:${v.mutation_id}`);
+          if (record) {
+            await this.kvPut(`mutation_staged:${v.mutation_id}`, {
+              ...record,
+              ...(v.updated_ops ? { ops: v.updated_ops } : {}),
+              ...(v.updated_checks ? { checks: v.updated_checks } : {}),
+              ...(v.updated_claims ? { claims: v.updated_claims } : {}),
+              modified_at: new Date().toISOString(),
+            });
+            await this.karmaRecord({ event: "mutation_modified", mutation_id: v.mutation_id });
+          }
+          break;
+        }
+        // Candidate mutation verdicts
+        case "promote":
+          await this.promoteCandidate(v.mutation_id);
+          break;
+        case "rollback":
+          await this.rollbackCandidate(v.mutation_id, v.reason || "deep_reflect_verdict");
+          break;
+        // Shared
+        case "defer":
+          await this.karmaRecord({ event: "mutation_deferred", mutation_id: v.mutation_id, reason: v.reason });
+          break;
+      }
+    }
+  }
+
+  async runCircuitBreaker() {
+    const kvIndex = await this.listKVKeys();
+    const candidateKeys = kvIndex
+      .filter(k => k.key.startsWith("mutation_candidate:"))
+      .map(k => k.key);
+
+    const dangerSignals = ["fatal_error", "orient_parse_error", "all_providers_failed"];
+
+    for (const ck of candidateKeys) {
+      const record = await this.kvGet(ck);
+      if (!record?.activated_at) continue;
+
+      const activatedAt = new Date(record.activated_at).getTime();
+
+      // Scan karma logs for danger signals after activation
+      const karmaKeys = kvIndex
+        .filter(k => k.key.startsWith("karma:"))
+        .map(k => k.key);
+
+      let shouldRollback = false;
+      for (const kk of karmaKeys) {
+        const entries = await this.kvGet(kk);
+        if (!Array.isArray(entries)) continue;
+        if (entries.some(e => e.t >= activatedAt && dangerSignals.includes(e.event))) {
+          shouldRollback = true;
+          break;
+        }
+      }
+
+      if (shouldRollback) {
+        await this.rollbackCandidate(record.id, "circuit_breaker");
+        await this.karmaRecord({ event: "circuit_breaker_fired", mutation_id: record.id });
+      }
+    }
+  }
+
+  async loadCandidateMutations() {
+    const kvIndex = await this.listKVKeys();
+    const candidateKeys = kvIndex
+      .filter(k => k.key.startsWith("mutation_candidate:"))
+      .map(k => k.key);
+
+    const result = {};
+    for (const key of candidateKeys) {
+      const record = await this.kvGet(key);
+      if (!record) continue;
+      const checkResults = await this.evaluateChecks(record.checks || []);
+      result[record.id] = { record, check_results: checkResults };
+    }
+    return result;
+  }
+
   // ── Helpers ─────────────────────────────────────────────────
 
   // BOOTSTRAP SAFETY: Minimal prompt injection filter.
@@ -985,6 +1371,9 @@ class Brainstem {
     if (key === "soul") {
       throw new Error("Cannot overwrite soul — immutable key");
     }
+
+    // System keys cannot be marked unprotected
+    if (Brainstem.isSystemKey(key)) delete metadata.unprotected;
 
     // Auto-tag: guarantee every key has at minimum a type based on prefix
     const prefix = key.split(":")[0];
@@ -1113,21 +1502,42 @@ class Brainstem {
     return counter || 0;
   }
 
-  // BOOTSTRAP NOTE: This currently writes without recording diffs.
-  // Swayambhu could improve by reading the old value before writing
-  // and including {old_value, new_value} in a karma record.
-  // Makes cross-session debugging much more powerful.
   async applyKVOperation(op) {
+    const key = op.key;
+
+    // System keys always blocked — must go through mutation protocol
+    if (Brainstem.isSystemKey(key)) {
+      await this.karmaRecord({
+        event: "mutation_blocked",
+        key,
+        reason: "system_key",
+      });
+      return;
+    }
+
+    // Agent keys: check KV-native metadata for unprotected flag
+    const { metadata } = await this.kvGetWithMeta(key);
+    if (!metadata?.unprotected) {
+      await this.karmaRecord({
+        event: "mutation_blocked",
+        key,
+        reason: "protected_key",
+      });
+      return;
+    }
+
+    await this.applyKVOperationDirect(op);
+  }
+
+  async applyKVOperationDirect(op) {
     switch (op.op) {
-      case "create":
-      case "update":
+      case "put":
         await this.kvPut(op.key, op.value, op.metadata);
         break;
       case "delete":
         await this.kv.delete(op.key);
         break;
       case "rename": {
-        // Preserve KV-native metadata on rename
         const { value, metadata } = await this.kvGetWithMeta(op.key);
         if (value !== null) {
           await this.kvPut(op.value, value, metadata);
@@ -1136,18 +1546,6 @@ class Brainstem {
         break;
       }
     }
-  }
-
-  async applyModelUpdates(updates, models) {
-    if (!models || !updates) return;
-    for (const update of updates) {
-      const model = models.models.find(m => m.alias === update.model || m.id === update.model);
-      if (model) {
-        const { model: _, ...fields } = update;
-        Object.assign(model, fields);
-      }
-    }
-    await this.kvPut("config:models", models);
   }
 
   async writeSessionResults(plan, config) {
@@ -1161,12 +1559,6 @@ class Brainstem {
         ).toISOString();
       }
       writes.push(this.kvPut("wake_config", wakeConf));
-    }
-
-    if (plan.model_details_updates) {
-      writes.push(
-        this.applyModelUpdates(plan.model_details_updates, this.modelsConfig)
-      );
     }
 
     writes.push(
