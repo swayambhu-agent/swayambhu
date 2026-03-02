@@ -675,28 +675,6 @@ describe("runAgentLoop", () => {
     expect(executedTools).toContain("tool_b");
   });
 
-  it("accumulates sessionCost", async () => {
-    const { brain } = makeBrain();
-    brain.sessionCost = 0;
-    brain.callLLM = vi.fn(async () => ({
-      content: '{"ok":true}',
-      cost: 0.05,
-      toolCalls: null,
-    }));
-
-    await brain.runAgentLoop({
-      systemPrompt: "test",
-      initialContext: "cost test",
-      tools: [],
-      model: "test",
-      effort: "low",
-      maxTokens: 100,
-      maxSteps: 3,
-      step: "test",
-    });
-
-    expect(brain.sessionCost).toBe(0.05);
-  });
 });
 
 // ── 11. executeToolCall ─────────────────────────────────────
@@ -1120,6 +1098,136 @@ describe("executeAction", () => {
 });
 
 // ── 21. loadReflectHistory — uses kv.list prefix ────────────
+
+// ── 22. callLLM budget enforcement ──────────────────────────
+
+describe("callLLM budget enforcement", () => {
+  function makeBudgetBrain(budgetOverrides = {}) {
+    const { brain, env } = makeBrain();
+    const budget = {
+      max_cost: 0.10,
+      max_steps: 8,
+      max_duration_seconds: 600,
+      ...budgetOverrides,
+    };
+    brain.defaults = { session_budget: budget };
+    brain.callWithCascade = vi.fn(async () => ({
+      ok: true,
+      tier: "hardcoded",
+      content: '{"result":"ok"}',
+      usage: { prompt_tokens: 100, completion_tokens: 50 },
+      toolCalls: null,
+    }));
+    brain.estimateCost = vi.fn(() => 0.001);
+    return { brain, env };
+  }
+
+  it("throws on cost limit", async () => {
+    const { brain } = makeBudgetBrain();
+    brain.sessionCost = 0.10;
+
+    await expect(brain.callLLM({
+      model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
+    })).rejects.toThrow("Budget exceeded: cost");
+  });
+
+  it("throws on step limit", async () => {
+    const { brain } = makeBudgetBrain();
+    brain.sessionLLMCalls = 8;
+
+    await expect(brain.callLLM({
+      model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
+    })).rejects.toThrow("Budget exceeded: steps");
+  });
+
+  it("throws on duration limit", async () => {
+    const { brain } = makeBudgetBrain();
+    brain.startTime = Date.now() - 601_000; // elapsed > 600s
+
+    await expect(brain.callLLM({
+      model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
+    })).rejects.toThrow("Budget exceeded: duration");
+  });
+
+  it("accumulates cost and calls", async () => {
+    const { brain } = makeBudgetBrain();
+    brain.sessionCost = 0;
+    brain.sessionLLMCalls = 0;
+
+    await brain.callLLM({
+      model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
+    });
+
+    expect(brain.sessionCost).toBe(0.001);
+    expect(brain.sessionLLMCalls).toBe(1);
+  });
+
+  it("passes when under budget", async () => {
+    const { brain } = makeBudgetBrain();
+    brain.sessionCost = 0.05;
+    brain.sessionLLMCalls = 4;
+
+    const result = await brain.callLLM({
+      model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
+    });
+
+    expect(result.content).toBe('{"result":"ok"}');
+  });
+});
+
+// ── 23. runAgentLoop budget handling ────────────────────────
+
+describe("runAgentLoop budget handling", () => {
+  it("catches budget error gracefully", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    let callCount = 0;
+    brain.callLLM = vi.fn(async () => {
+      callCount++;
+      if (callCount === 2) throw new Error("Budget exceeded: cost");
+      return {
+        content: null,
+        cost: 0.05,
+        toolCalls: [{ id: "tc1", function: { name: "tool", arguments: "{}" } }],
+      };
+    });
+    brain.executeToolCall = vi.fn(async () => ({ ok: true }));
+
+    const result = await brain.runAgentLoop({
+      systemPrompt: "test",
+      initialContext: "budget test",
+      tools: [],
+      model: "test",
+      effort: "low",
+      maxTokens: 100,
+      maxSteps: 5,
+      step: "test",
+    });
+
+    expect(result.budget_exceeded).toBe(true);
+    expect(result.reason).toBe("Budget exceeded: cost");
+  });
+
+  it("re-throws non-budget errors", async () => {
+    const { brain } = makeBrain();
+    brain.callLLM = vi.fn(async () => {
+      throw new Error("Network failure");
+    });
+
+    await expect(brain.runAgentLoop({
+      systemPrompt: "test",
+      initialContext: "error test",
+      tools: [],
+      model: "test",
+      effort: "low",
+      maxTokens: 100,
+      maxSteps: 5,
+      step: "test",
+    })).rejects.toThrow("Network failure");
+  });
+});
+
+// ── 24. loadReflectHistory — uses kv.list prefix ────────────
 
 describe("loadReflectHistory", () => {
   it("uses kv.list with prefix filter", async () => {

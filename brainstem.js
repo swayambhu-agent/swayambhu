@@ -53,6 +53,7 @@ class Brainstem {
     this.startTime = Date.now();
     this.sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.sessionCost = 0;
+    this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
     this.kvWritesThisSession = 0;
     this.modelsConfig = null;
@@ -345,8 +346,10 @@ class Brainstem {
       }
     }
 
-    // Session reflect — unchanged, triggered after orient loop
-    await this.executeReflect({ model: this.defaults.reflect.model });
+    // Session reflect — skip if budget exhausted (would immediately throw again)
+    if (!output.budget_exceeded) {
+      await this.executeReflect({ model: this.defaults.reflect.model });
+    }
 
     // Write session results
     await this.writeSessionResults(output, config);
@@ -760,12 +763,16 @@ class Brainstem {
   }
 
   // ── LLM calls (dynamic provider with cascade fallback) ─────
-  // BOOTSTRAP NOTE: No hard daily spend cap is enforced here.
-  // Swayambhu could add a config:budget_limits key and have the brainstem
-  // refuse to call the LLM if daily cost exceeds the cap, regardless
-  // of what orient requests. Orient optimizes; brainstem enforces floors.
 
   async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step }) {
+    const budget = this.defaults?.session_budget;
+    if (budget?.max_cost && this.sessionCost >= budget.max_cost)
+      throw new Error("Budget exceeded: cost");
+    if (budget?.max_steps && this.sessionLLMCalls >= budget.max_steps)
+      throw new Error("Budget exceeded: steps");
+    if (budget?.max_duration_seconds && this.elapsed() > budget.max_duration_seconds * 1000)
+      throw new Error("Budget exceeded: duration");
+
     const startMs = Date.now();
 
     // Build messages array, prepending system prompt if provided
@@ -824,6 +831,9 @@ class Brainstem {
       response: result.content?.slice(0, 2000) || null,
       tool_calls: result.toolCalls?.length || 0,
     });
+
+    this.sessionCost += cost;
+    this.sessionLLMCalls++;
 
     return { content: result.content, usage: result.usage, cost, toolCalls: result.toolCalls };
   }
@@ -1044,51 +1054,58 @@ class Brainstem {
       messages.push({ role: 'user', content });
     }
 
-    for (let i = 0; i < maxSteps; i++) {
-      const response = await this.callLLM({
-        model, effort, maxTokens,
-        systemPrompt, messages, tools,
-        step: `${step}_turn_${i}`,
-      });
-      this.sessionCost += response.cost;
-
-      if (response.toolCalls?.length) {
-        // Add assistant message with tool calls
-        messages.push({
-          role: 'assistant',
-          content: response.content || null,
-          tool_calls: response.toolCalls,
+    try {
+      for (let i = 0; i < maxSteps; i++) {
+        const response = await this.callLLM({
+          model, effort, maxTokens,
+          systemPrompt, messages, tools,
+          step: `${step}_turn_${i}`,
         });
 
-        // Execute tools in parallel
-        const results = await Promise.all(
-          response.toolCalls.map(tc => this.executeToolCall(tc)
-            .catch(err => ({ error: err.message })))
-        );
-
-        // Add tool result messages (one per tool call)
-        for (let j = 0; j < response.toolCalls.length; j++) {
+        if (response.toolCalls?.length) {
+          // Add assistant message with tool calls
           messages.push({
-            role: 'tool',
-            tool_call_id: response.toolCalls[j].id,
-            content: JSON.stringify(results[j]),
+            role: 'assistant',
+            content: response.content || null,
+            tool_calls: response.toolCalls,
           });
+
+          // Execute tools in parallel
+          const results = await Promise.all(
+            response.toolCalls.map(tc => this.executeToolCall(tc)
+              .catch(err => ({ error: err.message })))
+          );
+
+          // Add tool result messages (one per tool call)
+          for (let j = 0; j < response.toolCalls.length; j++) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: response.toolCalls[j].id,
+              content: JSON.stringify(results[j]),
+            });
+          }
+          continue;
         }
-        continue;
+
+        // No tool calls — final output
+        return this.parseAgentOutput(response.content);
       }
 
-      // No tool calls — final output
-      return this.parseAgentOutput(response.content);
-    }
+      // Max steps reached — force final output (no tools, forces text)
+      messages.push({ role: 'user', content: 'Maximum steps reached. Produce your final output now.' });
+      const finalResponse = await this.callLLM({
+        model, effort, maxTokens, systemPrompt, messages,
+        step: `${step}_final`,
+      });
+      return this.parseAgentOutput(finalResponse.content);
 
-    // Max steps reached — force final output (no tools, forces text)
-    messages.push({ role: 'user', content: 'Maximum steps reached. Produce your final output now.' });
-    const finalResponse = await this.callLLM({
-      model, effort, maxTokens, systemPrompt, messages,
-      step: `${step}_final`,
-    });
-    this.sessionCost += finalResponse.cost;
-    return this.parseAgentOutput(finalResponse.content);
+    } catch (err) {
+      if (err.message.startsWith("Budget exceeded")) {
+        await this.karmaRecord({ event: "budget_exceeded", reason: err.message, step });
+        return { budget_exceeded: true, reason: err.message };
+      }
+      throw err;
+    }
   }
 
   parseAgentOutput(content) {
