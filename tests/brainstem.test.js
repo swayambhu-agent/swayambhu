@@ -24,12 +24,18 @@ function makeKVStore(initial = {}) {
       store.delete(key);
       metaStore.delete(key);
     }),
-    list: vi.fn(async () => ({
-      keys: [...store.keys()].map((name) => ({
-        name,
-        metadata: metaStore.get(name) || null,
-      })),
-    })),
+    list: vi.fn(async (opts = {}) => {
+      let keys = [...store.keys()];
+      if (opts.prefix) keys = keys.filter(k => k.startsWith(opts.prefix));
+      if (opts.limit) keys = keys.slice(0, opts.limit);
+      return {
+        keys: keys.map((name) => ({
+          name,
+          metadata: metaStore.get(name) || null,
+        })),
+        list_complete: true,
+      };
+    }),
     getWithMetadata: vi.fn(async (key, format) => {
       const val = store.get(key) ?? null;
       return { value: val, metadata: metaStore.get(key) || null };
@@ -87,7 +93,6 @@ describe("buildOrientContext", () => {
       kvUsage: { writes_this_session: 0 },
       lastReflect: { session_summary: "test" },
       additionalContext: { foo: "bar" },
-      kvIndex: [{ key: "a", metadata: null }],
       effort: "medium",
       crashData: null,
     };
@@ -96,9 +101,9 @@ describe("buildOrientContext", () => {
     expect(result).toHaveProperty("kv_usage");
     expect(result).toHaveProperty("last_reflect");
     expect(result).toHaveProperty("additional_context");
-    expect(result).toHaveProperty("kv_index");
     expect(result).toHaveProperty("effort");
     expect(result).toHaveProperty("crash_data");
+    expect(result).not.toHaveProperty("kv_index");
     expect(result.effort).toBe("medium");
     expect(result.crash_data).toBeNull();
   });
@@ -926,5 +931,217 @@ describe("applyReflectOutput", () => {
     const schedulePut = putCalls.find(([key]) => key === "reflect:schedule:2");
     expect(schedulePut).toBeTruthy();
     expect(schedulePut[1].after_sessions).toBe(25);
+  });
+});
+
+// ── 13. _trackAdd / _trackRemove ────────────────────────────
+
+describe("_trackAdd / _trackRemove", () => {
+  it("adds to tracking array", () => {
+    const { brain } = makeBrain();
+    brain._trackAdd("activeStaged", "m_1");
+    expect(brain.activeStaged).toEqual(["m_1"]);
+  });
+
+  it("deduplicates", () => {
+    const { brain } = makeBrain();
+    brain._trackAdd("activeStaged", "m_1");
+    brain._trackAdd("activeStaged", "m_1");
+    expect(brain.activeStaged).toEqual(["m_1"]);
+  });
+
+  it("removes from tracking array", () => {
+    const { brain } = makeBrain();
+    brain.activeStaged = ["m_1", "m_2", "m_3"];
+    brain._trackRemove("activeStaged", "m_2");
+    expect(brain.activeStaged).toEqual(["m_1", "m_3"]);
+  });
+
+  it("no-op when removing non-existent id", () => {
+    const { brain } = makeBrain();
+    brain.activeCandidates = ["m_1"];
+    brain._trackRemove("activeCandidates", "m_99");
+    expect(brain.activeCandidates).toEqual(["m_1"]);
+  });
+});
+
+// ── 14. loadStagedMutations ─────────────────────────────────
+
+describe("loadStagedMutations", () => {
+  it("reads from activeStaged array, not KV scan", async () => {
+    const { brain, env } = makeBrain({
+      "mutation_staged:m_1": JSON.stringify({
+        id: "m_1",
+        claims: ["test"],
+        ops: [{ op: "put", key: "x", value: 1 }],
+        checks: [],
+      }),
+    });
+    brain.activeStaged = ["m_1"];
+    const result = await brain.loadStagedMutations();
+    expect(result).toHaveProperty("m_1");
+    expect(result.m_1.record.id).toBe("m_1");
+    expect(result.m_1.check_results.all_passed).toBe(true);
+  });
+
+  it("skips missing mutations", async () => {
+    const { brain } = makeBrain();
+    brain.activeStaged = ["m_gone"];
+    const result = await brain.loadStagedMutations();
+    expect(Object.keys(result)).toHaveLength(0);
+  });
+});
+
+// ── 15. loadCandidateMutations ──────────────────────────────
+
+describe("loadCandidateMutations", () => {
+  it("reads from activeCandidates array", async () => {
+    const { brain } = makeBrain({
+      "mutation_candidate:m_2": JSON.stringify({
+        id: "m_2",
+        claims: ["perf"],
+        ops: [{ op: "put", key: "y", value: 2 }],
+        checks: [],
+        snapshots: {},
+        activated_at: new Date().toISOString(),
+      }),
+    });
+    brain.activeCandidates = ["m_2"];
+    const result = await brain.loadCandidateMutations();
+    expect(result).toHaveProperty("m_2");
+    expect(result.m_2.record.id).toBe("m_2");
+  });
+});
+
+// ── 16. findCandidateConflict ───────────────────────────────
+
+describe("findCandidateConflict", () => {
+  it("detects overlapping snapshot keys", async () => {
+    const { brain } = makeBrain({
+      "mutation_candidate:m_c": JSON.stringify({
+        id: "m_c",
+        snapshots: { "config:defaults": { value: "{}", metadata: {} } },
+      }),
+    });
+    brain.activeCandidates = ["m_c"];
+    const conflict = await brain.findCandidateConflict(["config:defaults", "wisdom"]);
+    expect(conflict).not.toBeNull();
+    expect(conflict.id).toBe("m_c");
+    expect(conflict.keys).toContain("config:defaults");
+  });
+
+  it("returns null when no overlap", async () => {
+    const { brain } = makeBrain({
+      "mutation_candidate:m_c": JSON.stringify({
+        id: "m_c",
+        snapshots: { "config:defaults": { value: "{}" } },
+      }),
+    });
+    brain.activeCandidates = ["m_c"];
+    const conflict = await brain.findCandidateConflict(["wisdom"]);
+    expect(conflict).toBeNull();
+  });
+});
+
+// ── 17. stageMutation tracking ──────────────────────────────
+
+describe("stageMutation", () => {
+  it("appends to activeStaged", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.kvPut = vi.fn(async () => {});
+    const id = await brain.stageMutation({
+      claims: ["test"],
+      ops: [{ op: "put", key: "x", value: 1 }],
+      checks: [{ type: "kv_value_unchanged", key: "x" }],
+    }, "test_session");
+    expect(id).toBeTruthy();
+    expect(brain.activeStaged).toContain(id);
+  });
+});
+
+// ── 18. promoteCandidate tracking ───────────────────────────
+
+describe("promoteCandidate", () => {
+  it("removes from activeCandidates", async () => {
+    const { brain } = makeBrain();
+    brain.activeCandidates = ["m_p"];
+    brain.karmaRecord = vi.fn(async () => {});
+    await brain.promoteCandidate("m_p");
+    expect(brain.activeCandidates).not.toContain("m_p");
+  });
+});
+
+// ── 19. rollbackCandidate tracking ──────────────────────────
+
+describe("rollbackCandidate", () => {
+  it("removes from activeCandidates", async () => {
+    const { brain } = makeBrain({
+      "mutation_candidate:m_r": JSON.stringify({
+        id: "m_r",
+        snapshots: {},
+      }),
+    });
+    brain.activeCandidates = ["m_r"];
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.kvPut = vi.fn(async () => {});
+    await brain.rollbackCandidate("m_r", "test_reason");
+    expect(brain.activeCandidates).not.toContain("m_r");
+  });
+});
+
+// ── 20. executeAction — tool: prefix ────────────────────────
+
+describe("executeAction", () => {
+  it("reads from tool:name:code + tool:name:meta", async () => {
+    const toolCode = 'async function execute({ x }) { return { doubled: x * 2 }; }';
+    const toolMeta = { secrets: [], kv_access: "none", timeout_ms: 5000 };
+    const { brain } = makeBrain({
+      "tool:doubler:code": JSON.stringify(toolCode),
+      "tool:doubler:meta": JSON.stringify(toolMeta),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.buildToolContext = vi.fn(async () => ({ x: 5 }));
+    brain.runInIsolate = vi.fn(async () => ({ doubled: 10 }));
+
+    const result = await brain.executeAction({ tool: "doubler", input: { x: 5 }, id: "tc1" });
+    expect(result).toEqual({ doubled: 10 });
+    expect(brain.runInIsolate).toHaveBeenCalledWith(
+      expect.objectContaining({ moduleCode: toolCode })
+    );
+  });
+
+  it("throws for missing tool code", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.executeAction({ tool: "nonexistent", input: {}, id: "tc1" }))
+      .rejects.toThrow("Unknown tool: nonexistent");
+  });
+});
+
+// ── 21. loadReflectHistory — uses kv.list prefix ────────────
+
+describe("loadReflectHistory", () => {
+  it("uses kv.list with prefix filter", async () => {
+    const { brain, env } = makeBrain({
+      "reflect:1:s_001": JSON.stringify({ reflection: "first" }),
+      "reflect:1:s_002": JSON.stringify({ reflection: "second" }),
+      "reflect:2:s_003": JSON.stringify({ reflection: "depth2" }),
+    });
+    const result = await brain.loadReflectHistory(1, 5);
+    // Should only get depth 1 entries
+    expect(result).toHaveProperty("reflect:1:s_002");
+    expect(result).toHaveProperty("reflect:1:s_001");
+    expect(result).not.toHaveProperty("reflect:2:s_003");
+  });
+
+  it("limits results to count", async () => {
+    const { brain } = makeBrain({
+      "reflect:1:s_001": JSON.stringify({ reflection: "a" }),
+      "reflect:1:s_002": JSON.stringify({ reflection: "b" }),
+      "reflect:1:s_003": JSON.stringify({ reflection: "c" }),
+    });
+    const result = await brain.loadReflectHistory(1, 2);
+    expect(Object.keys(result)).toHaveLength(2);
   });
 });

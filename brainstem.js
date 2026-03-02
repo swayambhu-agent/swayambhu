@@ -25,6 +25,18 @@ export class ScopedKV extends WorkerEntrypoint {
     const resolved = `tooldata:${toolName}:${key}`;  // writes always scoped
     await this.env.KV.put(resolved, typeof value === "string" ? value : JSON.stringify(value));
   }
+  async list(opts = {}) {
+    const { toolName, kvAccess } = this.ctx.props;
+    if (kvAccess === "own") {
+      const scope = `tooldata:${toolName}:`;
+      const result = await this.env.KV.list({ ...opts, prefix: scope + (opts.prefix || "") });
+      return {
+        keys: result.keys.map(k => ({ ...k, name: k.name.slice(scope.length) })),
+        list_complete: result.list_complete,
+      };
+    }
+    return this.env.KV.list(opts);
+  }
 }
 
 export default {
@@ -48,17 +60,28 @@ class Brainstem {
     this.soul = null;
     this.toolsCache = {};      // Loaded tool code+meta, cached per session
     this.lastWorkingSnapshotted = false; // Only snapshot provider once per session
+    this.activeStaged = [];      // mutation IDs with mutation_staged: keys
+    this.activeCandidates = [];  // mutation IDs with mutation_candidate: keys
   }
 
   static SYSTEM_KEY_PREFIXES = [
-    'prompt:', 'config:', 'functions:', 'secret:',
+    'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'mutation_staged:', 'mutation_candidate:',
   ];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'wisdom'];
+  static DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
 
   static isSystemKey(key) {
     if (Brainstem.SYSTEM_KEY_EXACT.includes(key)) return true;
     return Brainstem.SYSTEM_KEY_PREFIXES.some(p => key.startsWith(p));
+  }
+
+  _trackAdd(list, id) {
+    if (!this[list].includes(id)) this[list].push(id);
+  }
+
+  _trackRemove(list, id) {
+    this[list] = this[list].filter(x => x !== id);
   }
 
   generateMutationId() {
@@ -84,12 +107,11 @@ class Brainstem {
   }
 
   async loadReflectHistory(depth, count = 10) {
-    const kvIndex = await this.listKVKeys();
-    const keys = kvIndex
-      .filter(k => k.key.startsWith(`reflect:${depth}:`))
-      .sort((a, b) => b.key.localeCompare(a.key))
-      .slice(0, count)
-      .map(k => k.key);
+    const result = await this.kv.list({ prefix: `reflect:${depth}:`, limit: count + 10 });
+    const keys = result.keys
+      .map(k => k.name)
+      .sort((a, b) => b.localeCompare(a))
+      .slice(0, count);
     return this.loadKeys(keys);
   }
 
@@ -148,12 +170,21 @@ class Brainstem {
   // ── Karma log ────────────────────────────────────────────────
 
   async karmaRecord(entry) {
-    this.karma.push({
+    const record = {
       t: Date.now(),
       elapsed_ms: this.elapsed(),
       ...entry,
-    });
+    };
+    this.karma.push(record);
     await this.kvPut(`karma:${this.sessionId}`, this.karma);
+
+    if (Brainstem.DANGER_SIGNALS.includes(entry.event)) {
+      await this.kvPut("last_danger", {
+        t: record.t,
+        event: entry.event,
+        session_id: this.sessionId,
+      });
+    }
   }
 
   // ── Wake cycle ──────────────────────────────────────────────
@@ -170,6 +201,14 @@ class Brainstem {
 
       // 1. Crash detection — check if previous session died mid-flight
       const crashData = await this.detectCrash();
+
+      // 1a-pre. Initialize mutation tracking from targeted prefix scans
+      const [stagedList, candidateList] = await Promise.all([
+        this.kv.list({ prefix: "mutation_staged:", limit: 200 }),
+        this.kv.list({ prefix: "mutation_candidate:", limit: 200 }),
+      ]);
+      this.activeStaged = stagedList.keys.map(k => k.name.slice("mutation_staged:".length));
+      this.activeCandidates = candidateList.keys.map(k => k.name.slice("mutation_candidate:".length));
 
       // 1b. Circuit breaker — auto-rollback candidates if system is unstable
       await this.runCircuitBreaker();
@@ -210,16 +249,12 @@ class Brainstem {
         || [];
       const additionalContext = await this.loadKeys(loadKeys);
 
-      // 8. Build KV index
-      const kvIndex = await this.listKVKeys();
-
-      // 9. Build context object
+      // 8. Build context object
       const context = {
         balances,
         kvUsage,
         lastReflect,
         additionalContext,
-        kvIndex,
         effort,
         reflectDepth,
         crashData,  // null if clean, full karma of dead session if crash
@@ -323,7 +358,6 @@ class Brainstem {
       kv_usage: context.kvUsage,
       last_reflect: context.lastReflect,
       additional_context: context.additionalContext,
-      kv_index: context.kvIndex,
       effort: context.effort,
       crash_data: context.crashData,
     });
@@ -334,16 +368,17 @@ class Brainstem {
   async executeAction(step) {
     const toolName = step.tool;
 
-    // Load function code + KV-native metadata (cached per session)
+    // Load tool code + meta (cached per session)
     if (!this.toolsCache[toolName]) {
-      const fn = await this.kvGetWithMeta(`functions:${toolName}`);
-      if (!fn.value) {
-        throw new Error(`Unknown tool: ${toolName} — no code at functions:${toolName}`);
-      }
-      this.toolsCache[toolName] = fn;
+      const [code, meta] = await Promise.all([
+        this.kvGet(`tool:${toolName}:code`),
+        this.kvGet(`tool:${toolName}:meta`),
+      ]);
+      if (!code) throw new Error(`Unknown tool: ${toolName} — no code at tool:${toolName}:code`);
+      this.toolsCache[toolName] = { code, meta };
     }
 
-    const { value: moduleCode, metadata: meta } = this.toolsCache[toolName];
+    const { code: moduleCode, meta } = this.toolsCache[toolName];
 
     // Build sandboxed context based on function metadata
     const ctx = await this.buildToolContext(toolName, meta || {}, step.input || {});
@@ -450,68 +485,95 @@ class Brainstem {
       exact: Brainstem.SYSTEM_KEY_EXACT,
     };
 
-    const prompt = this.buildPrompt(reflectPrompt || this.defaultReflectPrompt(), {
-      soul: this.soul,
+    // Build system prompt (identity + instructions)
+    const systemPrompt = this.buildPrompt(
+      reflectPrompt || this.defaultReflectPrompt(),
+      { soul: this.soul, systemKeyPatterns }
+    );
+
+    // Build user message (session-specific data)
+    const initialContext = JSON.stringify({
       karma: this.karma,
       sessionCost: this.sessionCost,
       stagedMutations,
-      systemKeyPatterns,
     });
 
     const model = this.resolveModel(
       step.model || this.defaults.reflect.model
     );
-    const result = await this.callLLM({
+
+    // Route through agent loop (enables future tool use)
+    const output = await this.runAgentLoop({
+      systemPrompt,
+      initialContext,
+      tools: [],
       model,
       effort: step.effort || this.defaults.reflect.effort,
       maxTokens: step.max_output_tokens || this.defaults.reflect.max_output_tokens,
-      messages: [{ role: "user", content: prompt }],
+      maxSteps: 1,
       step: "reflect",
     });
-    this.sessionCost += result.cost;
 
-    try {
-      const reflection = JSON.parse(result.content);
+    // Detect parse failure (parseAgentOutput returns { raw } on failure)
+    if (output.raw !== undefined) {
       await this.kvPut("last_reflect", {
-        ...reflection,
+        raw: output.raw,
+        parse_error: true,
         session_id: this.sessionId,
       });
-
-      // Apply any KV operations the reflection requests (gated by protection)
-      if (reflection.kv_operations) {
-        for (const op of reflection.kv_operations) {
-          await this.applyKVOperation(op);
-        }
-      }
-
-      // Process mutation verdicts (withdraw/modify only)
-      if (reflection.mutation_verdicts) {
-        await this.processReflectVerdicts(reflection.mutation_verdicts);
-      }
-
-      // Stage new mutation requests
-      if (reflection.mutation_requests) {
-        for (const req of reflection.mutation_requests) {
-          await this.stageMutation(req, this.sessionId);
-        }
-      }
-
-      // Update wake config if specified
-      if (reflection.next_wake_config) {
-        const wakeConf = { ...reflection.next_wake_config };
-        if (wakeConf.sleep_seconds) {
-          wakeConf.next_wake_after = new Date(
-            Date.now() + wakeConf.sleep_seconds * 1000
-          ).toISOString();
-        }
-        await this.kvPut("wake_config", wakeConf);
-      }
-    } catch (err) {
-      await this.kvPut("last_reflect", {
-        raw: result.content,
-        parse_error: err.message,
+      await this.kvPut(`reflect:0:${this.sessionId}`, {
+        raw: output.raw,
+        parse_error: true,
+        depth: 0,
         session_id: this.sessionId,
+        timestamp: new Date().toISOString(),
       });
+      return;
+    }
+
+    // Success — write last_reflect
+    await this.kvPut("last_reflect", {
+      ...output,
+      session_id: this.sessionId,
+    });
+
+    // Persist historical record for loadReflectHistory(0, N)
+    await this.kvPut(`reflect:0:${this.sessionId}`, {
+      reflection: output.session_summary || output.reflection,
+      note_to_future_self: output.note_to_future_self,
+      depth: 0,
+      session_id: this.sessionId,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Apply any KV operations the reflection requests (gated by protection)
+    if (output.kv_operations) {
+      for (const op of output.kv_operations) {
+        await this.applyKVOperation(op);
+      }
+    }
+
+    // Process mutation verdicts (withdraw/modify only)
+    if (output.mutation_verdicts) {
+      await this.processReflectVerdicts(output.mutation_verdicts);
+    }
+
+    // Stage new mutation requests
+    if (output.mutation_requests) {
+      for (const req of output.mutation_requests) {
+        await this.stageMutation(req, this.sessionId);
+      }
+    }
+
+    // Update wake config if specified
+    if (output.next_wake_config) {
+      const wakeConf = { ...output.next_wake_config };
+      if (wakeConf.sleep_seconds) {
+        wakeConf.next_wake_after = new Date(
+          Date.now() + wakeConf.sleep_seconds * 1000
+        ).toISOString();
+      }
+      await this.kvPut("wake_config", wakeConf);
     }
   }
 
@@ -579,11 +641,11 @@ class Brainstem {
 
     if (depth === 1) {
       // Depth 1: examines karma + orient prompt + session history
-      const karmaKeys = context.kvIndex
-        .filter(k => k.key.startsWith("karma:"))
-        .sort((a, b) => b.key.localeCompare(a.key))
-        .slice(0, 10)
-        .map(k => k.key);
+      const karmaList = await this.kv.list({ prefix: "karma:", limit: 20 });
+      const karmaKeys = karmaList.keys
+        .map(k => k.name)
+        .sort((a, b) => b.localeCompare(a))
+        .slice(0, 10);
       const recentKarma = await this.loadKeys(karmaKeys);
       const orientPrompt = await this.kvGet("prompt:orient");
       const sessionHistory = await this.kvGet("session_history");
@@ -596,7 +658,6 @@ class Brainstem {
         depth,
         balances: context.balances,
         kv_usage: context.kvUsage,
-        kv_index: context.kvIndex,
         effort: context.effort,
         crash_data: context.crashData,
         staged_mutations: stagedMutations,
@@ -770,12 +831,16 @@ class Brainstem {
   async callWithCascade(request, step) {
     // Tier 1: Dynamic adapter from KV
     try {
-      const result = await this.callViaAdapter("llm_adapter", request);
-      // Success — snapshot as last working (value + KV-native metadata)
+      const result = await this.callViaAdapter("llm", request);
+      // Success — snapshot as last working
       if (!this.lastWorkingSnapshotted) {
-        const fn = await this.kvGetWithMeta("functions:llm_adapter");
-        if (fn.value) {
-          await this.kvPut("functions:llm_adapter:last_working", fn.value, fn.metadata);
+        const [code, meta] = await Promise.all([
+          this.kvGet("provider:llm:code"),
+          this.kvGet("provider:llm:meta"),
+        ]);
+        if (code) {
+          await this.kvPut("provider:llm:last_working:code", code);
+          await this.kvPut("provider:llm:last_working:meta", meta);
           this.lastWorkingSnapshotted = true;
         }
       }
@@ -791,7 +856,7 @@ class Brainstem {
 
     // Tier 2: Last known working adapter
     try {
-      const result = await this.callViaAdapter("llm_adapter:last_working", request);
+      const result = await this.callViaAdapter("llm:last_working", request);
       return { ...result, ok: true, tier: "last_working" };
     } catch (err) {
       await this.karmaRecord({
@@ -812,10 +877,13 @@ class Brainstem {
   }
 
   async callViaAdapter(fnKey, request) {
-    const fn = await this.kvGetWithMeta(`functions:${fnKey}`);
-    if (!fn.value) throw new Error(`No adapter at functions:${fnKey}`);
+    const [code, meta_] = await Promise.all([
+      this.kvGet(`provider:${fnKey}:code`),
+      this.kvGet(`provider:${fnKey}:meta`),
+    ]);
+    if (!code) throw new Error(`No adapter at provider:${fnKey}:code`);
 
-    const meta = fn.metadata || {};
+    const meta = meta_ || {};
 
     // Build scoped secrets — same two-tier pattern as tools
     const secrets = {};
@@ -829,7 +897,7 @@ class Brainstem {
 
     const result = await this.runInIsolate({
       id: `fn:${fnKey}:${this.sessionId}`,
-      moduleCode: fn.value,
+      moduleCode: code,
       ctx: { ...request, secrets },
       timeoutMs: meta.timeout_ms || 60000,
     });
@@ -1099,6 +1167,7 @@ class Brainstem {
       staged_at: new Date().toISOString(),
       staged_by_session: sessionId,
     });
+    this._trackAdd('activeStaged', id);
     await this.karmaRecord({ event: "mutation_staged", mutation_id: id, claims: request.claims });
     return id;
   }
@@ -1133,6 +1202,8 @@ class Brainstem {
       activated_at: new Date().toISOString(),
     });
     await this.kv.delete(`mutation_staged:${mutationId}`);
+    this._trackRemove('activeStaged', mutationId);
+    this._trackAdd('activeCandidates', mutationId);
 
     // Refresh defaults if ops touch config:defaults
     if (targetKeys.some(k => k === "config:defaults")) {
@@ -1176,6 +1247,7 @@ class Brainstem {
       staged_by_session: sessionId,
       activated_at: new Date().toISOString(),
     });
+    this._trackAdd('activeCandidates', id);
 
     if (targetKeys.some(k => k === "config:defaults")) {
       this.defaults = await this.kvGet("config:defaults");
@@ -1187,6 +1259,7 @@ class Brainstem {
 
   async promoteCandidate(mutationId) {
     await this.kv.delete(`mutation_candidate:${mutationId}`);
+    this._trackRemove('activeCandidates', mutationId);
     await this.karmaRecord({ event: "mutation_promoted", mutation_id: mutationId });
   }
 
@@ -1210,35 +1283,24 @@ class Brainstem {
     }
 
     await this.kv.delete(`mutation_candidate:${mutationId}`);
+    this._trackRemove('activeCandidates', mutationId);
     await this.karmaRecord({ event: "mutation_rolled_back", mutation_id: mutationId, reason });
   }
 
   async findCandidateConflict(targetKeys) {
-    const kvIndex = await this.listKVKeys();
-    const candidateKeys = kvIndex
-      .filter(k => k.key.startsWith("mutation_candidate:"))
-      .map(k => k.key);
-
-    for (const ck of candidateKeys) {
-      const record = await this.kvGet(ck);
+    for (const id of this.activeCandidates) {
+      const record = await this.kvGet(`mutation_candidate:${id}`);
       if (!record?.snapshots) continue;
       const overlap = targetKeys.filter(k => k in record.snapshots);
-      if (overlap.length > 0) {
-        return { id: record.id, keys: overlap };
-      }
+      if (overlap.length > 0) return { id: record.id, keys: overlap };
     }
     return null;
   }
 
   async loadStagedMutations() {
-    const kvIndex = await this.listKVKeys();
-    const stagedKeys = kvIndex
-      .filter(k => k.key.startsWith("mutation_staged:"))
-      .map(k => k.key);
-
     const result = {};
-    for (const key of stagedKeys) {
-      const record = await this.kvGet(key);
+    for (const id of this.activeStaged) {
+      const record = await this.kvGet(`mutation_staged:${id}`);
       if (!record) continue;
       const checkResults = await this.evaluateChecks(record.checks || []);
       result[record.id] = { record, check_results: checkResults };
@@ -1251,6 +1313,7 @@ class Brainstem {
       switch (v.verdict) {
         case "withdraw":
           await this.kv.delete(`mutation_staged:${v.mutation_id}`);
+          this._trackRemove('activeStaged', v.mutation_id);
           await this.karmaRecord({ event: "mutation_withdrawn", mutation_id: v.mutation_id });
           break;
         case "modify": {
@@ -1282,10 +1345,12 @@ class Brainstem {
           break;
         case "reject":
           await this.kv.delete(`mutation_staged:${v.mutation_id}`);
+          this._trackRemove('activeStaged', v.mutation_id);
           await this.karmaRecord({ event: "mutation_rejected", mutation_id: v.mutation_id, reason: v.reason });
           break;
         case "withdraw":
           await this.kv.delete(`mutation_staged:${v.mutation_id}`);
+          this._trackRemove('activeStaged', v.mutation_id);
           await this.karmaRecord({ event: "mutation_withdrawn", mutation_id: v.mutation_id });
           break;
         case "modify": {
@@ -1318,35 +1383,14 @@ class Brainstem {
   }
 
   async runCircuitBreaker() {
-    const kvIndex = await this.listKVKeys();
-    const candidateKeys = kvIndex
-      .filter(k => k.key.startsWith("mutation_candidate:"))
-      .map(k => k.key);
+    const lastDanger = await this.kvGet("last_danger");
+    if (!lastDanger) return;
 
-    const dangerSignals = ["fatal_error", "orient_parse_error", "all_providers_failed"];
-
-    for (const ck of candidateKeys) {
-      const record = await this.kvGet(ck);
+    for (const id of this.activeCandidates) {
+      const record = await this.kvGet(`mutation_candidate:${id}`);
       if (!record?.activated_at) continue;
 
-      const activatedAt = new Date(record.activated_at).getTime();
-
-      // Scan karma logs for danger signals after activation
-      const karmaKeys = kvIndex
-        .filter(k => k.key.startsWith("karma:"))
-        .map(k => k.key);
-
-      let shouldRollback = false;
-      for (const kk of karmaKeys) {
-        const entries = await this.kvGet(kk);
-        if (!Array.isArray(entries)) continue;
-        if (entries.some(e => e.t >= activatedAt && dangerSignals.includes(e.event))) {
-          shouldRollback = true;
-          break;
-        }
-      }
-
-      if (shouldRollback) {
+      if (lastDanger.t >= new Date(record.activated_at).getTime()) {
         await this.rollbackCandidate(record.id, "circuit_breaker");
         await this.karmaRecord({ event: "circuit_breaker_fired", mutation_id: record.id });
       }
@@ -1354,14 +1398,9 @@ class Brainstem {
   }
 
   async loadCandidateMutations() {
-    const kvIndex = await this.listKVKeys();
-    const candidateKeys = kvIndex
-      .filter(k => k.key.startsWith("mutation_candidate:"))
-      .map(k => k.key);
-
     const result = {};
-    for (const key of candidateKeys) {
-      const record = await this.kvGet(key);
+    for (const id of this.activeCandidates) {
+      const record = await this.kvGet(`mutation_candidate:${id}`);
       if (!record) continue;
       const checkResults = await this.evaluateChecks(record.checks || []);
       result[record.id] = { record, check_results: checkResults };
@@ -1372,7 +1411,7 @@ class Brainstem {
   // ── Helpers ─────────────────────────────────────────────────
 
   // Config-driven balance checks — iterates providers and wallets KV configs,
-  // calling functions:check_{type} for each. No hardcoded provider logic.
+  // calling each entry's adapter for balance data. No hardcoded provider logic.
   async getBalances() {
     const [providers, wallets] = await Promise.all([
       this.kvGet("providers"),
@@ -1382,8 +1421,12 @@ class Brainstem {
     const balances = { providers: {}, wallets: {} };
 
     for (const [name, config] of Object.entries(providers || {})) {
-      const fn = await this.kvGetWithMeta(`functions:check_${config.provider}`);
-      if (!fn.value) continue;
+      if (!config.adapter) continue;
+      const [code, meta] = await Promise.all([
+        this.kvGet(`${config.adapter}:code`),
+        this.kvGet(`${config.adapter}:meta`),
+      ]);
+      if (!code) continue;
 
       const secret = config.secret_store === "env"
         ? this.env[config.secret_name] ?? null
@@ -1391,24 +1434,28 @@ class Brainstem {
 
       try {
         balances.providers[name] = await this.runInIsolate({
-          id: `fn:check_${config.provider}:${this.sessionId}`,
-          moduleCode: fn.value,
+          id: `fn:${config.adapter}:${this.sessionId}`,
+          moduleCode: code,
           ctx: { provider: config, secret },
-          timeoutMs: fn.metadata?.timeout_ms || 10000,
+          timeoutMs: meta?.timeout_ms || 10000,
         });
       } catch { balances.providers[name] = null; }
     }
 
     for (const [name, config] of Object.entries(wallets || {})) {
-      const fn = await this.kvGetWithMeta(`functions:check_${config.network}`);
-      if (!fn.value) continue;
+      if (!config.adapter) continue;
+      const [code, meta] = await Promise.all([
+        this.kvGet(`${config.adapter}:code`),
+        this.kvGet(`${config.adapter}:meta`),
+      ]);
+      if (!code) continue;
 
       try {
         balances.wallets[name] = await this.runInIsolate({
-          id: `fn:check_${config.network}:${this.sessionId}`,
-          moduleCode: fn.value,
+          id: `fn:${config.adapter}:${this.sessionId}`,
+          moduleCode: code,
           ctx: { wallet: config },
-          timeoutMs: fn.metadata?.timeout_ms || 10000,
+          timeoutMs: meta?.timeout_ms || 10000,
         });
       } catch { balances.wallets[name] = null; }
     }
@@ -1457,7 +1504,8 @@ class Brainstem {
     const defaults = {
       providers:  { type: "config" },
       wallets:    { type: "config" },
-      functions:  { type: "function", runtime: "worker" },
+      tool:       { type: "tool", runtime: "worker" },
+      provider:   { type: "provider", runtime: "worker" },
       karma:      { type: "log" },
       prompt:     { type: "prompt" },
       config:     { type: "config" },
@@ -1476,15 +1524,6 @@ class Brainstem {
     const data = typeof value === "string" ? value : JSON.stringify(value);
     await this.kv.put(key, data, { metadata: finalMetadata });
     this.kvWritesThisSession++;
-  }
-
-  async listKVKeys() {
-    const keys = [];
-    const result = await this.kv.list({ limit: 1000 });
-    for (const key of result.keys) {
-      keys.push({ key: key.name, metadata: key.metadata });
-    }
-    return keys;
   }
 
   async loadKeys(keys) {
@@ -1646,12 +1685,14 @@ Budget: max {{maxSteps}} turns, max ${{maxCost}}.`;
 
   defaultReflectPrompt() {
     return `You are reflecting on a session that just completed.
-Session karma log: {{karma}}
-Total cost: ${{sessionCost}}
+
+Your soul: {{soul}}
+
+Review the session karma log and cost provided in the user message.
 
 Produce a JSON object with: session_summary, note_to_future_self,
 next_orient_context (with load_keys array), and optionally
-next_wake_config and kv_operations.`;
+next_wake_config, kv_operations, mutation_verdicts, and mutation_requests.`;
   }
 
   defaultDeepReflectPrompt(depth) {

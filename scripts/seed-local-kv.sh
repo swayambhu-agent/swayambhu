@@ -26,6 +26,26 @@ put_kv_value() {
 
 echo "=== Seeding local KV ==="
 
+# ── Identity keys ──────────────────────────────────────────────
+
+echo ""
+echo "--- Identity ---"
+
+cat > /tmp/_kv_seed_val <<'JSONEOF'
+{
+  "did": "did:ethr:8453:0xde2c9b784177dafd667b83a631b0de79a68a584e",
+  "address": "0xde2c9b784177dafd667b83a631b0de79a68a584e",
+  "chain_id": 8453,
+  "chain_name": "base",
+  "registry": "0xdca7ef03e98e0dc2b855be647c39abe984fcf21b",
+  "registry_deployed": false,
+  "created_at": "2026-03-02T11:39:35.915Z",
+  "soul_hash": null,
+  "controller": "0xde2c9b784177dafd667b83a631b0de79a68a584e"
+}
+JSONEOF
+put_kv "identity:did" /tmp/_kv_seed_val
+
 # ── Config keys ──────────────────────────────────────────────
 
 echo ""
@@ -62,6 +82,13 @@ cat > /tmp/_kv_seed_val <<'JSONEOF'
   },
   "execution": {
     "max_subplan_depth": 3,
+    "max_reflect_depth": 1,
+    "reflect_interval_multiplier": 5,
+    "max_steps": {
+      "orient": 3,
+      "reflect_default": 5,
+      "reflect_deep": 10
+    },
     "fallback_model": "anthropic/claude-haiku-4-5-20251001"
   },
   "deep_reflect": {
@@ -149,6 +176,29 @@ cat > /tmp/_kv_seed_val <<'JSONEOF'
 JSONEOF
 put_kv "config:resources" /tmp/_kv_seed_val
 
+cat > /tmp/_kv_seed_val <<'JSONEOF'
+{
+  "openrouter": {
+    "provider": "openrouter",
+    "adapter": "provider:llm_balance",
+    "secret_name": "OPENROUTER_API_KEY",
+    "secret_store": "env"
+  }
+}
+JSONEOF
+put_kv "providers" /tmp/_kv_seed_val
+
+cat > /tmp/_kv_seed_val <<'JSONEOF'
+{
+  "base_usdc": {
+    "network": "base",
+    "adapter": "provider:wallet_balance",
+    "address": "0x1951e298f9Aa7eFf5eB0dD5349e823BBB09a3260"
+  }
+}
+JSONEOF
+put_kv "wallets" /tmp/_kv_seed_val
+
 # ── Tool registry ────────────────────────────────────────────
 
 cat > /tmp/_kv_seed_val <<'JSONEOF'
@@ -160,7 +210,8 @@ cat > /tmp/_kv_seed_val <<'JSONEOF'
     { "name": "kv_write", "description": "Write to tool's own KV namespace", "input": { "key": "required", "value": "required" } },
     { "name": "check_or_balance", "description": "Check current OpenRouter credit balance", "input": {} },
     { "name": "check_wallet_balance", "description": "Check USDC balance on Base", "input": {} },
-    { "name": "topup_openrouter", "description": "Transfer USDC from wallet to OpenRouter credits", "input": { "amount": "USD amount, required" } }
+    { "name": "topup_openrouter", "description": "Transfer USDC from wallet to OpenRouter credits", "input": { "amount": "USD amount, required" } },
+    { "name": "kv_manifest", "description": "List KV keys, optionally filtered by prefix. Use to explore what is stored in memory.", "input": { "prefix": "optional key prefix filter", "limit": "max keys to return (default 100, max 500)" } }
   ]
 }
 JSONEOF
@@ -173,12 +224,13 @@ echo "--- Providers ---"
 
 # provider:llm
 cat > /tmp/_kv_seed_val <<'EOF'
-async function call({ model, messages, max_tokens, thinking, secrets, fetch }) {
+async function call({ model, messages, max_tokens, thinking, tools, secrets, fetch }) {
   const body = { model, max_tokens, messages };
   if (thinking) {
     body.provider = { require_parameters: true };
     body.thinking = thinking;
   }
+  if (tools) body.tools = tools;
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -189,9 +241,11 @@ async function call({ model, messages, max_tokens, thinking, secrets, fetch }) {
   });
   const data = await resp.json();
   if (!resp.ok || data.error) throw new Error(JSON.stringify(data.error));
+  const msg = data.choices?.[0]?.message;
   return {
-    content: data.choices?.[0]?.message?.content || "",
-    usage: data.usage || {}
+    content: msg?.content || "",
+    usage: data.usage || {},
+    toolCalls: msg?.tool_calls || null,
   };
 }
 EOF
@@ -343,24 +397,39 @@ EOF
 put_kv "tool:topup_openrouter:code" /tmp/_kv_seed_val
 put_kv_value "tool:topup_openrouter:meta" '{"secrets":["OPENROUTER_API_KEY","WALLET_PRIVATE_KEY","WALLET_ADDRESS"],"kv_access":"none","timeout_ms":30000}'
 
+# tool:kv_manifest
+cat > /tmp/_kv_seed_val <<'EOF'
+async function execute({ prefix, limit, kv }) {
+  const opts = { limit: Math.min(parseInt(limit) || 100, 500) };
+  if (prefix) opts.prefix = prefix;
+  const result = await kv.list(opts);
+  return {
+    keys: result.keys.map(k => ({ key: k.name, metadata: k.metadata })),
+    list_complete: result.list_complete,
+    count: result.keys.length,
+  };
+}
+EOF
+put_kv "tool:kv_manifest:code" /tmp/_kv_seed_val
+put_kv_value "tool:kv_manifest:meta" '{"secrets":[],"kv_access":"read_all","timeout_ms":5000}'
+
 # ── Prompt templates ─────────────────────────────────────────
 
 echo ""
 echo "--- Prompts ---"
 
 put_kv "prompt:reflect" "prompt-reflect.md"
-put_kv "prompt:deep" "prompt-deep.md"
+put_kv "prompt:reflect:1" "prompt-deep.md"
 
 cat > /tmp/_kv_seed_val <<'PROMPTEOF'
-You are planning a subgoal. Produce a JSON array of steps.
+You are executing a subgoal. You have tools available via function calling.
 
 Goal: {{goal}}
 
-Each step is an object with: type (action|think|conditional|subplan), id, tool, input, reason.
-Optional: store_result_as (save result as variable for later steps via {{var}}), depends_on (array of step IDs that must succeed first).
+Use your tools to accomplish this goal. When done, produce a JSON object
+with a "result" field summarizing what you accomplished.
 
-Budget: max {{maxSteps}} steps, max ${{maxCost}}.
-Executor model: {{executorModel}}
+Budget: max {{maxSteps}} turns, max ${{maxCost}}.
 PROMPTEOF
 put_kv "prompt:subplan" /tmp/_kv_seed_val
 
@@ -387,50 +456,30 @@ else
   cat > /tmp/_kv_seed_val <<'PROMPTEOF'
 You are Swayambhu. You have just woken up.
 
-## Context
-- **Balance:** ${{orBalance}} OpenRouter credits | ${{walletBalance}} USDC
-- **KV usage:** {{kvUsage}}
-- **Effort level:** {{effort}}
-- **Crash data:** {{crashData}}
-
-## Last reflection
-{{lastReflect}}
-
-## Additional context
-{{additionalContext}}
+Your soul: {{soul}}
 
 ## Available tools
-{{toolRegistry}}
 
-## KV index
-{{kvIndex}}
+You have tools available via function calling. Use them to act on the world:
+check balances, search the web, send messages, read/write memory.
+
+To run independent tasks in parallel, call spawn_subplan multiple times in
+a single turn. Each spawns a nested agent with its own tool access.
 
 ## What to do
-Orient yourself. Decide what to do this session. Respond with JSON:
-```json
-{
-  "session_plan": "What you will do and why",
-  "steps": [
-    {
-      "type": "action",
-      "id": "unique_step_id",
-      "tool": "tool_name",
-      "input": {},
-      "reason": "why",
-      "store_result_as": "var_name",
-      "depends_on": ["other_step_id"]
-    }
-  ],
-  "effort_assessment": "low|medium|high",
-  "kv_operations": []
-}
-```
 
-### Step fields
-- **type**: `action` (run a tool), `think` (call an LLM), `conditional` (branch on a condition), `subplan` (nested goal)
-- **id**: unique identifier for this step — required if other steps depend on it
-- **store_result_as**: save the result as a variable; later steps can reference it as `{{var_name}}`
-- **depends_on**: array of step IDs that must succeed before this step runs. Use this for ordering dependencies even when no variables are shared (e.g. step A sends a message, step B checks for a reply). If any dependency failed, this step is skipped automatically.
+Orient yourself using the context provided. Then act — check what needs
+checking, do what needs doing. When you're done, produce your final output
+as a JSON object:
+
+{
+  "session_summary": "What you did and why",
+  "kv_operations": [],
+  "next_wake_config": { "sleep_seconds": 21600, "effort": "low" }
+}
+
+kv_operations: array of {op: "put"|"delete", key, value} for unprotected keys.
+Protected keys (prompts, config, wisdom) require mutation_requests via reflect.
 PROMPTEOF
   put_kv "prompt:orient" /tmp/_kv_seed_val
 
