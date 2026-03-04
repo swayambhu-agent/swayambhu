@@ -91,6 +91,12 @@ export async function wake(K, input) {
     activeStaged = stagedList.keys.map(k => k.name.slice("mutation_staged:".length));
     activeCandidates = candidateList.keys.map(k => k.name.slice("mutation_candidate:".length));
 
+    // 1a-cache. Cache full KV index for dashboard (avoids list() calls from API)
+    const allKeys = await K.kvList({ limit: 1000 });
+    await K.kvPutSafe("cache:kv_index", allKeys.keys.map(k => ({
+      key: k.name, metadata: k.metadata
+    })));
+
     // 1b. Circuit breaker
     await runCircuitBreaker(K);
 
@@ -1002,6 +1008,11 @@ export async function writeSessionResults(K, plan, config) {
 
   const count = await K.getSessionCount();
   await K.kvPutSafe("session_counter", count + 1);
+
+  // Cache session ID list for dashboard
+  const sessionIds = await K.kvGet("cache:session_ids") || [];
+  sessionIds.push(await K.getSessionId());
+  await K.kvPutSafe("cache:session_ids", sessionIds);
 }
 
 // ── Helpers ────────────────────────────────────────────────

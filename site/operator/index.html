@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swayambhu — Operator Dashboard</title>
+  <link rel="icon" type="image/png" href="../avatar.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0a0a0f',
+            'bg-panel': '#0f0f18',
+            'bg-card': '#14142a',
+            border: '#1e1e3a',
+            accent: '#f59e0b',
+            'accent-dim': 'rgba(245, 158, 11, 0.12)',
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { background: #0a0a0f; }
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #1e1e3a; border-radius: 3px; }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+    @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fade-in 0.3s ease-out; }
+  </style>
+</head>
+<body class="text-gray-300 font-mono min-h-screen">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+    // ── Config ────────────────────────────────────────────────
+    const API_URL = location.hostname === 'localhost'
+      ? 'http://localhost:8788'
+      : 'https://swayambhu-dashboard-api.swayambhu.workers.dev';
+
+    // ── API helpers ───────────────────────────────────────────
+    const kvReadCount = { current: 0 };
+
+    async function api(path, key) {
+      kvReadCount.current++;
+      const res = await fetch(`${API_URL}${path}`, {
+        headers: { 'X-Operator-Key': key },
+      });
+      if (res.status === 401) throw new Error('UNAUTHORIZED');
+      return res.json();
+    }
+
+    // Browser-side cache for stable keys
+    const stableCache = {};
+    const STABLE_PREFIXES = ['dharma', 'wisdom', 'prompt:', 'tool:', 'provider:'];
+
+    async function cachedApi(path, key) {
+      const cacheKey = path;
+      if (stableCache[cacheKey]) return stableCache[cacheKey];
+      const data = await api(path, key);
+      // Cache stable keys
+      if (STABLE_PREFIXES.some(p => path.includes(p))) {
+        stableCache[cacheKey] = data;
+      }
+      return data;
+    }
+
+    async function apiMulti(keys, operatorKey) {
+      if (!keys.length) return {};
+      const encoded = keys.map(k => encodeURIComponent(k)).join(',');
+      return api(`/kv/multi?keys=${encoded}`, operatorKey);
+    }
+
+    // ── Event type colors ─────────────────────────────────────
+    const EVENT_COLORS = {
+      session_start: { bg: 'bg-green-900/30', border: 'border-green-700', text: 'text-green-400', dot: 'bg-green-500' },
+      session_end: { bg: 'bg-green-900/20', border: 'border-green-800', text: 'text-green-500', dot: 'bg-green-600' },
+      llm_call: { bg: 'bg-blue-900/30', border: 'border-blue-700', text: 'text-blue-400', dot: 'bg-blue-500' },
+      llm_response: { bg: 'bg-blue-900/20', border: 'border-blue-800', text: 'text-blue-400', dot: 'bg-blue-400' },
+      tool_call: { bg: 'bg-purple-900/30', border: 'border-purple-700', text: 'text-purple-400', dot: 'bg-purple-500' },
+      tool_result: { bg: 'bg-purple-900/20', border: 'border-purple-800', text: 'text-purple-400', dot: 'bg-purple-400' },
+      fallback: { bg: 'bg-orange-900/30', border: 'border-orange-700', text: 'text-orange-400', dot: 'bg-orange-500' },
+      fatal: { bg: 'bg-red-900/30', border: 'border-red-700', text: 'text-red-400', dot: 'bg-red-500' },
+      error: { bg: 'bg-red-900/20', border: 'border-red-800', text: 'text-red-400', dot: 'bg-red-400' },
+      mutation: { bg: 'bg-yellow-900/30', border: 'border-yellow-700', text: 'text-yellow-400', dot: 'bg-yellow-500' },
+      reflect: { bg: 'bg-teal-900/30', border: 'border-teal-700', text: 'text-teal-400', dot: 'bg-teal-500' },
+      orient: { bg: 'bg-cyan-900/30', border: 'border-cyan-700', text: 'text-cyan-400', dot: 'bg-cyan-500' },
+      subplan: { bg: 'bg-indigo-900/30', border: 'border-indigo-700', text: 'text-indigo-400', dot: 'bg-indigo-500' },
+    };
+
+    function eventColor(type) {
+      return EVENT_COLORS[type] || { bg: 'bg-gray-900/30', border: 'border-gray-700', text: 'text-gray-400', dot: 'bg-gray-500' };
+    }
+
+    // ── JSON viewer ───────────────────────────────────────────
+    function JsonView({ data, depth = 0 }) {
+      if (data === null || data === undefined) return <span className="text-gray-500">null</span>;
+      if (typeof data === 'string') {
+        if (data.length > 200 && depth > 0) {
+          return <span className="text-green-400 break-all">"{data.slice(0, 200)}..."</span>;
+        }
+        return <span className="text-green-400 break-all">"{data}"</span>;
+      }
+      if (typeof data === 'number') return <span className="text-amber-400">{data}</span>;
+      if (typeof data === 'boolean') return <span className="text-purple-400">{String(data)}</span>;
+      if (Array.isArray(data)) {
+        if (data.length === 0) return <span className="text-gray-500">[]</span>;
+        return (
+          <div className="ml-4">
+            <span className="text-gray-500">[</span>
+            {data.map((item, i) => (
+              <div key={i} className="ml-2">
+                <JsonView data={item} depth={depth + 1} />
+                {i < data.length - 1 && <span className="text-gray-600">,</span>}
+              </div>
+            ))}
+            <span className="text-gray-500">]</span>
+          </div>
+        );
+      }
+      if (typeof data === 'object') {
+        const entries = Object.entries(data);
+        if (entries.length === 0) return <span className="text-gray-500">{'{}'}</span>;
+        return (
+          <div className="ml-4">
+            <span className="text-gray-500">{'{'}</span>
+            {entries.map(([k, v], i) => (
+              <div key={k} className="ml-2">
+                <span className="text-cyan-400">"{k}"</span>
+                <span className="text-gray-500">: </span>
+                <JsonView data={v} depth={depth + 1} />
+                {i < entries.length - 1 && <span className="text-gray-600">,</span>}
+              </div>
+            ))}
+            <span className="text-gray-500">{'}'}</span>
+          </div>
+        );
+      }
+      return <span>{String(data)}</span>;
+    }
+
+    // ── Login screen ──────────────────────────────────────────
+    function LoginScreen({ onLogin }) {
+      const [key, setKey] = useState('');
+      const [error, setError] = useState('');
+      const [loading, setLoading] = useState(false);
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError('');
+        try {
+          await api('/health', key);
+          onLogin(key);
+        } catch (err) {
+          setError(err.message === 'UNAUTHORIZED' ? 'Invalid key' : 'Connection failed');
+        }
+        setLoading(false);
+      };
+
+      return (
+        <div className="min-h-screen flex items-center justify-center">
+          <form onSubmit={handleSubmit} className="bg-bg-panel border border-border rounded-lg p-8 w-full max-w-sm">
+            <h1 className="text-accent font-bold text-lg tracking-widest mb-1">SWAYAMBHU</h1>
+            <p className="text-gray-500 text-sm mb-6">Operator Dashboard</p>
+            <input
+              type="password"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder="Operator key"
+              className="w-full bg-bg border border-border rounded px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent mb-4"
+              autoFocus
+            />
+            {error && <p className="text-red-400 text-xs mb-3">{error}</p>}
+            <button
+              type="submit"
+              disabled={loading || !key}
+              className="w-full bg-accent/20 border border-accent text-accent font-semibold py-2.5 rounded text-sm hover:bg-accent/30 transition disabled:opacity-40"
+            >
+              {loading ? 'Connecting...' : 'Enter'}
+            </button>
+          </form>
+        </div>
+      );
+    }
+
+    // ── Budget Bar ────────────────────────────────────────────
+    function BudgetBar({ health, kvReads }) {
+      if (!health) return null;
+      const sc = health.sessionCounter || 0;
+      const kvPct = Math.min(100, (kvReads / 100000) * 100);
+      const kvColor = kvPct < 50 ? 'text-green-400' : kvPct < 80 ? 'text-yellow-400' : 'text-red-400';
+
+      return (
+        <div className="bg-bg-panel border-b border-border px-4 py-2 flex flex-wrap gap-4 items-center text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500">Sessions:</span>
+            <span className="text-accent font-semibold">{sc}</span>
+          </div>
+          {health.wakeConfig?.next_wake_after && (
+            <div className="flex items-center gap-2">
+              <span className="text-gray-500">Next wake:</span>
+              <span className="text-gray-300">{new Date(health.wakeConfig.next_wake_after).toLocaleString()}</span>
+            </div>
+          )}
+          {health.session && (
+            <div className="flex items-center gap-2">
+              <span className="text-gray-500">Current session:</span>
+              <span className="text-green-400">{health.session}</span>
+            </div>
+          )}
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="text-gray-500">KV reads:</span>
+            <span className={kvColor}>{kvReads.toLocaleString()} / 100k</span>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Timeline Tab ──────────────────────────────────────────
+    function TimelineTab({ operatorKey, onSelectEntry }) {
+      const [sessionIds, setSessionIds] = useState([]);
+      const [selectedSession, setSelectedSession] = useState(null);
+      const [karma, setKarma] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [watching, setWatching] = useState(false);
+      const watchRef = useRef(null);
+      const karmaRef = useRef([]);
+
+      useEffect(() => {
+        api('/kv/cache:session_ids', operatorKey).then(d => {
+          const ids = d.value || [];
+          setSessionIds(ids);
+          if (ids.length > 0) setSelectedSession(ids[ids.length - 1]);
+        }).catch(() => {});
+      }, [operatorKey]);
+
+      const loadKarma = useCallback(async (sid) => {
+        if (!sid) return;
+        setLoading(true);
+        try {
+          const d = await api(`/kv/karma:${sid}`, operatorKey);
+          const entries = d.value || [];
+          setKarma(entries);
+          karmaRef.current = entries;
+        } catch { setKarma([]); karmaRef.current = []; }
+        setLoading(false);
+      }, [operatorKey]);
+
+      useEffect(() => {
+        if (selectedSession) loadKarma(selectedSession);
+        return () => { if (watchRef.current) clearInterval(watchRef.current); };
+      }, [selectedSession, loadKarma]);
+
+      const toggleWatch = () => {
+        if (watching) {
+          clearInterval(watchRef.current);
+          watchRef.current = null;
+          setWatching(false);
+        } else {
+          setWatching(true);
+          watchRef.current = setInterval(async () => {
+            try {
+              const d = await api(`/kv/karma:${selectedSession}`, operatorKey);
+              const entries = d.value || [];
+              if (entries.length > karmaRef.current.length) {
+                setKarma(entries);
+                karmaRef.current = entries;
+              }
+              // Auto-stop if session ended
+              const last = entries[entries.length - 1];
+              if (last && (last.type === 'session_end' || last.type === 'fatal')) {
+                clearInterval(watchRef.current);
+                watchRef.current = null;
+                setWatching(false);
+              }
+            } catch {}
+          }, 2000);
+        }
+      };
+
+      // Compute running stats
+      const stats = useMemo(() => {
+        if (!karma.length) return null;
+        const first = karma[0];
+        const last = karma[karma.length - 1];
+        const elapsed = first.ts && last.ts
+          ? Math.round((new Date(last.ts) - new Date(first.ts)) / 1000)
+          : 0;
+        const cost = karma.reduce((sum, e) => sum + (e.cost || 0), 0);
+        const steps = karma.filter(e => e.type === 'tool_call' || e.type === 'llm_call').length;
+        return { elapsed, cost, steps };
+      }, [karma]);
+
+      return (
+        <div className="flex flex-col h-full">
+          {/* Session selector */}
+          <div className="flex items-center gap-3 mb-3 flex-wrap">
+            <select
+              value={selectedSession || ''}
+              onChange={(e) => setSelectedSession(e.target.value)}
+              className="bg-bg border border-border rounded px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:border-accent"
+            >
+              {sessionIds.map(sid => (
+                <option key={sid} value={sid}>{sid}</option>
+              ))}
+            </select>
+            <button
+              onClick={toggleWatch}
+              className={`px-3 py-1.5 rounded text-xs font-semibold border transition ${
+                watching
+                  ? 'bg-green-900/30 border-green-700 text-green-400'
+                  : 'bg-bg border-border text-gray-400 hover:border-accent hover:text-accent'
+              }`}
+            >
+              {watching && <span className="inline-block w-2 h-2 rounded-full bg-green-400 pulse-dot mr-1.5"></span>}
+              {watching ? 'Watching' : 'Watch Session'}
+            </button>
+            <button
+              onClick={() => loadKarma(selectedSession)}
+              className="px-3 py-1.5 rounded text-xs border border-border text-gray-400 hover:border-accent hover:text-accent transition"
+            >
+              Refresh
+            </button>
+          </div>
+
+          {/* Running stats */}
+          {stats && (
+            <div className="flex gap-4 mb-3 text-xs">
+              <div><span className="text-gray-500">Steps:</span> <span className="text-accent">{stats.steps}</span></div>
+              <div><span className="text-gray-500">Elapsed:</span> <span className="text-gray-300">{stats.elapsed}s</span></div>
+              {stats.cost > 0 && (
+                <div><span className="text-gray-500">Cost:</span> <span className="text-green-400">${stats.cost.toFixed(4)}</span></div>
+              )}
+            </div>
+          )}
+
+          {/* Karma entries */}
+          <div className="flex-1 overflow-y-auto scrollbar-thin space-y-1.5">
+            {loading && <p className="text-gray-500 text-sm">Loading karma...</p>}
+            {!loading && karma.length === 0 && (
+              <p className="text-gray-500 text-sm">No karma entries found</p>
+            )}
+            {karma.map((entry, i) => {
+              const c = eventColor(entry.type);
+              return (
+                <div
+                  key={i}
+                  onClick={() => onSelectEntry(entry)}
+                  className={`${c.bg} border ${c.border} rounded px-3 py-2 cursor-pointer hover:brightness-125 transition text-xs fade-in`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`w-2 h-2 rounded-full ${c.dot} flex-shrink-0`}></span>
+                    <span className={`${c.text} font-semibold`}>{entry.type}</span>
+                    {entry.ts && (
+                      <span className="text-gray-500 ml-auto">{new Date(entry.ts).toLocaleTimeString()}</span>
+                    )}
+                  </div>
+                  {entry.tool && <span className="text-purple-300 ml-4">{entry.tool}</span>}
+                  {entry.model && <span className="text-blue-300 ml-4">{entry.model}</span>}
+                  {entry.summary && <p className="text-gray-400 ml-4 mt-1 truncate">{entry.summary}</p>}
+                  {entry.error && <p className="text-red-300 ml-4 mt-1 truncate">{entry.error}</p>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Context Panel ─────────────────────────────────────────
+    function ContextPanel({ operatorKey, selectedEntry }) {
+      const [context, setContext] = useState({});
+      const [loading, setLoading] = useState(false);
+
+      const CONTEXT_KEYS_BY_TYPE = {
+        orient: ['prompt:orient', 'dharma', 'config:defaults', 'last_reflect'],
+        reflect: ['prompt:reflect', 'dharma', 'last_reflect'],
+        deep_reflect: ['prompt:reflect:N', 'dharma', 'wisdom'],
+        subplan: ['prompt:subplan'],
+        session_start: ['config:defaults', 'wake_config', 'dharma'],
+      };
+
+      const DEFAULT_KEYS = ['dharma', 'wisdom', 'last_reflect', 'config:defaults'];
+
+      useEffect(() => {
+        if (!selectedEntry) {
+          // Default view
+          apiMulti(DEFAULT_KEYS, operatorKey).then(setContext).catch(() => {});
+          return;
+        }
+
+        setLoading(true);
+        let keys = CONTEXT_KEYS_BY_TYPE[selectedEntry.type] || [];
+
+        // Tool events → fetch tool code + registry
+        if (selectedEntry.type === 'tool_call' && selectedEntry.tool) {
+          keys = [`tool:${selectedEntry.tool}:code`, 'config:tool_registry'];
+        }
+        // Mutation events
+        if (selectedEntry.type === 'mutation' && selectedEntry.id) {
+          keys = [`mutation_staged:${selectedEntry.id}`, `mutation_candidate:${selectedEntry.id}`];
+        }
+        // Provider fallback
+        if (selectedEntry.type === 'fallback') {
+          keys = ['provider:llm:code', 'provider:llm:last_working:code'];
+        }
+
+        if (keys.length === 0) keys = DEFAULT_KEYS;
+
+        apiMulti(keys, operatorKey)
+          .then(data => { setContext(data); setLoading(false); })
+          .catch(() => setLoading(false));
+      }, [selectedEntry, operatorKey]);
+
+      return (
+        <div className="h-full overflow-y-auto scrollbar-thin">
+          <h3 className="text-accent text-xs font-bold tracking-widest uppercase mb-3">Context</h3>
+          {selectedEntry && (
+            <div className="mb-3 text-xs">
+              <span className="text-gray-500">Viewing context for:</span>{' '}
+              <span className={eventColor(selectedEntry.type).text}>{selectedEntry.type}</span>
+              {selectedEntry.tool && <span className="text-purple-300 ml-2">{selectedEntry.tool}</span>}
+            </div>
+          )}
+          {loading && <p className="text-gray-500 text-xs">Loading...</p>}
+          {Object.entries(context).map(([key, value]) => (
+            <div key={key} className="mb-4">
+              <div className="text-cyan-400 text-xs font-semibold mb-1">{key}</div>
+              <div className="bg-bg rounded p-2 text-xs overflow-x-auto max-h-64 overflow-y-auto scrollbar-thin">
+                {typeof value === 'string' ? (
+                  <pre className="text-gray-300 whitespace-pre-wrap">{value}</pre>
+                ) : (
+                  <JsonView data={value} />
+                )}
+              </div>
+            </div>
+          ))}
+          {!loading && Object.keys(context).length === 0 && (
+            <p className="text-gray-500 text-xs">No context available</p>
+          )}
+        </div>
+      );
+    }
+
+    // ── KV Explorer Tab ───────────────────────────────────────
+    function KVExplorerTab({ operatorKey }) {
+      const [index, setIndex] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [expandedKey, setExpandedKey] = useState(null);
+      const [keyValue, setKeyValue] = useState(null);
+      const [keyLoading, setKeyLoading] = useState(false);
+
+      useEffect(() => {
+        api('/kv', operatorKey)
+          .then(d => { setIndex(d.keys || []); setLoading(false); })
+          .catch(() => setLoading(false));
+      }, [operatorKey]);
+
+      // Group by prefix
+      const grouped = useMemo(() => {
+        const groups = {};
+        index.forEach(entry => {
+          const key = entry.key;
+          const colon = key.indexOf(':');
+          const prefix = colon > 0 ? key.slice(0, colon) : '_root';
+          if (!groups[prefix]) groups[prefix] = [];
+          groups[prefix].push(entry);
+        });
+        return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+      }, [index]);
+
+      const [collapsedGroups, setCollapsedGroups] = useState(new Set());
+
+      const toggleGroup = (prefix) => {
+        setCollapsedGroups(prev => {
+          const next = new Set(prev);
+          next.has(prefix) ? next.delete(prefix) : next.add(prefix);
+          return next;
+        });
+      };
+
+      const fetchKey = async (key) => {
+        if (expandedKey === key) { setExpandedKey(null); return; }
+        setExpandedKey(key);
+        setKeyLoading(true);
+        try {
+          const d = await api(`/kv/${encodeURIComponent(key)}`, operatorKey);
+          setKeyValue(d.value);
+        } catch { setKeyValue('(error fetching)'); }
+        setKeyLoading(false);
+      };
+
+      return (
+        <div className="h-full overflow-y-auto scrollbar-thin">
+          {loading && <p className="text-gray-500 text-sm">Loading index...</p>}
+          <div className="text-xs text-gray-500 mb-3">{index.length} keys total</div>
+          {grouped.map(([prefix, entries]) => (
+            <div key={prefix} className="mb-2">
+              <button
+                onClick={() => toggleGroup(prefix)}
+                className="flex items-center gap-2 text-sm font-semibold text-accent hover:text-amber-300 transition w-full text-left py-1"
+              >
+                <span className="text-gray-500">{collapsedGroups.has(prefix) ? '▸' : '▾'}</span>
+                {prefix}
+                <span className="text-gray-600 text-xs font-normal">({entries.length})</span>
+              </button>
+              {!collapsedGroups.has(prefix) && (
+                <div className="ml-4 space-y-0.5">
+                  {entries.map(entry => (
+                    <div key={entry.key}>
+                      <button
+                        onClick={() => fetchKey(entry.key)}
+                        className={`text-xs py-1 px-2 rounded w-full text-left transition ${
+                          expandedKey === entry.key
+                            ? 'bg-accent/10 text-accent'
+                            : 'text-gray-400 hover:text-gray-200 hover:bg-bg-card'
+                        }`}
+                      >
+                        {entry.key}
+                      </button>
+                      {expandedKey === entry.key && (
+                        <div className="ml-2 mt-1 mb-2 bg-bg rounded p-2 max-h-80 overflow-y-auto scrollbar-thin text-xs fade-in">
+                          {keyLoading ? (
+                            <span className="text-gray-500">Loading...</span>
+                          ) : (
+                            <JsonView data={keyValue} />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ── Reflections Tab ───────────────────────────────────────
+    function ReflectionsTab({ operatorKey }) {
+      const [reflect, setReflect] = useState(null);
+      const [reflectKeys, setReflectKeys] = useState([]);
+      const [selectedReflect, setSelectedReflect] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        // Load latest reflect + index for reflect:* keys
+        Promise.all([
+          api('/kv/last_reflect', operatorKey),
+          api('/kv?prefix=reflect:', operatorKey),
+        ]).then(([lr, idx]) => {
+          setReflect(lr.value);
+          setReflectKeys((idx.keys || []).map(k => k.key));
+          setLoading(false);
+        }).catch(() => setLoading(false));
+      }, [operatorKey]);
+
+      const loadReflect = async (key) => {
+        setSelectedReflect(null);
+        try {
+          const d = await api(`/kv/${encodeURIComponent(key)}`, operatorKey);
+          setSelectedReflect({ key, value: d.value });
+        } catch {}
+      };
+
+      if (loading) return <p className="text-gray-500 text-sm">Loading reflections...</p>;
+
+      const fields = ['summary', 'note_to_future_self', 'mutation_requests', 'kv_operations', 'next_wake_config'];
+
+      return (
+        <div className="h-full overflow-y-auto scrollbar-thin space-y-6">
+          {/* Latest reflect */}
+          <div>
+            <h3 className="text-accent text-xs font-bold tracking-widest uppercase mb-3">Latest Reflection</h3>
+            {reflect ? (
+              <div className="space-y-3">
+                {fields.map(f => {
+                  const val = reflect[f];
+                  if (val === undefined || val === null) return null;
+                  return (
+                    <div key={f}>
+                      <div className="text-cyan-400 text-xs font-semibold mb-1">{f}</div>
+                      <div className="bg-bg rounded p-3 text-sm">
+                        {typeof val === 'string' ? (
+                          <p className="text-gray-300 whitespace-pre-wrap">{val}</p>
+                        ) : (
+                          <JsonView data={val} />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {/* Full JSON fallback for other fields */}
+                {Object.entries(reflect).filter(([k]) => !fields.includes(k)).length > 0 && (
+                  <div>
+                    <div className="text-cyan-400 text-xs font-semibold mb-1">Other fields</div>
+                    <div className="bg-bg rounded p-3 text-xs">
+                      <JsonView data={Object.fromEntries(Object.entries(reflect).filter(([k]) => !fields.includes(k)))} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">No reflection data</p>
+            )}
+          </div>
+
+          {/* Reflect history */}
+          <div>
+            <h3 className="text-accent text-xs font-bold tracking-widest uppercase mb-3">Reflection History</h3>
+            <div className="space-y-1">
+              {reflectKeys.length === 0 && <p className="text-gray-500 text-xs">No historical reflections</p>}
+              {reflectKeys.map(key => (
+                <button
+                  key={key}
+                  onClick={() => loadReflect(key)}
+                  className="block text-xs text-gray-400 hover:text-accent transition py-1"
+                >
+                  {key}
+                </button>
+              ))}
+            </div>
+            {selectedReflect && (
+              <div className="mt-3 bg-bg rounded p-3 text-xs fade-in max-h-96 overflow-y-auto scrollbar-thin">
+                <div className="text-cyan-400 font-semibold mb-2">{selectedReflect.key}</div>
+                <JsonView data={selectedReflect.value} />
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Mutations Tab ─────────────────────────────────────────
+    function MutationsTab({ operatorKey }) {
+      const [staged, setStaged] = useState([]);
+      const [candidates, setCandidates] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [expandedId, setExpandedId] = useState(null);
+      const [detail, setDetail] = useState(null);
+      const [filter, setFilter] = useState('all');
+
+      useEffect(() => {
+        Promise.all([
+          api('/kv?prefix=mutation_staged:', operatorKey),
+          api('/kv?prefix=mutation_candidate:', operatorKey),
+        ]).then(([s, c]) => {
+          setStaged((s.keys || []).map(k => ({ ...k, status: 'staged' })));
+          setCandidates((c.keys || []).map(k => ({ ...k, status: 'candidate' })));
+          setLoading(false);
+        }).catch(() => setLoading(false));
+      }, [operatorKey]);
+
+      const all = useMemo(() => {
+        return [...staged, ...candidates].sort((a, b) => {
+          // Extract mutation ID for sorting
+          return b.key.localeCompare(a.key);
+        });
+      }, [staged, candidates]);
+
+      const filtered = filter === 'all' ? all : all.filter(m => m.status === filter);
+
+      const loadDetail = async (key) => {
+        if (expandedId === key) { setExpandedId(null); return; }
+        setExpandedId(key);
+        try {
+          const d = await api(`/kv/${encodeURIComponent(key)}`, operatorKey);
+          setDetail(d.value);
+        } catch { setDetail('(error)'); }
+      };
+
+      const STATUS_COLORS = {
+        staged: { bar: 'bg-yellow-500', text: 'text-yellow-400', label: 'Staged' },
+        candidate: { bar: 'bg-blue-500', text: 'text-blue-400', label: 'Candidate' },
+        promoted: { bar: 'bg-green-500', text: 'text-green-400', label: 'Promoted' },
+        rolled_back: { bar: 'bg-red-500', text: 'text-red-400', label: 'Rolled Back' },
+      };
+
+      if (loading) return <p className="text-gray-500 text-sm">Loading mutations...</p>;
+
+      return (
+        <div className="h-full overflow-y-auto scrollbar-thin">
+          <div className="flex gap-2 mb-4">
+            {['all', 'staged', 'candidate'].map(f => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`px-3 py-1 rounded text-xs border transition ${
+                  filter === f
+                    ? 'border-accent text-accent bg-accent/10'
+                    : 'border-border text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                {f.charAt(0).toUpperCase() + f.slice(1)}
+                <span className="ml-1 text-gray-600">
+                  ({f === 'all' ? all.length : f === 'staged' ? staged.length : candidates.length})
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="space-y-2">
+            {filtered.length === 0 && <p className="text-gray-500 text-xs">No mutations found</p>}
+            {filtered.map(m => {
+              const sc = STATUS_COLORS[m.status] || STATUS_COLORS.staged;
+              return (
+                <div key={m.key}>
+                  <button
+                    onClick={() => loadDetail(m.key)}
+                    className={`w-full text-left px-3 py-2 rounded border transition ${
+                      expandedId === m.key
+                        ? 'border-accent bg-accent/5'
+                        : 'border-border hover:border-gray-600 bg-bg-card'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`w-1.5 h-6 rounded-full ${sc.bar}`}></div>
+                      <span className="text-xs text-gray-300 flex-1 truncate">{m.key}</span>
+                      <span className={`text-xs ${sc.text}`}>{sc.label}</span>
+                    </div>
+                  </button>
+                  {expandedId === m.key && detail && (
+                    <div className="ml-6 mt-1 mb-2 bg-bg rounded p-3 text-xs max-h-80 overflow-y-auto scrollbar-thin fade-in">
+                      <JsonView data={detail} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Main App ──────────────────────────────────────────────
+    function App() {
+      const [operatorKey, setOperatorKey] = useState(() => sessionStorage.getItem('operatorKey'));
+      const [health, setHealth] = useState(null);
+      const [activeTab, setActiveTab] = useState('timeline');
+      const [selectedEntry, setSelectedEntry] = useState(null);
+
+      const handleLogin = (key) => {
+        sessionStorage.setItem('operatorKey', key);
+        setOperatorKey(key);
+      };
+
+      const handleLogout = () => {
+        sessionStorage.removeItem('operatorKey');
+        setOperatorKey(null);
+        setHealth(null);
+      };
+
+      // Load health on auth
+      useEffect(() => {
+        if (!operatorKey) return;
+        api('/health', operatorKey)
+          .then(setHealth)
+          .catch(err => {
+            if (err.message === 'UNAUTHORIZED') handleLogout();
+          });
+      }, [operatorKey]);
+
+      if (!operatorKey) return <LoginScreen onLogin={handleLogin} />;
+
+      const tabs = [
+        { id: 'timeline', label: 'Timeline' },
+        { id: 'kv', label: 'KV Explorer' },
+        { id: 'reflections', label: 'Reflections' },
+        { id: 'mutations', label: 'Mutations' },
+      ];
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          <BudgetBar health={health} kvReads={kvReadCount.current} />
+
+          {/* Header */}
+          <div className="bg-bg-panel border-b border-border px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-accent font-bold tracking-widest text-sm">SWAYAMBHU</span>
+              <span className="text-gray-600 text-xs">operator</span>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="text-gray-600 text-xs hover:text-gray-400 transition"
+            >
+              logout
+            </button>
+          </div>
+
+          {/* Tab bar */}
+          <div className="bg-bg-panel border-b border-border px-4 flex gap-1">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-4 py-2.5 text-xs font-semibold transition border-b-2 ${
+                  activeTab === tab.id
+                    ? 'border-accent text-accent'
+                    : 'border-transparent text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 flex overflow-hidden">
+            {activeTab === 'timeline' ? (
+              <>
+                <div className="flex-1 p-4 overflow-hidden flex flex-col">
+                  <TimelineTab operatorKey={operatorKey} onSelectEntry={setSelectedEntry} />
+                </div>
+                <div className="w-96 border-l border-border p-4 overflow-hidden bg-bg-panel">
+                  <ContextPanel operatorKey={operatorKey} selectedEntry={selectedEntry} />
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 p-4 overflow-hidden">
+                {activeTab === 'kv' && <KVExplorerTab operatorKey={operatorKey} />}
+                {activeTab === 'reflections' && <ReflectionsTab operatorKey={operatorKey} />}
+                {activeTab === 'mutations' && <MutationsTab operatorKey={operatorKey} />}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
