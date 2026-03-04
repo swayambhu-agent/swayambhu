@@ -110,18 +110,48 @@ The same gearing works in reverse for mistakes, which is why the dharma and muta
 
 ## Kernel / hook architecture
 
-The runtime is split into two layers: a **kernel** (`brainstem.js`) and a **wake hook** (`wake-hook.js`).
+The runtime is split into two layers:
 
-The kernel contains hardcoded primitives and safety invariants — LLM calls, KV access, tool execution, the agent loop, sandbox isolation, karma logging, and provider cascading. It's deployed code; changes require a redeploy.
+**The kernel** (`brainstem.js`) contains hardcoded primitives and safety invariants. It handles LLM calls, KV access, tool execution, the agent loop, sandbox isolation, karma logging, provider cascading, and alerting. The kernel is deployed code — changes require a redeploy.
 
-The wake hook contains all session policy — wake flow, crash detection, reflect scheduling, the mutation protocol, circuit breaker, and session orchestration. It's stored in KV as `hook:wake:code` and executed in an isolate via the Worker Loader API. Swayambhu can rewrite it through the mutation protocol, restructuring his own control flow without a deploy.
+**The wake hook** (`wake-hook.js`, stored in KV as `hook:wake:code`) contains all session policy — the wake flow, crash detection, reflect scheduling, the mutation protocol, circuit breaker, and session orchestration. The hook is data — Swayambhu can rewrite it through the mutation protocol, restructuring his own control flow without a deploy.
 
-The hook calls kernel primitives via RPC (`K.callLLM()`, `K.runAgentLoop()`, etc.) through a `KernelRPC` entrypoint. The kernel enforces write protection on every call: routine data goes through `kvPutSafe`, system key mutations go through `kvWritePrivileged` (snapshotted, rate-limited, audited). `kernel:*` keys and `dharma` are unconditionally blocked — only the kernel's internal write path can touch them.
+### How it runs
 
-A meta-safety tripwire watches for consecutive crashes. If the last 3 sessions all crashed or were platform-killed, the kernel deletes the hook, sends an alert, and runs a hardcoded minimal fallback until the hook is manually re-seeded. This catches the case where a bad hook rewrite breaks the system — recovery is mechanical, no working LLM call required.
+On each cron trigger, the kernel's `scheduled()` entry point:
+
+1. Checks for platform kills (previous session's `kernel:active_session` still present)
+2. Runs the meta-safety tripwire (`checkHookSafety`)
+3. Loads `hook:wake:code` from KV
+4. If found: executes the hook in an isolate via the Worker Loader API, passing `KernelRPC` as a binding
+5. If missing: runs a hardcoded minimal fallback (recovery prompt, tight budget, no reflect)
+
+The hook calls kernel primitives via RPC — `K.callLLM()`, `K.kvGet()`, `K.runAgentLoop()`, etc. The kernel exposes these through `KernelRPC extends WorkerEntrypoint`, which delegates to the active `Brainstem` instance. The hook composes primitives into policy; the kernel enforces invariants on every call regardless of what the hook does.
+
+### Two-tier KV writes
+
+The hook cannot write to KV directly. Two RPC methods gate all writes:
+
+**`kvPutSafe(key, value, metadata)`** — allows writes to non-system keys. Blocks writes to system key prefixes (`prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `mutation_staged:`, `mutation_candidate:`, `hook:`), kernel-only prefixes (`kernel:`), system exact keys (`dharma`, `wisdom`), and the `dharma` key unconditionally. This is for routine data writes.
+
+**`kvWritePrivileged(ops)`** — allows writes to system keys (but not `kernel:*` or `dharma`). For each operation: snapshots the current value to karma before writing, increments a per-session counter (max 50, hardcoded), and auto-reloads cached config after writes to config keys. The mutation protocol in the hook uses this for vetted changes to prompts, config, and tools.
+
+Neither path can write `kernel:*` keys or `dharma`. Only the kernel's internal `kvPut` (not exposed via RPC) can write kernel-namespaced keys.
+
+### Meta-safety tripwire
+
+The kernel maintains `kernel:last_sessions` — a list of the last 5 session outcomes (clean/crash/killed), written via internal `kvPut` after every hook execution. Platform kills are detected by a `kernel:active_session` breadcrumb: written before hook execution, deleted after. If present at the start of the next session, the previous session was killed by the platform (wall-time, CPU, or OOM).
+
+If the last 3 outcomes are all crashes or kills, `checkHookSafety` fires: deletes `hook:wake:code`, sends a kernel alert, and the next session runs the hardcoded minimal fallback. This catches the case where a bad hook rewrite breaks the system — the kernel recovers mechanically without needing a working LLM call.
+
+The minimal fallback uses a kernel-embedded recovery prompt (does not load `prompt:orient` from KV, which could be corrupted), a hardcoded budget (`max_steps: 3`, `max_cost: 0.50`), and discards all `kv_operations` from LLM output. It runs one basic orient session for status reporting, then waits for manual re-seeding of the hook.
+
+### Alerting
+
+`sendKernelAlert(event, message)` is a kernel-internal fire-and-forget notification. It reads `kernel:alert_config` from KV (cached after first read), which contains a URL template, headers, and body template. Template variables (`{{TELEGRAM_BOT_TOKEN}}`, `{{TELEGRAM_CHAT_ID}}`) resolve from Worker environment bindings; `{{event}}`, `{{message}}`, `{{session}}` interpolate at call time. Alerting failures are swallowed — alerting must never crash the kernel. Not exposed via RPC.
 
 ## Current status
 
-The brainstem runtime is functional. Swayambhu runs on Cloudflare Workers with tool execution via Dynamic Worker Loaders (isolate-based sandboxing). The kernel/hook split separates hardcoded safety from evolvable policy. Local development works fully with Wrangler. Production deployment uses Cloudflare's Dynamic Worker Loader API.
+The brainstem runtime is functional. Swayambhu runs on Cloudflare Workers with tool execution via Dynamic Worker Loaders (isolate-based sandboxing). The kernel/hook split separates hardcoded safety (kernel, deployed code) from evolvable policy (wake hook, stored in KV). Local development works fully with Wrangler. Production deployment uses Cloudflare's Dynamic Worker Loader API.
 
-For setup instructions, KV schema, and implementation details, see `seed-config.md`, `brainstem.js` (kernel), and `wake-hook.js` (policy). For detailed architecture, see `docs/ARCHITECTURE.md`.
+For setup instructions, KV schema, and implementation details, see `seed-config.md`, `brainstem.js` (kernel), and `wake-hook.js` (policy).

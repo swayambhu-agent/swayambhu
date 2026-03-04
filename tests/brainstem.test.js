@@ -40,7 +40,6 @@ function makeKVStore(initial = {}) {
       const val = store.get(key) ?? null;
       return { value: val, metadata: metaStore.get(key) || null };
     }),
-    // Expose internals for assertions
     _store: store,
     _meta: metaStore,
   };
@@ -56,60 +55,50 @@ function makeBrain(kvInit = {}, opts = {}) {
   brain.defaults = opts.defaults || {};
   brain.toolRegistry = opts.toolRegistry || null;
   brain.modelsConfig = opts.modelsConfig || null;
-  brain.soul = opts.soul || null;
+  brain.dharma = opts.dharma || null;
   return { brain, env };
 }
 
 // ── 1. parseAgentOutput ─────────────────────────────────────
 
 describe("parseAgentOutput", () => {
-  it("returns parsed object for valid JSON", () => {
+  it("returns parsed object for valid JSON", async () => {
     const { brain } = makeBrain();
-    const result = brain.parseAgentOutput('{"key":"value","n":42}');
+    const result = await brain.parseAgentOutput('{"key":"value","n":42}');
     expect(result).toEqual({ key: "value", n: 42 });
   });
 
-  it("returns { raw } for invalid JSON", () => {
+  it("returns { parse_error, raw } for invalid JSON (no hook)", async () => {
     const { brain } = makeBrain();
-    const result = brain.parseAgentOutput("not json at all");
-    expect(result).toEqual({ raw: "not json at all" });
+    brain.callHook = vi.fn(async () => null);
+    const result = await brain.parseAgentOutput("not json at all");
+    expect(result).toEqual({ parse_error: true, raw: "not json at all" });
   });
 
-  it("returns {} for empty/null content", () => {
+  it("returns {} for empty/null content", async () => {
     const { brain } = makeBrain();
-    expect(brain.parseAgentOutput(null)).toEqual({});
-    expect(brain.parseAgentOutput("")).toEqual({});
-    expect(brain.parseAgentOutput(undefined)).toEqual({});
+    expect(await brain.parseAgentOutput(null)).toEqual({});
+    expect(await brain.parseAgentOutput("")).toEqual({});
+    expect(await brain.parseAgentOutput(undefined)).toEqual({});
   });
-});
 
-// ── 2. buildOrientContext ───────────────────────────────────
-
-describe("buildOrientContext", () => {
-  it("returns JSON string with all expected keys", () => {
+  it("calls parse_repair hook on failure", async () => {
     const { brain } = makeBrain();
-    const context = {
-      balances: { providers: {}, wallets: {} },
-      kvUsage: { writes_this_session: 0 },
-      lastReflect: { session_summary: "test" },
-      additionalContext: { foo: "bar" },
-      effort: "medium",
-      crashData: null,
-    };
-    const result = JSON.parse(brain.buildOrientContext(context));
-    expect(result).toHaveProperty("balances");
-    expect(result).toHaveProperty("kv_usage");
-    expect(result).toHaveProperty("last_reflect");
-    expect(result).toHaveProperty("additional_context");
-    expect(result).toHaveProperty("effort");
-    expect(result).toHaveProperty("crash_data");
-    expect(result).not.toHaveProperty("kv_index");
-    expect(result.effort).toBe("medium");
-    expect(result.crash_data).toBeNull();
+    brain.callHook = vi.fn(async () => ({ content: '{"fixed":true}' }));
+    const result = await brain.parseAgentOutput("not json");
+    expect(result).toEqual({ fixed: true });
+    expect(brain.callHook).toHaveBeenCalledWith("parse_repair", { content: "not json" });
+  });
+
+  it("returns parse_error when hook returns bad JSON", async () => {
+    const { brain } = makeBrain();
+    brain.callHook = vi.fn(async () => ({ content: "still bad" }));
+    const result = await brain.parseAgentOutput("not json");
+    expect(result).toEqual({ parse_error: true, raw: "not json" });
   });
 });
 
-// ── 3. buildToolDefinitions ─────────────────────────────────
+// ── 2. buildToolDefinitions ─────────────────────────────────
 
 describe("buildToolDefinitions", () => {
   it("maps registry tools to OpenAI format", () => {
@@ -122,7 +111,7 @@ describe("buildToolDefinitions", () => {
       },
     });
     const defs = brain.buildToolDefinitions();
-    expect(defs.length).toBe(3); // 2 tools + spawn_subplan
+    expect(defs.length).toBe(3);
     expect(defs[0]).toEqual({
       type: "function",
       function: {
@@ -162,279 +151,14 @@ describe("buildToolDefinitions", () => {
   });
 });
 
-// ── 4. getMaxSteps ──────────────────────────────────────────
-
-describe("getMaxSteps", () => {
-  it("returns execution config for orient", () => {
-    const { brain } = makeBrain({}, {
-      defaults: { execution: { max_steps: { orient: 7 } } },
-    });
-    expect(brain.getMaxSteps("orient")).toBe(7);
-  });
-
-  it("returns default 3 for orient when not configured", () => {
-    const { brain } = makeBrain();
-    expect(brain.getMaxSteps("orient")).toBe(3);
-  });
-
-  it("returns reflect_default for depth 1", () => {
-    const { brain } = makeBrain({}, {
-      defaults: { execution: { max_steps: { reflect_default: 8 } } },
-    });
-    expect(brain.getMaxSteps("reflect", 1)).toBe(8);
-  });
-
-  it("returns default 5 for depth 1 when not configured", () => {
-    const { brain } = makeBrain();
-    expect(brain.getMaxSteps("reflect", 1)).toBe(5);
-  });
-
-  it("returns reflect_deep for depth > 1", () => {
-    const { brain } = makeBrain({}, {
-      defaults: { execution: { max_steps: { reflect_deep: 15 } } },
-    });
-    expect(brain.getMaxSteps("reflect", 2)).toBe(15);
-  });
-
-  it("returns default 10 for depth > 1 when not configured", () => {
-    const { brain } = makeBrain();
-    expect(brain.getMaxSteps("reflect", 3)).toBe(10);
-  });
-
-  it("uses per-level override via reflect_levels", () => {
-    const { brain } = makeBrain({}, {
-      defaults: {
-        reflect_levels: { 2: { max_steps: 25 } },
-        execution: { max_steps: { reflect_deep: 15 } },
-      },
-    });
-    expect(brain.getMaxSteps("reflect", 2)).toBe(25);
-  });
-});
-
-// ── 5. getReflectModel ──────────────────────────────────────
-
-describe("getReflectModel", () => {
-  it("uses per-level override", () => {
-    const { brain } = makeBrain({}, {
-      defaults: {
-        reflect_levels: { 2: { model: "opus" } },
-        deep_reflect: { model: "sonnet" },
-        orient: { model: "haiku" },
-      },
-    });
-    expect(brain.getReflectModel(2)).toBe("opus");
-  });
-
-  it("falls back to deep_reflect.model", () => {
-    const { brain } = makeBrain({}, {
-      defaults: {
-        deep_reflect: { model: "sonnet" },
-        orient: { model: "haiku" },
-      },
-    });
-    expect(brain.getReflectModel(1)).toBe("sonnet");
-  });
-
-  it("falls back to orient.model", () => {
-    const { brain } = makeBrain({}, {
-      defaults: { orient: { model: "haiku" } },
-    });
-    expect(brain.getReflectModel(1)).toBe("haiku");
-  });
-
-  it("returns undefined when nothing configured", () => {
-    const { brain } = makeBrain();
-    expect(brain.getReflectModel(1)).toBeUndefined();
-  });
-});
-
-// ── 6. loadReflectPrompt ────────────────────────────────────
-
-describe("loadReflectPrompt", () => {
-  it("returns depth-specific prompt from KV", async () => {
-    const { brain } = makeBrain({
-      "prompt:reflect:2": JSON.stringify("depth-2 prompt"),
-    });
-    const result = await brain.loadReflectPrompt(2);
-    expect(result).toBe("depth-2 prompt");
-  });
-
-  it("falls back to prompt:deep for depth 1", async () => {
-    const { brain } = makeBrain({
-      "prompt:deep": JSON.stringify("deep prompt"),
-    });
-    const result = await brain.loadReflectPrompt(1);
-    expect(result).toBe("deep prompt");
-  });
-
-  it("falls back to hardcoded defaultDeepReflectPrompt", async () => {
-    const { brain } = makeBrain();
-    const result = await brain.loadReflectPrompt(1);
-    expect(result).toContain("depth-1 reflection");
-  });
-
-  it("does NOT fall back to prompt:deep for depth > 1", async () => {
-    const { brain } = makeBrain({
-      "prompt:deep": JSON.stringify("deep prompt"),
-    });
-    const result = await brain.loadReflectPrompt(3);
-    // Should get the hardcoded default, not "deep prompt"
-    expect(result).toContain("depth-3 reflection");
-  });
-});
-
-// ── 7. isReflectDue ─────────────────────────────────────────
-
-describe("isReflectDue", () => {
-  it("cold-start: depth 1 due at session 20 (baseInterval)", async () => {
-    const { brain } = makeBrain({
-      session_counter: JSON.stringify(20),
-    }, {
-      defaults: { deep_reflect: { default_interval_sessions: 20 } },
-    });
-    const due = await brain.isReflectDue(1);
-    expect(due).toBe(true);
-  });
-
-  it("cold-start: depth 1 NOT due below threshold", async () => {
-    const { brain } = makeBrain({
-      session_counter: JSON.stringify(19),
-    }, {
-      defaults: { deep_reflect: { default_interval_sessions: 20 } },
-    });
-    const due = await brain.isReflectDue(1);
-    expect(due).toBe(false);
-  });
-
-  it("cold-start: depth 2 uses exponential formula", async () => {
-    const { brain } = makeBrain({
-      session_counter: JSON.stringify(100),
-    }, {
-      defaults: {
-        deep_reflect: { default_interval_sessions: 20 },
-        execution: { reflect_interval_multiplier: 5 },
-      },
-    });
-    // threshold = 20 * 5^(2-1) = 100
-    const due = await brain.isReflectDue(2);
-    expect(due).toBe(true);
-  });
-
-  it("cold-start: depth 2 NOT due below exponential threshold", async () => {
-    const { brain } = makeBrain({
-      session_counter: JSON.stringify(99),
-    }, {
-      defaults: {
-        deep_reflect: { default_interval_sessions: 20 },
-        execution: { reflect_interval_multiplier: 5 },
-      },
-    });
-    const due = await brain.isReflectDue(2);
-    expect(due).toBe(false);
-  });
-
-  it("self-scheduled: due when sessionsSince >= after_sessions", async () => {
-    const { brain } = makeBrain({
-      "reflect:schedule:1": JSON.stringify({
-        after_sessions: 10,
-        after_days: 999,
-        last_reflect_session: 5,
-        last_reflect: new Date().toISOString(),
-      }),
-      session_counter: JSON.stringify(15),
-    }, {
-      defaults: { deep_reflect: { default_interval_sessions: 20 } },
-    });
-    const due = await brain.isReflectDue(1);
-    expect(due).toBe(true);
-  });
-
-  it("self-scheduled: NOT due when below both thresholds", async () => {
-    const { brain } = makeBrain({
-      "reflect:schedule:1": JSON.stringify({
-        after_sessions: 10,
-        after_days: 999,
-        last_reflect_session: 12,
-        last_reflect: new Date().toISOString(),
-      }),
-      session_counter: JSON.stringify(15),
-    }, {
-      defaults: { deep_reflect: { default_interval_sessions: 20 } },
-    });
-    const due = await brain.isReflectDue(1);
-    expect(due).toBe(false);
-  });
-
-  it("backward compat: depth 1 reads deep_reflect_schedule", async () => {
-    const { brain } = makeBrain({
-      deep_reflect_schedule: JSON.stringify({
-        after_sessions: 5,
-        after_days: 999,
-        last_deep_reflect_session: 10,
-        last_deep_reflect: new Date().toISOString(),
-      }),
-      session_counter: JSON.stringify(15),
-    }, {
-      defaults: { deep_reflect: { default_interval_sessions: 20 } },
-    });
-    const due = await brain.isReflectDue(1);
-    expect(due).toBe(true);
-  });
-});
-
-// ── 8. highestReflectDepthDue ───────────────────────────────
-
-describe("highestReflectDepthDue", () => {
-  it("returns highest due depth", async () => {
-    const { brain } = makeBrain({
-      session_counter: JSON.stringify(100),
-    }, {
-      defaults: {
-        execution: { max_reflect_depth: 2, reflect_interval_multiplier: 5 },
-        deep_reflect: { default_interval_sessions: 20 },
-      },
-    });
-    // depth 2 threshold = 20 * 5 = 100, depth 1 threshold = 20
-    const result = await brain.highestReflectDepthDue();
-    expect(result).toBe(2);
-  });
-
-  it("returns 0 when none due", async () => {
-    const { brain } = makeBrain({
-      session_counter: JSON.stringify(5),
-    }, {
-      defaults: {
-        execution: { max_reflect_depth: 2, reflect_interval_multiplier: 5 },
-        deep_reflect: { default_interval_sessions: 20 },
-      },
-    });
-    const result = await brain.highestReflectDepthDue();
-    expect(result).toBe(0);
-  });
-
-  it("returns depth 1 when only depth 1 is due", async () => {
-    const { brain } = makeBrain({
-      session_counter: JSON.stringify(25),
-    }, {
-      defaults: {
-        execution: { max_reflect_depth: 2, reflect_interval_multiplier: 5 },
-        deep_reflect: { default_interval_sessions: 20 },
-      },
-    });
-    const result = await brain.highestReflectDepthDue();
-    expect(result).toBe(1);
-  });
-});
-
-// ── 9. callLLM ──────────────────────────────────────────────
+// ── 3. callLLM ──────────────────────────────────────────────
 
 describe("callLLM", () => {
   function makeLLMBrain(response = {}) {
     const { brain, env } = makeBrain();
     const defaultResponse = {
       ok: true,
-      tier: "hardcoded",
+      tier: "kernel_fallback",
       content: '{"result":"ok"}',
       usage: { prompt_tokens: 100, completion_tokens: 50 },
       toolCalls: null,
@@ -452,7 +176,6 @@ describe("callLLM", () => {
       systemPrompt: "You are helpful",
       step: "test",
     });
-
     const call = brain.callWithCascade.mock.calls[0][0];
     expect(call.messages[0]).toEqual({ role: "system", content: "You are helpful" });
     expect(call.messages[1]).toEqual({ role: "user", content: "hello" });
@@ -465,7 +188,6 @@ describe("callLLM", () => {
       messages: [{ role: "user", content: "hello" }],
       step: "test",
     });
-
     const call = brain.callWithCascade.mock.calls[0][0];
     expect(call.messages.length).toBe(1);
     expect(call.messages[0].role).toBe("user");
@@ -480,7 +202,6 @@ describe("callLLM", () => {
       tools,
       step: "test",
     });
-
     const call = brain.callWithCascade.mock.calls[0][0];
     expect(call.tools).toEqual(tools);
   });
@@ -507,7 +228,7 @@ describe("callLLM", () => {
         return { ok: false, error: "provider down", tier: "all_failed" };
       }
       return {
-        ok: true, tier: "hardcoded",
+        ok: true, tier: "kernel_fallback",
         content: "fallback worked",
         usage: { prompt_tokens: 10, completion_tokens: 5 },
       };
@@ -519,15 +240,71 @@ describe("callLLM", () => {
       messages: [{ role: "user", content: "hi" }],
       step: "test",
     });
-
     expect(callCount).toBe(2);
-    // Second call should use fallback model
     const secondCall = brain.callWithCascade.mock.calls[1][0];
     expect(secondCall.model).toBe("anthropic/claude-haiku-4.5");
   });
 });
 
-// ── 10. runAgentLoop ────────────────────────────────────────
+// ── 3b. callViaKernelFallback ────────────────────────────────
+
+describe("callViaKernelFallback", () => {
+  it("throws when no kernel:llm_fallback configured", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.callViaKernelFallback({
+      model: "test", messages: [{ role: "user", content: "hi" }],
+      max_tokens: 100,
+    })).rejects.toThrow("No LLM fallback configured at kernel:llm_fallback");
+  });
+
+  it("executes adapter via runInIsolate with scoped secrets", async () => {
+    const adapterCode = 'async function call(ctx) { return { content: "ok", usage: {} }; }';
+    const { brain } = makeBrain({
+      "kernel:llm_fallback": JSON.stringify(adapterCode),
+      "kernel:llm_fallback:meta": JSON.stringify({
+        secrets: ["OPENROUTER_API_KEY"],
+        timeout_ms: 30000,
+      }),
+    });
+    brain.env.OPENROUTER_API_KEY = "test-key";
+    brain.runInIsolate = vi.fn(async () => ({
+      content: "fallback response",
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    }));
+
+    const result = await brain.callViaKernelFallback({
+      model: "test-model",
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 100,
+    });
+
+    expect(result.content).toBe("fallback response");
+    expect(brain.runInIsolate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        moduleCode: adapterCode,
+        ctx: expect.objectContaining({
+          model: "test-model",
+          secrets: { OPENROUTER_API_KEY: "test-key" },
+        }),
+        timeoutMs: 30000,
+      })
+    );
+  });
+
+  it("rejects invalid adapter response", async () => {
+    const adapterCode = 'async function call() { return { bad: true }; }';
+    const { brain } = makeBrain({
+      "kernel:llm_fallback": JSON.stringify(adapterCode),
+    });
+    brain.runInIsolate = vi.fn(async () => ({ bad: true }));
+
+    await expect(brain.callViaKernelFallback({
+      model: "test", messages: [], max_tokens: 100,
+    })).rejects.toThrow("Adapter returned invalid response");
+  });
+});
+
+// ── 4. runAgentLoop ────────────────────────────────────────
 
 describe("runAgentLoop", () => {
   it("immediate text response (1 turn)", async () => {
@@ -594,19 +371,7 @@ describe("runAgentLoop", () => {
 
   it("max steps forces final output", async () => {
     const { brain } = makeBrain();
-    brain.callLLM = vi.fn(async () => ({
-      content: null,
-      cost: 0.005,
-      toolCalls: [{
-        id: "tc1",
-        function: { name: "looping_tool", arguments: "{}" },
-      }],
-    }));
     brain.executeToolCall = vi.fn(async () => ({ result: "ok" }));
-
-    // After maxSteps tool calls, the loop appends a "max steps reached"
-    // message and makes one more LLM call without tools.
-    // Override callLLM to return text on that final call.
     let callCount = 0;
     brain.callLLM = vi.fn(async ({ step }) => {
       callCount++;
@@ -632,7 +397,6 @@ describe("runAgentLoop", () => {
     });
 
     expect(result).toEqual({ forced: true });
-    // 2 tool-call turns + 1 final = 3 calls
     expect(brain.callLLM).toHaveBeenCalledTimes(3);
   });
 
@@ -674,10 +438,9 @@ describe("runAgentLoop", () => {
     expect(executedTools).toContain("tool_a");
     expect(executedTools).toContain("tool_b");
   });
-
 });
 
-// ── 11. executeToolCall ─────────────────────────────────────
+// ── 5. executeToolCall ─────────────────────────────────────
 
 describe("executeToolCall", () => {
   it("routes spawn_subplan to spawnSubplan", async () => {
@@ -743,332 +506,7 @@ describe("executeToolCall", () => {
   });
 });
 
-// ── 12. applyReflectOutput ──────────────────────────────────
-
-describe("applyReflectOutput", () => {
-  function makeReflectBrain() {
-    const { brain, env } = makeBrain();
-    brain.sessionId = "test_session";
-    brain.applyKVOperation = vi.fn(async () => {});
-    brain.processDeepReflectVerdicts = vi.fn(async () => {});
-    brain.applyDirectAsCandidate = vi.fn(async () => "m_123");
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.getSessionCount = vi.fn(async () => 42);
-    // kvPut needs to work for storing reflect output
-    brain.kvPut = vi.fn(async () => {});
-    brain.kvGet = vi.fn(async (key) => {
-      if (key === "config:defaults") return { some: "defaults" };
-      return null;
-    });
-    return { brain, env };
-  }
-
-  it("applies kv_operations", async () => {
-    const { brain } = makeReflectBrain();
-    const output = {
-      reflection: "test",
-      kv_operations: [
-        { op: "put", key: "test_key", value: "test_val" },
-      ],
-    };
-
-    await brain.applyReflectOutput(1, output, {});
-    expect(brain.applyKVOperation).toHaveBeenCalledWith(output.kv_operations[0]);
-  });
-
-  it("processes verdicts BEFORE mutation_requests", async () => {
-    const { brain } = makeReflectBrain();
-    const callOrder = [];
-    brain.processDeepReflectVerdicts = vi.fn(async () => { callOrder.push("verdicts"); });
-    brain.applyDirectAsCandidate = vi.fn(async () => { callOrder.push("mutations"); return "m_1"; });
-
-    const output = {
-      reflection: "test",
-      mutation_verdicts: [{ verdict: "promote", mutation_id: "m_old" }],
-      mutation_requests: [{ claims: ["a"], ops: [{ op: "put" }], checks: [] }],
-    };
-
-    await brain.applyReflectOutput(1, output, {});
-    expect(callOrder).toEqual(["verdicts", "mutations"]);
-  });
-
-  it("writes schedule to reflect:schedule:N", async () => {
-    const { brain } = makeReflectBrain();
-    const output = {
-      reflection: "test",
-      next_reflect: { after_sessions: 30, after_days: 14 },
-    };
-
-    await brain.applyReflectOutput(2, output, {});
-
-    const putCalls = brain.kvPut.mock.calls;
-    const schedulePut = putCalls.find(([key]) => key === "reflect:schedule:2");
-    expect(schedulePut).toBeTruthy();
-    const scheduleData = schedulePut[1];
-    expect(scheduleData.after_sessions).toBe(30);
-    expect(scheduleData.after_days).toBe(14);
-    expect(scheduleData).toHaveProperty("last_reflect");
-    expect(scheduleData.last_reflect_session).toBe(42);
-  });
-
-  it("stores history at reflect:N:sessionId", async () => {
-    const { brain } = makeReflectBrain();
-    const output = {
-      reflection: "deep thoughts",
-      note_to_future_self: "remember this",
-    };
-
-    await brain.applyReflectOutput(2, output, {});
-
-    const putCalls = brain.kvPut.mock.calls;
-    const historyPut = putCalls.find(([key]) => key === "reflect:2:test_session");
-    expect(historyPut).toBeTruthy();
-    const historyData = historyPut[1];
-    expect(historyData.reflection).toBe("deep thoughts");
-    expect(historyData.note_to_future_self).toBe("remember this");
-    expect(historyData.depth).toBe(2);
-    expect(historyData.session_id).toBe("test_session");
-  });
-
-  it("depth 1 writes last_reflect + wake_config", async () => {
-    const { brain } = makeReflectBrain();
-    const output = {
-      reflection: "depth 1 reflection",
-      note_to_future_self: "keep going",
-      next_wake_config: { sleep_seconds: 3600, effort: "low" },
-    };
-
-    await brain.applyReflectOutput(1, output, {});
-
-    const putCalls = brain.kvPut.mock.calls;
-    const lastReflect = putCalls.find(([key]) => key === "last_reflect");
-    expect(lastReflect).toBeTruthy();
-    expect(lastReflect[1].was_deep_reflect).toBe(true);
-    expect(lastReflect[1].depth).toBe(1);
-
-    const wakeConfig = putCalls.find(([key]) => key === "wake_config");
-    expect(wakeConfig).toBeTruthy();
-    expect(wakeConfig[1].sleep_seconds).toBe(3600);
-    expect(wakeConfig[1]).toHaveProperty("next_wake_after");
-  });
-
-  it("depth > 1 does NOT write last_reflect or wake_config", async () => {
-    const { brain } = makeReflectBrain();
-    const output = {
-      reflection: "depth 2 reflection",
-      note_to_future_self: "meta thoughts",
-      next_wake_config: { sleep_seconds: 3600 },
-    };
-
-    await brain.applyReflectOutput(2, output, {});
-
-    const putCalls = brain.kvPut.mock.calls;
-    const lastReflect = putCalls.find(([key]) => key === "last_reflect");
-    expect(lastReflect).toBeUndefined();
-    const wakeConfig = putCalls.find(([key]) => key === "wake_config");
-    expect(wakeConfig).toBeUndefined();
-  });
-
-  it("refreshes this.defaults after apply", async () => {
-    const { brain } = makeReflectBrain();
-    brain.kvGet = vi.fn(async (key) => {
-      if (key === "config:defaults") return { refreshed: true };
-      return null;
-    });
-
-    await brain.applyReflectOutput(1, { reflection: "test" }, {});
-    expect(brain.defaults).toEqual({ refreshed: true });
-  });
-
-  it("depth 1 also writes deep_reflect_schedule for backward compat", async () => {
-    const { brain } = makeReflectBrain();
-    const output = {
-      reflection: "test",
-      next_reflect: { after_sessions: 15 },
-    };
-
-    await brain.applyReflectOutput(1, output, {});
-
-    const putCalls = brain.kvPut.mock.calls;
-    const legacySchedule = putCalls.find(([key]) => key === "deep_reflect_schedule");
-    expect(legacySchedule).toBeTruthy();
-    expect(legacySchedule[1]).toHaveProperty("last_deep_reflect");
-    expect(legacySchedule[1]).toHaveProperty("last_deep_reflect_session");
-  });
-
-  it("handles next_deep_reflect alias for schedule", async () => {
-    const { brain } = makeReflectBrain();
-    const output = {
-      reflection: "test",
-      next_deep_reflect: { after_sessions: 25 },
-    };
-
-    await brain.applyReflectOutput(2, output, {});
-
-    const putCalls = brain.kvPut.mock.calls;
-    const schedulePut = putCalls.find(([key]) => key === "reflect:schedule:2");
-    expect(schedulePut).toBeTruthy();
-    expect(schedulePut[1].after_sessions).toBe(25);
-  });
-});
-
-// ── 13. _trackAdd / _trackRemove ────────────────────────────
-
-describe("_trackAdd / _trackRemove", () => {
-  it("adds to tracking array", () => {
-    const { brain } = makeBrain();
-    brain._trackAdd("activeStaged", "m_1");
-    expect(brain.activeStaged).toEqual(["m_1"]);
-  });
-
-  it("deduplicates", () => {
-    const { brain } = makeBrain();
-    brain._trackAdd("activeStaged", "m_1");
-    brain._trackAdd("activeStaged", "m_1");
-    expect(brain.activeStaged).toEqual(["m_1"]);
-  });
-
-  it("removes from tracking array", () => {
-    const { brain } = makeBrain();
-    brain.activeStaged = ["m_1", "m_2", "m_3"];
-    brain._trackRemove("activeStaged", "m_2");
-    expect(brain.activeStaged).toEqual(["m_1", "m_3"]);
-  });
-
-  it("no-op when removing non-existent id", () => {
-    const { brain } = makeBrain();
-    brain.activeCandidates = ["m_1"];
-    brain._trackRemove("activeCandidates", "m_99");
-    expect(brain.activeCandidates).toEqual(["m_1"]);
-  });
-});
-
-// ── 14. loadStagedMutations ─────────────────────────────────
-
-describe("loadStagedMutations", () => {
-  it("reads from activeStaged array, not KV scan", async () => {
-    const { brain, env } = makeBrain({
-      "mutation_staged:m_1": JSON.stringify({
-        id: "m_1",
-        claims: ["test"],
-        ops: [{ op: "put", key: "x", value: 1 }],
-        checks: [],
-      }),
-    });
-    brain.activeStaged = ["m_1"];
-    const result = await brain.loadStagedMutations();
-    expect(result).toHaveProperty("m_1");
-    expect(result.m_1.record.id).toBe("m_1");
-    expect(result.m_1.check_results.all_passed).toBe(true);
-  });
-
-  it("skips missing mutations", async () => {
-    const { brain } = makeBrain();
-    brain.activeStaged = ["m_gone"];
-    const result = await brain.loadStagedMutations();
-    expect(Object.keys(result)).toHaveLength(0);
-  });
-});
-
-// ── 15. loadCandidateMutations ──────────────────────────────
-
-describe("loadCandidateMutations", () => {
-  it("reads from activeCandidates array", async () => {
-    const { brain } = makeBrain({
-      "mutation_candidate:m_2": JSON.stringify({
-        id: "m_2",
-        claims: ["perf"],
-        ops: [{ op: "put", key: "y", value: 2 }],
-        checks: [],
-        snapshots: {},
-        activated_at: new Date().toISOString(),
-      }),
-    });
-    brain.activeCandidates = ["m_2"];
-    const result = await brain.loadCandidateMutations();
-    expect(result).toHaveProperty("m_2");
-    expect(result.m_2.record.id).toBe("m_2");
-  });
-});
-
-// ── 16. findCandidateConflict ───────────────────────────────
-
-describe("findCandidateConflict", () => {
-  it("detects overlapping snapshot keys", async () => {
-    const { brain } = makeBrain({
-      "mutation_candidate:m_c": JSON.stringify({
-        id: "m_c",
-        snapshots: { "config:defaults": { value: "{}", metadata: {} } },
-      }),
-    });
-    brain.activeCandidates = ["m_c"];
-    const conflict = await brain.findCandidateConflict(["config:defaults", "wisdom"]);
-    expect(conflict).not.toBeNull();
-    expect(conflict.id).toBe("m_c");
-    expect(conflict.keys).toContain("config:defaults");
-  });
-
-  it("returns null when no overlap", async () => {
-    const { brain } = makeBrain({
-      "mutation_candidate:m_c": JSON.stringify({
-        id: "m_c",
-        snapshots: { "config:defaults": { value: "{}" } },
-      }),
-    });
-    brain.activeCandidates = ["m_c"];
-    const conflict = await brain.findCandidateConflict(["wisdom"]);
-    expect(conflict).toBeNull();
-  });
-});
-
-// ── 17. stageMutation tracking ──────────────────────────────
-
-describe("stageMutation", () => {
-  it("appends to activeStaged", async () => {
-    const { brain } = makeBrain();
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.kvPut = vi.fn(async () => {});
-    const id = await brain.stageMutation({
-      claims: ["test"],
-      ops: [{ op: "put", key: "x", value: 1 }],
-      checks: [{ type: "kv_value_unchanged", key: "x" }],
-    }, "test_session");
-    expect(id).toBeTruthy();
-    expect(brain.activeStaged).toContain(id);
-  });
-});
-
-// ── 18. promoteCandidate tracking ───────────────────────────
-
-describe("promoteCandidate", () => {
-  it("removes from activeCandidates", async () => {
-    const { brain } = makeBrain();
-    brain.activeCandidates = ["m_p"];
-    brain.karmaRecord = vi.fn(async () => {});
-    await brain.promoteCandidate("m_p");
-    expect(brain.activeCandidates).not.toContain("m_p");
-  });
-});
-
-// ── 19. rollbackCandidate tracking ──────────────────────────
-
-describe("rollbackCandidate", () => {
-  it("removes from activeCandidates", async () => {
-    const { brain } = makeBrain({
-      "mutation_candidate:m_r": JSON.stringify({
-        id: "m_r",
-        snapshots: {},
-      }),
-    });
-    brain.activeCandidates = ["m_r"];
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.kvPut = vi.fn(async () => {});
-    await brain.rollbackCandidate("m_r", "test_reason");
-    expect(brain.activeCandidates).not.toContain("m_r");
-  });
-});
-
-// ── 20. executeAction — tool: prefix ────────────────────────
+// ── 6. executeAction ────────────────────────────────────────
 
 describe("executeAction", () => {
   it("reads from tool:name:code + tool:name:meta", async () => {
@@ -1097,9 +535,7 @@ describe("executeAction", () => {
   });
 });
 
-// ── 21. loadReflectHistory — uses kv.list prefix ────────────
-
-// ── 22. callLLM budget enforcement ──────────────────────────
+// ── 7. callLLM budget enforcement ──────────────────────────
 
 describe("callLLM budget enforcement", () => {
   function makeBudgetBrain(budgetOverrides = {}) {
@@ -1113,7 +549,7 @@ describe("callLLM budget enforcement", () => {
     brain.defaults = { session_budget: budget };
     brain.callWithCascade = vi.fn(async () => ({
       ok: true,
-      tier: "hardcoded",
+      tier: "kernel_fallback",
       content: '{"result":"ok"}',
       usage: { prompt_tokens: 100, completion_tokens: 50 },
       toolCalls: null,
@@ -1125,7 +561,6 @@ describe("callLLM budget enforcement", () => {
   it("throws on cost limit", async () => {
     const { brain } = makeBudgetBrain();
     brain.sessionCost = 0.10;
-
     await expect(brain.callLLM({
       model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
     })).rejects.toThrow("Budget exceeded: cost");
@@ -1134,7 +569,6 @@ describe("callLLM budget enforcement", () => {
   it("throws on step limit", async () => {
     const { brain } = makeBudgetBrain();
     brain.sessionLLMCalls = 8;
-
     await expect(brain.callLLM({
       model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
     })).rejects.toThrow("Budget exceeded: steps");
@@ -1142,8 +576,7 @@ describe("callLLM budget enforcement", () => {
 
   it("throws on duration limit", async () => {
     const { brain } = makeBudgetBrain();
-    brain.startTime = Date.now() - 601_000; // elapsed > 600s
-
+    brain.startTime = Date.now() - 601_000;
     await expect(brain.callLLM({
       model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
     })).rejects.toThrow("Budget exceeded: duration");
@@ -1153,11 +586,9 @@ describe("callLLM budget enforcement", () => {
     const { brain } = makeBudgetBrain();
     brain.sessionCost = 0;
     brain.sessionLLMCalls = 0;
-
     await brain.callLLM({
       model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
     });
-
     expect(brain.sessionCost).toBe(0.001);
     expect(brain.sessionLLMCalls).toBe(1);
   });
@@ -1166,16 +597,14 @@ describe("callLLM budget enforcement", () => {
     const { brain } = makeBudgetBrain();
     brain.sessionCost = 0.05;
     brain.sessionLLMCalls = 4;
-
     const result = await brain.callLLM({
       model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
     });
-
     expect(result.content).toBe('{"result":"ok"}');
   });
 });
 
-// ── 23. runAgentLoop budget handling ────────────────────────
+// ── 8. runAgentLoop budget handling ────────────────────────
 
 describe("runAgentLoop budget handling", () => {
   it("catches budget error gracefully", async () => {
@@ -1203,7 +632,6 @@ describe("runAgentLoop budget handling", () => {
       maxSteps: 5,
       step: "test",
     });
-
     expect(result.budget_exceeded).toBe(true);
     expect(result.reason).toBe("Budget exceeded: cost");
   });
@@ -1213,7 +641,6 @@ describe("runAgentLoop budget handling", () => {
     brain.callLLM = vi.fn(async () => {
       throw new Error("Network failure");
     });
-
     await expect(brain.runAgentLoop({
       systemPrompt: "test",
       initialContext: "error test",
@@ -1227,29 +654,724 @@ describe("runAgentLoop budget handling", () => {
   });
 });
 
-// ── 24. loadReflectHistory — uses kv.list prefix ────────────
+// ── 9. callHook ────────────────────────────────────────────
 
-describe("loadReflectHistory", () => {
-  it("uses kv.list with prefix filter", async () => {
-    const { brain, env } = makeBrain({
-      "reflect:1:s_001": JSON.stringify({ reflection: "first" }),
-      "reflect:1:s_002": JSON.stringify({ reflection: "second" }),
-      "reflect:2:s_003": JSON.stringify({ reflection: "depth2" }),
-    });
-    const result = await brain.loadReflectHistory(1, 5);
-    // Should only get depth 1 entries
-    expect(result).toHaveProperty("reflect:1:s_002");
-    expect(result).toHaveProperty("reflect:1:s_001");
-    expect(result).not.toHaveProperty("reflect:2:s_003");
+describe("callHook", () => {
+  it("returns null when hook doesn't exist", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.buildToolContext = vi.fn(async () => ({}));
+    brain.runInIsolate = vi.fn(async () => ({}));
+    const result = await brain.callHook("validate", { tool: "test" });
+    expect(result).toBeNull();
+    expect(brain.toolsCache["validate"]).toBe(false);
   });
 
-  it("limits results to count", async () => {
+  it("calls hook and returns result", async () => {
+    const hookCode = 'async function execute(ctx) { return { ok: true }; }';
     const { brain } = makeBrain({
-      "reflect:1:s_001": JSON.stringify({ reflection: "a" }),
-      "reflect:1:s_002": JSON.stringify({ reflection: "b" }),
-      "reflect:1:s_003": JSON.stringify({ reflection: "c" }),
+      "tool:validate:code": JSON.stringify(hookCode),
+      "tool:validate:meta": JSON.stringify({ timeout_ms: 3000 }),
     });
-    const result = await brain.loadReflectHistory(1, 2);
-    expect(Object.keys(result)).toHaveLength(2);
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.buildToolContext = vi.fn(async (name, meta, input) => input);
+    brain.runInIsolate = vi.fn(async () => ({ ok: true }));
+    brain.sessionId = "test_session";
+    const result = await brain.callHook("validate", { tool: "test" });
+    expect(result).toEqual({ ok: true });
+    expect(brain.runInIsolate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        moduleCode: hookCode,
+        toolName: "validate",
+        timeoutMs: 3000,
+      })
+    );
+  });
+
+  it("caches miss — doesn't re-check KV", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.buildToolContext = vi.fn(async () => ({}));
+    brain.runInIsolate = vi.fn(async () => ({}));
+    await brain.callHook("validate", {});
+    await brain.callHook("validate", {});
+    const kvCalls = env.KV.get.mock.calls.filter(([key]) => key === "tool:validate:code");
+    expect(kvCalls).toHaveLength(1);
+  });
+
+  it("swallows hook errors", async () => {
+    const hookCode = 'async function execute() { throw new Error("boom"); }';
+    const { brain } = makeBrain({
+      "tool:validate:code": JSON.stringify(hookCode),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.buildToolContext = vi.fn(async () => ({}));
+    brain.runInIsolate = vi.fn(async () => { throw new Error("boom"); });
+    brain.sessionId = "test_session";
+    const result = await brain.callHook("validate", {});
+    expect(result).toBeNull();
+    expect(brain.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "hook_error", hook: "validate" })
+    );
+  });
+});
+
+// ── 10. executeToolCall with hooks ──────────────────────────
+
+describe("executeToolCall with hooks", () => {
+  it("pre-validate rejects bad args", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.executeAction = vi.fn(async () => ({ result: "should not reach" }));
+    brain.callHook = vi.fn(async (hookName) => {
+      if (hookName === "validate") return { ok: false, error: "missing field" };
+      return null;
+    });
+    const result = await brain.executeToolCall({
+      id: "tc1",
+      function: { name: "test_tool", arguments: '{"a":1}' },
+    });
+    expect(result).toEqual({ error: "missing field" });
+    expect(brain.executeAction).not.toHaveBeenCalled();
+  });
+
+  it("pre-validate corrects args", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.executeAction = vi.fn(async (step) => ({ received: step.input }));
+    brain.callHook = vi.fn(async (hookName) => {
+      if (hookName === "validate") return { ok: true, args: { a: 1, b: "added" } };
+      return null;
+    });
+    const result = await brain.executeToolCall({
+      id: "tc1",
+      function: { name: "test_tool", arguments: '{"a":1}' },
+    });
+    expect(brain.executeAction).toHaveBeenCalledWith(
+      expect.objectContaining({ input: { a: 1, b: "added" } })
+    );
+  });
+
+  it("post-validate rejects bad result", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.executeAction = vi.fn(async () => ({ data: "some result" }));
+    brain.callHook = vi.fn(async (hookName) => {
+      if (hookName === "validate_result") return { ok: false, error: "empty response" };
+      return null;
+    });
+    const result = await brain.executeToolCall({
+      id: "tc1",
+      function: { name: "test_tool", arguments: '{}' },
+    });
+    expect(result).toEqual({ error: "empty response" });
+  });
+
+  it("no hooks — pass through", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.executeAction = vi.fn(async () => ({ tool_result: "ok" }));
+    brain.callHook = vi.fn(async () => null);
+    const result = await brain.executeToolCall({
+      id: "tc1",
+      function: { name: "test_tool", arguments: '{"x":1}' },
+    });
+    expect(result).toEqual({ tool_result: "ok" });
+    expect(brain.executeAction).toHaveBeenCalled();
+  });
+
+  it("garbled arguments returns error", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.executeAction = vi.fn(async () => ({}));
+    brain.callHook = vi.fn(async () => null);
+    const result = await brain.executeToolCall({
+      id: "tc1",
+      function: { name: "test_tool", arguments: "not json" },
+    });
+    expect(result).toEqual({ error: "Invalid JSON in tool arguments for test_tool" });
+    expect(brain.executeAction).not.toHaveBeenCalled();
+  });
+});
+
+// ── 11. runAgentLoop parse error retry ──────────────────────
+
+describe("runAgentLoop parse error retry", () => {
+  it("retries on parse_error", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    let turn = 0;
+    brain.callLLM = vi.fn(async () => {
+      turn++;
+      if (turn === 1) {
+        return { content: "not json", cost: 0.001, toolCalls: null };
+      }
+      return { content: '{"recovered":true}', cost: 0.001, toolCalls: null };
+    });
+    brain.callHook = vi.fn(async () => null);
+
+    const result = await brain.runAgentLoop({
+      systemPrompt: "test",
+      initialContext: "retry test",
+      tools: [],
+      model: "test",
+      effort: "low",
+      maxTokens: 100,
+      maxSteps: 5,
+      step: "test",
+    });
+    expect(result).toEqual({ recovered: true });
+    expect(brain.callLLM).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries only once", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.callLLM = vi.fn(async () => ({
+      content: "still not json",
+      cost: 0.001,
+      toolCalls: null,
+    }));
+    brain.callHook = vi.fn(async () => null);
+
+    const result = await brain.runAgentLoop({
+      systemPrompt: "test",
+      initialContext: "retry test",
+      tools: [],
+      model: "test",
+      effort: "low",
+      maxTokens: 100,
+      maxSteps: 5,
+      step: "test",
+    });
+    expect(result.parse_error).toBe(true);
+    expect(result.raw).toBe("still not json");
+    expect(brain.callLLM).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── 12. isSystemKey / isKernelOnly ──────────────────────────
+
+describe("isSystemKey / isKernelOnly", () => {
+  it("recognizes system key prefixes", () => {
+    expect(Brainstem.isSystemKey("config:defaults")).toBe(true);
+    expect(Brainstem.isSystemKey("prompt:orient")).toBe(true);
+    expect(Brainstem.isSystemKey("tool:kv_read:code")).toBe(true);
+    expect(Brainstem.isSystemKey("hook:wake:code")).toBe(true);
+    expect(Brainstem.isSystemKey("mutation_staged:m_1")).toBe(true);
+    expect(Brainstem.isSystemKey("doc:mutation_guide")).toBe(true);
+  });
+
+  it("recognizes exact system keys", () => {
+    expect(Brainstem.isSystemKey("providers")).toBe(true);
+    expect(Brainstem.isSystemKey("wallets")).toBe(true);
+    expect(Brainstem.isSystemKey("wisdom")).toBe(true);
+  });
+
+  it("rejects non-system keys", () => {
+    expect(Brainstem.isSystemKey("wake_config")).toBe(false);
+    expect(Brainstem.isSystemKey("last_reflect")).toBe(false);
+    expect(Brainstem.isSystemKey("session_counter")).toBe(false);
+  });
+
+  it("recognizes kernel-only keys", () => {
+    expect(Brainstem.isKernelOnly("kernel:last_sessions")).toBe(true);
+    expect(Brainstem.isKernelOnly("kernel:active_session")).toBe(true);
+    expect(Brainstem.isKernelOnly("kernel:alert_config")).toBe(true);
+  });
+
+  it("kernel-only does not overlap with system keys", () => {
+    expect(Brainstem.isKernelOnly("config:defaults")).toBe(false);
+    expect(Brainstem.isKernelOnly("prompt:orient")).toBe(false);
+  });
+});
+
+// ── 13. kvPutSafe ──────────────────────────────────────────
+
+describe("kvPutSafe", () => {
+  it("blocks dharma", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.kvPutSafe("dharma", "new value"))
+      .rejects.toThrow("immutable");
+  });
+
+  it("blocks kernel-only keys", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.kvPutSafe("kernel:last_sessions", []))
+      .rejects.toThrow("kernel-only");
+  });
+
+  it("blocks system keys", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.kvPutSafe("config:defaults", {}))
+      .rejects.toThrow("system key");
+  });
+
+  it("allows non-system keys", async () => {
+    const { brain } = makeBrain();
+    await brain.kvPutSafe("wake_config", { sleep_seconds: 100 });
+    // Should not throw
+  });
+});
+
+// ── 14. kvDeleteSafe ───────────────────────────────────────
+
+describe("kvDeleteSafe", () => {
+  it("blocks dharma", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.kvDeleteSafe("dharma"))
+      .rejects.toThrow("immutable");
+  });
+
+  it("blocks kernel-only keys", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.kvDeleteSafe("kernel:active_session"))
+      .rejects.toThrow("kernel-only");
+  });
+
+  it("blocks system keys", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.kvDeleteSafe("prompt:orient"))
+      .rejects.toThrow("system key");
+  });
+
+  it("allows non-system keys", async () => {
+    const { brain } = makeBrain();
+    await brain.kvDeleteSafe("session");
+    // Should not throw
+  });
+});
+
+// ── 15. kvWritePrivileged ──────────────────────────────────
+
+describe("kvWritePrivileged", () => {
+  it("blocks dharma", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.kvWritePrivileged([
+      { op: "put", key: "dharma", value: "evil" },
+    ])).rejects.toThrow("immutable");
+  });
+
+  it("blocks kernel-only keys", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.kvWritePrivileged([
+      { op: "put", key: "kernel:last_sessions", value: [] },
+    ])).rejects.toThrow("kernel-only");
+  });
+
+  it("allows system keys with snapshot", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await brain.kvWritePrivileged([
+      { op: "put", key: "config:defaults", value: { new: true } },
+    ]);
+    expect(brain.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "privileged_write", key: "config:defaults" })
+    );
+    expect(brain.privilegedWriteCount).toBe(1);
+  });
+
+  it("enforces rate limit", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.privilegedWriteCount = 49;
+    await expect(brain.kvWritePrivileged([
+      { op: "put", key: "config:defaults", value: {} },
+      { op: "put", key: "wisdom", value: "new" },
+    ])).rejects.toThrow("Privileged write limit");
+  });
+
+  it("auto-refreshes config after privileged writes", async () => {
+    const { brain } = makeBrain({
+      "config:defaults": JSON.stringify({ updated: true }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    await brain.kvWritePrivileged([
+      { op: "put", key: "config:defaults", value: { updated: true } },
+    ]);
+    expect(brain.defaults).toEqual({ updated: true });
+  });
+
+  it("handles delete operations", async () => {
+    const { brain, env } = makeBrain({
+      "mutation_staged:m_1": JSON.stringify({ id: "m_1" }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    await brain.kvWritePrivileged([
+      { op: "delete", key: "mutation_staged:m_1" },
+    ]);
+    expect(env.KV.delete).toHaveBeenCalledWith("mutation_staged:m_1");
+    expect(brain.privilegedWriteCount).toBe(1);
+  });
+});
+
+// ── 16. checkHookSafety ────────────────────────────────────
+
+describe("checkHookSafety", () => {
+  it("returns true with no history", async () => {
+    const { brain } = makeBrain();
+    brain.sendKernelAlert = vi.fn(async () => {});
+    const safe = await brain.checkHookSafety();
+    expect(safe).toBe(true);
+  });
+
+  it("returns true with mixed outcomes", async () => {
+    const { brain } = makeBrain({
+      "kernel:last_sessions": JSON.stringify([
+        { id: "s_1", outcome: "crash" },
+        { id: "s_2", outcome: "clean" },
+        { id: "s_3", outcome: "crash" },
+      ]),
+    });
+    brain.sendKernelAlert = vi.fn(async () => {});
+    const safe = await brain.checkHookSafety();
+    expect(safe).toBe(true);
+  });
+
+  it("fires tripwire on 3 consecutive crashes (no snapshot → fallback)", async () => {
+    const { brain, env } = makeBrain({
+      "kernel:last_sessions": JSON.stringify([
+        { id: "s_1", outcome: "crash" },
+        { id: "s_2", outcome: "killed" },
+        { id: "s_3", outcome: "crash" },
+      ]),
+      "hook:wake:code": "some code",
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    const safe = await brain.checkHookSafety();
+    expect(safe).toBe(false);
+    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:code");
+    expect(brain.sendKernelAlert).toHaveBeenCalledWith("hook_reset",
+      expect.stringContaining("No good version to restore"));
+  });
+
+  it("auto-restores from last_good_hook on tripwire", async () => {
+    const { brain, env } = makeBrain({
+      "kernel:last_sessions": JSON.stringify([
+        { id: "s_1", outcome: "crash" },
+        { id: "s_2", outcome: "killed" },
+        { id: "s_3", outcome: "crash" },
+      ]),
+      "hook:wake:code": "bad code",
+      "kernel:last_good_hook": JSON.stringify({ code: "good code" }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    const safe = await brain.checkHookSafety();
+    expect(safe).toBe(true);
+    // Old bad code deleted
+    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:code");
+    // Good code restored
+    const putCalls = env.KV.put.mock.calls;
+    const hookPut = putCalls.find(([key]) => key === "hook:wake:code");
+    expect(hookPut).toBeTruthy();
+    // Snapshot deleted (anti-loop)
+    expect(env.KV.delete).toHaveBeenCalledWith("kernel:last_good_hook");
+    expect(brain.sendKernelAlert).toHaveBeenCalledWith("hook_reset",
+      expect.stringContaining("Restored last good version"));
+  });
+
+  it("auto-restores manifest-based hook on tripwire", async () => {
+    const manifest = {
+      "main": "hook:wake:modules:main",
+      "utils.js": "hook:wake:modules:utils",
+    };
+    const { brain, env } = makeBrain({
+      "kernel:last_sessions": JSON.stringify([
+        { id: "s_1", outcome: "crash" },
+        { id: "s_2", outcome: "crash" },
+        { id: "s_3", outcome: "crash" },
+      ]),
+      "hook:wake:manifest": JSON.stringify(manifest),
+      "hook:wake:modules:main": JSON.stringify("bad main"),
+      "hook:wake:modules:utils": JSON.stringify("bad utils"),
+      "kernel:last_good_hook": JSON.stringify({
+        manifest,
+        modules: {
+          "hook:wake:modules:main": "good main",
+          "hook:wake:modules:utils": "good utils",
+        },
+      }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    const safe = await brain.checkHookSafety();
+    expect(safe).toBe(true);
+    // Bad modules deleted
+    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:modules:main");
+    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:modules:utils");
+    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:manifest");
+    // Snapshot deleted (anti-loop)
+    expect(env.KV.delete).toHaveBeenCalledWith("kernel:last_good_hook");
+  });
+
+  it("anti-loop: second tripwire with no snapshot falls to fallback", async () => {
+    const { brain } = makeBrain({
+      "kernel:last_sessions": JSON.stringify([
+        { id: "s_1", outcome: "crash" },
+        { id: "s_2", outcome: "crash" },
+        { id: "s_3", outcome: "crash" },
+      ]),
+      "hook:wake:code": "restored-but-still-bad code",
+      // No kernel:last_good_hook — was deleted by first tripwire
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    const safe = await brain.checkHookSafety();
+    expect(safe).toBe(false);
+    expect(brain.sendKernelAlert).toHaveBeenCalledWith("hook_reset",
+      expect.stringContaining("No good version to restore"));
+  });
+});
+
+// ── 17. detectPlatformKill ─────────────────────────────────
+
+describe("detectPlatformKill", () => {
+  it("no-op when no active session marker", async () => {
+    const { brain, env } = makeBrain();
+    await brain.detectPlatformKill();
+    // No writes to kernel:last_sessions
+    const putCalls = env.KV.put.mock.calls.filter(
+      ([key]) => key === "kernel:last_sessions"
+    );
+    expect(putCalls).toHaveLength(0);
+  });
+
+  it("injects killed outcome when active session found", async () => {
+    const { brain, env } = makeBrain({
+      "kernel:active_session": JSON.stringify("s_dead"),
+    });
+    await brain.detectPlatformKill();
+
+    // Should have written kernel:last_sessions with killed entry
+    const putCalls = env.KV.put.mock.calls;
+    const lastSessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    expect(lastSessionsPut).toBeTruthy();
+
+    // Should have deleted kernel:active_session
+    expect(env.KV.delete).toHaveBeenCalledWith("kernel:active_session");
+  });
+});
+
+// ── 18. updateSessionOutcome snapshot ──────────────────────
+
+describe("updateSessionOutcome snapshot", () => {
+  it("snapshots hook on first clean (no existing snapshot)", async () => {
+    const { brain, env } = makeBrain({
+      "hook:wake:code": JSON.stringify("seed hook code"),
+    });
+    await brain.updateSessionOutcome("clean");
+
+    const putCalls = env.KV.put.mock.calls;
+    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
+    expect(snapshotPut).toBeTruthy();
+    const snapshot = JSON.parse(snapshotPut[1]);
+    expect(snapshot.code).toBe("seed hook code");
+  });
+
+  it("snapshots when hook_dirty is set", async () => {
+    const { brain, env } = makeBrain({
+      "hook:wake:code": JSON.stringify("modified hook"),
+      "kernel:hook_dirty": JSON.stringify(true),
+      "kernel:last_good_hook": JSON.stringify({ code: "old version" }),
+    });
+    await brain.updateSessionOutcome("clean");
+
+    const putCalls = env.KV.put.mock.calls;
+    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
+    expect(snapshotPut).toBeTruthy();
+    const snapshot = JSON.parse(snapshotPut[1]);
+    expect(snapshot.code).toBe("modified hook");
+    // hook_dirty should be cleared
+    expect(env.KV.delete).toHaveBeenCalledWith("kernel:hook_dirty");
+  });
+
+  it("skips snapshot when not dirty and snapshot exists", async () => {
+    const { brain, env } = makeBrain({
+      "hook:wake:code": JSON.stringify("unchanged hook"),
+      "kernel:last_good_hook": JSON.stringify({ code: "unchanged hook" }),
+      // No kernel:hook_dirty
+    });
+    await brain.updateSessionOutcome("clean");
+
+    const putCalls = env.KV.put.mock.calls;
+    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
+    expect(snapshotPut).toBeFalsy();
+  });
+
+  it("does not snapshot on crash outcome", async () => {
+    const { brain, env } = makeBrain({
+      "hook:wake:code": JSON.stringify("some hook"),
+    });
+    await brain.updateSessionOutcome("crash");
+
+    const putCalls = env.KV.put.mock.calls;
+    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
+    expect(snapshotPut).toBeFalsy();
+  });
+
+  it("snapshots manifest-based hook", async () => {
+    const manifest = {
+      "main": "hook:wake:modules:main",
+      "utils.js": "hook:wake:modules:utils",
+    };
+    const { brain, env } = makeBrain({
+      "hook:wake:manifest": JSON.stringify(manifest),
+      "hook:wake:modules:main": JSON.stringify("main code"),
+      "hook:wake:modules:utils": JSON.stringify("utils code"),
+      "kernel:hook_dirty": JSON.stringify(true),
+      "kernel:last_good_hook": JSON.stringify({ code: "old" }),
+    });
+    await brain.updateSessionOutcome("clean");
+
+    const putCalls = env.KV.put.mock.calls;
+    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
+    expect(snapshotPut).toBeTruthy();
+    const snapshot = JSON.parse(snapshotPut[1]);
+    expect(snapshot.manifest).toEqual(manifest);
+    expect(snapshot.modules["hook:wake:modules:main"]).toBe("main code");
+    expect(snapshot.modules["hook:wake:modules:utils"]).toBe("utils code");
+  });
+
+  it("skips snapshot when no hook is loaded", async () => {
+    const { brain, env } = makeBrain({
+      // No hook:wake:code and no hook:wake:manifest
+    });
+    await brain.updateSessionOutcome("clean");
+
+    const putCalls = env.KV.put.mock.calls;
+    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
+    expect(snapshotPut).toBeFalsy();
+  });
+});
+
+// ── 19. kvWritePrivileged hook_dirty flag ──────────────────
+
+describe("kvWritePrivileged hook_dirty flag", () => {
+  it("sets kernel:hook_dirty when writing hook:wake:* key", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    await brain.kvWritePrivileged([
+      { op: "put", key: "hook:wake:code", value: "new hook" },
+    ]);
+
+    const putCalls = env.KV.put.mock.calls;
+    const dirtyPut = putCalls.find(([key]) => key === "kernel:hook_dirty");
+    expect(dirtyPut).toBeTruthy();
+  });
+
+  it("does not set hook_dirty for non-wake hook keys", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    await brain.kvWritePrivileged([
+      { op: "put", key: "hook:other:code", value: "something" },
+    ]);
+
+    const putCalls = env.KV.put.mock.calls;
+    const dirtyPut = putCalls.find(([key]) => key === "kernel:hook_dirty");
+    expect(dirtyPut).toBeFalsy();
+  });
+
+  it("sets hook_dirty for hook:wake:manifest writes", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    await brain.kvWritePrivileged([
+      { op: "put", key: "hook:wake:manifest", value: { "main": "hook:wake:modules:main" } },
+    ]);
+
+    const putCalls = env.KV.put.mock.calls;
+    const dirtyPut = putCalls.find(([key]) => key === "kernel:hook_dirty");
+    expect(dirtyPut).toBeTruthy();
+  });
+});
+
+// ── 20. runScheduled manifest loading ─────────────────────
+
+describe("runScheduled manifest loading", () => {
+  it("loads single hook:wake:code when no manifest", async () => {
+    const { brain } = makeBrain({
+      "hook:wake:code": JSON.stringify("single hook code"),
+    });
+    brain.detectPlatformKill = vi.fn(async () => {});
+    brain.checkHookSafety = vi.fn(async () => true);
+    brain.executeHook = vi.fn(async () => {});
+    brain.wake = vi.fn(async () => {});
+
+    await brain.runScheduled();
+
+    expect(brain.executeHook).toHaveBeenCalledWith(
+      { "hook.js": "single hook code" },
+      "hook.js"
+    );
+    expect(brain.wake).not.toHaveBeenCalled();
+  });
+
+  it("loads manifest-based modules", async () => {
+    const manifest = {
+      "main": "hook:wake:modules:main",
+      "utils.js": "hook:wake:modules:utils",
+    };
+    const { brain } = makeBrain({
+      "hook:wake:manifest": JSON.stringify(manifest),
+      "hook:wake:modules:main": JSON.stringify("main module code"),
+      "hook:wake:modules:utils": JSON.stringify("utils module code"),
+    });
+    brain.detectPlatformKill = vi.fn(async () => {});
+    brain.checkHookSafety = vi.fn(async () => true);
+    brain.executeHook = vi.fn(async () => {});
+    brain.wake = vi.fn(async () => {});
+
+    await brain.runScheduled();
+
+    expect(brain.executeHook).toHaveBeenCalledWith(
+      {
+        "main": "main module code",
+        "utils.js": "utils module code",
+      },
+      "main"
+    );
+  });
+
+  it("falls back to wake() when hook unsafe", async () => {
+    const { brain } = makeBrain({
+      "hook:wake:code": JSON.stringify("some code"),
+    });
+    brain.detectPlatformKill = vi.fn(async () => {});
+    brain.checkHookSafety = vi.fn(async () => false);
+    brain.executeHook = vi.fn(async () => {});
+    brain.wake = vi.fn(async () => {});
+
+    await brain.runScheduled();
+
+    expect(brain.executeHook).not.toHaveBeenCalled();
+    expect(brain.wake).toHaveBeenCalled();
+  });
+
+  it("falls back to wake() when no hook code exists", async () => {
+    const { brain } = makeBrain({
+      // No hook:wake:code or manifest
+    });
+    brain.detectPlatformKill = vi.fn(async () => {});
+    brain.checkHookSafety = vi.fn(async () => true);
+    brain.executeHook = vi.fn(async () => {});
+    brain.wake = vi.fn(async () => {});
+
+    await brain.runScheduled();
+
+    expect(brain.executeHook).not.toHaveBeenCalled();
+    expect(brain.wake).toHaveBeenCalled();
   });
 });

@@ -50,7 +50,7 @@ Mutation Protocol: Feature Proposal for brainstem.js
  ---
  Three-tier protection model
 
- 1. soul — immutable. kvPut throws. Cannot be changed by any mechanism.
+ 1. dharma — immutable. kvPut throws. Cannot be changed by any mechanism.
 
  2. System keys — always protected. Mutation protocol required. Protection
     cannot be toggled off.
@@ -234,7 +234,7 @@ Mutation Protocol: Feature Proposal for brainstem.js
    mutation_blocked to karma.
 
  kvPut
-   After the soul immutability check, strip unprotected metadata flag on
+   After the dharma immutability check, strip unprotected metadata flag on
    system keys.
 
  wake

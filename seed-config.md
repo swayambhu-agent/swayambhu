@@ -38,6 +38,13 @@ session, Swayambhu owns all of them and can modify anything.
   },
   "execution": {
     "max_subplan_depth": 3,
+    "max_reflect_depth": 1,
+    "reflect_interval_multiplier": 5,
+    "max_steps": {
+      "orient": 3,
+      "reflect_default": 5,
+      "reflect_deep": 10
+    },
     "fallback_model": "anthropic/claude-haiku-4-5-20251001"
   },
   "deep_reflect": {
@@ -180,12 +187,13 @@ be removed — they're the safety net.
 ### provider:llm:code
 
 ```js
-async function call({ model, messages, max_tokens, thinking, secrets, fetch }) {
+async function call({ model, messages, max_tokens, thinking, tools, secrets, fetch }) {
   const body = { model, max_tokens, messages };
   if (thinking) {
     body.provider = { require_parameters: true };
     body.thinking = thinking;
   }
+  if (tools) body.tools = tools;
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -196,9 +204,11 @@ async function call({ model, messages, max_tokens, thinking, secrets, fetch }) {
   });
   const data = await resp.json();
   if (!resp.ok || data.error) throw new Error(JSON.stringify(data.error));
+  const msg = data.choices?.[0]?.message;
   return {
-    content: data.choices?.[0]?.message?.content || "",
-    usage: data.usage || {}
+    content: msg?.content || "",
+    usage: data.usage || {},
+    toolCalls: msg?.tool_calls || null,
   };
 }
 ```

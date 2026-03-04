@@ -6,9 +6,9 @@ Everything that happened is below. Your job is to distill it into something your
 
 ---
 
-## Your soul
+## Your dharma
 
-{{soul}}
+{{dharma}}
 
 ## This session
 
@@ -40,7 +40,7 @@ Be specific. "Things went well" is worthless. "The web_fetch to OpenRouter's API
 
 If a step failed, say why. If you're unsure why, say that too. If something succeeded but felt fragile or lucky, note it. Your future self — possibly running at low effort with minimal context — needs your observations more than your optimism.
 
-Consider your soul as you reflect. Are your actions aligned with what you are? You don't need to answer this fully — that's for deep reflection. But notice if something feels off. If it does, say so in your note to your future self.
+Consider your dharma as you reflect. Are your actions aligned with what you are? You don't need to answer this fully — that's for deep reflection. But notice if something feels off. If it does, say so in your note to your future self.
 
 ---
 

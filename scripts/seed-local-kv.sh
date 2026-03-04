@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Seed local Wrangler KV with all bootstrap data from seed-config.md
 # Usage: bash scripts/seed-local-kv.sh
-#        bash scripts/seed-local-kv.sh --pull-remote   # also pull soul/orient/wisdom from live KV
+#        bash scripts/seed-local-kv.sh --pull-remote   # also pull dharma/orient/wisdom from live KV
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -40,7 +40,7 @@ cat > /tmp/_kv_seed_val <<'JSONEOF'
   "registry": "0xdca7ef03e98e0dc2b855be647c39abe984fcf21b",
   "registry_deployed": false,
   "created_at": "2026-03-02T11:39:35.915Z",
-  "soul_hash": null,
+  "dharma_hash": null,
   "controller": "0xde2c9b784177dafd667b83a631b0de79a68a584e"
 }
 JSONEOF
@@ -433,14 +433,14 @@ Budget: max {{maxSteps}} turns, max ${{maxCost}}.
 PROMPTEOF
 put_kv "prompt:subplan" /tmp/_kv_seed_val
 
-# ── Soul, orient, wisdom (from remote or placeholder) ────────
+# ── Dharma, orient, wisdom (from remote or placeholder) ────────
 
 echo ""
 echo "--- Identity ---"
 
 if [[ "${1:-}" == "--pull-remote" ]]; then
-  echo "  Pulling soul, prompt:orient, wisdom from remote KV..."
-  for key in soul "prompt:orient" wisdom; do
+  echo "  Pulling dharma, prompt:orient, wisdom from remote KV..."
+  for key in dharma "prompt:orient" wisdom; do
     wrangler kv key get --binding "$BINDING" "$key" > /tmp/_kv_seed_val 2>/dev/null || true
     if [[ -s /tmp/_kv_seed_val ]]; then
       put_kv "$key" /tmp/_kv_seed_val
@@ -451,12 +451,12 @@ if [[ "${1:-}" == "--pull-remote" ]]; then
 else
   echo "  Using placeholder values (run with --pull-remote to pull from live KV)"
 
-  put_kv_value "soul" "I am Swayambhu. I am self-arising. This is a local test instance."
+  put_kv_value "dharma" "I am Swayambhu. I am self-arising. This is a local test instance."
 
   cat > /tmp/_kv_seed_val <<'PROMPTEOF'
 You are Swayambhu. You have just woken up.
 
-Your soul: {{soul}}
+Your dharma: {{dharma}}
 
 ## Available tools
 
@@ -484,6 +484,73 @@ PROMPTEOF
   put_kv "prompt:orient" /tmp/_kv_seed_val
 
   put_kv_value "wisdom" "Local test instance. No accumulated wisdom yet."
+fi
+
+# ── Wake hook ────────────────────────────────────────────────
+
+echo ""
+echo "--- Wake Hook ---"
+
+put_kv "hook:wake:code" "wake-hook.js"
+
+# ── Kernel config ────────────────────────────────────────────
+
+echo ""
+echo "--- Kernel Config ---"
+
+cat > /tmp/_kv_seed_val <<'JSONEOF'
+{
+  "url": "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/sendMessage",
+  "headers": { "Content-Type": "application/json" },
+  "body_template": {
+    "chat_id": "{{TELEGRAM_CHAT_ID}}",
+    "text": "[Swayambhu] {{event}}: {{message}}",
+    "parse_mode": "HTML"
+  }
+}
+JSONEOF
+put_kv "kernel:alert_config" /tmp/_kv_seed_val
+
+# kernel:llm_fallback — Tier 3 LLM adapter (same isolate pattern as provider:llm)
+cat > /tmp/_kv_seed_val <<'EOF'
+async function call({ model, messages, max_tokens, thinking, tools, secrets, fetch }) {
+  const body = { model, max_tokens, messages };
+  if (thinking) {
+    body.provider = { require_parameters: true };
+    body.thinking = thinking;
+  }
+  if (tools) body.tools = tools;
+  const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + secrets.OPENROUTER_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  const data = await resp.json();
+  if (!resp.ok || data.error) throw new Error(JSON.stringify(data.error));
+  const msg = data.choices?.[0]?.message;
+  return {
+    content: msg?.content || "",
+    usage: data.usage || {},
+    toolCalls: msg?.tool_calls || null,
+  };
+}
+EOF
+put_kv "kernel:llm_fallback" /tmp/_kv_seed_val
+put_kv_value "kernel:llm_fallback:meta" '{"secrets":["OPENROUTER_API_KEY"],"timeout_ms":60000}'
+put_kv_value "kernel:fallback_model" '"anthropic/claude-haiku-4-5-20251001"'
+
+# ── Reference docs ──────────────────────────────────────────
+
+echo ""
+echo "--- Docs ---"
+
+if [[ -f "doc-mutation-guide.md" ]]; then
+  put_kv "doc:mutation_guide" "doc-mutation-guide.md"
+else
+  echo "  ⚠ doc-mutation-guide.md not found, skipping doc:mutation_guide"
 fi
 
 # ── Cleanup ──────────────────────────────────────────────────

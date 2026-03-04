@@ -55,7 +55,7 @@ wake()
 
 ### KV is the brain, the brainstem is the body
 
-Cloudflare KV (a persistent key-value store) holds everything: the soul,
+Cloudflare KV (a persistent key-value store) holds everything: the dharma,
 prompt templates, config, tools, session logs, wisdom, secrets. The brainstem
 reads from KV, does what it's told, and writes results back. Between sessions,
 KV is the only thing that persists.
@@ -242,7 +242,7 @@ normal session. This is a more thorough self-review that can:
 - **Update model preferences** — change which models are used for what
 - **Schedule the next deep reflection**
 
-Deep reflection loads significantly more context than a normal session: the soul,
+Deep reflection loads significantly more context than a normal session: the dharma,
 wisdom, recent karma logs, the orient prompt, current defaults, and session
 history.
 
@@ -250,8 +250,8 @@ history.
 
 ## Safety Rails
 
-### Immutable soul
-The `soul` key in KV cannot be overwritten — `kvPut` throws an error if you
+### Immutable dharma
+The `dharma` key in KV cannot be overwritten — `kvPut` throws an error if you
 try. This is the one thing Swayambhu cannot change about itself.
 
 ### Prompt injection filtering
@@ -277,7 +277,7 @@ Swayambhu breaks its own provider configuration.
 
 | Pattern | Contents |
 |---------|----------|
-| `soul` | Immutable identity document |
+| `dharma` | Immutable identity document |
 | `wisdom` | Accumulated long-term knowledge |
 | `prompt:orient` | Orient prompt template |
 | `prompt:reflect` | Reflect prompt template |

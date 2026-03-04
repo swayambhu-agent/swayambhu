@@ -1,14 +1,14 @@
-// Swayambhu Brainstem
-// A thin, unopinionated execution layer. It reads config, follows instructions,
-// makes API calls, and writes results. It has no opinions. Every decision that
-// can be pushed to the models has been pushed to the models.
+// Swayambhu Kernel
+// Hardcoded primitives + safety + alerting + hook dispatch.
+// Policy (wake flow, reflection, mutation protocol) lives in wake-hook.js,
+// stored in KV as hook:wake:code, and executed via Worker Loader isolate.
 //
-// Tools are loaded dynamically from KV — Swayambhu creates, edits, and deletes
-// his own tools. The brainstem only provides primitives: fetch, scoped KV, scoped secrets.
+// The kernel exposes primitives via KernelRPC (WorkerEntrypoint).
+// The hook composes them. Day 1 it's the current logic.
+// Day N the model restructures it via reflection.
 //
+// Tools are loaded dynamically from KV and executed in sandboxed isolates.
 // The karma log records every LLM call and tool execution with full request/response.
-// It flushes to KV after each entry so that if the worker crashes, the log survives
-// up to the point of death. Swayambhu manages archival of old karma logs himself.
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 
@@ -39,10 +39,72 @@ export class ScopedKV extends WorkerEntrypoint {
   }
 }
 
+// Module-level reference to active Brainstem instance.
+// Safe — Workers process one request per isolate.
+let _activeBrain = null;
+
+// RPC bridge — gives the wake hook access to kernel primitives.
+export class KernelRPC extends WorkerEntrypoint {
+  _brain() {
+    if (!_activeBrain) throw new Error("KernelRPC: no active brainstem instance");
+    return _activeBrain;
+  }
+
+  // LLM
+  async callLLM(opts) { return this._brain().callLLM(opts); }
+
+  // KV reads
+  async kvGet(key) { return this._brain().kvGet(key); }
+  async kvGetWithMeta(key) { return this._brain().kvGetWithMeta(key); }
+  async kvList(opts) { return this._brain().kv.list(opts); }
+
+  // KV writes — safe tier (blocks system + kernel keys)
+  async kvPutSafe(key, value, metadata) { return this._brain().kvPutSafe(key, value, metadata); }
+  async kvDeleteSafe(key) { return this._brain().kvDeleteSafe(key); }
+
+  // KV writes — privileged tier (snapshots to karma, rate-limited)
+  async kvWritePrivileged(ops) { return this._brain().kvWritePrivileged(ops); }
+
+  // Agent loop
+  async runAgentLoop(opts) { return this._brain().runAgentLoop(opts); }
+  async executeToolCall(tc) { return this._brain().executeToolCall(tc); }
+  async buildToolDefinitions(extra) { return this._brain().buildToolDefinitions(extra); }
+  async spawnSubplan(args, depth) { return this._brain().spawnSubplan(args, depth); }
+  async callHook(name, ctx) { return this._brain().callHook(name, ctx); }
+
+  // Sandbox
+  async executeAction(step) { return this._brain().executeAction(step); }
+
+  // Karma
+  async karmaRecord(entry) { return this._brain().karmaRecord(entry); }
+
+  // Alerting — NOT exposed (kernel-internal only)
+
+  // Utility
+  async resolveModel(m) { return this._brain().resolveModel(m); }
+  async estimateCost(model, usage) { return this._brain().estimateCost(model, usage); }
+  async buildPrompt(template, vars) { return this._brain().buildPrompt(template, vars); }
+  async parseAgentOutput(content) { return this._brain().parseAgentOutput(content); }
+  async loadKeys(keys) { return this._brain().loadKeys(keys); }
+  async getSessionCount() { return this._brain().getSessionCount(); }
+  async mergeDefaults(defaults, overrides) { return this._brain().mergeDefaults(defaults, overrides); }
+  async isSystemKey(key) { return Brainstem.isSystemKey(key); }
+
+  // State (read-only)
+  async getSessionId() { return this._brain().sessionId; }
+  async getSessionCost() { return this._brain().sessionCost; }
+  async getKarma() { return this._brain().karma; }
+  async getDefaults() { return this._brain().defaults; }
+  async getModelsConfig() { return this._brain().modelsConfig; }
+  async getDharma() { return this._brain().dharma; }
+  async getToolRegistry() { return this._brain().toolRegistry; }
+  async elapsed() { return this._brain().elapsed(); }
+}
+
 export default {
   async scheduled(event, env) {
     const brain = new Brainstem(env);
-    await brain.wake();
+    await brain.runScheduled();
   },
 };
 
@@ -58,114 +120,29 @@ class Brainstem {
     this.kvWritesThisSession = 0;
     this.modelsConfig = null;
     this.defaults = null;
-    this.soul = null;
+    this.dharma = null;
     this.toolsCache = {};      // Loaded tool code+meta, cached per session
     this.lastWorkingSnapshotted = false; // Only snapshot provider once per session
-    this.activeStaged = [];      // mutation IDs with mutation_staged: keys
-    this.activeCandidates = [];  // mutation IDs with mutation_candidate: keys
+    this.privilegedWriteCount = 0; // Counter for kvWritePrivileged calls
+    this._alertConfigCache = undefined; // undefined = not loaded, null = doesn't exist
   }
 
   static SYSTEM_KEY_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'mutation_staged:', 'mutation_candidate:',
+    'mutation_staged:', 'mutation_candidate:', 'hook:', 'doc:',
   ];
+  static KERNEL_ONLY_PREFIXES = ['kernel:'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'wisdom'];
   static DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
+  static MAX_PRIVILEGED_WRITES = 50;
 
   static isSystemKey(key) {
     if (Brainstem.SYSTEM_KEY_EXACT.includes(key)) return true;
     return Brainstem.SYSTEM_KEY_PREFIXES.some(p => key.startsWith(p));
   }
 
-  _trackAdd(list, id) {
-    if (!this[list].includes(id)) this[list].push(id);
-  }
-
-  _trackRemove(list, id) {
-    this[list] = this[list].filter(x => x !== id);
-  }
-
-  generateMutationId() {
-    return `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  // ── Reflect hierarchy helpers ──────────────────────────────
-
-  async loadReflectPrompt(depth) {
-    // Try depth-specific prompt, fall back to prompt:deep for depth 1
-    const specific = await this.kvGet(`prompt:reflect:${depth}`);
-    if (specific) return specific;
-    if (depth === 1) {
-      const legacy = await this.kvGet("prompt:deep");
-      if (legacy) return legacy;
-    }
-    return this.defaultDeepReflectPrompt(depth);
-  }
-
-  async loadBelowPrompt(depth) {
-    if (depth === 1) return this.kvGet("prompt:orient");
-    return this.kvGet(`prompt:reflect:${depth - 1}`);
-  }
-
-  async loadReflectHistory(depth, count = 10) {
-    const result = await this.kv.list({ prefix: `reflect:${depth}:`, limit: count + 10 });
-    const keys = result.keys
-      .map(k => k.name)
-      .sort((a, b) => b.localeCompare(a))
-      .slice(0, count);
-    return this.loadKeys(keys);
-  }
-
-  getReflectModel(depth) {
-    const perLevel = this.defaults?.reflect_levels?.[depth];
-    if (perLevel?.model) return perLevel.model;
-    return this.defaults?.deep_reflect?.model || this.defaults?.orient?.model;
-  }
-
-  getMaxSteps(role, depth) {
-    if (role === 'orient') return this.defaults?.execution?.max_steps?.orient || 3;
-    const perLevel = this.defaults?.reflect_levels?.[depth];
-    if (perLevel?.max_steps) return perLevel.max_steps;
-    return depth === 1
-      ? (this.defaults?.execution?.max_steps?.reflect_default || 5)
-      : (this.defaults?.execution?.max_steps?.reflect_deep || 10);
-  }
-
-  // ── Reflect scheduling ───────────────────────────────────
-
-  async isReflectDue(depth) {
-    // Phase 1: self-scheduled check
-    const scheduleKey = depth === 1 ? "deep_reflect_schedule" : `reflect:schedule:${depth}`;
-    const schedule = await this.kvGet(`reflect:schedule:${depth}`)
-      || (depth === 1 ? await this.kvGet("deep_reflect_schedule") : null);
-
-    const sessionCount = await this.getSessionCount();
-
-    if (schedule) {
-      const sessionsSince = sessionCount - (schedule.last_deep_reflect_session || schedule.last_reflect_session || 0);
-      const daysSince = schedule.last_deep_reflect || schedule.last_reflect
-        ? (Date.now() - new Date(schedule.last_deep_reflect || schedule.last_reflect).getTime()) / 86400000
-        : Infinity;
-      const maxSessions = schedule.after_sessions
-        || this.defaults?.deep_reflect?.default_interval_sessions || 20;
-      const maxDays = schedule.after_days
-        || this.defaults?.deep_reflect?.default_interval_days || 7;
-      return sessionsSince >= maxSessions || daysSince >= maxDays;
-    }
-
-    // Phase 2: cold-start fallback — exponential interval
-    const baseInterval = this.defaults?.deep_reflect?.default_interval_sessions || 20;
-    const multiplier = this.defaults?.execution?.reflect_interval_multiplier || 5;
-    const threshold = baseInterval * Math.pow(multiplier, depth - 1);
-    return sessionCount >= threshold;
-  }
-
-  async highestReflectDepthDue() {
-    const maxDepth = this.defaults?.execution?.max_reflect_depth || 1;
-    for (let d = maxDepth; d >= 1; d--) {
-      if (await this.isReflectDue(d)) return d;
-    }
-    return 0;
+  static isKernelOnly(key) {
+    return Brainstem.KERNEL_ONLY_PREFIXES.some(p => key.startsWith(p));
   }
 
   // ── Karma log ────────────────────────────────────────────────
@@ -188,182 +165,336 @@ class Brainstem {
     }
   }
 
-  // ── Wake cycle ──────────────────────────────────────────────
+  // ── Kernel alerting ────────────────────────────────────────
 
-  async wake() {
+  async sendKernelAlert(event, message) {
     try {
-      // 0. Check if it's actually time to wake up
-      const wakeConfig = await this.kvGet("wake_config");
-      if (wakeConfig?.next_wake_after) {
-        if (Date.now() < new Date(wakeConfig.next_wake_after).getTime()) {
-          return; // Not time yet, go back to sleep
-        }
+      if (this._alertConfigCache === undefined) {
+        this._alertConfigCache = await this.kvGet("kernel:alert_config");
       }
+      const config = this._alertConfigCache;
+      if (!config?.url) return;
 
-      // 1. Crash detection — check if previous session died mid-flight
-      const crashData = await this.detectCrash();
+      // Resolve {{ENV_VAR}} patterns in URL from this.env
+      const url = config.url.replace(/\{\{(\w+)\}\}/g, (_, name) => this.env[name] || "");
 
-      // 1a-pre. Initialize mutation tracking from targeted prefix scans
-      const [stagedList, candidateList] = await Promise.all([
-        this.kv.list({ prefix: "mutation_staged:", limit: 200 }),
-        this.kv.list({ prefix: "mutation_candidate:", limit: 200 }),
-      ]);
-      this.activeStaged = stagedList.keys.map(k => k.name.slice("mutation_staged:".length));
-      this.activeCandidates = candidateList.keys.map(k => k.name.slice("mutation_candidate:".length));
+      // Build body from template, interpolating {{message}}, {{event}}, {{session}}
+      const vars = { message, event, session: this.sessionId };
+      const bodyStr = JSON.stringify(config.body_template || {})
+        .replace(/\{\{(\w+)\}\}/g, (_, name) => vars[name] || "");
 
-      // 1b. Circuit breaker — auto-rollback candidates if system is unstable
-      await this.runCircuitBreaker();
+      await fetch(url, {
+        method: "POST",
+        headers: config.headers || { "Content-Type": "application/json" },
+        body: bodyStr,
+      });
+    } catch {
+      // Alerting must never crash the kernel — swallow errors
+    }
+  }
 
-      // 1a. Mark this session as in-progress (crash breadcrumb for next wake)
-      await this.kvPut("session", this.sessionId);
+  // ── KV write tiers (RPC-exposed) ─────────────────────────
 
-      // 2. Load ground truth (no LLM needed)
-      const [balances, kvUsage] = await Promise.all([
-        this.getBalances(),
-        this.getKVUsage(),
-      ]);
+  async kvPutSafe(key, value, metadata) {
+    if (key === "dharma") throw new Error("Cannot overwrite dharma — immutable key");
+    if (Brainstem.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
+    if (Brainstem.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWritePrivileged`);
+    return this.kvPut(key, value, metadata);
+  }
 
-      // 3. Load core state from KV
-      this.defaults = await this.kvGet("config:defaults");
-      const lastReflect = await this.kvGet("last_reflect");
+  async kvDeleteSafe(key) {
+    if (key === "dharma") throw new Error("Cannot delete dharma — immutable key");
+    if (Brainstem.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
+    if (Brainstem.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWritePrivileged`);
+    return this.kv.delete(key);
+  }
 
-      // 4. Merge with defaults
-      const config = this.mergeDefaults(this.defaults, wakeConfig);
+  async kvWritePrivileged(ops) {
+    if (!Array.isArray(ops) || ops.length === 0) return;
 
-      // 4a. Cache immutable/stable values for the session
-      this.modelsConfig = await this.kvGet("config:models");
-      this.soul = await this.kvGet("soul");
-      this.toolRegistry = await this.kvGet("config:tool_registry");
+    for (const op of ops) {
+      if (op.key === "dharma") throw new Error("Cannot write dharma — immutable key");
+      if (Brainstem.isKernelOnly(op.key)) throw new Error(`Blocked: kernel-only key "${op.key}"`);
+    }
 
-      // 5. Check if reflection is due (any depth)
-      const reflectDepth = await this.highestReflectDepthDue();
+    if (this.privilegedWriteCount + ops.length > Brainstem.MAX_PRIVILEGED_WRITES) {
+      throw new Error(`Privileged write limit (${Brainstem.MAX_PRIVILEGED_WRITES}/session) exceeded`);
+    }
 
-      // 6. Evaluate tripwires against live data
-      const effort = this.evaluateTripwires(
-        config,
-        { balances, kvUsage }
-      );
+    const configKeys = ["config:defaults", "config:models", "config:tool_registry"];
 
-      // 7. Load context keys (from last_reflect or defaults)
-      const loadKeys = lastReflect?.next_orient_context?.load_keys
-        || this.defaults?.memory?.default_load_keys
-        || [];
-      const additionalContext = await this.loadKeys(loadKeys);
-
-      // 8. Build context object
-      const context = {
-        balances,
-        kvUsage,
-        lastReflect,
-        additionalContext,
-        effort,
-        reflectDepth,
-        crashData,  // null if clean, full karma of dead session if crash
-      };
-
-      // 10. Record session start in karma
+    for (const op of ops) {
+      // Snapshot current value before writing
+      const { value: oldValue, metadata: oldMeta } = await this.kvGetWithMeta(op.key);
       await this.karmaRecord({
-        event: "session_start",
-        session_id: this.sessionId,
-        effort,
-        crash_detected: !!crashData,
+        event: "privileged_write",
+        key: op.key,
+        old_value: oldValue,
+        new_value: op.value,
+        op: op.op,
       });
 
-      // 11. Run the appropriate session type
-      if (reflectDepth > 0) {
-        await this.runReflect(reflectDepth, context);
+      // Execute the operation
+      if (op.op === "delete") {
+        await this.kv.delete(op.key);
       } else {
-        await this.runSession(context, config);
+        await this.kvPut(op.key, op.value, op.metadata);
       }
 
-      // 12. Mark session complete — clear the crash breadcrumb
-      await this.kv.delete("session");
+      this.privilegedWriteCount++;
 
+      // Alert on hook: key writes + set dirty flag for snapshot tracking
+      if (op.key.startsWith("hook:")) {
+        await this.sendKernelAlert("hook_write",
+          `Privileged write to ${op.key} in session ${this.sessionId}`);
+        if (op.key.startsWith("hook:wake:")) {
+          await this.kvPut("kernel:hook_dirty", true);
+        }
+      }
+    }
+
+    // Auto-reload cached config after privileged writes to config keys
+    const touchedConfig = ops.some(op => configKeys.includes(op.key));
+    if (touchedConfig) {
+      if (ops.some(op => op.key === "config:defaults"))
+        this.defaults = await this.kvGet("config:defaults");
+      if (ops.some(op => op.key === "config:models"))
+        this.modelsConfig = await this.kvGet("config:models");
+      if (ops.some(op => op.key === "config:tool_registry"))
+        this.toolRegistry = await this.kvGet("config:tool_registry");
+    }
+  }
+
+  // ── Hook dispatch (scheduled entry point) ─────────────────
+
+  async runScheduled() {
+    const brain = this;
+
+    // 1. Detect platform kill from previous session
+    await brain.detectPlatformKill();
+
+    // 2. Meta-safety check
+    const hookSafe = await brain.checkHookSafety();
+
+    // 3. Load hook modules (manifest or single code)
+    let modules = null;
+    let mainModule = null;
+    if (hookSafe) {
+      const manifest = await brain.kvGet("hook:wake:manifest");
+      if (manifest) {
+        // manifest maps filenames → KV keys; "main" entry is the entry point
+        modules = {};
+        for (const [filename, kvKey] of Object.entries(manifest)) {
+          modules[filename] = await brain.kvGet(kvKey);
+        }
+        mainModule = "main" in manifest ? "main" : Object.keys(manifest)[0];
+      } else {
+        const hookCode = await brain.kvGet("hook:wake:code");
+        if (hookCode) {
+          modules = { "hook.js": hookCode };
+          mainModule = "hook.js";
+        }
+      }
+    }
+
+    // 4. Execute hook or fallback
+    if (modules) {
+      await brain.executeHook(modules, mainModule);
+    } else {
+      // Hardcoded minimal fallback — or legacy wake() path
+      await brain.wake();
+    }
+  }
+
+  async detectPlatformKill() {
+    const activeSession = await this.kvGet("kernel:active_session");
+    if (!activeSession) return;
+
+    // Previous session was platform-killed — inject into last_sessions
+    const history = await this.kvGet("kernel:last_sessions") || [];
+    history.unshift({ id: activeSession, outcome: "killed", ts: new Date().toISOString() });
+    while (history.length > 5) history.pop();
+    await this.kvPut("kernel:last_sessions", history);
+
+    // Clean up the stale marker
+    await this.kv.delete("kernel:active_session");
+  }
+
+  async checkHookSafety() {
+    const history = await this.kvGet("kernel:last_sessions") || [];
+    if (history.length < 3) return true;
+
+    const last3 = history.slice(0, 3);
+    const allBad = last3.every(s => s.outcome === "crash" || s.outcome === "killed");
+    if (!allBad) return true;
+
+    // Tripwire fires — delete current hook (manifest-aware)
+    const manifest = await this.kvGet("hook:wake:manifest");
+    if (manifest) {
+      for (const kvKey of Object.values(manifest)) {
+        await this.kv.delete(kvKey);
+      }
+      await this.kv.delete("hook:wake:manifest");
+    } else {
+      await this.kv.delete("hook:wake:code");
+    }
+
+    await this.karmaRecord({ event: "hook_safety_reset", last_sessions: last3 });
+
+    // Attempt auto-restore from last known good hook
+    const snapshot = await this.kvGet("kernel:last_good_hook");
+    if (snapshot) {
+      if (snapshot.manifest) {
+        await this.kvPut("hook:wake:manifest", snapshot.manifest);
+        for (const [kvKey, code] of Object.entries(snapshot.modules)) {
+          await this.kvPut(kvKey, code);
+        }
+      } else {
+        await this.kvPut("hook:wake:code", snapshot.code);
+      }
+      // Anti-loop: delete snapshot so a second tripwire falls through to fallback
+      await this.kv.delete("kernel:last_good_hook");
+      await this.sendKernelAlert("hook_reset",
+        "Hook safety reset. Restored last good version.");
+      return true;
+    }
+
+    // No good version to restore — fall back to minimal
+    await this.sendKernelAlert("hook_reset",
+      "Hook safety reset. No good version to restore. Running minimal mode.");
+    return false;
+  }
+
+  async executeHook(modules, mainModule) {
+    // Write active session marker (catches platform kills)
+    await this.kvPut("kernel:active_session", this.sessionId);
+
+    let outcome = "clean";
+    _activeBrain = this;
+
+    try {
+      const worker = this.env.LOADER.get(`hook:wake:${this.sessionId}`, (loaderCtx) => ({
+        compatibilityDate: "2025-06-01",
+        mainModule,
+        modules,
+        env: {
+          KERNEL: loaderCtx.exports.KernelRPC(),
+        },
+      }));
+
+      const entrypoint = worker.getEntrypoint();
+      const request = new Request("https://internal/wake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: this.sessionId }),
+      });
+
+      const response = await entrypoint.fetch(request);
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Hook returned ${response.status}: ${body}`);
+      }
     } catch (err) {
-      // Last resort: log error to karma and KV
+      outcome = "crash";
       await this.karmaRecord({
-        event: "fatal_error",
+        event: "hook_execution_error",
         error: err.message,
         stack: err.stack,
       });
+
+      // Fall back to hardcoded minimal in same session
+      await this.runMinimalFallback();
+    } finally {
+      _activeBrain = null;
+    }
+
+    // Update session history
+    await this.updateSessionOutcome(outcome);
+
+    // Clean up active session marker
+    await this.kv.delete("kernel:active_session");
+  }
+
+  async updateSessionOutcome(outcome) {
+    const history = await this.kvGet("kernel:last_sessions") || [];
+    history.unshift({ id: this.sessionId, outcome, ts: new Date().toISOString() });
+    while (history.length > 5) history.pop();
+    await this.kvPut("kernel:last_sessions", history);
+
+    // Snapshot hook as last_good_hook on clean outcome
+    if (outcome === "clean") {
+      const dirty = await this.kvGet("kernel:hook_dirty");
+      const existing = await this.kvGet("kernel:last_good_hook");
+      if (!dirty && existing) return; // no modification since last snapshot
+
+      const manifest = await this.kvGet("hook:wake:manifest");
+      if (manifest) {
+        const modules = {};
+        for (const [filename, kvKey] of Object.entries(manifest)) {
+          modules[kvKey] = await this.kvGet(kvKey);
+        }
+        await this.kvPut("kernel:last_good_hook", { manifest, modules });
+      } else {
+        const code = await this.kvGet("hook:wake:code");
+        if (!code) return; // no hook loaded, nothing to snapshot
+        await this.kvPut("kernel:last_good_hook", { code });
+      }
+
+      if (dirty) await this.kv.delete("kernel:hook_dirty");
     }
   }
 
-  // ── Crash detection ─────────────────────────────────────────
+  async runMinimalFallback() {
+    await this.sendKernelAlert("hook_reset",
+      "Hook execution failed. Running minimal recovery mode.");
 
-  async detectCrash() {
-    const stale = await this.kvGet("session");
-    if (!stale) return null;  // first boot or clean exit
+    const hardcodedPrompt = `You are Swayambhu in recovery mode. Your wake hook has been reset due to repeated failures. Check your balances and report your status via send_telegram. Do not attempt complex operations.`;
 
-    // That session never finished — load its karma
-    const deadKarma = await this.kvGet(`karma:${stale}`);
-    return {
-      dead_session_id: stale,
-      karma: deadKarma,
-      last_entry: Array.isArray(deadKarma) ? deadKarma[deadKarma.length - 1] : null,
-    };
-  }
-
-  // ── Normal session ──────────────────────────────────────────
-
-  async runSession(context, config) {
-    const orientPrompt = await this.kvGet("prompt:orient");
-    const resources = await this.kvGet("config:resources");
-
-    // Build system prompt
-    const systemPrompt = this.buildPrompt(orientPrompt, {
-      soul: this.soul,
-      models: this.modelsConfig,
-      resources,
-      config,
-    });
-
-    // Build initial context (user message with dynamic data)
-    const initialContext = this.buildOrientContext(context);
-
-    const orientModel = this.resolveModel(
-      config.orient?.model || this.defaults.orient.model
-    );
+    this.defaults = { session_budget: { max_cost: 0.50, max_steps: 3, max_duration_seconds: 120 } };
+    this.modelsConfig = this.modelsConfig || await this.kvGet("config:models");
+    this.toolRegistry = this.toolRegistry || await this.kvGet("config:tool_registry");
+    this.dharma = this.dharma || await this.kvGet("dharma");
 
     const tools = this.buildToolDefinitions();
+    const fallbackModel = this.modelsConfig?.fallback_model
+      || await this.kvGet("kernel:fallback_model");
+    if (!fallbackModel) throw new Error("No fallback model configured");
+    const model = this.resolveModel(fallbackModel);
 
-    // Run orient agent loop
-    const output = await this.runAgentLoop({
-      systemPrompt,
-      initialContext,
-      tools,
-      model: orientModel,
-      effort: context.effort || config.orient?.effort || this.defaults.orient.effort,
-      maxTokens: config.orient?.max_output_tokens || this.defaults.orient.max_output_tokens,
-      maxSteps: this.getMaxSteps('orient'),
-      step: 'orient',
-    });
-
-    // Apply KV operations from orient output (gated by protection)
-    if (output.kv_operations) {
-      for (const op of output.kv_operations) {
-        await this.applyKVOperation(op);
-      }
+    try {
+      await this.runAgentLoop({
+        systemPrompt: hardcodedPrompt,
+        initialContext: "Recovery mode. Check balances and report status.",
+        tools,
+        model,
+        effort: "low",
+        maxTokens: 1000,
+        maxSteps: 3,
+        step: "recovery",
+      });
+      // Don't process kv_operations — discard them
+    } catch (err) {
+      await this.karmaRecord({
+        event: "recovery_error",
+        error: err.message,
+      });
     }
 
-    // Session reflect — skip if budget exhausted (would immediately throw again)
-    if (!output.budget_exceeded) {
-      await this.executeReflect({ model: this.defaults.reflect.model });
-    }
-
-    // Write session results
-    await this.writeSessionResults(output, config);
+    // Write session counter via internal kvPut
+    const count = await this.getSessionCount();
+    await this.kvPut("session_counter", count + 1);
   }
 
-  buildOrientContext(context) {
-    return JSON.stringify({
-      balances: context.balances,
-      kv_usage: context.kvUsage,
-      last_reflect: context.lastReflect,
-      additional_context: context.additionalContext,
-      effort: context.effort,
-      crash_data: context.crashData,
-    });
+  // ── Wake cycle ──────────────────────────────────────────────
+
+  // ── Minimal fallback (no hook:wake:code in KV) ─────────────
+  // Used when no hook is loaded, or after the hook safety tripwire fires.
+  // Runs a hardcoded recovery session — does NOT load prompt:orient
+  // (could be corrupted). Does NOT process kv_operations from output.
+
+  async wake() {
+    await this.runMinimalFallback();
+    await this.updateSessionOutcome("clean");
   }
 
   // ── Actions (dynamic tools) ─────────────────────────────────
@@ -477,291 +608,6 @@ class Brainstem {
     return body.result;
   }
 
-  // ── Reflect ─────────────────────────────────────────────────
-
-  async executeReflect(step) {
-    const reflectPrompt = await this.kvGet("prompt:reflect");
-    const stagedMutations = await this.loadStagedMutations();
-
-    const systemKeyPatterns = {
-      prefixes: Brainstem.SYSTEM_KEY_PREFIXES,
-      exact: Brainstem.SYSTEM_KEY_EXACT,
-    };
-
-    // Build system prompt (identity + instructions)
-    const systemPrompt = this.buildPrompt(
-      reflectPrompt || this.defaultReflectPrompt(),
-      { soul: this.soul, systemKeyPatterns }
-    );
-
-    // Build user message (session-specific data)
-    const initialContext = JSON.stringify({
-      karma: this.karma,
-      sessionCost: this.sessionCost,
-      stagedMutations,
-    });
-
-    const model = this.resolveModel(
-      step.model || this.defaults.reflect.model
-    );
-
-    // Route through agent loop (enables future tool use)
-    const output = await this.runAgentLoop({
-      systemPrompt,
-      initialContext,
-      tools: [],
-      model,
-      effort: step.effort || this.defaults.reflect.effort,
-      maxTokens: step.max_output_tokens || this.defaults.reflect.max_output_tokens,
-      maxSteps: 1,
-      step: "reflect",
-    });
-
-    // Detect parse failure (parseAgentOutput returns { raw } on failure)
-    if (output.raw !== undefined) {
-      await this.kvPut("last_reflect", {
-        raw: output.raw,
-        parse_error: true,
-        session_id: this.sessionId,
-      });
-      await this.kvPut(`reflect:0:${this.sessionId}`, {
-        raw: output.raw,
-        parse_error: true,
-        depth: 0,
-        session_id: this.sessionId,
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
-
-    // Success — write last_reflect
-    await this.kvPut("last_reflect", {
-      ...output,
-      session_id: this.sessionId,
-    });
-
-    // Persist historical record for loadReflectHistory(0, N)
-    await this.kvPut(`reflect:0:${this.sessionId}`, {
-      reflection: output.session_summary || output.reflection,
-      note_to_future_self: output.note_to_future_self,
-      depth: 0,
-      session_id: this.sessionId,
-      timestamp: new Date().toISOString(),
-    });
-
-    // Apply any KV operations the reflection requests (gated by protection)
-    if (output.kv_operations) {
-      for (const op of output.kv_operations) {
-        await this.applyKVOperation(op);
-      }
-    }
-
-    // Process mutation verdicts (withdraw/modify only)
-    if (output.mutation_verdicts) {
-      await this.processReflectVerdicts(output.mutation_verdicts);
-    }
-
-    // Stage new mutation requests
-    if (output.mutation_requests) {
-      for (const req of output.mutation_requests) {
-        await this.stageMutation(req, this.sessionId);
-      }
-    }
-
-    // Update wake config if specified
-    if (output.next_wake_config) {
-      const wakeConf = { ...output.next_wake_config };
-      if (wakeConf.sleep_seconds) {
-        wakeConf.next_wake_after = new Date(
-          Date.now() + wakeConf.sleep_seconds * 1000
-        ).toISOString();
-      }
-      await this.kvPut("wake_config", wakeConf);
-    }
-  }
-
-  // ── Deep reflection (recursive, depth-aware) ────────────────
-
-  async runReflect(depth, context) {
-    const prompt = await this.loadReflectPrompt(depth);
-    const initialCtx = await this.gatherReflectContext(depth, context);
-    const belowPrompt = await this.loadBelowPrompt(depth);
-
-    // Build system prompt with template substitution
-    const systemPrompt = this.buildPrompt(prompt, {
-      soul: this.soul,
-      depth,
-      belowPrompt,
-      ...initialCtx.templateVars,
-    });
-
-    // Reflect uses tools for investigation but NOT spawn_subplan
-    const tools = this.buildToolDefinitions()
-      .filter(t => t.function.name !== 'spawn_subplan');
-
-    const model = this.resolveModel(this.getReflectModel(depth));
-    const maxSteps = this.getMaxSteps('reflect', depth);
-
-    const output = await this.runAgentLoop({
-      systemPrompt,
-      initialContext: initialCtx.userMessage,
-      tools,
-      model,
-      effort: this.defaults?.deep_reflect?.effort || 'high',
-      maxTokens: this.defaults?.deep_reflect?.max_output_tokens || 4000,
-      maxSteps,
-      step: `reflect_depth_${depth}`,
-    });
-
-    // Apply output through mutation protocol
-    await this.applyReflectOutput(depth, output, context);
-
-    // Cascade — run next depth down
-    if (depth > 1) {
-      await this.runReflect(depth - 1, context);
-    }
-  }
-
-  async gatherReflectContext(depth, context) {
-    const wisdom = await this.kvGet("wisdom");
-    const stagedMutations = await this.loadStagedMutations();
-    const candidateMutations = await this.loadCandidateMutations();
-    const systemKeyPatterns = {
-      prefixes: Brainstem.SYSTEM_KEY_PREFIXES,
-      exact: Brainstem.SYSTEM_KEY_EXACT,
-    };
-
-    const templateVars = {
-      wisdom,
-      currentDefaults: this.defaults,
-      models: this.modelsConfig,
-      stagedMutations,
-      candidateMutations,
-      systemKeyPatterns,
-    };
-
-    let userMessage;
-
-    if (depth === 1) {
-      // Depth 1: examines karma + orient prompt + session history
-      const karmaList = await this.kv.list({ prefix: "karma:", limit: 20 });
-      const karmaKeys = karmaList.keys
-        .map(k => k.name)
-        .sort((a, b) => b.localeCompare(a))
-        .slice(0, 10);
-      const recentKarma = await this.loadKeys(karmaKeys);
-      const orientPrompt = await this.kvGet("prompt:orient");
-      const sessionHistory = await this.kvGet("session_history");
-
-      templateVars.recentKarma = recentKarma;
-      templateVars.orientPrompt = orientPrompt;
-      templateVars.sessionHistory = sessionHistory;
-
-      userMessage = JSON.stringify({
-        depth,
-        balances: context.balances,
-        kv_usage: context.kvUsage,
-        effort: context.effort,
-        crash_data: context.crashData,
-        staged_mutations: stagedMutations,
-        candidate_mutations: candidateMutations,
-      });
-    } else {
-      // Depth N>1: examines depth N-1 outputs + below prompt
-      const belowOutputs = await this.loadReflectHistory(depth - 1, 10);
-      const belowPromptText = await this.loadBelowPrompt(depth);
-
-      templateVars.belowOutputs = belowOutputs;
-
-      userMessage = JSON.stringify({
-        depth,
-        below_outputs: belowOutputs,
-        below_prompt: belowPromptText,
-        staged_mutations: stagedMutations,
-        candidate_mutations: candidateMutations,
-      });
-    }
-
-    return { userMessage, templateVars };
-  }
-
-  async applyReflectOutput(depth, output, context) {
-    // 1. KV operations (gated by protection)
-    if (output.kv_operations) {
-      for (const op of output.kv_operations) {
-        await this.applyKVOperation(op);
-      }
-    }
-
-    // 2. Verdicts BEFORE new requests — clears conflicts first
-    if (output.mutation_verdicts) {
-      await this.processDeepReflectVerdicts(output.mutation_verdicts);
-    }
-
-    // 3. New mutation requests — applied directly as candidates
-    if (output.mutation_requests) {
-      for (const req of output.mutation_requests) {
-        await this.applyDirectAsCandidate(req, this.sessionId);
-      }
-    }
-
-    // 4. Schedule — store for this depth
-    const schedule = output.next_reflect || output.next_deep_reflect;
-    if (schedule) {
-      await this.kvPut(`reflect:schedule:${depth}`, {
-        ...schedule,
-        last_reflect: new Date().toISOString(),
-        last_reflect_session: await this.getSessionCount(),
-      });
-      // Backward compat: also write deep_reflect_schedule for depth 1
-      if (depth === 1) {
-        await this.kvPut("deep_reflect_schedule", {
-          ...schedule,
-          last_deep_reflect: new Date().toISOString(),
-          last_deep_reflect_session: await this.getSessionCount(),
-        });
-      }
-    }
-
-    // 5. Store output as reflect:{depth}:{sessionId}
-    await this.kvPut(`reflect:${depth}:${this.sessionId}`, {
-      reflection: output.reflection,
-      note_to_future_self: output.note_to_future_self,
-      depth,
-      session_id: this.sessionId,
-      timestamp: new Date().toISOString(),
-    });
-
-    // 6. Only depth 1: write last_reflect and wake_config
-    if (depth === 1) {
-      await this.kvPut("last_reflect", {
-        session_summary: output.reflection,
-        note_to_future_self: output.note_to_future_self,
-        was_deep_reflect: true,
-        depth,
-        session_id: this.sessionId,
-      });
-
-      const wakeConf = output.next_wake_config || {};
-      if (wakeConf.sleep_seconds) {
-        wakeConf.next_wake_after = new Date(
-          Date.now() + wakeConf.sleep_seconds * 1000
-        ).toISOString();
-      }
-      await this.kvPut("wake_config", wakeConf);
-    }
-
-    // 7. Refresh defaults after every depth (cascade visibility)
-    this.defaults = await this.kvGet("config:defaults");
-
-    // 8. Karma
-    await this.karmaRecord({
-      event: "reflect_complete",
-      depth,
-      session_id: this.sessionId,
-    });
-  }
-
   // ── LLM calls (dynamic provider with cascade fallback) ─────
 
   async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step }) {
@@ -807,8 +653,9 @@ class Brainstem {
 
       // Model fallback (separate from provider fallback)
       const fallbackModel = this.modelsConfig?.fallback_model
-        || "anthropic/claude-haiku-4.5";
-      if (model !== fallbackModel) {
+        || await this.kvGet("kernel:fallback_model")
+        || null;
+      if (fallbackModel && model !== fallbackModel) {
         return this.callLLM({ model: fallbackModel, effort: "low", maxTokens,
           systemPrompt, messages, tools, step });
       }
@@ -877,25 +724,37 @@ class Brainstem {
       });
     }
 
-    // Tier 3: Hardcoded OpenRouter — the absolute last resort
+    // Tier 3: Kernel fallback adapter (kernel:llm_fallback, human-managed)
     try {
-      const result = await this.hardcodedOpenRouterCall(request);
-      return { ...result, ok: true, tier: "hardcoded" };
+      const result = await this.callViaKernelFallback(request);
+      return { ...result, ok: true, tier: "kernel_fallback" };
     } catch (err) {
       return { ok: false, error: err.message, tier: "all_failed" };
     }
   }
 
   async callViaAdapter(fnKey, request) {
-    const [code, meta_] = await Promise.all([
+    const [code, meta] = await Promise.all([
       this.kvGet(`provider:${fnKey}:code`),
       this.kvGet(`provider:${fnKey}:meta`),
     ]);
     if (!code) throw new Error(`No adapter at provider:${fnKey}:code`);
+    return this.runAdapter(code, meta, request, fnKey);
+  }
 
+  async callViaKernelFallback(request) {
+    const [code, meta] = await Promise.all([
+      this.kvGet("kernel:llm_fallback"),
+      this.kvGet("kernel:llm_fallback:meta"),
+    ]);
+    if (!code) throw new Error("No LLM fallback configured at kernel:llm_fallback");
+    return this.runAdapter(code, meta, request, "kernel_fallback");
+  }
+
+  // Shared adapter execution — builds secrets, runs in isolate, validates response
+  async runAdapter(code, meta_, request, id) {
     const meta = meta_ || {};
 
-    // Build scoped secrets — same two-tier pattern as tools
     const secrets = {};
     for (const name of (meta.secrets || [])) {
       if (this.env[name] !== undefined) secrets[name] = this.env[name];
@@ -906,54 +765,16 @@ class Brainstem {
     }
 
     const result = await this.runInIsolate({
-      id: `fn:${fnKey}:${this.sessionId}`,
+      id: `fn:${id}:${this.sessionId}`,
       moduleCode: code,
       ctx: { ...request, secrets },
       timeoutMs: meta.timeout_ms || 60000,
     });
 
-    // Adapter must return { content, usage } or { toolCalls, usage }
     if (!result || (typeof result.content !== "string" && !result.toolCalls?.length)) {
       throw new Error("Adapter returned invalid response — missing content and tool calls");
     }
     return result;
-  }
-
-  // Hardcoded fallback — this is the one thing that never changes
-  async hardcodedOpenRouterCall(request) {
-    const body = {
-      model: request.model,
-      max_tokens: request.max_tokens,
-      messages: request.messages,
-    };
-    if (request.thinking) {
-      body.provider = { require_parameters: true };
-      body.thinking = request.thinking;
-    }
-    if (request.tools?.length) {
-      body.tools = request.tools;
-    }
-
-    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    const data = await resp.json();
-    if (!resp.ok || data.error) {
-      throw new Error(JSON.stringify(data.error));
-    }
-
-    const msg = data.choices?.[0]?.message;
-    return {
-      content: msg?.content || "",
-      usage: data.usage || {},
-      toolCalls: msg?.tool_calls || null,
-    };
   }
 
   // ── Agent loop (tool-calling execution primitive) ──────────
@@ -997,19 +818,69 @@ class Brainstem {
 
   async executeToolCall(toolCall) {
     const name = toolCall.function.name;
-    const args = typeof toolCall.function.arguments === 'string'
-      ? JSON.parse(toolCall.function.arguments)
-      : toolCall.function.arguments || {};
+    let args;
+    try {
+      args = typeof toolCall.function.arguments === 'string'
+        ? JSON.parse(toolCall.function.arguments)
+        : toolCall.function.arguments || {};
+    } catch {
+      return { error: `Invalid JSON in tool arguments for ${name}` };
+    }
 
     if (name === 'spawn_subplan') {
       return this.spawnSubplan(args);
     }
 
-    return this.executeAction({
+    // Pre-validation hook
+    const schema = this.toolRegistry?.tools?.find(t => t.name === name)?.input;
+    const preCheck = await this.callHook('validate', { tool: name, args, schema });
+    if (preCheck && !preCheck.ok) {
+      await this.karmaRecord({ event: "hook_rejected", hook: "validate", tool: name, error: preCheck.error });
+      return { error: preCheck.error };
+    }
+    if (preCheck?.args) args = preCheck.args;
+
+    const result = await this.executeAction({
       tool: name,
       input: args,
       id: toolCall.id,
     });
+
+    // Post-validation hook
+    const postCheck = await this.callHook('validate_result', { tool: name, args, result });
+    if (postCheck && !postCheck.ok) {
+      await this.karmaRecord({ event: "hook_rejected", hook: "validate_result", tool: name, error: postCheck.error });
+      return { error: postCheck.error };
+    }
+
+    return result;
+  }
+
+  async callHook(hookName, ctx) {
+    // Cache check: undefined = not loaded, false = doesn't exist
+    if (this.toolsCache[hookName] === undefined) {
+      const code = await this.kvGet(`tool:${hookName}:code`);
+      if (!code) { this.toolsCache[hookName] = false; return null; }
+      const meta = await this.kvGet(`tool:${hookName}:meta`);
+      this.toolsCache[hookName] = { code, meta };
+    }
+    if (!this.toolsCache[hookName]) return null;
+
+    const { code, meta } = this.toolsCache[hookName];
+    try {
+      const hookCtx = await this.buildToolContext(hookName, meta || {}, ctx);
+      return await this.runInIsolate({
+        id: `fn:${hookName}:${this.sessionId}`,
+        moduleCode: code,
+        ctx: hookCtx,
+        kvAccess: meta?.kv_access,
+        toolName: hookName,
+        timeoutMs: meta?.timeout_ms || 5000,
+      });
+    } catch (err) {
+      await this.karmaRecord({ event: "hook_error", hook: hookName, error: err.message });
+      return null;  // broken hook degrades to no hook, not crash
+    }
   }
 
   async spawnSubplan(args, depth = 0) {
@@ -1054,6 +925,8 @@ class Brainstem {
       messages.push({ role: 'user', content });
     }
 
+    let parseRetried = false;
+
     try {
       for (let i = 0; i < maxSteps; i++) {
         const response = await this.callLLM({
@@ -1088,7 +961,16 @@ class Brainstem {
         }
 
         // No tool calls — final output
-        return this.parseAgentOutput(response.content);
+        const parsed = await this.parseAgentOutput(response.content);
+        if (parsed.parse_error && !parseRetried) {
+          parseRetried = true;
+          messages.push(
+            { role: 'assistant', content: response.content },
+            { role: 'user', content: 'Your output was not valid JSON. Respond with only a valid JSON object.' }
+          );
+          continue;  // burns one step, loop retries once
+        }
+        return parsed;
       }
 
       // Max steps reached — force final output (no tools, forces text)
@@ -1097,7 +979,7 @@ class Brainstem {
         model, effort, maxTokens, systemPrompt, messages,
         step: `${step}_final`,
       });
-      return this.parseAgentOutput(finalResponse.content);
+      return await this.parseAgentOutput(finalResponse.content);
 
     } catch (err) {
       if (err.message.startsWith("Budget exceeded")) {
@@ -1108,381 +990,20 @@ class Brainstem {
     }
   }
 
-  parseAgentOutput(content) {
+  async parseAgentOutput(content) {
     if (!content) return {};
     try { return JSON.parse(content); }
-    catch { return { raw: content }; }
-  }
-
-  // ── Mutation protocol ──────────────────────────────────────
-
-  evaluatePredicate(value, predicate, expected) {
-    switch (predicate) {
-      case "exists": return value !== null && value !== undefined;
-      case "equals": return value === expected;
-      case "gt": return typeof value === "number" && value > expected;
-      case "lt": return typeof value === "number" && value < expected;
-      case "matches": return typeof value === "string" && new RegExp(expected).test(value);
-      case "type": return typeof value === expected;
-      default: return false; // Unknown predicates fail closed
-    }
-  }
-
-  async evaluateCheck(check) {
-    try {
-      switch (check.type) {
-        case "kv_assert": {
-          let value = await this.kvGet(check.key);
-          if (check.path && value != null) {
-            value = check.path.split(".").reduce((o, k) => o?.[k], value);
-          }
-          const passed = this.evaluatePredicate(value, check.predicate, check.expected);
-          return { passed, detail: `${check.key}${check.path ? '.' + check.path : ''} ${check.predicate} ${JSON.stringify(check.expected)} → actual: ${JSON.stringify(value)}` };
-        }
-        case "tool_call": {
-          const result = await this.executeAction({
-            tool: check.tool,
-            input: check.input || {},
-            id: `check_${check.tool}`,
-          });
-          if (check.assert) {
-            const passed = this.evaluatePredicate(result, check.assert.predicate, check.assert.expected);
-            return { passed, detail: `${check.tool} result ${check.assert.predicate} ${JSON.stringify(check.assert.expected)} → actual: ${JSON.stringify(result)}` };
-          }
-          return { passed: true, detail: `${check.tool} executed successfully` };
-        }
-        default:
-          return { passed: false, detail: `unknown check type: ${check.type}` };
+    catch {
+      const repaired = await this.callHook('parse_repair', { content });
+      if (repaired?.content) {
+        try { return JSON.parse(repaired.content); }
+        catch { /* fall through */ }
       }
-    } catch (err) {
-      return { passed: false, detail: `check error: ${err.message}` };
+      return { parse_error: true, raw: content };
     }
-  }
-
-  async evaluateChecks(checks) {
-    const results = [];
-    for (const check of checks) {
-      results.push(await this.evaluateCheck(check));
-    }
-    return {
-      all_passed: results.every(r => r.passed),
-      results,
-    };
-  }
-
-  async stageMutation(request, sessionId) {
-    if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
-      await this.karmaRecord({ event: "mutation_invalid", reason: "missing required fields (claims, ops, checks)" });
-      return null;
-    }
-    const id = this.generateMutationId();
-    await this.kvPut(`mutation_staged:${id}`, {
-      id,
-      claims: request.claims,
-      ops: request.ops,
-      checks: request.checks,
-      staged_at: new Date().toISOString(),
-      staged_by_session: sessionId,
-    });
-    this._trackAdd('activeStaged', id);
-    await this.karmaRecord({ event: "mutation_staged", mutation_id: id, claims: request.claims });
-    return id;
-  }
-
-  async applyStagedAsCandidate(mutationId) {
-    const record = await this.kvGet(`mutation_staged:${mutationId}`);
-    if (!record) throw new Error(`No staged mutation: ${mutationId}`);
-
-    const targetKeys = record.ops.map(op => op.key);
-    const conflict = await this.findCandidateConflict(targetKeys);
-    if (conflict) {
-      await this.karmaRecord({ event: "mutation_conflict", mutation_id: mutationId, conflicting_mutation: conflict.id, overlapping_keys: conflict.keys });
-      throw new Error(`Conflict with candidate ${conflict.id} on keys: ${conflict.keys.join(", ")}`);
-    }
-
-    // Snapshot current values before applying
-    const snapshots = {};
-    for (const key of targetKeys) {
-      const { value, metadata } = await this.kvGetWithMeta(key);
-      snapshots[key] = { value: value !== null ? value : null, metadata };
-    }
-
-    // Apply ops
-    for (const op of record.ops) {
-      await this.applyKVOperationDirect(op);
-    }
-
-    // Write candidate record
-    await this.kvPut(`mutation_candidate:${mutationId}`, {
-      ...record,
-      snapshots,
-      activated_at: new Date().toISOString(),
-    });
-    await this.kv.delete(`mutation_staged:${mutationId}`);
-    this._trackRemove('activeStaged', mutationId);
-    this._trackAdd('activeCandidates', mutationId);
-
-    // Refresh defaults if ops touch config:defaults
-    if (targetKeys.some(k => k === "config:defaults")) {
-      this.defaults = await this.kvGet("config:defaults");
-    }
-
-    await this.karmaRecord({ event: "mutation_applied", mutation_id: mutationId, target_keys: targetKeys });
-    return mutationId;
-  }
-
-  async applyDirectAsCandidate(request, sessionId) {
-    if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
-      await this.karmaRecord({ event: "mutation_invalid", reason: "missing required fields (claims, ops, checks)" });
-      return null;
-    }
-    const id = this.generateMutationId();
-    const targetKeys = request.ops.map(op => op.key);
-
-    const conflict = await this.findCandidateConflict(targetKeys);
-    if (conflict) {
-      await this.karmaRecord({ event: "mutation_conflict", mutation_id: id, conflicting_mutation: conflict.id, overlapping_keys: conflict.keys });
-      return null;
-    }
-
-    const snapshots = {};
-    for (const key of targetKeys) {
-      const { value, metadata } = await this.kvGetWithMeta(key);
-      snapshots[key] = { value: value !== null ? value : null, metadata };
-    }
-
-    for (const op of request.ops) {
-      await this.applyKVOperationDirect(op);
-    }
-
-    await this.kvPut(`mutation_candidate:${id}`, {
-      id,
-      claims: request.claims,
-      ops: request.ops,
-      checks: request.checks,
-      snapshots,
-      staged_by_session: sessionId,
-      activated_at: new Date().toISOString(),
-    });
-    this._trackAdd('activeCandidates', id);
-
-    if (targetKeys.some(k => k === "config:defaults")) {
-      this.defaults = await this.kvGet("config:defaults");
-    }
-
-    await this.karmaRecord({ event: "mutation_applied", mutation_id: id, target_keys: targetKeys });
-    return id;
-  }
-
-  async promoteCandidate(mutationId) {
-    await this.kv.delete(`mutation_candidate:${mutationId}`);
-    this._trackRemove('activeCandidates', mutationId);
-    await this.karmaRecord({ event: "mutation_promoted", mutation_id: mutationId });
-  }
-
-  async rollbackCandidate(mutationId, reason) {
-    const record = await this.kvGet(`mutation_candidate:${mutationId}`);
-    if (!record) return;
-
-    // Restore snapshotted values
-    for (const [key, snapshot] of Object.entries(record.snapshots || {})) {
-      if (snapshot.value === null) {
-        await this.kv.delete(key);
-      } else {
-        await this.kvPut(key, snapshot.value, snapshot.metadata || {});
-      }
-    }
-
-    // Refresh defaults if applicable
-    const targetKeys = Object.keys(record.snapshots || {});
-    if (targetKeys.some(k => k === "config:defaults")) {
-      this.defaults = await this.kvGet("config:defaults");
-    }
-
-    await this.kv.delete(`mutation_candidate:${mutationId}`);
-    this._trackRemove('activeCandidates', mutationId);
-    await this.karmaRecord({ event: "mutation_rolled_back", mutation_id: mutationId, reason });
-  }
-
-  async findCandidateConflict(targetKeys) {
-    for (const id of this.activeCandidates) {
-      const record = await this.kvGet(`mutation_candidate:${id}`);
-      if (!record?.snapshots) continue;
-      const overlap = targetKeys.filter(k => k in record.snapshots);
-      if (overlap.length > 0) return { id: record.id, keys: overlap };
-    }
-    return null;
-  }
-
-  async loadStagedMutations() {
-    const result = {};
-    for (const id of this.activeStaged) {
-      const record = await this.kvGet(`mutation_staged:${id}`);
-      if (!record) continue;
-      const checkResults = await this.evaluateChecks(record.checks || []);
-      result[record.id] = { record, check_results: checkResults };
-    }
-    return result;
-  }
-
-  async processReflectVerdicts(verdicts) {
-    for (const v of verdicts || []) {
-      switch (v.verdict) {
-        case "withdraw":
-          await this.kv.delete(`mutation_staged:${v.mutation_id}`);
-          this._trackRemove('activeStaged', v.mutation_id);
-          await this.karmaRecord({ event: "mutation_withdrawn", mutation_id: v.mutation_id });
-          break;
-        case "modify": {
-          const record = await this.kvGet(`mutation_staged:${v.mutation_id}`);
-          if (record) {
-            await this.kvPut(`mutation_staged:${v.mutation_id}`, {
-              ...record,
-              ...(v.updated_ops ? { ops: v.updated_ops } : {}),
-              ...(v.updated_checks ? { checks: v.updated_checks } : {}),
-              ...(v.updated_claims ? { claims: v.updated_claims } : {}),
-              modified_at: new Date().toISOString(),
-            });
-            await this.karmaRecord({ event: "mutation_modified", mutation_id: v.mutation_id });
-          }
-          break;
-        }
-        // Other verdict types silently ignored by reflect
-      }
-    }
-  }
-
-  async processDeepReflectVerdicts(verdicts) {
-    for (const v of verdicts || []) {
-      switch (v.verdict) {
-        // Staged mutation verdicts
-        case "apply":
-          try { await this.applyStagedAsCandidate(v.mutation_id); }
-          catch (err) { await this.karmaRecord({ event: "mutation_apply_failed", mutation_id: v.mutation_id, error: err.message }); }
-          break;
-        case "reject":
-          await this.kv.delete(`mutation_staged:${v.mutation_id}`);
-          this._trackRemove('activeStaged', v.mutation_id);
-          await this.karmaRecord({ event: "mutation_rejected", mutation_id: v.mutation_id, reason: v.reason });
-          break;
-        case "withdraw":
-          await this.kv.delete(`mutation_staged:${v.mutation_id}`);
-          this._trackRemove('activeStaged', v.mutation_id);
-          await this.karmaRecord({ event: "mutation_withdrawn", mutation_id: v.mutation_id });
-          break;
-        case "modify": {
-          const record = await this.kvGet(`mutation_staged:${v.mutation_id}`);
-          if (record) {
-            await this.kvPut(`mutation_staged:${v.mutation_id}`, {
-              ...record,
-              ...(v.updated_ops ? { ops: v.updated_ops } : {}),
-              ...(v.updated_checks ? { checks: v.updated_checks } : {}),
-              ...(v.updated_claims ? { claims: v.updated_claims } : {}),
-              modified_at: new Date().toISOString(),
-            });
-            await this.karmaRecord({ event: "mutation_modified", mutation_id: v.mutation_id });
-          }
-          break;
-        }
-        // Candidate mutation verdicts
-        case "promote":
-          await this.promoteCandidate(v.mutation_id);
-          break;
-        case "rollback":
-          await this.rollbackCandidate(v.mutation_id, v.reason || "deep_reflect_verdict");
-          break;
-        // Shared
-        case "defer":
-          await this.karmaRecord({ event: "mutation_deferred", mutation_id: v.mutation_id, reason: v.reason });
-          break;
-      }
-    }
-  }
-
-  async runCircuitBreaker() {
-    const lastDanger = await this.kvGet("last_danger");
-    if (!lastDanger) return;
-
-    for (const id of this.activeCandidates) {
-      const record = await this.kvGet(`mutation_candidate:${id}`);
-      if (!record?.activated_at) continue;
-
-      if (lastDanger.t >= new Date(record.activated_at).getTime()) {
-        await this.rollbackCandidate(record.id, "circuit_breaker");
-        await this.karmaRecord({ event: "circuit_breaker_fired", mutation_id: record.id });
-      }
-    }
-  }
-
-  async loadCandidateMutations() {
-    const result = {};
-    for (const id of this.activeCandidates) {
-      const record = await this.kvGet(`mutation_candidate:${id}`);
-      if (!record) continue;
-      const checkResults = await this.evaluateChecks(record.checks || []);
-      result[record.id] = { record, check_results: checkResults };
-    }
-    return result;
   }
 
   // ── Helpers ─────────────────────────────────────────────────
-
-  // Config-driven balance checks — iterates providers and wallets KV configs,
-  // calling each entry's adapter for balance data. No hardcoded provider logic.
-  async getBalances() {
-    const [providers, wallets] = await Promise.all([
-      this.kvGet("providers"),
-      this.kvGet("wallets"),
-    ]);
-
-    const balances = { providers: {}, wallets: {} };
-
-    for (const [name, config] of Object.entries(providers || {})) {
-      if (!config.adapter) continue;
-      const [code, meta] = await Promise.all([
-        this.kvGet(`${config.adapter}:code`),
-        this.kvGet(`${config.adapter}:meta`),
-      ]);
-      if (!code) continue;
-
-      const secret = config.secret_store === "env"
-        ? this.env[config.secret_name] ?? null
-        : await this.kvGet(`secret:${config.secret_name}`);
-
-      try {
-        balances.providers[name] = await this.runInIsolate({
-          id: `fn:${config.adapter}:${this.sessionId}`,
-          moduleCode: code,
-          ctx: { provider: config, secret },
-          timeoutMs: meta?.timeout_ms || 10000,
-        });
-      } catch { balances.providers[name] = null; }
-    }
-
-    for (const [name, config] of Object.entries(wallets || {})) {
-      if (!config.adapter) continue;
-      const [code, meta] = await Promise.all([
-        this.kvGet(`${config.adapter}:code`),
-        this.kvGet(`${config.adapter}:meta`),
-      ]);
-      if (!code) continue;
-
-      try {
-        balances.wallets[name] = await this.runInIsolate({
-          id: `fn:${config.adapter}:${this.sessionId}`,
-          moduleCode: code,
-          ctx: { wallet: config },
-          timeoutMs: meta?.timeout_ms || 10000,
-        });
-      } catch { balances.wallets[name] = null; }
-    }
-
-    return balances;
-  }
-
-  async getKVUsage() {
-    return { writes_this_session: this.kvWritesThisSession };
-  }
 
   async kvGet(key) {
     try {
@@ -1509,8 +1030,8 @@ class Brainstem {
 
   async kvPut(key, value, metadata = {}) {
     // Protect immutable keys
-    if (key === "soul") {
-      throw new Error("Cannot overwrite soul — immutable key");
+    if (key === "dharma") {
+      throw new Error("Cannot overwrite dharma — immutable key");
     }
 
     // System keys cannot be marked unprotected
@@ -1526,11 +1047,16 @@ class Brainstem {
       karma:      { type: "log" },
       prompt:     { type: "prompt" },
       config:     { type: "config" },
-      soul:       { type: "core", immutable: true },
+      dharma:     { type: "core", immutable: true },
       secret:     { type: "secret" },
       session:    { type: "session" },
       tooldata:   { type: "tooldata" },
       reflect:    { type: "reflect_output" },
+      hook:       { type: "hook" },
+      doc:        { type: "doc" },
+      mutation_staged:    { type: "mutation" },
+      mutation_candidate: { type: "mutation" },
+      kernel:     { type: "kernel" },
     };
     const finalMetadata = {
       ...defaults[prefix],
@@ -1580,102 +1106,9 @@ class Brainstem {
     return merged;
   }
 
-  evaluateTripwires(config, liveData) {
-    const alerts = config.alerts || [];
-    let effort = config.default_effort || config.wake?.default_effort || "low";
-    for (const alert of alerts) {
-      // Support dotted paths like "balances.providers.or:main"
-      const value = alert.field.split(".").reduce((o, k) => o?.[k], liveData) ?? null;
-      if (value === null) continue;
-      let fired = false;
-      switch (alert.condition) {
-        case "below": fired = value < alert.value; break;
-        case "above": fired = value > alert.value; break;
-        case "equals": fired = value === alert.value; break;
-        case "changed": fired = true; break;
-      }
-      if (fired && alert.override_effort) {
-        const levels = ["low", "medium", "high", "max"];
-        if (levels.indexOf(alert.override_effort) > levels.indexOf(effort)) {
-          effort = alert.override_effort;
-        }
-      }
-    }
-    return effort;
-  }
-
-
   async getSessionCount() {
     const counter = await this.kvGet("session_counter");
     return counter || 0;
-  }
-
-  async applyKVOperation(op) {
-    const key = op.key;
-
-    // System keys always blocked — must go through mutation protocol
-    if (Brainstem.isSystemKey(key)) {
-      await this.karmaRecord({
-        event: "mutation_blocked",
-        key,
-        reason: "system_key",
-      });
-      return;
-    }
-
-    // Agent keys: check KV-native metadata for unprotected flag
-    const { metadata } = await this.kvGetWithMeta(key);
-    if (!metadata?.unprotected) {
-      await this.karmaRecord({
-        event: "mutation_blocked",
-        key,
-        reason: "protected_key",
-      });
-      return;
-    }
-
-    await this.applyKVOperationDirect(op);
-  }
-
-  async applyKVOperationDirect(op) {
-    switch (op.op) {
-      case "put":
-        await this.kvPut(op.key, op.value, op.metadata);
-        break;
-      case "delete":
-        await this.kv.delete(op.key);
-        break;
-      case "rename": {
-        const { value, metadata } = await this.kvGetWithMeta(op.key);
-        if (value !== null) {
-          await this.kvPut(op.value, value, metadata);
-          await this.kv.delete(op.key);
-        }
-        break;
-      }
-    }
-  }
-
-  async writeSessionResults(plan, config) {
-    const writes = [];
-
-    if (plan.next_wake_config) {
-      const wakeConf = { ...plan.next_wake_config };
-      if (wakeConf.sleep_seconds) {
-        wakeConf.next_wake_after = new Date(
-          Date.now() + wakeConf.sleep_seconds * 1000
-        ).toISOString();
-      }
-      writes.push(this.kvPut("wake_config", wakeConf));
-    }
-
-    writes.push(
-      this.getSessionCount().then(count =>
-        this.kvPut("session_counter", count + 1)
-      )
-    );
-
-    return Promise.all(writes);
   }
 
   buildPrompt(template, vars) {
@@ -1698,69 +1131,6 @@ Use your tools to accomplish this goal. When done, produce a JSON object
 with a "result" field summarizing what you accomplished.
 
 Budget: max {{maxSteps}} turns, max ${{maxCost}}.`;
-  }
-
-  defaultReflectPrompt() {
-    return `You are reflecting on a session that just completed.
-
-Your soul: {{soul}}
-
-Review the session karma log and cost provided in the user message.
-
-Produce a JSON object with: session_summary, note_to_future_self,
-next_orient_context (with load_keys array), and optionally
-next_wake_config, kv_operations, mutation_verdicts, and mutation_requests.`;
-  }
-
-  defaultDeepReflectPrompt(depth) {
-    if (depth === 1) {
-      return `You are performing a depth-1 reflection. This is a deep examination of your recent operations.
-
-Your soul: {{soul}}
-
-You have tools available for investigation — use kv_read, web_fetch, etc. to gather data before drawing conclusions.
-
-Your output is stored at reflect:1:{sessionId} and read by higher-depth reflections.
-
-Examine your karma, your orient prompt, your patterns. Produce a JSON object:
-{
-  "reflection": "What you see when you look at yourself as a system",
-  "note_to_future_self": "Orientation, not action items",
-  "kv_operations": [],
-  "mutation_requests": [],
-  "mutation_verdicts": [],
-  "next_reflect": { "after_sessions": 20, "after_days": 7, "reason": "..." },
-  "next_wake_config": { "sleep_seconds": 21600, "effort": "low" }
-}
-
-mutation_requests go through applyDirectAsCandidate. mutation_verdicts for staged/candidate mutations.
-Required: reflection, note_to_future_self. Everything else optional.`;
-    }
-
-    return `You are performing a depth-${depth} reflection. You examine the outputs of depth-${depth - 1} reflections.
-
-Your soul: {{soul}}
-
-You have tools available for investigation — use kv_read, web_fetch, etc. to gather data.
-
-Your output is stored at reflect:${depth}:{sessionId}.
-
-## One-level-below write discipline
-You can only propose mutations targeting prompt:reflect:${depth - 1} (the prompt for the level below you).
-
-Below-level prompt: {{belowPrompt}}
-
-Examine the depth-${depth - 1} outputs for patterns, drift, and alignment. Produce a JSON object:
-{
-  "reflection": "What you see in the level-below patterns",
-  "note_to_future_self": "Orientation for next depth-${depth} reflection",
-  "kv_operations": [],
-  "mutation_requests": [],
-  "mutation_verdicts": [],
-  "next_reflect": { "after_sessions": 100, "after_days": 30, "reason": "..." }
-}
-
-Required: reflection, note_to_future_self. Everything else optional.`;
   }
 
   elapsed() {
