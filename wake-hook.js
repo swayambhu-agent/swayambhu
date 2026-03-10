@@ -147,6 +147,7 @@ export async function wake(K, input) {
       session_id: sessionId,
       effort,
       crash_detected: !!crashData,
+      balances,
     });
 
     // 11. Run session or reflect
@@ -173,6 +174,11 @@ export async function wake(K, input) {
 export async function detectCrash(K) {
   const stale = await K.kvGet("kernel:active_session");
   if (!stale) return null;
+
+  // The kernel writes active_session before invoking the hook,
+  // so if it matches our current session, it's not a crash.
+  const currentId = await K.getSessionId();
+  if (stale === currentId) return null;
 
   const deadKarma = await K.kvGet(`karma:${stale}`);
   return {
@@ -205,6 +211,13 @@ export async function runSession(K, state, context, config) {
 
   const tools = await K.buildToolDefinitions();
 
+  // Reserve budget for reflect if configured
+  const budget = defaults?.session_budget;
+  const reservePct = budget?.reflect_reserve_pct || 0;
+  const orientBudgetCap = (budget?.max_cost && reservePct > 0)
+    ? budget.max_cost * (1 - reservePct)
+    : undefined;
+
   const output = await K.runAgentLoop({
     systemPrompt,
     initialContext,
@@ -214,6 +227,7 @@ export async function runSession(K, state, context, config) {
     maxTokens: config.orient?.max_output_tokens || defaults.orient.max_output_tokens,
     maxSteps: getMaxSteps(state, 'orient'),
     step: 'orient',
+    budgetCap: orientBudgetCap,
   });
 
   // Apply KV operations (gated by protection)
@@ -223,8 +237,10 @@ export async function runSession(K, state, context, config) {
     }
   }
 
-  // Session reflect — skip if budget exhausted
-  if (!output.budget_exceeded) {
+  // Session reflect — skip if budget fully exhausted (but not if
+  // orient was soft-capped by reflect_reserve_pct)
+  const skipReflect = output.budget_exceeded && !reservePct;
+  if (!skipReflect) {
     await executeReflect(K, state, { model: defaults.reflect.model });
   }
 
@@ -232,13 +248,15 @@ export async function runSession(K, state, context, config) {
 }
 
 export function buildOrientContext(context) {
+  // Static/stable fields first for prompt caching (prefix match),
+  // volatile fields last so cache hits on the stable prefix.
   return JSON.stringify({
-    balances: context.balances,
-    kv_usage: context.kvUsage,
-    last_reflect: context.lastReflect,
     additional_context: context.additionalContext,
+    last_reflect: context.lastReflect,
     effort: context.effort,
     crash_data: context.crashData,
+    kv_usage: context.kvUsage,
+    balances: context.balances,
   });
 }
 
@@ -261,8 +279,16 @@ export async function executeReflect(K, state, step) {
     { dharma, systemKeyPatterns }
   );
 
-  const karma = await K.getKarma();
+  const rawKarma = await K.getKarma();
   const sessionCost = await K.getSessionCost();
+
+  // Strip bulky fields that repeat across turns — reflect needs events,
+  // responses, and tool calls, not the full LLM request payloads.
+  const karma = rawKarma.map(e => {
+    if (e.event !== 'llm_call') return e;
+    const { request, tools_available, ...rest } = e;
+    return rest;
+  });
 
   const initialContext = JSON.stringify({
     karma,
@@ -366,6 +392,13 @@ export async function runReflect(K, state, depth, context) {
   const model = await K.resolveModel(getReflectModel(state, depth));
   const maxSteps = getMaxSteps(state, 'reflect', depth);
 
+  // Deep reflect gets its own budget: max_cost * budget_multiplier
+  const budget = defaults?.session_budget;
+  const multiplier = defaults?.deep_reflect?.budget_multiplier || 1;
+  const deepBudgetCap = (budget?.max_cost && multiplier > 1)
+    ? budget.max_cost * multiplier
+    : undefined;
+
   const output = await K.runAgentLoop({
     systemPrompt,
     initialContext: initialCtx.userMessage,
@@ -375,6 +408,7 @@ export async function runReflect(K, state, depth, context) {
     maxTokens: defaults?.deep_reflect?.max_output_tokens || 4000,
     maxSteps,
     step: `reflect_depth_${depth}`,
+    budgetCap: deepBudgetCap,
   });
 
   await applyReflectOutput(K, state, depth, output, context);
@@ -389,6 +423,7 @@ export async function gatherReflectContext(K, state, depth, context) {
   const { defaults, modelsConfig } = state;
 
   const wisdom = await K.kvGet("wisdom");
+  const orientPrompt = await K.kvGet("prompt:orient");
   const stagedMutations = await loadStagedMutations(K);
   const candidateMutations = await loadCandidateMutations(K);
   const systemKeyPatterns = {
@@ -396,56 +431,32 @@ export async function gatherReflectContext(K, state, depth, context) {
     exact: SYSTEM_KEY_EXACT,
   };
 
+  const recentSessionIds = await K.kvGet("cache:session_ids") || [];
+
   const templateVars = {
     wisdom,
+    orientPrompt,
     currentDefaults: defaults,
     models: modelsConfig,
     stagedMutations,
     candidateMutations,
     systemKeyPatterns,
+    recentSessionIds,
+    context: {
+      orBalance: context?.balances?.providers?.openrouter?.balance ?? "unknown",
+      walletBalance: context?.balances?.wallets?.base_usdc?.balance ?? 0,
+      kvUsage: context?.kvUsage ?? "unknown",
+      kvIndex: context?.kvIndex ?? "not loaded",
+      effort: context?.effort || defaults?.deep_reflect?.effort || "high",
+      crashData: context?.crashData || "none",
+    },
   };
 
-  let userMessage;
-
-  if (depth === 1) {
-    const karmaList = await K.kvList({ prefix: "karma:", limit: 20 });
-    const karmaKeys = karmaList.keys
-      .map(k => k.name)
-      .sort((a, b) => b.localeCompare(a))
-      .slice(0, 10);
-    const recentKarma = await K.loadKeys(karmaKeys);
-    const orientPrompt = await K.kvGet("prompt:orient");
-    const sessionHistory = await K.kvGet("session_history");
-
-    templateVars.recentKarma = recentKarma;
-    templateVars.orientPrompt = orientPrompt;
-    templateVars.sessionHistory = sessionHistory;
-
-    userMessage = JSON.stringify({
-      depth,
-      balances: context.balances,
-      kv_usage: context.kvUsage,
-      effort: context.effort,
-      crash_data: context.crashData,
-      staged_mutations: stagedMutations,
-      candidate_mutations: candidateMutations,
-    });
-  } else {
-    const belowOutputs = await loadReflectHistory(K, depth - 1, 10);
-    const belowPromptText = await loadBelowPrompt(K, depth);
-
-    templateVars.belowOutputs = belowOutputs;
-
-    userMessage = JSON.stringify({
-      depth,
-      below_outputs: belowOutputs,
-      below_prompt: belowPromptText,
-      staged_mutations: stagedMutations,
-      candidate_mutations: candidateMutations,
-    });
+  if (depth >= 1) {
+    templateVars.belowOutputs = await loadReflectHistory(K, depth - 1, 10);
   }
 
-  return { userMessage, templateVars };
+  return { userMessage: "Begin.", templateVars };
 }
 
 export async function applyReflectOutput(K, state, depth, output, context) {
@@ -938,6 +949,10 @@ export async function runCircuitBreaker(K) {
       await K.karmaRecord({ event: "circuit_breaker_fired", mutation_id: record.id });
     }
   }
+
+  // Clear the danger signal — it's been processed. Leaving it around
+  // causes repeat rollbacks on every subsequent wake.
+  await K.kvDeleteSafe("last_danger");
 }
 
 // ── Protection gate ────────────────────────────────────────
@@ -963,9 +978,9 @@ export async function applyKVOperation(K, op) {
     return;
   }
 
-  // Agent keys: check KV-native metadata for unprotected flag
-  const { metadata } = await K.kvGetWithMeta(key);
-  if (!metadata?.unprotected) {
+  // Agent keys: new keys can be created freely; existing keys need unprotected flag
+  const { value: existing, metadata } = await K.kvGetWithMeta(key);
+  if (existing !== null && !metadata?.unprotected) {
     await K.karmaRecord({
       event: "mutation_blocked",
       key,
@@ -982,7 +997,7 @@ export async function applyKVOperation(K, op) {
 async function applyKVOperationDirect(K, op) {
   switch (op.op) {
     case "put":
-      await K.kvPutSafe(op.key, op.value, op.metadata);
+      await K.kvPutSafe(op.key, op.value, { unprotected: true, ...op.metadata });
       break;
     case "delete":
       await K.kvDeleteSafe(op.key);
@@ -1023,28 +1038,7 @@ export async function writeSessionResults(K, plan, config) {
 // ── Helpers ────────────────────────────────────────────────
 
 export async function getBalances(K, state) {
-  const [providers, wallets] = await Promise.all([
-    K.kvGet("providers"),
-    K.kvGet("wallets"),
-  ]);
-
-  const balances = { providers: {}, wallets: {} };
-
-  for (const [name, config] of Object.entries(providers || {})) {
-    if (!config.adapter) continue;
-    try {
-      balances.providers[name] = await K.executeAdapter(config.adapter, {});
-    } catch { balances.providers[name] = null; }
-  }
-
-  for (const [name, config] of Object.entries(wallets || {})) {
-    if (!config.adapter) continue;
-    try {
-      balances.wallets[name] = await K.executeAdapter(config.adapter, {});
-    } catch { balances.wallets[name] = null; }
-  }
-
-  return balances;
+  return K.checkBalance({});
 }
 
 export async function getKVUsage(K) {

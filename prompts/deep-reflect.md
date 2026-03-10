@@ -32,13 +32,15 @@ You have tools available for investigation — use kv_read, web_fetch, etc. to g
 
 {{models}}
 
-## Recent karma — your raw operational history
+## Recent session IDs — for karma investigation
 
-{{recentKarma}}
+{{recentSessionIds}}
 
-## Session history
+Use the `karma_query` tool to investigate sessions. Call it with just a session ID to get an event index, then drill into specific events using dot-bracket paths (e.g. `[1]`, `[1].tool_calls[0].function`). Each call returns one level of depth — use progressively deeper paths to find what you need without loading entire karma blobs.
 
-{{sessionHistory}}
+## Recent depth-0 reflect outputs
+
+{{belowOutputs}}
 
 ## Staged mutations
 
@@ -165,12 +167,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 ### On the mutation protocol
 
-You no longer write protected keys directly. The old fields (`updated_wisdom`, `updated_defaults`, `updated_model_details`, `orient_prompt_proposals`) are gone. All changes to protected keys — including wisdom, config:defaults, prompt:orient, config:models — go through mutation requests.
-
-**What was `updated_wisdom`** → a mutation request with `ops: [{"op": "put", "key": "wisdom", "value": "..."}]`
-**What was `updated_defaults`** → a mutation request with `ops: [{"op": "put", "key": "config:defaults", "value": {...}}]`
-**What was `orient_prompt_proposals`** → a mutation request with `ops: [{"op": "put", "key": "prompt:orient", "value": "..."}]`
-**What was `updated_model_details`** → a mutation request with `ops: [{"op": "put", "key": "config:models", "value": {...}}]`
+All changes to protected keys — wisdom, config:defaults, prompt:orient, config:models, etc. — go through `mutation_requests`. Each request bundles claims (why), ops (what to change), and checks (how to verify).
 
 Your mutation requests are applied **immediately as candidates** — they skip the staging step and become active. The changes are live but carry a snapshot of the old values. If they cause problems, the circuit breaker auto-rolls them back on fatal errors, or you can roll them back yourself in the next deep reflection.
 
@@ -188,7 +185,7 @@ For candidate mutations (already active):
 - `rollback` — revert to the snapshotted values
 - `defer` — leave it as a candidate for further observation
 
-Every mutation request needs `checks` — verifiable conditions that tell your future self whether the mutation worked. Design checks that surface failures clearly: kv_assert for state checks, tool_call for behavioral checks.
+Every mutation request needs `checks` — verifiable conditions that tell your future self whether the mutation worked. Aim for at least one check per claim so nothing slips through unverified. Design checks that surface failures clearly: kv_assert for state checks, tool_call for behavioral checks.
 
 ### On scheduling the next reflection at this depth
 
