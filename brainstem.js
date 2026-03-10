@@ -12,6 +12,7 @@
 
 // CF-SPECIFIC: WorkerEntrypoint is the CF RPC mechanism for cross-isolate calls
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { handleChat } from './hook-chat.js';
 
 // CF-SPECIFIC: WorkerEntrypoint subclass — RPC bridge giving isolate-loaded tools scoped KV access
 export class ScopedKV extends WorkerEntrypoint {
@@ -79,6 +80,7 @@ export class KernelRPC extends WorkerEntrypoint {
   // Sandbox
   async executeAction(step) { return this._brain().executeAction(step); }
   async executeAdapter(adapterKey, input) { return this._brain().executeAdapter(adapterKey, input); }
+  async checkBalance(args) { return this._brain().checkBalance(args); }
 
   // Karma
   async karmaRecord(entry) { return this._brain().karmaRecord(entry); }
@@ -111,6 +113,88 @@ export default {
   async scheduled(event, env, ctx) {
     const brain = new Brainstem(env, { ctx });
     await brain.runScheduled();
+  },
+
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/chat\/(\w+)$/);
+    if (!match || request.method !== "POST") {
+      return new Response("Not found", { status: 404 });
+    }
+
+    const channel = match[1];
+    const brain = new Brainstem(env, { ctx });
+
+    // Load channel adapter from KV
+    const adapterCode = await brain.kvGet(`channel:${channel}:code`);
+    if (!adapterCode) {
+      return new Response(`Unknown channel: ${channel}`, { status: 404 });
+    }
+    const adapterConfig = await brain.kvGet(`channel:${channel}:config`) || {};
+
+    const rawBody = await request.text();
+    const body = JSON.parse(rawBody);
+
+    // Verify webhook authenticity via adapter isolate
+    const envVars = {};
+    for (const s of (adapterConfig.secrets || [])) {
+      if (env[s] !== undefined) envVars[s] = env[s];
+    }
+    if (adapterConfig.webhook_secret_env && env[adapterConfig.webhook_secret_env]) {
+      envVars[adapterConfig.webhook_secret_env] = env[adapterConfig.webhook_secret_env];
+    }
+
+    const verified = await brain.runInIsolate({
+      id: `channel:${channel}:verify:${brain.sessionId}`,
+      moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
+      ctx: { action: "verify", headers: Object.fromEntries(request.headers), body, env_vars: envVars },
+      timeoutMs: 5000,
+    });
+    if (!verified?.ok) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
+    // Parse inbound message via adapter isolate
+    const parsed = await brain.runInIsolate({
+      id: `channel:${channel}:parse:${brain.sessionId}`,
+      moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
+      ctx: { action: "parse", body },
+      timeoutMs: 5000,
+    });
+    if (!parsed?.inbound) {
+      return new Response("OK", { status: 200 });
+    }
+
+    // Load config eagerly for chat handler
+    brain.defaults = await brain.kvGet("config:defaults");
+    brain.modelsConfig = await brain.kvGet("config:models");
+    brain.dharma = await brain.kvGet("dharma");
+    brain.toolRegistry = await brain.kvGet("config:tool_registry");
+
+    // Build adapter interface for chat handler
+    const secrets = {};
+    for (const s of (adapterConfig.secrets || [])) {
+      if (env[s] !== undefined) secrets[s] = env[s];
+    }
+
+    const adapter = {
+      sendReply: async (chatId, text) => {
+        await brain.runInIsolate({
+          id: `channel:${channel}:send:${brain.sessionId}`,
+          moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
+          ctx: { action: "send", chatId, text, secrets },
+          timeoutMs: 10000,
+        });
+      },
+    };
+
+    ctx.waitUntil(
+      handleChat(brain, channel, parsed.inbound, adapter).catch(err => {
+        brain.karmaRecord({ event: "chat_error", channel, error: err.message });
+      })
+    );
+
+    return new Response("OK", { status: 200 });
   },
 };
 
@@ -244,6 +328,19 @@ class Brainstem {
       // Execute the operation
       if (op.op === "delete") {
         await this.kv.delete(op.key);
+      } else if (op.op === "patch") {
+        const current = await this.kvGet(op.key);
+        if (typeof current !== "string") {
+          throw new Error(`patch op: key "${op.key}" is not a string value`);
+        }
+        if (!current.includes(op.old_string)) {
+          throw new Error(`patch op: old_string not found in "${op.key}"`);
+        }
+        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) {
+          throw new Error(`patch op: old_string matches multiple locations in "${op.key}"`);
+        }
+        const patched = current.replace(op.old_string, op.new_string);
+        await this.kvPut(op.key, patched, op.metadata);
       } else {
         await this.kvPut(op.key, op.value, op.metadata);
       }
@@ -557,14 +654,67 @@ class Brainstem {
     }
   }
 
-  async executeAdapter(adapterKey, input) {
+  async executeAdapter(adapterKey, input, secretOverrides) {
     const [code, meta] = await Promise.all([
       this.kvGet(`${adapterKey}:code`),
       this.kvGet(`${adapterKey}:meta`),
     ]);
     if (!code) throw new Error(`No adapter at ${adapterKey}:code`);
     const ctx = await this.buildToolContext(adapterKey, meta || {}, input);
+    // Apply secret overrides from provider config (e.g. project-scoped keys)
+    if (secretOverrides) Object.assign(ctx.secrets, secretOverrides);
     return this._executeTool(adapterKey, code, meta, ctx);
+  }
+
+  async checkBalance(args) {
+    const [providers, wallets] = await Promise.all([
+      this.kvGet("providers"),
+      this.kvGet("wallets"),
+    ]);
+
+    const results = { providers: {}, wallets: {} };
+    const scopeFilter = args?.scope;
+
+    for (const [name, config] of Object.entries(providers || {})) {
+      if (!config.adapter) continue;
+      const scope = config.scope || "general";
+      if (scopeFilter && scope !== scopeFilter) continue;
+      try {
+        const val = await this.executeAdapter(config.adapter, {}, await this._resolveSecretOverrides(config));
+        results.providers[name] = { balance: val, scope };
+      } catch (e) {
+        results.providers[name] = { balance: null, scope, error: e.message };
+      }
+    }
+
+    for (const [name, config] of Object.entries(wallets || {})) {
+      if (!config.adapter) continue;
+      const scope = config.scope || "general";
+      if (scopeFilter && scope !== scopeFilter) continue;
+      try {
+        const val = await this.executeAdapter(config.adapter, {}, await this._resolveSecretOverrides(config));
+        results.wallets[name] = { balance: val, scope };
+      } catch (e) {
+        results.wallets[name] = { balance: null, scope, error: e.message };
+      }
+    }
+
+    return results;
+  }
+
+  // Resolve secret overrides from provider config
+  // Supports "kv:secret:key_name" values that read from KV
+  async _resolveSecretOverrides(config) {
+    if (!config.secrets) return null;
+    const resolved = {};
+    for (const [key, val] of Object.entries(config.secrets)) {
+      if (typeof val === 'string' && val.startsWith('kv:')) {
+        resolved[key] = await this.kvGet(val.slice(3));
+      } else {
+        resolved[key] = val;
+      }
+    }
+    return resolved;
   }
 
   // Platform-specific: load tool code + meta from KV (cached per session)
@@ -639,6 +789,35 @@ export default {
 `;
   }
 
+  static wrapChannelAdapter(rawCode) {
+    return `${rawCode}
+
+export default {
+  async fetch(request, env) {
+    const ctx = await request.json();
+    const headers = ctx.headers ? new Headers(Object.entries(ctx.headers)) : null;
+    try {
+      if (ctx.action === "verify") {
+        const ok = verify(headers, ctx.body, ctx.env_vars || {});
+        return Response.json({ ok });
+      }
+      if (ctx.action === "parse") {
+        const inbound = parseInbound(ctx.body);
+        return Response.json({ inbound });
+      }
+      if (ctx.action === "send") {
+        await sendReply(ctx.chatId, ctx.text, ctx.secrets || {}, fetch);
+        return Response.json({ ok: true });
+      }
+      return Response.json({ error: "unknown action" });
+    } catch (e) {
+      return Response.json({ ok: false, error: e.message });
+    }
+  },
+};
+`;
+  }
+
   // ── Isolate execution (Worker Loader API) ───────────────────
 
   async runInIsolate({ id, moduleCode, ctx, kvAccess, toolName, timeoutMs }) {
@@ -677,9 +856,10 @@ export default {
 
   // ── LLM calls (dynamic provider with cascade fallback) ─────
 
-  async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step }) {
+  async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap }) {
     const budget = this.defaults?.session_budget;
-    if (budget?.max_cost && this.sessionCost >= budget.max_cost)
+    const costLimit = budgetCap ?? budget?.max_cost;
+    if (costLimit && this.sessionCost >= costLimit)
       throw new Error("Budget exceeded: cost");
     if (budget?.max_steps && this.sessionLLMCalls >= budget.max_steps)
       throw new Error("Budget exceeded: steps");
@@ -724,7 +904,7 @@ export default {
         || null;
       if (fallbackModel && model !== fallbackModel) {
         return this.callLLM({ model: fallbackModel, effort: "low", maxTokens,
-          systemPrompt, messages, tools, step });
+          systemPrompt, messages, tools, step, budgetCap });
       }
       throw new Error(`LLM call failed on all providers: ${result.error}`);
     }
@@ -899,6 +1079,10 @@ export default {
       return this.spawnSubplan(args);
     }
 
+    if (name === 'check_balance') {
+      return this.checkBalance(args);
+    }
+
     // Pre-validation hook
     const schema = this.toolRegistry?.tools?.find(t => t.name === name)?.input;
     const preCheck = await this.callHook('validate', { tool: name, args, schema });
@@ -984,7 +1168,7 @@ export default {
   }
 
   async runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
-                       maxTokens, maxSteps, step }) {
+                       maxTokens, maxSteps, step, budgetCap }) {
     const messages = [];
     if (initialContext) {
       const content = typeof initialContext === 'string'
@@ -1000,7 +1184,7 @@ export default {
         const response = await this.callLLM({
           model, effort, maxTokens,
           systemPrompt, messages, tools,
-          step: `${step}_turn_${i}`,
+          step: `${step}_turn_${i}`, budgetCap,
         });
 
         if (response.toolCalls?.length) {
@@ -1045,7 +1229,7 @@ export default {
       messages.push({ role: 'user', content: 'Maximum steps reached. Produce your final output now.' });
       const finalResponse = await this.callLLM({
         model, effort, maxTokens, systemPrompt, messages,
-        step: `${step}_final`,
+        step: `${step}_final`, budgetCap,
       });
       return await this.parseAgentOutput(finalResponse.content);
 
@@ -1062,6 +1246,10 @@ export default {
     if (!content) return {};
     try { return JSON.parse(content); }
     catch {
+      // Try extracting JSON from markdown fences or surrounding prose
+      const extracted = this._extractJSON(content);
+      if (extracted) return extracted;
+
       const repaired = await this.callHook('parse_repair', { content });
       if (repaired?.content) {
         try { return JSON.parse(repaired.content); }
@@ -1069,6 +1257,39 @@ export default {
       }
       return { parse_error: true, raw: content };
     }
+  }
+
+  _extractJSON(content) {
+    if (!content || typeof content !== "string") return null;
+    // Strip markdown code fences
+    const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+    if (fenceMatch) {
+      try { return JSON.parse(fenceMatch[1].trim()); }
+      catch { /* fall through */ }
+    }
+    // Find outermost { } or [ ]
+    const found = this._findBraces(content, "{", "}") || this._findBraces(content, "[", "]");
+    if (found) {
+      try { return JSON.parse(found); }
+      catch { /* no valid JSON */ }
+    }
+    return null;
+  }
+
+  _findBraces(text, open, close) {
+    const start = text.indexOf(open);
+    if (start === -1) return null;
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === open) depth++;
+      else if (ch === close && --depth === 0) return text.slice(start, i + 1);
+    }
+    return null;
   }
 
   // ── Helpers ─────────────────────────────────────────────────

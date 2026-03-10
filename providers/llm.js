@@ -7,6 +7,7 @@ export async function call({ model, messages, max_tokens, thinking, tools, secre
     body.thinking = thinking;
   }
   if (tools) body.tools = tools;
+  if (model?.startsWith('anthropic/')) body.cache_control = { type: 'ephemeral' };
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {

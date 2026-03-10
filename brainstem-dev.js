@@ -6,6 +6,12 @@
 
 import { Brainstem } from './brainstem.js';
 import { wake } from './wake-hook.js';
+import { handleChat } from './hook-chat.js';
+
+// ── Channel adapters (single source of truth: channels/*.js) ──
+import * as telegramAdapter from './channels/telegram.js';
+
+const CHANNEL_ADAPTERS = { telegram: telegramAdapter };
 
 // ── Tool modules (single source of truth: tools/*.js) ──────────
 
@@ -13,14 +19,12 @@ import * as send_telegram from './tools/send_telegram.js';
 import * as web_fetch from './tools/web_fetch.js';
 import * as kv_read from './tools/kv_read.js';
 import * as kv_write from './tools/kv_write.js';
-import * as check_or_balance from './tools/check_or_balance.js';
-import * as check_wallet_balance from './tools/check_wallet_balance.js';
-import * as topup_openrouter from './tools/topup_openrouter.js';
 import * as kv_manifest from './tools/kv_manifest.js';
+import * as karma_query from './tools/karma_query.js';
 
 const TOOL_MODULES = {
   send_telegram, web_fetch, kv_read, kv_write,
-  check_or_balance, check_wallet_balance, topup_openrouter, kv_manifest,
+  kv_manifest, karma_query,
 };
 
 // ── Provider adapter modules (single source of truth: providers/*.js) ──
@@ -39,6 +43,44 @@ export default {
   async scheduled(event, env, ctx) {
     const brain = new DevBrainstem(env, { ctx });
     await brain.runScheduled();
+  },
+
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/chat\/(\w+)$/);
+    if (!match || request.method !== "POST") {
+      return new Response("Not found", { status: 404 });
+    }
+
+    const channel = match[1];
+    const brain = new DevBrainstem(env, { ctx });
+
+    // Dev mode: load adapter from direct imports
+    const adapterMod = CHANNEL_ADAPTERS[channel];
+    if (!adapterMod) return new Response(`Unknown channel: ${channel}`, { status: 404 });
+
+    const body = await request.json();
+
+    // Skip verification in dev mode
+    const inbound = adapterMod.parseInbound(body);
+    if (!inbound) return new Response("OK", { status: 200 });
+
+    // Load config eagerly (same as _invokeHookModules)
+    brain.defaults = await brain.kvGet("config:defaults");
+    brain.modelsConfig = await brain.kvGet("config:models");
+    brain.dharma = await brain.kvGet("dharma");
+    brain.toolRegistry = await brain.kvGet("config:tool_registry");
+
+    const adapter = {
+      sendReply: async (chatId, text) => {
+        await adapterMod.sendReply(chatId, text, {
+          TELEGRAM_BOT_TOKEN: env.TELEGRAM_BOT_TOKEN,
+        }, fetch);
+      },
+    };
+
+    await handleChat(brain, channel, inbound, adapter);
+    return new Response("OK", { status: 200 });
   },
 };
 
@@ -59,6 +101,9 @@ class DevBrainstem extends Brainstem {
   async getToolRegistry() { return this.toolRegistry; }
   async kvList(opts)      { return this.kv.list(opts); }
   async isSystemKey(key)  { return Brainstem.isSystemKey(key); }
+
+  // ── Chat support — bridge to base class ───────────────────
+  async executeToolCall(tc) { return super.executeToolCall(tc); }
 
   // ── Platform override: _invokeHookModules ─────────────────
   // Calls wake() directly instead of Worker Loader isolate.
@@ -87,10 +132,11 @@ class DevBrainstem extends Brainstem {
   // ── Platform override: executeAdapter ────────────────────
   // Calls imported provider module directly instead of CF isolate.
 
-  async executeAdapter(adapterKey, input) {
+  async executeAdapter(adapterKey, input, secretOverrides) {
     const mod = PROVIDER_MODULES[adapterKey];
     if (!mod) throw new Error(`Unknown adapter: ${adapterKey}`);
     const ctx = await this.buildToolContext(adapterKey, mod.meta || {}, input);
+    if (secretOverrides) Object.assign(ctx.secrets, secretOverrides);
     ctx.fetch = (...args) => fetch(...args);
     const fn = mod.execute || mod.call || mod.check;
     if (!fn) throw new Error(`Adapter ${adapterKey} has no callable function`);
@@ -155,6 +201,7 @@ class DevBrainstem extends Brainstem {
       body.thinking = request.thinking;
     }
     if (request.tools?.length) body.tools = request.tools;
+    if (request.model?.startsWith('anthropic/')) body.cache_control = { type: 'ephemeral' };
 
     console.log(`[LLM] >>> ${step} | model=${request.model} | msgs=${request.messages.length}`);
 
