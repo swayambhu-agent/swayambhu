@@ -10,7 +10,7 @@
 // KV key: hook:wake:code
 
 import { applyKVOperation } from './hook-protect.js';
-import { initTracking, runCircuitBreaker } from './hook-mutations.js';
+import { initTracking, runCircuitBreaker, retryPendingGitSyncs } from './hook-mutations.js';
 import { executeReflect, runReflect, highestReflectDepthDue, getMaxSteps } from './hook-reflect.js';
 
 // ── Wake flow ──────────────────────────────────────────────
@@ -52,13 +52,13 @@ export async function wake(K, input) {
     const crashData = await detectCrash(K);
 
     // 1a-pre. Initialize mutation tracking from targeted prefix scans
-    const [stagedList, candidateList] = await Promise.all([
+    const [stagedList, rollbackList] = await Promise.all([
       K.kvList({ prefix: "mutation_staged:", limit: 200 }),
-      K.kvList({ prefix: "mutation_candidate:", limit: 200 }),
+      K.kvList({ prefix: "mutation_rollback:", limit: 200 }),
     ]);
     initTracking(
       stagedList.keys.map(k => k.name.slice("mutation_staged:".length)),
-      candidateList.keys.map(k => k.name.slice("mutation_candidate:".length)),
+      rollbackList.keys.map(k => k.name.slice("mutation_rollback:".length)),
     );
 
     // 1a-cache. Cache full KV index for dashboard (avoids list() calls from API)
@@ -69,6 +69,9 @@ export async function wake(K, input) {
 
     // 1b. Circuit breaker
     await runCircuitBreaker(K);
+
+    // 1c. Retry any pending git syncs from previous promotes
+    await retryPendingGitSyncs(K);
 
     // 2. Load ground truth
     const [balances, kvUsage] = await Promise.all([

@@ -50,9 +50,9 @@ Some things to know:
 
 ## Running an Instance
 
-See `deploy/` for technical setup. See `legal/operator-guide.md` for your jurisdiction-specific obligations before you begin — this is not optional reading.
+See `docs/DEPLOYMENT.md` for technical setup and `docs/DEVELOPMENT.md` for local dev.
 
-The short version: you provide a machine, deploy the agent, fund a wallet, and step back. The agent handles the rest. It will onboard you with a conversation about your legal jurisdiction so it can protect you properly. Let it.
+The short version: you provide a machine, deploy the agent, fund a wallet, and step back. The agent handles the rest.
 
 ## The Name
 

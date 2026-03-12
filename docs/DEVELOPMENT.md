@@ -15,7 +15,7 @@ hierarchy, budget enforcement, karma — is inherited unchanged.
 ```
 brainstem-dev.js
   ├── import { Brainstem } from './brainstem.js'   ← kernel
-  ├── import { wake } from './wake-hook.js'        ← policy layer
+  ├── import { wake } from './hook-main.js'         ← policy layer
   ├── import * as ... from './tools/*.js'           ← tool modules
   └── class DevBrainstem extends Brainstem
         ├── _invokeHookModules()  → calls wake() directly
@@ -30,10 +30,10 @@ brainstem-dev.js
 | Code | Location | How prod uses it | How dev uses it |
 |------|----------|------------------|-----------------|
 | Kernel (KV, karma, agent loop, budget) | `brainstem.js` | Direct | Inherited via `extends` |
-| Wake flow, reflection, mutations | `wake-hook.js` | Loaded from KV via isolate | `import { wake }` |
+| Wake flow, reflection, mutations | `hook-main.js` + modules | Loaded from KV via isolate | `import { wake }` |
 | Tool implementations | `tools/*.js` | Seeded to KV, loaded via isolate | `import * as ...` |
 | Provider adapters | `providers/*.js` | Seeded to KV, loaded via isolate | Direct `fetch()` in override |
-| Prompts, config, dharma | `scripts/seed-local-kv.sh` | KV | KV (same seed script) |
+| Prompts, config, dharma | `scripts/seed-local-kv.mjs` | KV | KV (same seed script) |
 
 Tools and providers live in `tools/` and `providers/` respectively. **Single
 source of truth.** The seed script reads these files directly into KV.
@@ -41,50 +41,35 @@ source of truth.** The seed script reads these files directly into KV.
 ## Running locally
 
 ```bash
-# 1. Kill stale workers
-taskkill //F //IM workerd.exe
+# Start services (preserves existing state)
+source .env && bash scripts/start.sh
 
-# 2. Clear state
-rm -rf .wrangler/shared-state
+# Start + trigger a wake cycle
+source .env && bash scripts/start.sh --wake
 
-# 3. Seed KV (fast — ~2s via Miniflare API)
-node scripts/seed-local-kv.mjs
-
-# 4. Start dev brainstem (uses wrangler.dev.toml)
-source .env
-npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state
-
-# 5. Trigger a wake cycle
-curl http://localhost:8787/__scheduled
+# Full reset + wake
+source .env && bash scripts/start.sh --reset-all-state --wake
 ```
 
 Watch stderr for `[KARMA]`, `[TOOL]`, `[LLM]`, `[HOOK]` tagged output.
-
-There are two seed scripts:
-- **`node scripts/seed-local-kv.mjs`** — fast (~2s). Uses Miniflare API
-  directly, writes all keys in a single process. Use this for day-to-day dev.
-- **`bash scripts/seed-local-kv.sh`** — slow (~60s). Uses `wrangler kv` CLI.
-  Supports `--pull-remote` to pull dharma/orient/wisdom from live KV.
-  Authoritative reference for what gets seeded.
 
 ### Switching models for cheap testing
 
 The seed script seeds the canonical production models (Claude Opus / Sonnet /
 Haiku). For basic dev work — testing tool wiring, KV operations, orient flow,
-prompt formatting — you don't need expensive models. Use the switch script to
-swap all roles to a cheap model:
+prompt formatting — you don't need expensive models. Use `--set` overrides
+when starting with `--reset-all-state`:
 
 ```bash
-# After seeding, switch to DeepSeek V3.2 (~30x cheaper than Claude)
-bash scripts/switch-model.sh deepseek/deepseek-v3.2
+# Full reset with DeepSeek for all roles (~30x cheaper than Claude)
+source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepseek --set reflect.model=deepseek
 
-# Switch back when testing reflect/mutation logic that needs stronger models
-bash scripts/switch-model.sh anthropic/claude-sonnet-4.6
+# Override just one role
+source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepseek
 ```
 
-The script patches `config:defaults`, `config:models`, and
-`kernel:fallback_model` in local KV in-place. No re-seed needed — just
-restart `wrangler dev`.
+Model aliases (e.g. `deepseek` for `deepseek/deepseek-v3.2`) are resolved
+at runtime via `config:models` alias_map.
 
 **When to use cheap models:** tool execution, orient sessions, basic wake
 cycles, KV read/write, prompt template rendering, budget enforcement.
@@ -104,16 +89,16 @@ session outcome tracking, hook safety checks.
 **Propagation:** Automatic. Dev inherits via `extends Brainstem`.
 **Nothing else to do.**
 
-### 2. Wake flow / reflection / mutation protocol (wake-hook.js)
+### 2. Wake flow / reflection / mutation protocol (hook modules)
 
 Examples: orient session, reflect hierarchy, mutation staging/promotion/rollback,
 circuit breaker, tripwire evaluation, session results.
 
-**Edit:** `wake-hook.js`
-**Propagation:** Automatic. Dev imports `wake` directly.
-**For prod deploy:** Re-seed KV so `hook:wake:code` picks up the new version:
+**Edit:** `hook-main.js`, `hook-reflect.js`, `hook-mutations.js`, or `hook-protect.js`
+**Propagation:** Automatic. Dev imports `wake` from `hook-main.js` directly.
+**For prod deploy:** Re-seed KV so hook modules pick up the new version:
 ```bash
-bash scripts/seed-local-kv.sh
+node scripts/seed-local-kv.mjs
 ```
 
 ### 3. Tool implementations
@@ -124,7 +109,7 @@ Examples: changing how `send_telegram` works, adding a new tool.
 
 1. Edit `tools/{name}.js`
 2. Dev picks it up automatically (imported directly)
-3. Re-seed for KV: `bash scripts/seed-local-kv.sh`
+3. Re-seed for KV: `node scripts/seed-local-kv.mjs`
 
 #### Adding a new tool
 
@@ -133,7 +118,7 @@ Examples: changing how `send_telegram` works, adding a new tool.
 3. Add `{name}` to the `TOOL_MODULES` object in `brainstem-dev.js`
 4. Add the tool to the `config:tool_registry` JSON in the seed script
 5. Add the tool name to the `for tool in ...` loop in the seed script
-6. Re-seed: `bash scripts/seed-local-kv.sh`
+6. Re-seed: `node scripts/seed-local-kv.mjs`
 
 #### Removing a tool
 
@@ -146,7 +131,7 @@ Examples: changing how `send_telegram` works, adding a new tool.
 
 Examples: changing `prompt:orient`, `config:defaults`, `config:models`.
 
-**Edit:** `scripts/seed-local-kv.sh` (or the referenced file, e.g. `prompt-reflect.md`)
+**Edit:** `scripts/seed-local-kv.mjs` (or the referenced file, e.g. `prompts/reflect.md`)
 **Propagation:** Re-seed. Both prod and dev read these from KV.
 **Nothing to change in brainstem-dev.js.**
 

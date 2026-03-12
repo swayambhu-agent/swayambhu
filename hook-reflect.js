@@ -4,8 +4,8 @@
 
 import { SYSTEM_KEY_PREFIXES, SYSTEM_KEY_EXACT, applyKVOperation } from './hook-protect.js';
 import {
-  loadStagedMutations, loadCandidateMutations,
-  stageMutation, applyDirectAsCandidate,
+  loadStagedMutations, loadInflightMutations,
+  stageMutation, applyDirect,
   processReflectVerdicts, processDeepReflectVerdicts,
 } from './hook-mutations.js';
 
@@ -173,7 +173,7 @@ export async function gatherReflectContext(K, state, depth, context) {
   const wisdom = await K.kvGet("wisdom");
   const orientPrompt = await K.kvGet("prompt:orient");
   const stagedMutations = await loadStagedMutations(K);
-  const candidateMutations = await loadCandidateMutations(K);
+  const inflightMutations = await loadInflightMutations(K);
   const systemKeyPatterns = {
     prefixes: SYSTEM_KEY_PREFIXES,
     exact: SYSTEM_KEY_EXACT,
@@ -187,7 +187,7 @@ export async function gatherReflectContext(K, state, depth, context) {
     currentDefaults: defaults,
     models: modelsConfig,
     stagedMutations,
-    candidateMutations,
+    inflightMutations,
     systemKeyPatterns,
     recentSessionIds,
     context: {
@@ -222,10 +222,10 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     await processDeepReflectVerdicts(K, output.mutation_verdicts);
   }
 
-  // 3. New mutation requests — applied directly as candidates
+  // 3. New mutation requests — applied directly as inflight
   if (output.mutation_requests) {
     for (const req of output.mutation_requests) {
-      await applyDirectAsCandidate(K, req, sessionId);
+      await applyDirect(K, req, sessionId);
     }
   }
 
@@ -321,12 +321,12 @@ export function getReflectModel(state, depth) {
 
 export function getMaxSteps(state, role, depth) {
   const { defaults } = state;
-  if (role === 'orient') return defaults?.execution?.max_steps?.orient || 3;
+  if (role === 'orient') return defaults?.execution?.max_steps?.orient || 12;
   const perLevel = defaults?.reflect_levels?.[depth];
   if (perLevel?.max_steps) return perLevel.max_steps;
   return depth === 1
-    ? (defaults?.execution?.max_steps?.reflect_default || 5)
-    : (defaults?.execution?.max_steps?.reflect_deep || 10);
+    ? (defaults?.execution?.max_steps?.reflect || 5)
+    : (defaults?.execution?.max_steps?.deep_reflect || 10);
 }
 
 // ── Reflect scheduling ───────────────────────────────────
@@ -397,7 +397,7 @@ Examine your karma, your orient prompt, your patterns. Produce a JSON object:
   "next_wake_config": { "sleep_seconds": 21600, "effort": "low" }
 }
 
-mutation_requests go through applyDirectAsCandidate. mutation_verdicts for staged/candidate mutations.
+mutation_requests go through applyDirect. mutation_verdicts for staged/inflight mutations.
 Required: reflection, note_to_future_self. Everything else optional.`;
   }
 

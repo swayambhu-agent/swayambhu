@@ -3,7 +3,7 @@
 // Usage: node scripts/seed-local-kv.mjs
 //
 // Replaces ~50 wrangler subprocess spawns with one Miniflare instance.
-// Seeds the same keys as scripts/seed-local-kv.sh.
+// Single source of truth for local KV seeding.
 
 import { Miniflare } from "miniflare";
 import { readFileSync } from "fs";
@@ -59,9 +59,9 @@ await put("identity:did", {
 
 console.log("--- Config ---");
 await put("config:defaults", {
-  orient: { model: "anthropic/claude-opus-4.6", effort: "low", max_output_tokens: 4000 },
+  orient: { model: "anthropic/claude-haiku-4.5", effort: "low", max_output_tokens: 4000 },
   reflect: { model: "anthropic/claude-sonnet-4.6", effort: "medium", max_output_tokens: 1000 },
-  session_budget: { max_cost: 0.15, max_steps: 8, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
+  session_budget: { max_cost: 0.15, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
   chat: {
     model: "sonnet",
     effort: "low",
@@ -75,7 +75,7 @@ await put("config:defaults", {
   memory: { default_load_keys: ["wisdom", "config:models", "config:resources"], max_context_budget_tokens: 8000 },
   execution: {
     max_subplan_depth: 3, max_reflect_depth: 1, reflect_interval_multiplier: 5,
-    max_steps: { orient: 3, reflect_default: 5, reflect_deep: 10 },
+    max_steps: { orient: 12, reflect: 5, deep_reflect: 10 },
     fallback_model: "anthropic/claude-haiku-4.5",
   },
   deep_reflect: {
@@ -89,9 +89,10 @@ await put("config:models", {
     { id: "anthropic/claude-opus-4.6", alias: "opus", input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection" },
     { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning" },
     { id: "anthropic/claude-haiku-4.5", alias: "haiku", input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
+    { id: "deepseek/deepseek-v3.2", alias: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, orient flow, KV ops, prompt rendering" },
   ],
   fallback_model: "anthropic/claude-haiku-4.5",
-  alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5" },
+  alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5", deepseek: "deepseek/deepseek-v3.2" },
 }, "json", "Available LLM models with pricing, aliases, and capabilities");
 
 await put("config:resources", {

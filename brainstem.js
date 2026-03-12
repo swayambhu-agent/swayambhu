@@ -1,7 +1,8 @@
 // Swayambhu Kernel
 // Hardcoded primitives + safety + alerting + hook dispatch.
-// Policy (wake flow, reflection, mutation protocol) lives in wake-hook.js,
-// stored in KV as hook:wake:code, and executed via Worker Loader isolate.
+// Policy (wake flow, reflection, mutation protocol) lives in hook-main.js
+// (+ hook-reflect.js, hook-mutations.js, hook-protect.js), stored in KV
+// via hook:wake:manifest, and executed via Worker Loader isolate.
 //
 // The kernel exposes primitives via KernelRPC (WorkerEntrypoint).
 // The hook composes them. Day 1 it's the current logic.
@@ -225,7 +226,7 @@ class Brainstem {
 
   static SYSTEM_KEY_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'mutation_staged:', 'mutation_candidate:', 'hook:', 'doc:',
+    'mutation_staged:', 'mutation_rollback:', 'hook:', 'doc:', 'git_pending:',
   ];
   static KERNEL_ONLY_PREFIXES = ['kernel:'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'wisdom'];
@@ -567,7 +568,7 @@ class Brainstem {
 
     const hardcodedPrompt = `You are Swayambhu in recovery mode. Your wake hook has been reset due to repeated failures. Check your balances and report your status. Do not attempt complex operations.`;
 
-    this.defaults = { session_budget: { max_cost: 0.50, max_steps: 3, max_duration_seconds: 120 } };
+    this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 120 } };
     this.modelsConfig = this.modelsConfig || await this.kvGet("config:models");
     this.toolRegistry = this.toolRegistry || await this.kvGet("config:tool_registry");
     this.dharma = this.dharma || await this.kvGet("dharma");
@@ -866,8 +867,6 @@ export default {
     const costLimit = budgetCap ?? budget?.max_cost;
     if (costLimit && this.sessionCost >= costLimit)
       throw new Error("Budget exceeded: cost");
-    if (budget?.max_steps && this.sessionLLMCalls >= budget.max_steps)
-      throw new Error("Budget exceeded: steps");
     if (budget?.max_duration_seconds && this.elapsed() > budget.max_duration_seconds * 1000)
       throw new Error("Budget exceeded: duration");
 
@@ -1357,7 +1356,8 @@ export default {
       doc:        { type: "doc", format: "text" },
       wisdom:     { type: "core", format: "text" },
       mutation_staged:    { type: "mutation", format: "json" },
-      mutation_candidate: { type: "mutation", format: "json" },
+      mutation_rollback: { type: "mutation", format: "json" },
+      git_pending:    { type: "git_sync", format: "json" },
       kernel:     { type: "kernel", format: "json" },
     };
     const finalMetadata = {

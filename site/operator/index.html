@@ -488,6 +488,7 @@
           setWatching(false);
         } else {
           setWatching(true);
+          loadKarma(selectedSession);
           watchRef.current = setInterval(async () => {
             try {
               const d = await api(`/kv/karma:${selectedSession}`, operatorKey);
@@ -511,13 +512,15 @@
                 setKarma(entries);
                 karmaRef.current = entries;
               }
-              // Auto-stop if session ended
-              const last = entries[entries.length - 1];
-              if (last && (last.type === 'session_end' || last.type === 'fatal')) {
-                clearInterval(watchRef.current);
-                watchRef.current = null;
-                setWatching(false);
-              }
+              // Auto-stop if no active session
+              try {
+                const h = await api('/health', operatorKey);
+                if (!h.session) {
+                  clearInterval(watchRef.current);
+                  watchRef.current = null;
+                  setWatching(false);
+                }
+              } catch {}
             } catch {}
           }, WATCH_INTERVAL);
         }
@@ -590,10 +593,6 @@
               {watching && <span className="inline-block w-2 h-2 rounded-full bg-green-400 pulse-dot mr-1.5"></span>}
               {watching ? 'Watching' : 'Watch'}
             </button>
-            <button
-              onClick={() => loadKarma(selectedSession)}
-              className="px-2 py-1 rounded border border-border text-gray-400 hover:border-accent hover:text-accent transition"
-            >Refresh</button>
             {stats && (
               <>
                 <span className="text-gray-700">|</span>
@@ -984,7 +983,7 @@
     // ── Mutations Tab ─────────────────────────────────────────
     function MutationsTab({ operatorKey }) {
       const [staged, setStaged] = useState([]);
-      const [candidates, setCandidates] = useState([]);
+      const [inflight, setInflight] = useState([]);
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState(null);
       const [expandedId, setExpandedId] = useState(null);
@@ -995,10 +994,10 @@
         setLoading(true); setError(null);
         Promise.all([
           api('/kv?prefix=mutation_staged:', operatorKey),
-          api('/kv?prefix=mutation_candidate:', operatorKey),
+          api('/kv?prefix=mutation_rollback:', operatorKey),
         ]).then(([s, c]) => {
           setStaged((s.keys || []).map(k => ({ ...k, status: 'staged' })));
-          setCandidates((c.keys || []).map(k => ({ ...k, status: 'candidate' })));
+          setInflight((c.keys || []).map(k => ({ ...k, status: 'inflight' })));
           setLoading(false);
         }).catch(e => { setError(e.message); setLoading(false); });
       }, [operatorKey]);
@@ -1006,11 +1005,11 @@
       useEffect(() => { loadMutations(); }, [loadMutations]);
 
       const all = useMemo(() => {
-        return [...staged, ...candidates].sort((a, b) => {
+        return [...staged, ...inflight].sort((a, b) => {
           // Extract mutation ID for sorting
           return b.key.localeCompare(a.key);
         });
-      }, [staged, candidates]);
+      }, [staged, inflight]);
 
       const filtered = filter === 'all' ? all : all.filter(m => m.status === filter);
 
@@ -1025,7 +1024,7 @@
 
       const STATUS_COLORS = {
         staged: { bar: 'bg-yellow-500', text: 'text-yellow-400', label: 'Staged' },
-        candidate: { bar: 'bg-blue-500', text: 'text-blue-400', label: 'Candidate' },
+        inflight: { bar: 'bg-blue-500', text: 'text-blue-400', label: 'Inflight' },
         promoted: { bar: 'bg-green-500', text: 'text-green-400', label: 'Promoted' },
         rolled_back: { bar: 'bg-red-500', text: 'text-red-400', label: 'Rolled Back' },
       };
@@ -1036,7 +1035,7 @@
       return (
         <div className="h-full overflow-y-auto scrollbar-thin">
           <div className="flex gap-2 mb-4">
-            {['all', 'staged', 'candidate'].map(f => (
+            {['all', 'staged', 'inflight'].map(f => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
@@ -1048,7 +1047,7 @@
               >
                 {f.charAt(0).toUpperCase() + f.slice(1)}
                 <span className="ml-1 text-gray-600">
-                  ({f === 'all' ? all.length : f === 'staged' ? staged.length : candidates.length})
+                  ({f === 'all' ? all.length : f === 'staged' ? staged.length : inflight.length})
                 </span>
               </button>
             ))}
@@ -1116,7 +1115,6 @@
       const [health, setHealth] = useState(null);
       const [balances, setBalances] = useState(null);
       const [countdown, setCountdown] = useState(null);
-      const [waking, setWaking] = useState(false);
       const [activeTab, setActiveTab] = useState('timeline');
       const [selectedEntry, setSelectedEntry] = useState(null);
       const [leftPct, setLeftPct] = useState(50); // percentage for left panel
@@ -1221,25 +1219,14 @@
                     </span>
                   </>
                 )}
-                <button
-                  onClick={async () => {
-                    if (waking) return;
-                    setWaking(true);
-                    try {
-                      await fetch('/wake', { method: 'POST' });
-                      // Refresh health to update countdown
-                      const h = await api('/health', operatorKey);
-                      setHealth(h);
-                    } catch {}
-                    setWaking(false);
-                  }}
-                  disabled={waking}
-                  className={`ml-1 px-2 py-0.5 rounded text-xs font-semibold transition ${
-                    waking
-                      ? 'bg-gray-700 text-gray-500 cursor-wait'
-                      : 'bg-accent/20 text-accent hover:bg-accent/30 cursor-pointer'
-                  }`}
-                >{waking ? 'Waking...' : 'Wake Now'}</button>
+                <span className="text-gray-600">|</span>
+                <span className={`ml-1 px-2 py-0.5 rounded text-xs font-semibold ${
+                  health.session
+                    ? 'bg-green-900/30 text-green-400'
+                    : countdown === 'now'
+                      ? 'bg-yellow-900/30 text-yellow-400'
+                      : 'bg-gray-800 text-gray-500'
+                }`}>{health.session ? 'Awake' : countdown === 'now' ? 'Sleeping' : 'Asleep'}</span>
               </>
             )}
             <div className="flex items-center gap-2 ml-auto">

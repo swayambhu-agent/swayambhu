@@ -13,17 +13,17 @@ import {
 import {
   evaluatePredicate,
   stageMutation,
-  findCandidateConflict,
-  promoteCandidate,
-  rollbackCandidate,
+  findInflightConflict,
+  promoteInflight,
+  rollbackInflight,
   processReflectVerdicts,
   processDeepReflectVerdicts,
   runCircuitBreaker,
   loadStagedMutations,
-  loadCandidateMutations,
+  loadInflightMutations,
   initTracking,
-  applyStagedAsCandidate,
-  applyDirectAsCandidate,
+  applyStaged,
+  applyDirect,
 } from "../hook-mutations.js";
 import {
   getMaxSteps,
@@ -91,13 +91,13 @@ describe("getMaxSteps", () => {
     expect(getMaxSteps(state, "orient")).toBe(7);
   });
 
-  it("returns default 3 for orient when not configured", () => {
+  it("returns default 12 for orient when not configured", () => {
     const state = makeState();
-    expect(getMaxSteps(state, "orient")).toBe(3);
+    expect(getMaxSteps(state, "orient")).toBe(12);
   });
 
-  it("returns reflect_default for depth 1", () => {
-    const state = makeState({ defaults: { execution: { max_steps: { reflect_default: 8 } } } });
+  it("returns reflect for depth 1", () => {
+    const state = makeState({ defaults: { execution: { max_steps: { reflect: 8 } } } });
     expect(getMaxSteps(state, "reflect", 1)).toBe(8);
   });
 
@@ -106,8 +106,8 @@ describe("getMaxSteps", () => {
     expect(getMaxSteps(state, "reflect", 1)).toBe(5);
   });
 
-  it("returns reflect_deep for depth > 1", () => {
-    const state = makeState({ defaults: { execution: { max_steps: { reflect_deep: 15 } } } });
+  it("returns deep_reflect for depth > 1", () => {
+    const state = makeState({ defaults: { execution: { max_steps: { deep_reflect: 15 } } } });
     expect(getMaxSteps(state, "reflect", 2)).toBe(15);
   });
 
@@ -120,7 +120,7 @@ describe("getMaxSteps", () => {
     const state = makeState({
       defaults: {
         reflect_levels: { 2: { max_steps: 25 } },
-        execution: { max_steps: { reflect_deep: 15 } },
+        execution: { max_steps: { deep_reflect: 15 } },
       },
     });
     expect(getMaxSteps(state, "reflect", 2)).toBe(25);
@@ -564,7 +564,7 @@ describe("runSession reflect_reserve_pct", () => {
     const defaults = {
       orient: { model: "test/orient", effort: "low", max_output_tokens: 1000 },
       reflect: { model: "test/reflect" },
-      session_budget: { max_cost: 0.15, max_steps: 8, max_duration_seconds: 600, ...budgetOverrides },
+      session_budget: { max_cost: 0.15, max_duration_seconds: 600, ...budgetOverrides },
       execution: { max_steps: { orient: 3 } },
     };
     const state = makeState({ defaults });
@@ -644,8 +644,8 @@ describe("runReflect budget_multiplier", () => {
     const defaults = {
       orient: { model: "test/orient", effort: "low", max_output_tokens: 1000 },
       reflect: { model: "test/reflect" },
-      session_budget: { max_cost: 0.10, max_steps: 8, max_duration_seconds: 600 },
-      execution: { max_steps: { reflect_deep: 10 }, max_reflect_depth: 1 },
+      session_budget: { max_cost: 0.10, max_duration_seconds: 600 },
+      execution: { max_steps: { deep_reflect: 10 }, max_reflect_depth: 1 },
       deep_reflect: { model: "test/opus", effort: "high", max_output_tokens: 4000, ...deepReflectOverrides },
     };
     const state = makeState({ defaults });
@@ -738,9 +738,9 @@ describe("patch op", () => {
   });
 });
 
-// ── 19. applyStagedAsCandidate with patch op ────────────────
+// ── 19. applyStaged with patch op ────────────────
 
-describe("applyStagedAsCandidate with patch op", () => {
+describe("applyStaged with patch op", () => {
   it("forwards patch ops through to kvWritePrivileged", async () => {
     const K = makeMockK({
       "hook:wake:mutations": "function old() { return 1; }",
@@ -755,8 +755,8 @@ describe("applyStagedAsCandidate with patch op", () => {
 
     expect(mutationId).toBeTruthy();
 
-    // Apply staged as candidate
-    await applyStagedAsCandidate(K, mutationId);
+    // Apply staged mutation
+    await applyStaged(K, mutationId);
 
     // Check that the patch was applied
     const afterValue = K._kv._store.get("hook:wake:mutations");

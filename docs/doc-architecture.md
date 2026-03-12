@@ -105,13 +105,14 @@ These are optional. If the hook code doesn't exist in KV, execution proceeds wit
 
 ## Budget Enforcement
 
-The kernel enforces three budget limits on every `callLLM` invocation:
+The kernel enforces two budget limits on every `callLLM` invocation:
 
 - **Cost**: `session_budget.max_cost` — cumulative cost across all LLM calls in the session
-- **Steps**: `session_budget.max_steps` — total number of LLM calls (not agent loop turns)
 - **Duration**: `session_budget.max_duration_seconds` — wall-clock time since session start
 
-These come from `config:defaults.session_budget` during normal operation. During minimal fallback, the kernel overwrites with hardcoded values (max_cost: $0.50, max_steps: 3, max_duration: 120s) and ignores `config:defaults`.
+Per-phase step limits are configured separately in `execution.max_steps` (orient, reflect, deep_reflect) and enforced by the agent loop's `maxSteps` parameter.
+
+These come from `config:defaults.session_budget` during normal operation. During minimal fallback, the kernel overwrites with hardcoded values (max_cost: $0.50, max_duration: 120s) and ignores `config:defaults`.
 
 When a budget is exceeded, `callLLM` throws `"Budget exceeded: {reason}"`. The agent loop catches this and returns `{ budget_exceeded: true, reason }` instead of crashing.
 
@@ -173,7 +174,7 @@ Each cron invocation has a **15-minute wall-clock limit** regardless of cron int
 - `hook:wake:{module}` — additional hook modules
 - `secret:{name}` — KV-stored secrets (accessible by tools/adapters via meta.kv_secrets)
 - `mutation_staged:{id}` — staged mutation records
-- `mutation_candidate:{id}` — candidate mutation records (applied but unverified)
+- `mutation_rollback:{id}` — rollback records for inflight mutations (applied but unverified)
 - `doc:{name}` — reference documents (this file, mutation guide, etc.)
 - `providers` — provider config map (adapter references, secret names)
 - `wallets` — wallet config map
@@ -202,8 +203,8 @@ The hook (`hook:wake:code`) exports a default fetch handler and a `wake(K, input
 
 1. **Wake gate** — checks `wake_config.next_wake_after`, skips if not time yet
 2. **Crash detection** — checks for stale `session` key from a previous hook-level crash
-3. **Mutation tracking init** — prefix-scans `mutation_staged:*` and `mutation_candidate:*` to build in-memory tracking lists
-4. **Circuit breaker** — checks `last_danger` against candidate mutation activation times, rolls back candidates that activated before danger signals
+3. **Mutation tracking init** — prefix-scans `mutation_staged:*` and `mutation_rollback:*` to build in-memory tracking lists
+4. **Circuit breaker** — checks `last_danger` against inflight mutation activation times, rolls back inflight mutations that activated before danger signals
 5. **Ground truth** — loads balances (via provider/wallet adapters), KV usage
 6. **State loading** — loads `config:defaults`, `last_reflect`, `config:models`, `dharma`, `config:tool_registry`
 7. **Reflect check** — determines if any reflection depth is due (based on session count and time intervals)
@@ -221,25 +222,25 @@ A single LLM call (maxSteps: 1, no tools) that reviews the session's karma log a
 
 ### Deep Reflect (depth 1+)
 
-A multi-turn agent loop with tool access (excluding `spawn_subplan`). Depth 1 examines recent karma logs, the orient prompt, and session history. Depth N examines depth N-1 outputs and the below-level prompt. Each depth can propose mutations (applied directly as candidates at depth 1+, or staged at depth 0). Output stored at `reflect:{depth}:{sessionId}`.
+A multi-turn agent loop with tool access (excluding `spawn_subplan`). Depth 1 examines recent karma logs, the orient prompt, and session history. Depth N examines depth N-1 outputs and the below-level prompt. Each depth can propose mutations (applied directly as inflight at depth 1+, or staged at depth 0). Output stored at `reflect:{depth}:{sessionId}`.
 
 Deep reflect cascades downward: depth N runs first, then depth N-1, then ... depth 1. Each level's output is available to the next via `reflect:{depth}:{sessionId}` keys.
 
 ## Mutation Protocol
 
-The lifecycle: **staged → candidate → promoted** (or rolled back at any stage).
+The lifecycle: **staged → inflight → promoted** (or rolled back at any stage).
 
 **Staged** (`mutation_staged:{id}`): A proposal with claims (why), ops (what to change), and checks (how to verify). Created by session reflect via `stageMutation`. Can be withdrawn or modified by session reflect, or applied/rejected by deep reflect.
 
-**Candidate** (`mutation_candidate:{id}`): Applied to KV but not yet verified. Contains snapshots of all affected keys before modification. Created either by promoting a staged mutation (`applyStagedAsCandidate`) or directly by deep reflect (`applyDirectAsCandidate`). Can be promoted (delete the candidate record, changes persist) or rolled back (restore snapshots).
+**Inflight** (`mutation_rollback:{id}`): Applied to KV but not yet verified. Contains snapshots of all affected keys before modification. Created either by promoting a staged mutation (`applyStaged`) or directly by deep reflect (`applyDirect`). Can be promoted (delete the rollback record, changes persist) or rolled back (restore snapshots).
 
-**Promoted**: The candidate record is deleted. The changes are now permanent. No rollback possible — the snapshots are gone.
+**Promoted**: The rollback record is deleted. The changes are now permanent. No rollback possible — the snapshots are gone.
 
-One active candidate per key enforced: if a new mutation targets a key that already has an active candidate, it's rejected as a conflict.
+One inflight mutation per key enforced: if a new mutation targets a key that already has an inflight mutation, it's rejected as a conflict.
 
 ### Circuit Breaker
 
-On each wake, before the hook runs, the hook checks `last_danger` (written by the kernel on danger signals). If any candidate mutation was activated before the danger signal timestamp, it's automatically rolled back. This catches cases where a mutation causes LLM failures or fatal errors.
+On each wake, before the hook runs, the hook checks `last_danger` (written by the kernel on danger signals). If any inflight mutation was activated before the danger signal timestamp, it's automatically rolled back. This catches cases where a mutation causes LLM failures or fatal errors.
 
 ## Isolate Execution
 

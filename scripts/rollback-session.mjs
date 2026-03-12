@@ -130,13 +130,13 @@ for (const pw of privilegedWrites) {
   }
 }
 
-// 3. Mutation candidates created this session — restore snapshots, delete record
+// 3. Mutation rollback records created this session — restore snapshots, delete record
 const mutationApplied = karma.filter(e => e.event === "mutation_applied");
 for (const ma of mutationApplied) {
-  const candidateKey = `mutation_candidate:${ma.mutation_id}`;
-  const candidate = await kvGet(candidateKey);
-  if (candidate?.snapshots) {
-    for (const [key, snapshot] of Object.entries(candidate.snapshots)) {
+  const rollbackKey = `mutation_rollback:${ma.mutation_id}`;
+  const rollback = await kvGet(rollbackKey);
+  if (rollback?.snapshots) {
+    for (const [key, snapshot] of Object.entries(rollback.snapshots)) {
       if (snapshot.value === null) {
         plan.deletes.push(key);
       } else {
@@ -149,10 +149,10 @@ for (const ma of mutationApplied) {
       }
     }
   }
-  // The candidate record itself should already be in privileged_write reversals,
+  // The rollback record itself should already be in privileged_write reversals,
   // but ensure it's deleted
-  if (!plan.deletes.includes(candidateKey)) {
-    plan.deletes.push(candidateKey);
+  if (!plan.deletes.includes(rollbackKey)) {
+    plan.deletes.push(rollbackKey);
   }
 }
 

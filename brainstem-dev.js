@@ -1,11 +1,11 @@
 // Swayambhu Dev Brainstem — subclass, not fork
-// Imports the real Brainstem + wake-hook.js, overrides only the platform-specific
+// Imports the real Brainstem + hook-main.js, overrides only the platform-specific
 // methods. All business logic (karma, budgets, error handling) lives in the base class.
 //
 // Run with: npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state
 
 import { Brainstem } from './brainstem.js';
-import { wake } from './wake-hook.js';
+import { wake } from './hook-main.js';
 import { handleChat } from './hook-chat.js';
 
 // ── Channel adapters (single source of truth: channels/*.js) ──
@@ -21,10 +21,14 @@ import * as kv_read from './tools/kv_read.js';
 import * as kv_write from './tools/kv_write.js';
 import * as kv_manifest from './tools/kv_manifest.js';
 import * as karma_query from './tools/karma_query.js';
+import * as akash_exec from './tools/akash_exec.js';
+import * as check_email from './tools/check_email.js';
+import * as send_email from './tools/send_email.js';
 
 const TOOL_MODULES = {
   send_slack, web_fetch, kv_read, kv_write,
-  kv_manifest, karma_query,
+  kv_manifest, karma_query, akash_exec,
+  check_email, send_email,
 };
 
 // ── Provider adapter modules (single source of truth: providers/*.js) ──
@@ -94,7 +98,7 @@ export default {
 class DevBrainstem extends Brainstem {
 
   // ── KernelRPC getter bridge ─────────────────────────────────
-  // wake-hook.js calls K.getSessionId(), K.getDharma(), etc.
+  // hook-main.js calls K.getSessionId(), K.getDharma(), etc.
   // In prod these live on KernelRPC (the RPC bridge). In dev, K = this.
 
   async getSessionId()    { return this.sessionId; }
@@ -114,7 +118,7 @@ class DevBrainstem extends Brainstem {
   // Calls wake() directly instead of Worker Loader isolate.
 
   async _invokeHookModules(modules, mainModule) {
-    // Load config eagerly (wake-hook expects these via getters)
+    // Load config eagerly (hook-main expects these via getters)
     this.defaults = await this.kvGet("config:defaults");
     this.modelsConfig = await this.kvGet("config:models");
     this.dharma = await this.kvGet("dharma");

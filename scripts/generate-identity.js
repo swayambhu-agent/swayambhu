@@ -15,8 +15,8 @@
 //   node scripts/generate-identity.js --seed-kv       # write to local KV
 
 import { ethers } from "ethers";
-import { execSync } from "child_process";
-import { writeFileSync, unlinkSync } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 
 const CHAIN_ID = 8453; // Base mainnet
 const CHAIN_NAME = "base";
@@ -90,7 +90,7 @@ console.log(`
 
   2. Seed local KV:
      node scripts/generate-identity.js --seed-kv
-     # or add the identity block to seed-local-kv.sh
+     # or add the identity block to seed-local-kv.mjs
 
   3. Later, when dharma is finalized:
      Deploy ERC-1056 registry to Base, then call setAttribute
@@ -98,26 +98,26 @@ console.log(`
 `);
 
 if (seedKV) {
-  const tmpFile = "/tmp/_kv_identity";
-  writeFileSync(tmpFile, JSON.stringify(kv, null, 2));
+  const { Miniflare } = await import("miniflare");
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const root = resolve(__dirname, "..");
 
-  try {
-    execSync(
-      `wrangler kv key put --binding KV --local "identity:did" --path ${tmpFile}`,
-      { stdio: "inherit" }
-    );
-    console.log("  ✓ identity:did written to local KV\n");
-  } catch (err) {
-    console.error("  ✗ Failed to write to local KV:", err.message);
-  }
+  const mf = new Miniflare({
+    modules: true,
+    script: 'export default { fetch() { return new Response("ok"); } }',
+    kvPersist: resolve(root, ".wrangler/shared-state/v3/kv"),
+    kvNamespaces: { KV: "05720444f9654ed4985fb67af4aea24d" },
+  });
 
-  unlinkSync(tmpFile);
+  const kvStore = await mf.getKVNamespace("KV");
+  await kvStore.put("identity:did", JSON.stringify(kv, null, 2), {
+    metadata: { format: "json", description: "Swayambhu DID identity" },
+  });
+  console.log("  ✓ identity:did written to local KV\n");
+  await mf.dispose();
 } else {
-  console.log(`── Paste into seed-local-kv.sh (Identity section) ─────────
+  console.log(`── To seed into local KV ───────────────────────────────────
 
-cat > /tmp/_kv_seed_val <<'JSONEOF'
-${JSON.stringify(kv, null, 2)}
-JSONEOF
-put_kv "identity:did" /tmp/_kv_seed_val
+  node scripts/generate-identity.js --seed-kv
 `);
 }

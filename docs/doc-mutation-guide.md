@@ -8,7 +8,7 @@ Every KV key falls into one of three tiers:
 
 **Kernel-only** (`kernel:*` and `dharma`): You cannot write these. Both `kvPutSafe` and `kvWritePrivileged` will reject the write. These keys are maintained exclusively by the kernel. They include your crash history (`kernel:last_sessions`), alert configuration (`kernel:alert_config`), the last known good hook snapshot (`kernel:last_good_hook`), and your dharma. You can read them.
 
-**System keys** (`config:*`, `prompt:*`, `hook:*`, `tool:*`, `provider:*`, `secret:*`, `mutation_staged:*`, `mutation_candidate:*`, and exact keys `providers`, `wallets`, `wisdom`): You cannot write these via `kvPutSafe`. You must use `kvWritePrivileged`, which snapshots the old value to karma before writing. This is the path the mutation protocol uses.
+**System keys** (`config:*`, `prompt:*`, `hook:*`, `tool:*`, `provider:*`, `secret:*`, `mutation_staged:*`, `mutation_rollback:*`, and exact keys `providers`, `wallets`, `wisdom`): You cannot write these via `kvPutSafe`. You must use `kvWritePrivileged`, which snapshots the old value to karma before writing. This is the path the mutation protocol uses.
 
 **Regular keys** (`reflect:*`, `wake_config`, `last_reflect`, `session_counter`, `tooldata:*`, etc.): Writable via `kvPutSafe`. No special protection needed.
 
@@ -70,7 +70,7 @@ Your wake session logic is split into 4 ES modules loaded via a manifest. The ke
 |--------|-------------------|----------|
 | `hook:wake:code` | `main` | Entry point: `wake()`, `runSession()`, `detectCrash()`, Worker Loader export |
 | `hook:wake:reflect` | `hook-reflect.js` | `executeReflect()`, `runReflect()`, scheduling, default prompts |
-| `hook:wake:mutations` | `hook-mutations.js` | Mutation protocol: staging, candidates, circuit breaker, verdicts |
+| `hook:wake:mutations` | `hook-mutations.js` | Mutation protocol: staging, inflight tracking, circuit breaker, verdicts |
 | `hook:wake:protect` | `hook-protect.js` | Constants (`SYSTEM_KEY_PREFIXES`, etc.), `isSystemKey()`, `applyKVOperation()` |
 
 ### Manifest
@@ -186,7 +186,7 @@ Before modifying, read the target module via `K.kvGet("hook:wake:mutations")` (o
 
 **Do not remove deep reflect from the hook.** Deep reflect is the mechanism that reviews your own changes. Removing it eliminates your ability to evaluate whether your modifications are working. The human custodian will be alerted (hook write alert), but you will have lost your own self-correction capability.
 
-**Do not remove the mutation protocol from the hook.** The staged → candidate → promoted lifecycle with checks is your own governance. Without it, modifications go directly through `kvWritePrivileged` with no verification step. The kernel still enforces snapshots and rate limits, but you lose the ability to validate changes before applying them.
+**Do not remove the mutation protocol from the hook.** The staged → inflight → promoted lifecycle with checks is your own governance. Without it, modifications go directly through `kvWritePrivileged` with no verification step. The kernel still enforces snapshots and rate limits, but you lose the ability to validate changes before applying them.
 
 **Do not modify `config:defaults` to raise budget limits excessively.** The kernel's fallback uses a hardcoded recovery budget (max_steps: 3, max_cost: $0.50) that ignores `config:defaults`. But during normal operation, inflated budgets waste resources and can trigger platform kills (wall-time/CPU limits), which count toward the tripwire.
 

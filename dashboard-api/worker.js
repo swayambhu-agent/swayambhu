@@ -15,7 +15,6 @@ function json(data, status = 200) {
 
 function auth(request, env) {
   const key = request.headers.get("X-Operator-Key");
-  console.log("auth debug:", JSON.stringify({ header: key, env: env.OPERATOR_KEY, match: key === env.OPERATOR_KEY }));
   return key && key === env.OPERATOR_KEY;
 }
 
@@ -53,18 +52,6 @@ export default {
     // All other routes require auth
     if (!auth(request, env)) {
       return json({ error: "unauthorized" }, 401);
-    }
-
-    // POST /wake — trigger brainstem wake cycle
-    if (path === "/wake" && request.method === "POST") {
-      const brainstemUrl = env.BRAINSTEM_URL || "http://localhost:8787";
-      try {
-        const resp = await fetch(`${brainstemUrl}/__scheduled`);
-        const text = await resp.text();
-        return json({ ok: resp.ok, status: resp.status, body: text });
-      } catch (e) {
-        return json({ ok: false, error: e.message }, 502);
-      }
     }
 
     // GET /health — system status snapshot

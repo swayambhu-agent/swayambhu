@@ -18,55 +18,38 @@ All local workers and the seed script must use the same `--persist-to` path
 so they share one KV store. The canonical path is `.wrangler/shared-state`
 (relative to repo root). The seed script already has this baked in.
 
-### Full reset & start (from repo root)
+### Starting dev environment
+
+One script handles everything — `start.sh`. By default it starts all
+services and preserves existing KV state. Use `--wake` to trigger a wake
+cycle after startup. Use `--reset-all-state` to wipe state and re-seed
+from scratch. Use `--set` to override any `config:defaults` value after seeding.
 
 ```bash
-# 1. Kill any running workers
-taskkill //F //IM workerd.exe
+# Start services only (dashboard, brainstem — no wake)
+source .env && bash scripts/start.sh
 
-# 2. Clear local state (wait a few seconds after killing workers)
-rm -rf .wrangler/shared-state
+# Start + trigger a wake cycle
+source .env && bash scripts/start.sh --wake
 
-# 3. Seed local KV (fast — ~2s)
-node scripts/seed-local-kv.mjs
+# Full reset + wake
+source .env && bash scripts/start.sh --reset-all-state --wake
 
-# 4. Switch to cheap model for basic testing
-bash scripts/switch-model.sh deepseek/deepseek-v3.2
-
-# 5. Start brainstem (port 8787)
-source .env
-npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state
-
-# 6. Start dashboard API (port 8790, in a second terminal)
-cd dashboard-api
-npx wrangler dev --port 8790 --persist-to ../.wrangler/shared-state
-
-# 7. Trigger a wake cycle
-curl http://localhost:8787/__scheduled
+# Full reset with config overrides (dot-path into config:defaults)
+source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepseek --set reflect.model=deepseek
 ```
 
-### Waking Swayambhu (preserve state)
+The script automatically:
+- Kills stale workers (`pkill -f workerd`)
+- Waits for ports to actually free (avoids port conflict footgun)
+- Starts brainstem, dashboard API, and dashboard SPA
+- Waits for services to be ready
+- Triggers `/__scheduled` if `--wake` is passed
 
-When you want to restart workers (e.g., after code changes) without wiping
-KV state, use `wake-now.sh`. It kills stale workers, resets the sleep timer
-so the wake isn't skipped, starts fresh workers, and triggers `/__scheduled`.
+### IMPORTANT: `pkill -f workerd` kills ALL workers
 
-```bash
-source .env && bash scripts/wake-now.sh
-```
-
-### IMPORTANT: `taskkill //F //IM workerd.exe` kills ALL workers
-
-This kills both brainstem (8787) and dashboard API (8790). After killing
-workers, always restart BOTH. Don't forget the dashboard.
-
-### Port conflict footgun
-
-When you kill a stale worker and start a new one, the new worker may silently
-bind to a different port (e.g., 8788 instead of 8787) if the old port hasn't
-freed yet. Then `curl localhost:8787` hits the *old* stale process, not your
-new code. `wake-now.sh` avoids this by polling until ports are actually free
-before starting new workers.
+This kills both brainstem (8787) and dashboard API (8790). The start
+script handles restarting both automatically.
 
 ### Ports
 
@@ -78,7 +61,7 @@ before starting new workers.
 
 ### Dashboard auth
 
-The operator key for local dev is `test` (set in `dashboard-api/.dev.vars`).
+The operator key for local dev is `test` (set in `dashboard-api/wrangler.toml`).
 Enter it in the dashboard login prompt.
 
 ## Testing
@@ -90,9 +73,10 @@ npm test          # vitest — all unit tests, no network, no Workers runtime
 ```
 
 Tests cover:
-- `tests/brainstem.test.js` — kernel logic (85 tests)
-- `tests/wake-hook.test.js` — wake flow, reflect, mutations (48 tests)
-- `tests/tools.test.js` — tool/provider execute(), module structure (38 tests)
+- `tests/brainstem.test.js` — kernel logic (104 tests)
+- `tests/wake-hook.test.js` — wake flow, reflect, mutations (62 tests)
+- `tests/tools.test.js` — tool/provider execute(), module structure (100 tests)
+- `tests/chat.test.js` — chat system (12 tests)
 
 Shared mocks in `tests/helpers/`: `mock-kv.js` (KV store), `mock-kernel.js`
 (KernelRPC mock).
@@ -109,18 +93,19 @@ Watch stderr for tagged output: `[KARMA]`, `[TOOL]`, `[LLM]`, `[HOOK]`.
 
 ### Switching models
 
-The seed script seeds canonical production models (Claude). Use the switch
-script to swap all roles to a cheaper model for basic dev testing:
+The seed script seeds canonical production models (Claude). To use cheaper
+models for basic dev testing, use `--set` with `--reset-all-state`:
 
 ```bash
-# Switch to DeepSeek V3.2 (~30x cheaper) for basic testing
-bash scripts/switch-model.sh deepseek/deepseek-v3.2
+# Full reset with DeepSeek for all roles (~30x cheaper)
+source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepseek --set reflect.model=deepseek
 
-# Switch back when testing reflect/mutation logic
-bash scripts/switch-model.sh anthropic/claude-sonnet-4.6
+# Override just orient model
+source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepseek
 ```
 
-Patches KV in-place (no re-seed needed). Restart wrangler dev to pick up.
+Model aliases (e.g. `deepseek` for `deepseek/deepseek-v3.2`) are resolved
+at runtime via `config:models` alias_map. You can also use full model IDs.
 
 **Use cheap models for:** tool wiring, orient flow, KV ops, prompt rendering,
 budget enforcement, basic wake cycles.
@@ -160,12 +145,10 @@ for `wrapAsModule` compatibility).
 
 | Script | Purpose |
 |--------|---------|
-| `source .env && bash scripts/dev-start.sh` | Full reset: seed, cheap models, start all, trigger wake |
-| `source .env && bash scripts/dev-start.sh --prod` | Same, but keeps production models |
-| `source .env && bash scripts/wake-now.sh` | Light restart: kill workers, reset sleep timer, start, trigger wake (no state wipe) |
-| `node scripts/seed-local-kv.mjs` | Fast seed (~2s) — uses Miniflare API directly |
-| `bash scripts/seed-local-kv.sh` | Slow seed — uses wrangler CLI, supports `--pull-remote` |
-| `bash scripts/switch-model.sh <model>` | Swap all LLM roles to a single model in KV |
+| `source .env && bash scripts/start.sh` | Restart workers, preserve state, trigger wake |
+| `source .env && bash scripts/start.sh --reset-all-state` | Full reset: wipe state, seed with production models |
+| `source .env && bash scripts/start.sh --reset-all-state --set path=value` | Full reset with config overrides |
+| `node scripts/seed-local-kv.mjs` | Seed local KV (~2s) — uses Miniflare API directly |
 | `node scripts/read-kv.mjs [key-or-prefix]` | Inspect local KV (list keys, read values) |
 | `node scripts/rollback-session.mjs` | Undo last session's KV changes (`--dry-run` to preview, `--yes` to skip confirm) |
 

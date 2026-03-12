@@ -33,10 +33,7 @@ wiring, KV serialization problems.
 
 **Run:**
 ```bash
-bash scripts/seed-local-kv.sh
-source .env
-npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state
-curl http://localhost:8787/__scheduled
+source .env && bash scripts/start.sh --reset-all-state --wake
 ```
 
 ### Layer 2: Prod integration (`wrangler dev` with `wrangler.toml`)
@@ -55,7 +52,7 @@ serialization problems, provider cascade failures.
 
 **Run:**
 ```bash
-bash scripts/seed-local-kv.sh
+node scripts/seed-local-kv.mjs
 source .env
 npx wrangler dev --test-scheduled --persist-to .wrangler/shared-state
 curl http://localhost:8787/__scheduled

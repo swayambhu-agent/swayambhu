@@ -34,7 +34,7 @@ The runtime then shuts down. Nothing persists except what's in the store. Next w
 
 Periodically, instead of a normal session, the brainstem triggers a **deep reflection**. Normal sessions and deep reflect sessions are mutually exclusive — when reflection fires, it replaces the normal act cycle entirely, because the point is to step back and examine the pattern rather than continue acting within it.
 
-**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose mutations to prompts, config, and tools through the mutation protocol — and its mutation requests are applied directly as candidates (no staging required). Depth 1 also writes the wake config and schedule that govern normal sessions.
+**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose mutations to prompts, config, and tools through the mutation protocol — and its mutation requests are applied directly as inflight (no staging required). Depth 1 also writes the wake config and schedule that govern normal sessions.
 
 **Depth 2** fires less often (~100 sessions by default, but self-determined after first run). It reads depth 1's stored outputs, looking for patterns in *how depth 1 is reflecting*. Is depth 1 over-correcting? Missing systemic issues? Fixating on symptoms instead of causes?
 
@@ -66,13 +66,13 @@ Self-modification is the point. But ungoverned self-modification is how you bric
 
 **Protected keys.** All writes from the agent loop pass through a protection gate. System keys — prompts, config, tools, credentials, the wisdom document — are blocked from direct writes. They can only be modified through the mutation protocol. Agent-created data keys pass through freely.
 
-**The mutation protocol.** Changes to protected keys go through a staged lifecycle. Session reflect proposes mutations, which are staged. Deep reflect reviews staged mutations and issues verdicts: apply, reject, modify, defer, or withdraw. Applied mutations become candidates — the changes take effect, but old values are snapshotted for rollback. Only after deep reflect explicitly promotes a candidate does the snapshot get deleted and the change become permanent. Deep reflect's own mutations skip staging and become candidates immediately — it's the highest-trust context.
+**The mutation protocol.** Changes to protected keys go through a staged lifecycle. Session reflect proposes mutations, which are staged. Deep reflect reviews staged mutations and issues verdicts: apply, reject, modify, defer, or withdraw. Applied mutations become inflight — the changes take effect, but old values are snapshotted for rollback. Only after deep reflect explicitly promotes an inflight mutation does the snapshot get deleted and the change become permanent. Deep reflect's own mutations skip staging and become inflight immediately — it's the highest-trust context.
 
 Each mutation carries **checks** — verifiable conditions that the runtime evaluates mechanically. These might assert that a KV key has a certain value, or that a tool produces a certain result. Check results are shown in context whenever mutations are loaded, so the model sees whether its changes are working before deciding to promote or roll back.
 
-**The circuit breaker.** On every wake, before anything else runs, the runtime scans karma logs for danger signals — fatal errors, parse failures, all providers failing — that occurred after any candidate mutation was activated. If found, it rolls back the candidate automatically. This catches the case where a bad mutation breaks the system so badly that no LLM call succeeds. The runtime handles recovery mechanically without needing a model.
+**The circuit breaker.** On every wake, before anything else runs, the runtime scans karma logs for danger signals — fatal errors, parse failures, all providers failing — that occurred after any inflight mutation was activated. If found, it rolls back the inflight mutation automatically. This catches the case where a bad mutation breaks the system so badly that no LLM call succeeds. The runtime handles recovery mechanically without needing a model.
 
-**Conflict detection.** Two mutations targeting the same key can't both be candidates simultaneously. The second is rejected until the first is promoted or rolled back.
+**Conflict detection.** Two mutations targeting the same key can't both be inflight simultaneously. The second is rejected until the first is promoted or rolled back.
 
 **Conservative seed defaults.** The system starts with tight constraints — low step limits, cautious budgets. As it gains experience, the reflection hierarchy can loosen these constraints via config updates. Safer to start tight and self-relax than start loose and self-correct after making expensive mistakes.
 
@@ -114,7 +114,7 @@ The runtime is split into two layers:
 
 **The kernel** (`brainstem.js`) contains hardcoded primitives and safety invariants. It handles LLM calls, KV access, tool execution, the agent loop, sandbox isolation, karma logging, provider cascading, and alerting. The kernel is deployed code — changes require a redeploy.
 
-**The wake hook** (`wake-hook.js`, stored in KV as `hook:wake:code`) contains all session policy — the wake flow, crash detection, reflect scheduling, the mutation protocol, circuit breaker, and session orchestration. The hook is data — Swayambhu can rewrite it through the mutation protocol, restructuring his own control flow without a deploy.
+**The wake hook** (modular: `hook-main.js`, `hook-reflect.js`, `hook-mutations.js`, `hook-protect.js`, stored in KV via `hook:wake:manifest`) contains all session policy — the wake flow, crash detection, reflect scheduling, the mutation protocol, circuit breaker, and session orchestration. The hook is data — Swayambhu can rewrite it through the mutation protocol, restructuring his own control flow without a deploy.
 
 ### How it runs
 
@@ -132,7 +132,7 @@ The hook calls kernel primitives via RPC — `K.callLLM()`, `K.kvGet()`, `K.runA
 
 The hook cannot write to KV directly. Two RPC methods gate all writes:
 
-**`kvPutSafe(key, value, metadata)`** — allows writes to non-system keys. Blocks writes to system key prefixes (`prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `mutation_staged:`, `mutation_candidate:`, `hook:`), kernel-only prefixes (`kernel:`), system exact keys (`dharma`, `wisdom`), and the `dharma` key unconditionally. This is for routine data writes.
+**`kvPutSafe(key, value, metadata)`** — allows writes to non-system keys. Blocks writes to system key prefixes (`prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `mutation_staged:`, `mutation_rollback:`, `hook:`), kernel-only prefixes (`kernel:`), system exact keys (`dharma`, `wisdom`), and the `dharma` key unconditionally. This is for routine data writes.
 
 **`kvWritePrivileged(ops)`** — allows writes to system keys (but not `kernel:*` or `dharma`). For each operation: snapshots the current value to karma before writing, increments a per-session counter (max 50, hardcoded), and auto-reloads cached config after writes to config keys. The mutation protocol in the hook uses this for vetted changes to prompts, config, and tools.
 
@@ -144,7 +144,7 @@ The kernel maintains `kernel:last_sessions` — a list of the last 5 session out
 
 If the last 3 outcomes are all crashes or kills, `checkHookSafety` fires: deletes `hook:wake:code`, sends a kernel alert, and the next session runs the hardcoded minimal fallback. This catches the case where a bad hook rewrite breaks the system — the kernel recovers mechanically without needing a working LLM call.
 
-The minimal fallback uses a kernel-embedded recovery prompt (does not load `prompt:orient` from KV, which could be corrupted), a hardcoded budget (`max_steps: 3`, `max_cost: 0.50`), and discards all `kv_operations` from LLM output. It runs one basic orient session for status reporting, then waits for manual re-seeding of the hook.
+The minimal fallback uses a kernel-embedded recovery prompt (does not load `prompt:orient` from KV, which could be corrupted), a hardcoded budget (`max_cost: 0.50`, `max_duration: 120s`), and discards all `kv_operations` from LLM output. It runs one basic orient session for status reporting, then waits for manual re-seeding of the hook.
 
 ### Alerting
 
@@ -154,4 +154,4 @@ The minimal fallback uses a kernel-embedded recovery prompt (does not load `prom
 
 The brainstem runtime is functional. Swayambhu runs on Cloudflare Workers with tool execution via Dynamic Worker Loaders (isolate-based sandboxing). The kernel/hook split separates hardcoded safety (kernel, deployed code) from evolvable policy (wake hook, stored in KV). Local development works fully with Wrangler. Production deployment uses Cloudflare's Dynamic Worker Loader API.
 
-For setup instructions, KV schema, and implementation details, see `seed-config.md`, `brainstem.js` (kernel), and `wake-hook.js` (policy).
+For setup instructions, KV schema, and implementation details, see `scripts/seed-local-kv.mjs`, `brainstem.js` (kernel), and the hook modules (policy).

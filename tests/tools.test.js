@@ -10,12 +10,19 @@ import * as kv_read from "../tools/kv_read.js";
 import * as kv_write from "../tools/kv_write.js";
 import * as kv_manifest from "../tools/kv_manifest.js";
 import * as karma_query from "../tools/karma_query.js";
+import * as check_email from "../tools/check_email.js";
+import * as send_email from "../tools/send_email.js";
+import * as akash_exec from "../tools/akash_exec.js";
+
+// ── Channel modules ─────────────────────────────────────────
+import * as telegram from "../channels/telegram.js";
 
 // ── Provider modules ─────────────────────────────────────────
 
 import * as llm from "../providers/llm.js";
 import * as llm_balance from "../providers/llm_balance.js";
 import * as wallet_balance from "../providers/wallet_balance.js";
+import * as gmail from "../providers/gmail.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -26,6 +33,49 @@ function mockFetch(response) {
     json: async () => response,
     text: async () => JSON.stringify(response),
   }));
+}
+
+function mockFetchSequence(responses) {
+  let i = 0;
+  return vi.fn(async () => {
+    const resp = responses[i++] || responses[responses.length - 1];
+    return {
+      ok: resp.ok !== false,
+      status: resp.status || 200,
+      json: async () => resp.json,
+      text: async () => resp.text || JSON.stringify(resp.json),
+    };
+  });
+}
+
+const GMAIL_SECRETS = {
+  GMAIL_CLIENT_ID: "test-client-id",
+  GMAIL_CLIENT_SECRET: "test-client-secret",
+  GMAIL_REFRESH_TOKEN: "test-refresh-token",
+};
+
+function base64url(str) {
+  return btoa(unescape(encodeURIComponent(str)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function gmailMessage({ id, threadId, from, subject, date, messageId, body, mimeType }) {
+  return {
+    id: id || "msg_1",
+    threadId: threadId || "thread_1",
+    payload: {
+      mimeType: mimeType || "text/plain",
+      headers: [
+        { name: "From", value: from || "alice@example.com" },
+        { name: "Subject", value: subject || "Test Subject" },
+        { name: "Date", value: date || "Mon, 10 Mar 2026 12:00:00 GMT" },
+        { name: "Message-ID", value: messageId || "<msg1@example.com>" },
+      ],
+      body: { data: base64url(body || "Hello world") },
+    },
+  };
 }
 
 function mockKV(initial = {}) {
@@ -50,10 +100,10 @@ function mockKV(initial = {}) {
 
 const allTools = {
   send_slack, web_fetch, kv_read, kv_write,
-  kv_manifest, karma_query,
+  kv_manifest, karma_query, check_email, send_email, akash_exec,
 };
 
-const allProviders = { llm, llm_balance, wallet_balance };
+const allProviders = { llm, llm_balance, wallet_balance, gmail };
 
 describe("module structure", () => {
   for (const [name, mod] of Object.entries(allTools)) {
@@ -133,6 +183,72 @@ describe("web_fetch", () => {
     const result = await web_fetch.execute({ url: "https://example.com", max_length: 50, fetch: f });
     expect(result.body.length).toBeLessThan(200);
     expect(result.body).toContain("...[truncated]");
+  });
+});
+
+describe("akash_exec", () => {
+  it("sends command and returns result", async () => {
+    const f = mockFetch({ status: "completed", exit_code: 0, output: "hello world", id: "p123" });
+    const result = await akash_exec.execute({
+      command: "echo hello",
+      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      fetch: f,
+    });
+    expect(f).toHaveBeenCalledOnce();
+    expect(result).toEqual({ ok: true, status: "completed", exit_code: 0, output: "hello world", process_id: "p123" });
+    const url = f.mock.calls[0][0];
+    expect(url).toContain("/execute?wait=60");
+    const opts = f.mock.calls[0][1];
+    expect(opts.method).toBe("POST");
+    expect(opts.headers["cf-access-client-id"]).toBe("cid");
+    expect(opts.headers["Authorization"]).toBe("Bearer key");
+  });
+
+  it("uses custom timeout", async () => {
+    const f = mockFetch({ status: "completed", exit_code: 0, output: "", id: "p1" });
+    await akash_exec.execute({
+      command: "ls",
+      timeout: 120,
+      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      fetch: f,
+    });
+    expect(f.mock.calls[0][0]).toContain("wait=120");
+  });
+
+  it("returns error when command is missing", async () => {
+    const result = await akash_exec.execute({
+      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      fetch: vi.fn(),
+    });
+    expect(result).toEqual({ ok: false, error: "command is required" });
+  });
+
+  it("handles fetch failure", async () => {
+    const f = vi.fn(async () => { throw new Error("network down"); });
+    const result = await akash_exec.execute({
+      command: "ls",
+      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      fetch: f,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("network down");
+  });
+
+  it("handles non-ok response", async () => {
+    const f = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+      text: async () => "server error detail",
+    }));
+    const result = await akash_exec.execute({
+      command: "ls",
+      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      fetch: f,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("500");
+    expect(result.detail).toBe("server error detail");
   });
 });
 
@@ -329,5 +445,686 @@ describe("karma_query", () => {
     // karma_query handles both cases
     const result = await karma_query.execute({ session: "s_str", kv });
     expect(result.count).toBe(3);
+  });
+});
+
+// ── 6. check_email tests ──────────────────────────────────────
+
+describe("check_email", () => {
+  it("returns empty list when no unread emails", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },        // token refresh
+      { json: { messages: [] } },                // list unread
+    ]);
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    expect(result).toEqual({ emails: [], count: 0 });
+  });
+
+  it("fetches unread emails with from, subject, snippet", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "msg_1" }, { id: "msg_2" }] } },
+      { json: gmailMessage({ id: "msg_1", from: "alice@test.com", subject: "Hi", body: "Hello" }) },
+      { json: gmailMessage({ id: "msg_2", from: "bob@test.com", subject: "Re: Hi", body: "Hey there" }) },
+    ]);
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    expect(result.count).toBe(2);
+    expect(result.emails[0].from).toBe("alice@test.com");
+    expect(result.emails[0].subject).toBe("Hi");
+    expect(result.emails[0].snippet).toBe("Hello");
+    expect(result.emails[1].from).toBe("bob@test.com");
+  });
+
+  it("truncates long email bodies at 500 chars", async () => {
+    const longBody = "x".repeat(600);
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "msg_1" }] } },
+      { json: gmailMessage({ id: "msg_1", body: longBody }) },
+    ]);
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    expect(result.emails[0].snippet.length).toBeLessThan(600);
+    expect(result.emails[0].snippet).toContain("...[truncated]");
+  });
+
+  it("respects max_results param", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "msg_1" }] } },
+      { json: gmailMessage({ id: "msg_1" }) },
+    ]);
+    await check_email.execute({ max_results: 5, secrets: GMAIL_SECRETS, fetch: f });
+    // Second call is listUnread — check the URL contains maxResults=5
+    const listUrl = f.mock.calls[1][0];
+    expect(listUrl).toContain("maxResults=5");
+  });
+
+  it("caps max_results at 20", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [] } },
+    ]);
+    await check_email.execute({ max_results: 100, secrets: GMAIL_SECRETS, fetch: f });
+    const listUrl = f.mock.calls[1][0];
+    expect(listUrl).toContain("maxResults=20");
+  });
+
+  it("calls markAsRead when mark_read is true", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "msg_1" }] } },
+      { json: gmailMessage({ id: "msg_1" }) },
+      { json: {} },  // markAsRead response
+    ]);
+    await check_email.execute({ mark_read: true, secrets: GMAIL_SECRETS, fetch: f });
+    expect(f).toHaveBeenCalledTimes(4);
+    const markUrl = f.mock.calls[3][0];
+    expect(markUrl).toContain("msg_1/modify");
+  });
+
+  it("does not call markAsRead when mark_read is false", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "msg_1" }] } },
+      { json: gmailMessage({ id: "msg_1" }) },
+    ]);
+    await check_email.execute({ mark_read: false, secrets: GMAIL_SECRETS, fetch: f });
+    expect(f).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws on token refresh failure", async () => {
+    const f = mockFetchSequence([
+      { ok: false, status: 401, json: {}, text: "Unauthorized" },
+    ]);
+    await expect(
+      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f })
+    ).rejects.toThrow("Gmail token refresh failed");
+  });
+
+  it("throws on list failure", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { ok: false, status: 500, json: {}, text: "Internal error" },
+    ]);
+    await expect(
+      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f })
+    ).rejects.toThrow("Gmail list failed");
+  });
+
+  it("extracts body from multipart text/plain", async () => {
+    const msg = {
+      id: "msg_1", threadId: "t_1",
+      payload: {
+        mimeType: "multipart/alternative",
+        headers: [
+          { name: "From", value: "test@test.com" },
+          { name: "Subject", value: "Multi" },
+          { name: "Date", value: "Mon, 10 Mar 2026" },
+          { name: "Message-ID", value: "<m1@test>" },
+        ],
+        parts: [
+          { mimeType: "text/plain", body: { data: base64url("Plain text body") } },
+          { mimeType: "text/html", body: { data: base64url("<p>HTML body</p>") } },
+        ],
+      },
+    };
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "msg_1" }] } },
+      { json: msg },
+    ]);
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    expect(result.emails[0].snippet).toBe("Plain text body");
+  });
+
+  it("falls back to stripped HTML when no text/plain", async () => {
+    const msg = {
+      id: "msg_1", threadId: "t_1",
+      payload: {
+        mimeType: "multipart/alternative",
+        headers: [
+          { name: "From", value: "test@test.com" },
+          { name: "Subject", value: "HTML only" },
+          { name: "Date", value: "Mon, 10 Mar 2026" },
+          { name: "Message-ID", value: "<m1@test>" },
+        ],
+        parts: [
+          { mimeType: "text/html", body: { data: base64url("<p>Hello</p><br/>World") } },
+        ],
+      },
+    };
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "msg_1" }] } },
+      { json: msg },
+    ]);
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    expect(result.emails[0].snippet).toContain("Hello");
+    expect(result.emails[0].snippet).toContain("World");
+    expect(result.emails[0].snippet).not.toContain("<p>");
+  });
+
+  it("returns id and threadId for each email", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "msg_42" }] } },
+      { json: gmailMessage({ id: "msg_42", threadId: "thread_7" }) },
+    ]);
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    expect(result.emails[0].id).toBe("msg_42");
+    expect(result.emails[0].threadId).toBe("thread_7");
+  });
+});
+
+// ── 7. send_email tests ───────────────────────────────────────
+
+describe("send_email", () => {
+  it("sends a new email and returns messageId + threadId", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { id: "sent_1", threadId: "new_thread" } },
+    ]);
+    const result = await send_email.execute({
+      to: "bob@test.com",
+      subject: "Hello",
+      body: "Hi Bob",
+      secrets: GMAIL_SECRETS,
+      fetch: f,
+    });
+    expect(result).toEqual({ sent: true, messageId: "sent_1", threadId: "new_thread" });
+  });
+
+  it("sends correct RFC 2822 headers", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { id: "sent_1", threadId: "t_1" } },
+    ]);
+    await send_email.execute({
+      to: "bob@test.com",
+      subject: "Test",
+      body: "Body",
+      secrets: GMAIL_SECRETS,
+      fetch: f,
+    });
+    const sendCall = f.mock.calls[1];
+    const payload = JSON.parse(sendCall[1].body);
+    // Decode raw to check headers
+    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = decodeURIComponent(escape(atob(padded)));
+    expect(decoded).toContain("To: bob@test.com");
+    expect(decoded).toContain("Subject: Test");
+    expect(decoded).toContain("MIME-Version: 1.0");
+    expect(decoded).toContain("Content-Type: text/plain; charset=UTF-8");
+    expect(decoded).toContain("Body");
+  });
+
+  it("returns error for missing 'to'", async () => {
+    const result = await send_email.execute({
+      subject: "Hi",
+      body: "test",
+      secrets: GMAIL_SECRETS,
+      fetch: mockFetch({}),
+    });
+    expect(result.error).toContain("to");
+  });
+
+  it("returns error for missing 'subject' when not replying", async () => {
+    const result = await send_email.execute({
+      to: "bob@test.com",
+      body: "test",
+      secrets: GMAIL_SECRETS,
+      fetch: mockFetch({}),
+    });
+    expect(result.error).toContain("subject");
+  });
+
+  it("returns error for missing 'body'", async () => {
+    const result = await send_email.execute({
+      to: "bob@test.com",
+      subject: "Hi",
+      secrets: GMAIL_SECRETS,
+      fetch: mockFetch({}),
+    });
+    expect(result.error).toContain("body");
+  });
+
+  it("allows missing subject when reply_to_id is provided", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      // getMessage for reply_to_id
+      { json: {
+        id: "orig_1", threadId: "thread_1",
+        payload: {
+          headers: [
+            { name: "Subject", value: "Original Subject" },
+            { name: "Message-ID", value: "<orig@test.com>" },
+          ],
+        },
+      }},
+      { json: { id: "sent_reply", threadId: "thread_1" } },
+    ]);
+    const result = await send_email.execute({
+      to: "bob@test.com",
+      body: "Reply body",
+      reply_to_id: "orig_1",
+      secrets: GMAIL_SECRETS,
+      fetch: f,
+    });
+    expect(result.sent).toBe(true);
+    expect(result.threadId).toBe("thread_1");
+  });
+
+  it("prepends Re: to subject when replying", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: {
+        id: "orig_1", threadId: "thread_1",
+        payload: {
+          headers: [
+            { name: "Subject", value: "Hello" },
+            { name: "Message-ID", value: "<orig@test.com>" },
+          ],
+        },
+      }},
+      { json: { id: "sent_1", threadId: "thread_1" } },
+    ]);
+    await send_email.execute({
+      to: "bob@test.com",
+      body: "Reply",
+      reply_to_id: "orig_1",
+      secrets: GMAIL_SECRETS,
+      fetch: f,
+    });
+    const sendCall = f.mock.calls[2];
+    const payload = JSON.parse(sendCall[1].body);
+    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = decodeURIComponent(escape(atob(padded)));
+    expect(decoded).toContain("Subject: Re: Hello");
+  });
+
+  it("does not double-prepend Re: if already present", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: {
+        id: "orig_1", threadId: "thread_1",
+        payload: {
+          headers: [
+            { name: "Subject", value: "Re: Hello" },
+            { name: "Message-ID", value: "<orig@test.com>" },
+          ],
+        },
+      }},
+      { json: { id: "sent_1", threadId: "thread_1" } },
+    ]);
+    await send_email.execute({
+      to: "bob@test.com",
+      body: "Reply",
+      reply_to_id: "orig_1",
+      secrets: GMAIL_SECRETS,
+      fetch: f,
+    });
+    const sendCall = f.mock.calls[2];
+    const payload = JSON.parse(sendCall[1].body);
+    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = decodeURIComponent(escape(atob(padded)));
+    expect(decoded).toContain("Subject: Re: Hello");
+    expect(decoded).not.toContain("Subject: Re: Re:");
+  });
+
+  it("includes In-Reply-To and References headers when replying", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: {
+        id: "orig_1", threadId: "thread_1",
+        payload: {
+          headers: [
+            { name: "Subject", value: "Test" },
+            { name: "Message-ID", value: "<unique@example.com>" },
+          ],
+        },
+      }},
+      { json: { id: "sent_1", threadId: "thread_1" } },
+    ]);
+    await send_email.execute({
+      to: "bob@test.com",
+      body: "Reply",
+      reply_to_id: "orig_1",
+      secrets: GMAIL_SECRETS,
+      fetch: f,
+    });
+    const sendCall = f.mock.calls[2];
+    const payload = JSON.parse(sendCall[1].body);
+    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = decodeURIComponent(escape(atob(padded)));
+    expect(decoded).toContain("In-Reply-To: <unique@example.com>");
+    expect(decoded).toContain("References: <unique@example.com>");
+    expect(payload.threadId).toBe("thread_1");
+  });
+
+  it("uses explicit subject over original when replying", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: {
+        id: "orig_1", threadId: "thread_1",
+        payload: {
+          headers: [
+            { name: "Subject", value: "Old Subject" },
+            { name: "Message-ID", value: "<orig@test.com>" },
+          ],
+        },
+      }},
+      { json: { id: "sent_1", threadId: "thread_1" } },
+    ]);
+    await send_email.execute({
+      to: "bob@test.com",
+      subject: "New Subject",
+      body: "Reply",
+      reply_to_id: "orig_1",
+      secrets: GMAIL_SECRETS,
+      fetch: f,
+    });
+    const sendCall = f.mock.calls[2];
+    const payload = JSON.parse(sendCall[1].body);
+    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = decodeURIComponent(escape(atob(padded)));
+    expect(decoded).toContain("Subject: New Subject");
+  });
+
+  it("throws on token refresh failure", async () => {
+    const f = mockFetchSequence([
+      { ok: false, status: 401, json: {}, text: "Unauthorized" },
+    ]);
+    await expect(
+      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f })
+    ).rejects.toThrow("Gmail token refresh failed");
+  });
+
+  it("throws on send failure", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { ok: false, status: 400, json: {}, text: "Bad request" },
+    ]);
+    await expect(
+      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f })
+    ).rejects.toThrow("Gmail send failed");
+  });
+});
+
+// ── 8. provider:gmail tests ──────────────────────────────────
+
+describe("provider:gmail", () => {
+  it("getAccessToken sends correct OAuth params", async () => {
+    const f = mockFetch({ access_token: "fresh_token" });
+    const token = await gmail.getAccessToken(GMAIL_SECRETS, f);
+    expect(token).toBe("fresh_token");
+    const call = f.mock.calls[0];
+    expect(call[0]).toBe("https://oauth2.googleapis.com/token");
+    expect(call[1].method).toBe("POST");
+    expect(call[1].body).toContain("grant_type=refresh_token");
+    expect(call[1].body).toContain("client_id=test-client-id");
+  });
+
+  it("getAccessToken throws on failure", async () => {
+    const f = mockFetchSequence([
+      { ok: false, status: 403, json: {}, text: "Forbidden" },
+    ]);
+    await expect(gmail.getAccessToken(GMAIL_SECRETS, f)).rejects.toThrow("token refresh failed");
+  });
+
+  it("listUnread returns message stubs", async () => {
+    const f = mockFetch({ messages: [{ id: "m1" }, { id: "m2" }] });
+    const msgs = await gmail.listUnread("tok", f, 10);
+    expect(msgs).toEqual([{ id: "m1" }, { id: "m2" }]);
+    expect(f.mock.calls[0][0]).toContain("maxResults=10");
+  });
+
+  it("listUnread returns empty array when no messages", async () => {
+    const f = mockFetch({});
+    const msgs = await gmail.listUnread("tok", f);
+    expect(msgs).toEqual([]);
+  });
+
+  it("getMessage extracts all headers and body", async () => {
+    const f = mockFetch(gmailMessage({
+      id: "m1",
+      threadId: "t1",
+      from: "sender@test.com",
+      subject: "Important",
+      date: "Tue, 11 Mar 2026",
+      messageId: "<m1@test>",
+      body: "Message body here",
+    }));
+    const msg = await gmail.getMessage("tok", f, "m1");
+    expect(msg.id).toBe("m1");
+    expect(msg.threadId).toBe("t1");
+    expect(msg.from).toBe("sender@test.com");
+    expect(msg.subject).toBe("Important");
+    expect(msg.body).toBe("Message body here");
+    expect(msg.messageId).toBe("<m1@test>");
+  });
+
+  it("sendMessage encodes raw RFC 2822 as base64url", async () => {
+    const f = mockFetch({ id: "sent_1", threadId: "t_new" });
+    const result = await gmail.sendMessage("tok", f, {
+      to: "dest@test.com",
+      subject: "Subj",
+      body: "Body text",
+    });
+    expect(result).toEqual({ messageId: "sent_1", threadId: "t_new" });
+    const call = f.mock.calls[0];
+    expect(call[0]).toContain("/messages/send");
+    const payload = JSON.parse(call[1].body);
+    expect(payload.raw).toBeDefined();
+    // Should not contain standard base64 chars that are URL-unsafe
+    expect(payload.raw).not.toMatch(/[+/=]/);
+  });
+
+  it("sendMessage includes threadId when provided", async () => {
+    const f = mockFetch({ id: "s1", threadId: "existing_thread" });
+    await gmail.sendMessage("tok", f, {
+      to: "a@b.com", subject: "Re: X", body: "reply",
+      inReplyTo: "<orig@test>", threadId: "existing_thread",
+    });
+    const payload = JSON.parse(f.mock.calls[0][1].body);
+    expect(payload.threadId).toBe("existing_thread");
+  });
+
+  it("markAsRead sends correct modify request", async () => {
+    const f = mockFetch({});
+    await gmail.markAsRead("tok", f, "msg_99");
+    const call = f.mock.calls[0];
+    expect(call[0]).toContain("msg_99/modify");
+    const payload = JSON.parse(call[1].body);
+    expect(payload.removeLabelIds).toEqual(["UNREAD"]);
+  });
+
+  it("check returns unread count estimate", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: { messages: [{ id: "m1" }] } },
+      { json: { resultSizeEstimate: 7 } },
+    ]);
+    const count = await gmail.check({ secrets: GMAIL_SECRETS, fetch: f });
+    expect(count).toBe(7);
+  });
+
+  it("check returns 0 when no unread", async () => {
+    const f = mockFetchSequence([
+      { json: { access_token: "tok" } },
+      { json: {} },
+      { json: {} },
+    ]);
+    const count = await gmail.check({ secrets: GMAIL_SECRETS, fetch: f });
+    expect(count).toBe(0);
+  });
+});
+
+// ── 9. channel:telegram tests ─────────────────────────────────
+
+describe("channel:telegram", () => {
+  describe("config", () => {
+    it("declares required secrets", () => {
+      expect(telegram.config.secrets).toContain("TELEGRAM_BOT_TOKEN");
+      expect(telegram.config.secrets).toContain("TELEGRAM_CHAT_ID");
+    });
+
+    it("declares webhook secret env", () => {
+      expect(telegram.config.webhook_secret_env).toBe("TELEGRAM_WEBHOOK_SECRET");
+    });
+  });
+
+  describe("verify", () => {
+    function makeHeaders(token) {
+      return new Map([["X-Telegram-Bot-Api-Secret-Token", token]]);
+    }
+
+    it("returns true when secret matches", () => {
+      const headers = makeHeaders("my-secret");
+      const env = { TELEGRAM_WEBHOOK_SECRET: "my-secret" };
+      expect(telegram.verify(headers, {}, env)).toBe(true);
+    });
+
+    it("returns false when secret does not match", () => {
+      const headers = makeHeaders("wrong");
+      const env = { TELEGRAM_WEBHOOK_SECRET: "my-secret" };
+      expect(telegram.verify(headers, {}, env)).toBe(false);
+    });
+
+    it("returns false when header is missing", () => {
+      const headers = new Map();
+      const env = { TELEGRAM_WEBHOOK_SECRET: "my-secret" };
+      expect(telegram.verify(headers, {}, env)).toBe(false);
+    });
+
+    it("returns false when env secret is not set", () => {
+      const headers = makeHeaders("something");
+      expect(telegram.verify(headers, {}, {})).toBe(false);
+    });
+
+    it("returns false when env secret is empty string", () => {
+      const headers = makeHeaders("");
+      const env = { TELEGRAM_WEBHOOK_SECRET: "" };
+      expect(telegram.verify(headers, {}, env)).toBe(false);
+    });
+  });
+
+  describe("parseInbound", () => {
+    it("parses a regular text message", () => {
+      const body = {
+        message: {
+          chat: { id: 12345 },
+          from: { id: 67890 },
+          text: "Hello bot",
+        },
+      };
+      const result = telegram.parseInbound(body);
+      expect(result).toEqual({
+        chatId: "12345",
+        text: "Hello bot",
+        userId: "67890",
+        command: null,
+      });
+    });
+
+    it("parses a command message", () => {
+      const body = {
+        message: {
+          chat: { id: 100 },
+          from: { id: 200 },
+          text: "/reset",
+        },
+      };
+      const result = telegram.parseInbound(body);
+      expect(result.command).toBe("reset");
+      expect(result.text).toBe("/reset");
+    });
+
+    it("parses command with bot mention (e.g. /reset@mybot)", () => {
+      const body = {
+        message: {
+          chat: { id: 100 },
+          from: { id: 200 },
+          text: "/status@swayambhu_bot",
+        },
+      };
+      const result = telegram.parseInbound(body);
+      expect(result.command).toBe("status");
+    });
+
+    it("parses command with arguments", () => {
+      const body = {
+        message: {
+          chat: { id: 100 },
+          from: { id: 200 },
+          text: "/search some query here",
+        },
+      };
+      const result = telegram.parseInbound(body);
+      expect(result.command).toBe("search");
+      expect(result.text).toBe("/search some query here");
+    });
+
+    it("returns null when message has no text", () => {
+      const body = {
+        message: {
+          chat: { id: 100 },
+          from: { id: 200 },
+          photo: [{ file_id: "abc" }],
+        },
+      };
+      expect(telegram.parseInbound(body)).toBeNull();
+    });
+
+    it("returns null when body has no message", () => {
+      expect(telegram.parseInbound({})).toBeNull();
+      expect(telegram.parseInbound({ edited_message: {} })).toBeNull();
+    });
+
+    it("falls back to chat.id when from is missing", () => {
+      const body = {
+        message: {
+          chat: { id: 999 },
+          text: "anonymous",
+        },
+      };
+      const result = telegram.parseInbound(body);
+      expect(result.userId).toBe("999");
+    });
+
+    it("stringifies numeric IDs", () => {
+      const body = {
+        message: {
+          chat: { id: 42 },
+          from: { id: 7 },
+          text: "test",
+        },
+      };
+      const result = telegram.parseInbound(body);
+      expect(typeof result.chatId).toBe("string");
+      expect(typeof result.userId).toBe("string");
+    });
+  });
+
+  describe("sendReply", () => {
+    it("calls Telegram sendMessage API with correct params", async () => {
+      const f = vi.fn(async () => ({ ok: true }));
+      const secrets = { TELEGRAM_BOT_TOKEN: "tok123" };
+      await telegram.sendReply("chat_1", "Hello!", secrets, f);
+
+      expect(f).toHaveBeenCalledOnce();
+      const [url, opts] = f.mock.calls[0];
+      expect(url).toBe("https://api.telegram.org/bottok123/sendMessage");
+      expect(opts.method).toBe("POST");
+      const body = JSON.parse(opts.body);
+      expect(body.chat_id).toBe("chat_1");
+      expect(body.text).toBe("Hello!");
+      expect(body.parse_mode).toBe("Markdown");
+    });
+
+    it("uses correct bot token in URL", async () => {
+      const f = vi.fn(async () => ({ ok: true }));
+      await telegram.sendReply("1", "hi", { TELEGRAM_BOT_TOKEN: "secret_token" }, f);
+      expect(f.mock.calls[0][0]).toContain("botsecret_token/");
+    });
   });
 });

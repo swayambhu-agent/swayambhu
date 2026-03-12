@@ -599,7 +599,6 @@ describe("callLLM budget enforcement", () => {
     const { brain, env } = makeBrain();
     const budget = {
       max_cost: 0.10,
-      max_steps: 8,
       max_duration_seconds: 600,
       ...budgetOverrides,
     };
@@ -621,14 +620,6 @@ describe("callLLM budget enforcement", () => {
     await expect(brain.callLLM({
       model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
     })).rejects.toThrow("Budget exceeded: cost");
-  });
-
-  it("throws on step limit", async () => {
-    const { brain } = makeBudgetBrain();
-    brain.sessionLLMCalls = 8;
-    await expect(brain.callLLM({
-      model: "test", messages: [{ role: "user", content: "hi" }], step: "test",
-    })).rejects.toThrow("Budget exceeded: steps");
   });
 
   it("throws on duration limit", async () => {

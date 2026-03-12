@@ -64,7 +64,7 @@ dependency injection.
 
 ## What's Portable (No Changes Needed)
 
-- **wake-hook.js** — pure policy logic, communicates via `env.KERNEL` RPC
+- **hook modules** (`hook-main.js`, `hook-reflect.js`, `hook-mutations.js`, `hook-protect.js`) — pure policy logic, communicates via `env.KERNEL` RPC
 - **LLM calls** — standard HTTP to OpenRouter (`callLLM`, `callWithCascade`)
 - **Agent loop** — `runAgentLoop`, `executeToolCall`, `spawnSubplan`
 - **Karma logging** — just appends to a KV key (swap the KV layer)
@@ -81,4 +81,4 @@ dependency injection.
 3. Replace `WorkerEntrypoint` classes with local RPC stubs
 4. Replace `scheduled()` with a cron/timer entry point
 5. Convert `wrangler.toml` bindings to env config
-6. Seed the KV store with existing data (`scripts/seed-local-kv.sh`)
+6. Seed the KV store with existing data (`node scripts/seed-local-kv.mjs`)
