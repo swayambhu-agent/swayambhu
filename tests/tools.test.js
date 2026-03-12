@@ -15,7 +15,7 @@ import * as send_email from "../tools/send_email.js";
 import * as akash_exec from "../tools/akash_exec.js";
 
 // ── Channel modules ─────────────────────────────────────────
-import * as telegram from "../channels/telegram.js";
+import * as slack from "../channels/slack.js";
 
 // ── Provider modules ─────────────────────────────────────────
 
@@ -959,172 +959,123 @@ describe("provider:gmail", () => {
   });
 });
 
-// ── 9. channel:telegram tests ─────────────────────────────────
+// ── 9. channel:slack tests ─────────────────────────────────
 
-describe("channel:telegram", () => {
+describe("channel:slack", () => {
   describe("config", () => {
     it("declares required secrets", () => {
-      expect(telegram.config.secrets).toContain("TELEGRAM_BOT_TOKEN");
-      expect(telegram.config.secrets).toContain("TELEGRAM_CHAT_ID");
+      expect(slack.config.secrets).toContain("SLACK_BOT_TOKEN");
     });
 
     it("declares webhook secret env", () => {
-      expect(telegram.config.webhook_secret_env).toBe("TELEGRAM_WEBHOOK_SECRET");
+      expect(slack.config.webhook_secret_env).toBe("SLACK_SIGNING_SECRET");
     });
   });
 
   describe("verify", () => {
-    function makeHeaders(token) {
-      return new Map([["X-Telegram-Bot-Api-Secret-Token", token]]);
+    function makeHeaders(timestamp, signature) {
+      return {
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": signature,
+      };
     }
 
-    it("returns true when secret matches", () => {
-      const headers = makeHeaders("my-secret");
-      const env = { TELEGRAM_WEBHOOK_SECRET: "my-secret" };
-      expect(telegram.verify(headers, {}, env)).toBe(true);
+    it("returns true when headers and env are present and timestamp is fresh", () => {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const headers = makeHeaders(ts, "v0=abc123");
+      const env = { SLACK_SIGNING_SECRET: "secret" };
+      expect(slack.verify(headers, {}, env)).toBe(true);
     });
 
-    it("returns false when secret does not match", () => {
-      const headers = makeHeaders("wrong");
-      const env = { TELEGRAM_WEBHOOK_SECRET: "my-secret" };
-      expect(telegram.verify(headers, {}, env)).toBe(false);
+    it("returns false when timestamp is missing", () => {
+      const headers = { "x-slack-signature": "v0=abc" };
+      expect(slack.verify(headers, {}, { SLACK_SIGNING_SECRET: "s" })).toBe(false);
     });
 
-    it("returns false when header is missing", () => {
-      const headers = new Map();
-      const env = { TELEGRAM_WEBHOOK_SECRET: "my-secret" };
-      expect(telegram.verify(headers, {}, env)).toBe(false);
+    it("returns false when signature is missing", () => {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const headers = { "x-slack-request-timestamp": ts };
+      expect(slack.verify(headers, {}, { SLACK_SIGNING_SECRET: "s" })).toBe(false);
     });
 
-    it("returns false when env secret is not set", () => {
-      const headers = makeHeaders("something");
-      expect(telegram.verify(headers, {}, {})).toBe(false);
+    it("returns false when signing secret is not set", () => {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const headers = makeHeaders(ts, "v0=abc");
+      expect(slack.verify(headers, {}, {})).toBe(false);
     });
 
-    it("returns false when env secret is empty string", () => {
-      const headers = makeHeaders("");
-      const env = { TELEGRAM_WEBHOOK_SECRET: "" };
-      expect(telegram.verify(headers, {}, env)).toBe(false);
+    it("returns false when timestamp is too old (replay protection)", () => {
+      const oldTs = String(Math.floor(Date.now() / 1000) - 600);
+      const headers = makeHeaders(oldTs, "v0=abc");
+      expect(slack.verify(headers, {}, { SLACK_SIGNING_SECRET: "s" })).toBe(false);
     });
   });
 
   describe("parseInbound", () => {
-    it("parses a regular text message", () => {
+    it("returns challenge for url_verification", () => {
+      const body = { type: "url_verification", challenge: "test_challenge" };
+      expect(slack.parseInbound(body)).toEqual({ _challenge: "test_challenge" });
+    });
+
+    it("parses a regular message event", () => {
       const body = {
-        message: {
-          chat: { id: 12345 },
-          from: { id: 67890 },
-          text: "Hello bot",
-        },
+        event: { type: "message", channel: "C123", user: "U456", text: "hello" },
       };
-      const result = telegram.parseInbound(body);
+      const result = slack.parseInbound(body);
       expect(result).toEqual({
-        chatId: "12345",
-        text: "Hello bot",
-        userId: "67890",
+        chatId: "C123",
+        text: "hello",
+        userId: "U456",
         command: null,
       });
     });
 
     it("parses a command message", () => {
       const body = {
-        message: {
-          chat: { id: 100 },
-          from: { id: 200 },
-          text: "/reset",
-        },
+        event: { type: "message", channel: "C1", user: "U1", text: "/status" },
       };
-      const result = telegram.parseInbound(body);
-      expect(result.command).toBe("reset");
-      expect(result.text).toBe("/reset");
-    });
-
-    it("parses command with bot mention (e.g. /reset@mybot)", () => {
-      const body = {
-        message: {
-          chat: { id: 100 },
-          from: { id: 200 },
-          text: "/status@swayambhu_bot",
-        },
-      };
-      const result = telegram.parseInbound(body);
+      const result = slack.parseInbound(body);
       expect(result.command).toBe("status");
     });
 
-    it("parses command with arguments", () => {
+    it("ignores bot messages", () => {
       const body = {
-        message: {
-          chat: { id: 100 },
-          from: { id: 200 },
-          text: "/search some query here",
-        },
+        event: { type: "message", channel: "C1", bot_id: "B1", text: "bot msg" },
       };
-      const result = telegram.parseInbound(body);
-      expect(result.command).toBe("search");
-      expect(result.text).toBe("/search some query here");
+      expect(slack.parseInbound(body)).toBeNull();
     });
 
-    it("returns null when message has no text", () => {
+    it("ignores subtypes (message_changed, etc.)", () => {
       const body = {
-        message: {
-          chat: { id: 100 },
-          from: { id: 200 },
-          photo: [{ file_id: "abc" }],
-        },
+        event: { type: "message", channel: "C1", user: "U1", text: "x", subtype: "message_changed" },
       };
-      expect(telegram.parseInbound(body)).toBeNull();
+      expect(slack.parseInbound(body)).toBeNull();
     });
 
-    it("returns null when body has no message", () => {
-      expect(telegram.parseInbound({})).toBeNull();
-      expect(telegram.parseInbound({ edited_message: {} })).toBeNull();
+    it("returns null when no event", () => {
+      expect(slack.parseInbound({})).toBeNull();
     });
 
-    it("falls back to chat.id when from is missing", () => {
-      const body = {
-        message: {
-          chat: { id: 999 },
-          text: "anonymous",
-        },
-      };
-      const result = telegram.parseInbound(body);
-      expect(result.userId).toBe("999");
-    });
-
-    it("stringifies numeric IDs", () => {
-      const body = {
-        message: {
-          chat: { id: 42 },
-          from: { id: 7 },
-          text: "test",
-        },
-      };
-      const result = telegram.parseInbound(body);
-      expect(typeof result.chatId).toBe("string");
-      expect(typeof result.userId).toBe("string");
+    it("returns null for non-message events", () => {
+      const body = { event: { type: "reaction_added" } };
+      expect(slack.parseInbound(body)).toBeNull();
     });
   });
 
   describe("sendReply", () => {
-    it("calls Telegram sendMessage API with correct params", async () => {
+    it("calls Slack chat.postMessage API", async () => {
       const f = vi.fn(async () => ({ ok: true }));
-      const secrets = { TELEGRAM_BOT_TOKEN: "tok123" };
-      await telegram.sendReply("chat_1", "Hello!", secrets, f);
+      const secrets = { SLACK_BOT_TOKEN: "xoxb-test" };
+      await slack.sendReply("C123", "Hello!", secrets, f);
 
       expect(f).toHaveBeenCalledOnce();
       const [url, opts] = f.mock.calls[0];
-      expect(url).toBe("https://api.telegram.org/bottok123/sendMessage");
+      expect(url).toBe("https://slack.com/api/chat.postMessage");
       expect(opts.method).toBe("POST");
+      expect(opts.headers.Authorization).toBe("Bearer xoxb-test");
       const body = JSON.parse(opts.body);
-      expect(body.chat_id).toBe("chat_1");
+      expect(body.channel).toBe("C123");
       expect(body.text).toBe("Hello!");
-      expect(body.parse_mode).toBe("Markdown");
-    });
-
-    it("uses correct bot token in URL", async () => {
-      const f = vi.fn(async () => ({ ok: true }));
-      await telegram.sendReply("1", "hi", { TELEGRAM_BOT_TOKEN: "secret_token" }, f);
-      expect(f.mock.calls[0][0]).toContain("botsecret_token/");
     });
   });
 });
