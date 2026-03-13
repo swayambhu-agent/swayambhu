@@ -1019,7 +1019,7 @@ describe("channel:slack", () => {
 
     it("parses a regular message event", () => {
       const body = {
-        event: { type: "message", channel: "C123", user: "U456", text: "hello" },
+        event: { type: "message", channel: "C123", user: "U456", text: "hello", client_msg_id: "msg-1" },
       };
       const result = slack.parseInbound(body);
       expect(result).toEqual({
@@ -1027,7 +1027,16 @@ describe("channel:slack", () => {
         text: "hello",
         userId: "U456",
         command: null,
+        msgId: "msg-1",
       });
+    });
+
+    it("sets msgId to null when client_msg_id is missing", () => {
+      const body = {
+        event: { type: "message", channel: "C1", user: "U1", text: "hi" },
+      };
+      const result = slack.parseInbound(body);
+      expect(result.msgId).toBeNull();
     });
 
     it("parses a command message", () => {

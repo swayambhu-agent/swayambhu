@@ -41,6 +41,47 @@ const PROVIDER_MODULES = {
   'provider:wallet_balance': wallet_balance,
 };
 
+// ── Channel access control ──────────────────────────────────────
+
+async function checkChannelAccess(brain, userId, env) {
+  const channelId = env.SLACK_CHANNEL_ID;
+  const token = env.SLACK_BOT_TOKEN;
+  if (!channelId || !token) return true;
+
+  const cacheKey = "cache:channel_members:slack";
+  const cached = await brain.kv.getWithMetadata(cacheKey);
+  if (cached?.value) {
+    const meta = cached.metadata || {};
+    const age = Date.now() - (meta.updated_at || 0);
+    if (age < 300_000) {
+      const members = JSON.parse(cached.value);
+      return members.includes(userId);
+    }
+  }
+
+  let members = [];
+  let cursor = "";
+  do {
+    const url = `https://slack.com/api/conversations.members?channel=${channelId}&limit=200${cursor ? `&cursor=${cursor}` : ""}`;
+    const resp = await fetch(url, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      console.error("[CHANNEL] Slack conversations.members failed:", data.error);
+      return true;
+    }
+    members = members.concat(data.members || []);
+    cursor = data.response_metadata?.next_cursor || "";
+  } while (cursor);
+
+  await brain.kv.put(cacheKey, JSON.stringify(members), {
+    metadata: { updated_at: Date.now() },
+  });
+
+  return members.includes(userId);
+}
+
 // ── Entry point ─────────────────────────────────────────────────
 
 export default {
@@ -51,7 +92,7 @@ export default {
 
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const match = url.pathname.match(/^\/chat\/(\w+)$/);
+    const match = url.pathname.match(/^\/channel\/(\w+)$/);
     if (!match || request.method !== "POST") {
       return new Response("Not found", { status: 404 });
     }
@@ -74,22 +115,47 @@ export default {
         { headers: { "Content-Type": "application/json" } });
     }
 
-    // Load config eagerly (same as _invokeHookModules)
-    brain.defaults = await brain.kvGet("config:defaults");
-    brain.modelsConfig = await brain.kvGet("config:models");
-    brain.dharma = await brain.kvGet("dharma");
-    brain.toolRegistry = await brain.kvGet("config:tool_registry");
-    await brain.loadYamasNiyamas();
+    // Deduplication: ignore Slack retries
+    if (inbound.msgId) {
+      const dedupKey = `dedup:${inbound.msgId}`;
+      const seen = await brain.kv.get(dedupKey);
+      if (seen) return new Response("OK", { status: 200 });
+      await brain.kv.put(dedupKey, "1", { expirationTtl: 30 });
+    }
 
-    const adapter = {
-      sendReply: async (chatId, text) => {
-        await adapterMod.sendReply(chatId, text, {
-          SLACK_BOT_TOKEN: env.SLACK_BOT_TOKEN,
-        }, fetch);
-      },
-    };
+    // Process in background, return 200 immediately
+    const work = (async () => {
+      try {
+        // Access control (Slack-specific: check channel membership)
+        if (channel === "slack") {
+          const allowed = await checkChannelAccess(brain, inbound.userId, env);
+          if (!allowed) {
+            await adapterMod.sendReply(inbound.chatId, "I'm not yet available to everyone. Message @swami.kevala to request access.", { SLACK_BOT_TOKEN: env.SLACK_BOT_TOKEN }, fetch);
+            return;
+          }
+        }
 
-    await handleChat(brain, channel, inbound, adapter);
+        // Load config eagerly (same as _invokeHookModules)
+        brain.defaults = await brain.kvGet("config:defaults");
+        brain.modelsConfig = await brain.kvGet("config:models");
+        brain.dharma = await brain.kvGet("dharma");
+        brain.toolRegistry = await brain.kvGet("config:tool_registry");
+        await brain.loadYamasNiyamas();
+
+        const adapter = {
+          sendReply: async (chatId, text) => {
+            await adapterMod.sendReply(chatId, text, {
+              SLACK_BOT_TOKEN: env.SLACK_BOT_TOKEN,
+            }, fetch);
+          },
+        };
+
+        await handleChat(brain, channel, inbound, adapter);
+      } catch (err) {
+        console.error("[CHAT]", err.message);
+      }
+    })();
+    if (ctx?.waitUntil) ctx.waitUntil(work);
     return new Response("OK", { status: 200 });
   },
 };

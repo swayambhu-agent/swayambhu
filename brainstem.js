@@ -111,6 +111,49 @@ export class KernelRPC extends WorkerEntrypoint {
   async elapsed() { return this._brain().elapsed(); }
 }
 
+// ── Channel access control ─────────────────────────────────────
+// Checks if a user is a member of the gated Slack channel (SLACK_CHANNEL_ID).
+// Caches the member list in KV for 5 minutes to avoid hitting the Slack API on every message.
+async function checkChannelAccess(brain, userId, env) {
+  const channelId = env.SLACK_CHANNEL_ID;
+  const token = env.SLACK_BOT_TOKEN;
+  if (!channelId || !token) return true; // no gating configured
+
+  const cacheKey = "cache:channel_members:slack";
+  const cached = await brain.kv.getWithMetadata(cacheKey);
+  if (cached?.value) {
+    const meta = cached.metadata || {};
+    const age = Date.now() - (meta.updated_at || 0);
+    if (age < 300_000) { // 5 minute TTL
+      const members = JSON.parse(cached.value);
+      return members.includes(userId);
+    }
+  }
+
+  // Fetch member list from Slack API (handles pagination)
+  let members = [];
+  let cursor = "";
+  do {
+    const url = `https://slack.com/api/conversations.members?channel=${channelId}&limit=200${cursor ? `&cursor=${cursor}` : ""}`;
+    const resp = await fetch(url, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      console.error("[CHANNEL] Slack conversations.members failed:", data.error);
+      return true; // fail open — don't block on API errors
+    }
+    members = members.concat(data.members || []);
+    cursor = data.response_metadata?.next_cursor || "";
+  } while (cursor);
+
+  await brain.kv.put(cacheKey, JSON.stringify(members), {
+    metadata: { updated_at: Date.now() },
+  });
+
+  return members.includes(userId);
+}
+
 // CF-SPECIFIC: scheduled() is the CF cron trigger entry point
 export default {
   async scheduled(event, env, ctx) {
@@ -120,7 +163,7 @@ export default {
 
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const match = url.pathname.match(/^\/chat\/(\w+)$/);
+    const match = url.pathname.match(/^\/channel\/(\w+)$/);
     if (!match || request.method !== "POST") {
       return new Response("Not found", { status: 404 });
     }
@@ -173,35 +216,62 @@ export default {
         { headers: { "Content-Type": "application/json" } });
     }
 
-    // Load config eagerly for chat handler
-    brain.defaults = await brain.kvGet("config:defaults");
-    brain.modelsConfig = await brain.kvGet("config:models");
-    brain.dharma = await brain.kvGet("dharma");
-    brain.toolRegistry = await brain.kvGet("config:tool_registry");
-    await brain.loadYamasNiyamas();
+    const inbound = parsed.inbound;
 
-    // Build adapter interface for chat handler
+    // Deduplication: Slack retries if no 200 within 3s. Ignore duplicate deliveries.
+    if (inbound.msgId) {
+      const dedupKey = `dedup:${inbound.msgId}`;
+      const seen = await brain.kv.get(dedupKey);
+      if (seen) return new Response("OK", { status: 200 });
+      await brain.kv.put(dedupKey, "1", { expirationTtl: 30 });
+    }
+
+    // Build secrets once for the adapter
     const secrets = {};
     for (const s of (adapterConfig.secrets || [])) {
       if (env[s] !== undefined) secrets[s] = env[s];
     }
 
-    const adapter = {
-      sendReply: async (chatId, text) => {
-        await brain.runInIsolate({
-          id: `channel:${channel}:send:${brain.sessionId}`,
-          moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
-          ctx: { action: "send", chatId, text, secrets },
-          timeoutMs: 10000,
-        });
-      },
-    };
+    // Return 200 immediately, process in background
+    ctx.waitUntil((async () => {
+      try {
+        // Access control (Slack-specific: check channel membership)
+        if (channel === "slack") {
+          const allowed = await checkChannelAccess(brain, inbound.userId, env);
+          if (!allowed) {
+            await brain.runInIsolate({
+              id: `channel:${channel}:send:${brain.sessionId}`,
+              moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
+              ctx: { action: "send", chatId: inbound.chatId, text: "I'm not yet available to everyone. Message @swami.kevala to request access.", secrets },
+              timeoutMs: 10000,
+            });
+            return;
+          }
+        }
 
-    ctx.waitUntil(
-      handleChat(brain, channel, parsed.inbound, adapter).catch(err => {
+        // Load config eagerly for chat handler
+        brain.defaults = await brain.kvGet("config:defaults");
+        brain.modelsConfig = await brain.kvGet("config:models");
+        brain.dharma = await brain.kvGet("dharma");
+        brain.toolRegistry = await brain.kvGet("config:tool_registry");
+        await brain.loadYamasNiyamas();
+
+        const adapter = {
+          sendReply: async (chatId, text) => {
+            await brain.runInIsolate({
+              id: `channel:${channel}:send:${brain.sessionId}`,
+              moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
+              ctx: { action: "send", chatId, text, secrets },
+              timeoutMs: 10000,
+            });
+          },
+        };
+
+        await handleChat(brain, channel, inbound, adapter);
+      } catch (err) {
         brain.karmaRecord({ event: "chat_error", channel, error: err.message });
-      })
-    );
+      }
+    })());
 
     return new Response("OK", { status: 200 });
   },

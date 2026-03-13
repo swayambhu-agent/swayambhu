@@ -46,6 +46,7 @@ export function parseInbound(body) {
     text,
     userId: event.user,
     command,
+    msgId: event.client_msg_id || null,
   };
 }
 

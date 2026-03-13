@@ -14,6 +14,41 @@
 
 Dev-only files (`brainstem-dev.js`, `wrangler.dev.toml`) are never deployed.
 
+## Staging: local prod-mode with tunnel
+
+Before deploying to CF, validate everything locally using the real kernel
+(`brainstem.js` with Worker Loader isolates) behind a Cloudflare Tunnel.
+
+### Setup
+
+The server runs a `cloudflared` tunnel (config at `~/.cloudflared/config.yml`).
+Add an ingress rule for the brainstem:
+
+```yaml
+ingress:
+  - hostname: swayambhu.dev
+    service: http://localhost:8787
+```
+
+Add a CNAME DNS record in Cloudflare: `swayambhu.dev` → `<tunnel-id>.cfargotunnel.com`
+(proxied). Restart `cloudflared` to pick up the config.
+
+### Validation stages
+
+1. **Isolates + provider cascade** — run `wrangler dev` with `wrangler.toml`,
+   trigger `/__scheduled` manually, watch `wrangler tail` for `[TOOL]` `[LLM]` `[HOOK]`
+2. **Slack webhook** — point Slack Event Subscriptions to
+   `https://swayambhu.dev/channel/slack`, verify challenge + chat flow
+3. **Autonomous wake/sleep** — let cron run, verify reflect scheduling
+4. **Reflection** — lower reflect interval, watch first depth-1 reflection
+
+### DNS cutover to CF Workers
+
+When moving to production CF Workers, update the DNS:
+- Remove the tunnel CNAME for `swayambhu.dev`
+- Add a Custom Domain on the Worker in the CF dashboard (handles DNS automatically)
+- Or manually point the CNAME to the Worker's `*.workers.dev` subdomain
+
 ## Secrets management
 
 ### Dev
@@ -40,8 +75,9 @@ Secrets are set individually per worker using `wrangler secret put`.
 
 ```bash
 wrangler secret put OPENROUTER_API_KEY
-wrangler secret put TELEGRAM_BOT_TOKEN
-wrangler secret put TELEGRAM_CHAT_ID
+wrangler secret put SLACK_BOT_TOKEN
+wrangler secret put SLACK_CHANNEL_ID
+wrangler secret put SLACK_SIGNING_SECRET
 wrangler secret put WALLET_ADDRESS
 wrangler secret put WALLET_PRIVATE_KEY
 ```
