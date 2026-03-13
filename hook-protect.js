@@ -7,6 +7,7 @@
 export const SYSTEM_KEY_PREFIXES = [
   'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
   'mutation_staged:', 'mutation_rollback:', 'hook:', 'git_pending:',
+  'yama:', 'niyama:',
 ];
 export const SYSTEM_KEY_EXACT = ['providers', 'wallets', 'wisdom'];
 export const DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
