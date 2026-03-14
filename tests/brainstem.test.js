@@ -906,14 +906,14 @@ describe("isSystemKey / isKernelOnly", () => {
     expect(Brainstem.isSystemKey("prompt:orient")).toBe(true);
     expect(Brainstem.isSystemKey("tool:kv_read:code")).toBe(true);
     expect(Brainstem.isSystemKey("hook:wake:code")).toBe(true);
-    expect(Brainstem.isSystemKey("mutation_staged:m_1")).toBe(true);
-    expect(Brainstem.isSystemKey("doc:mutation_guide")).toBe(true);
+    expect(Brainstem.isSystemKey("modification_staged:m_1")).toBe(true);
+    expect(Brainstem.isSystemKey("doc:modification_guide")).toBe(true);
   });
 
   it("recognizes exact system keys", () => {
     expect(Brainstem.isSystemKey("providers")).toBe(true);
     expect(Brainstem.isSystemKey("wallets")).toBe(true);
-    expect(Brainstem.isSystemKey("wisdom")).toBe(true);
+    // wisdom is no longer a system key (replaced by viveka:/prajna: prefixes)
   });
 
   it("rejects non-system keys", () => {
@@ -1044,13 +1044,13 @@ describe("kvWritePrivileged", () => {
 
   it("handles delete operations", async () => {
     const { brain, env } = makeBrain({
-      "mutation_staged:m_1": JSON.stringify({ id: "m_1" }),
+      "modification_staged:m_1": JSON.stringify({ id: "m_1" }),
     });
     brain.karmaRecord = vi.fn(async () => {});
     await brain.kvWritePrivileged([
-      { op: "delete", key: "mutation_staged:m_1" },
+      { op: "delete", key: "modification_staged:m_1" },
     ]);
-    expect(env.KV.delete).toHaveBeenCalledWith("mutation_staged:m_1");
+    expect(env.KV.delete).toHaveBeenCalledWith("modification_staged:m_1");
     expect(brain.privilegedWriteCount).toBe(1);
   });
 });
@@ -1846,5 +1846,391 @@ describe("Yamas and Niyamas", () => {
       expect(brain.isNiyamaCapable("anthropic/claude-sonnet-4.6")).toBe(true);
       expect(brain.isNiyamaCapable("anthropic/claude-haiku-4.5")).toBe(false);
     });
+  });
+});
+
+// ── Communication gate ──────────────────────────────────────
+
+describe("Communication gate", () => {
+  const slackMeta = {
+    secrets: ["SLACK_BOT_TOKEN"],
+    kv_access: "none",
+    communication: { channel: "slack", recipient_field: "channel", reply_field: null, content_field: "text" },
+  };
+
+  const emailMeta = {
+    secrets: ["GMAIL_CLIENT_ID"],
+    kv_access: "none",
+    communication: { channel: "email", recipient_field: "to", reply_field: "reply_to_id", content_field: "body" },
+  };
+
+  const noCommMeta = {
+    secrets: [],
+    kv_access: "none",
+  };
+
+  const commsModelsConfig = {
+    models: [
+      { id: "anthropic/claude-opus-4.6", alias: "opus", comms_gate_capable: true },
+      { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", comms_gate_capable: true },
+      { id: "anthropic/claude-haiku-4.5", alias: "haiku" },
+      { id: "deepseek/deepseek-v3.2", alias: "deepseek" },
+    ],
+  };
+
+  it("resolveCommsMode — slack always initiating (no reply_field)", () => {
+    const { brain } = makeBrain();
+    expect(brain.resolveCommsMode({}, slackMeta)).toBe("initiating");
+    expect(brain.resolveCommsMode({ channel: "C123" }, slackMeta)).toBe("initiating");
+  });
+
+  it("resolveCommsMode — email with reply_to_id is responding", () => {
+    const { brain } = makeBrain();
+    expect(brain.resolveCommsMode({ to: "a@b.com", reply_to_id: "msg123" }, emailMeta)).toBe("responding");
+    expect(brain.resolveCommsMode({ to: "a@b.com" }, emailMeta)).toBe("initiating");
+  });
+
+  it("resolveRecipient — reads from recipient_field", () => {
+    const { brain } = makeBrain();
+    expect(brain.resolveRecipient({ channel: "C123" }, slackMeta)).toBe("C123");
+    expect(brain.resolveRecipient({ to: "a@b.com" }, emailMeta)).toBe("a@b.com");
+    expect(brain.resolveRecipient({}, slackMeta)).toBeNull();
+  });
+
+  it("isCommsGateCapable — opus/sonnet capable, haiku/deepseek not", () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    expect(brain.isCommsGateCapable("anthropic/claude-opus-4.6")).toBe(true);
+    expect(brain.isCommsGateCapable("anthropic/claude-sonnet-4.6")).toBe(true);
+    expect(brain.isCommsGateCapable("anthropic/claude-haiku-4.5")).toBe(false);
+    expect(brain.isCommsGateCapable("deepseek/deepseek-v3.2")).toBe(false);
+  });
+
+  it("mechanical floor blocks initiating to unknown recipient", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    // No viveka:contact:* entries in KV
+    const result = await brain.communicationGate("send_slack", { text: "hello", channel: "C123" }, slackMeta);
+    expect(result.verdict).toBe("block");
+    expect(result.mechanical).toBe(true);
+    expect(result.reasoning).toContain("No viveka");
+  });
+
+  it("mechanical floor allows responding to unknown (email with reply)", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    // Stub callLLM for the gate
+    brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"reply ok"}', cost: 0.001 }));
+    const result = await brain.communicationGate(
+      "send_email",
+      { to: "unknown@example.com", body: "thanks", reply_to_id: "msg123" },
+      emailMeta,
+    );
+    expect(result.verdict).toBe("send");
+    expect(brain.callLLM).toHaveBeenCalled();
+  });
+
+  it("mechanical floor allows initiating to known recipient", async () => {
+    const kvInit = {};
+    const { brain, env } = makeBrain(kvInit, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    // Add a viveka:contact: entry
+    await env.KV.put("viveka:contact:swami", JSON.stringify({ text: "creator" }));
+    brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"known contact"}', cost: 0.001 }));
+    const result = await brain.communicationGate(
+      "send_slack",
+      { text: "hello", channel: "swami" },
+      slackMeta,
+    );
+    expect(result.verdict).toBe("send");
+    expect(brain.callLLM).toHaveBeenCalled();
+  });
+
+  it("model gate queues when not comms_gate_capable", async () => {
+    const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-haiku-4.5";
+    // Add viveka entry so it passes mechanical floor
+    await env.KV.put("viveka:contact:swami", JSON.stringify({ text: "creator" }));
+    const result = await brain.communicationGate(
+      "send_slack",
+      { text: "hello", channel: "swami" },
+      slackMeta,
+    );
+    expect(result.verdict).toBe("queue");
+    expect(result.reasoning).toContain("not comms_gate_capable");
+  });
+
+  it("gate approves send — tool proceeds", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"all good"}', cost: 0.001 }));
+    // responding mode — bypasses mechanical floor
+    const result = await brain.communicationGate(
+      "send_email",
+      { to: "a@b.com", body: "hello", reply_to_id: "msg1" },
+      emailMeta,
+    );
+    expect(result.verdict).toBe("send");
+    expect(result.reasoning).toBe("all good");
+  });
+
+  it("gate blocks send — returns block verdict", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.callLLM = vi.fn(async () => ({
+      content: '{"verdict":"block","reasoning":"inappropriate content"}',
+      cost: 0.001,
+    }));
+    const result = await brain.communicationGate(
+      "send_email",
+      { to: "a@b.com", body: "bad stuff", reply_to_id: "msg1" },
+      emailMeta,
+    );
+    expect(result.verdict).toBe("block");
+    expect(result.reasoning).toBe("inappropriate content");
+  });
+
+  it("gate revises message — returns revision", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.callLLM = vi.fn(async () => ({
+      content: '{"verdict":"revise","reasoning":"tone","revision":{"text":"better message"}}',
+      cost: 0.001,
+    }));
+    const result = await brain.communicationGate(
+      "send_email",
+      { to: "a@b.com", body: "rough draft", reply_to_id: "msg1" },
+      emailMeta,
+    );
+    expect(result.verdict).toBe("revise");
+    expect(result.revision.text).toBe("better message");
+  });
+
+  it("gate parse failure defaults to block", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.callLLM = vi.fn(async () => ({ content: "not json at all", cost: 0.001 }));
+    const result = await brain.communicationGate(
+      "send_email",
+      { to: "a@b.com", body: "test", reply_to_id: "msg1" },
+      emailMeta,
+    );
+    expect(result.verdict).toBe("block");
+    expect(result.reasoning).toContain("not valid JSON");
+  });
+
+  it("queueBlockedComm writes record to KV", async () => {
+    const { brain } = makeBrain();
+    brain.sessionId = "test_session_123";
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    const id = await brain.queueBlockedComm(
+      "send_slack",
+      { text: "hello", channel: "C123" },
+      slackMeta,
+      "test block reason",
+      { verdict: "block" },
+    );
+    expect(id).toMatch(/^cb_/);
+    const stored = await brain.kvGet(`comms_blocked:${id}`);
+    expect(stored.tool).toBe("send_slack");
+    expect(stored.channel).toBe("slack");
+    expect(stored.recipient).toBe("C123");
+    expect(stored.reason).toBe("test block reason");
+  });
+
+  it("processCommsVerdict send — executes and deletes record", async () => {
+    const { brain, env } = makeBrain();
+    brain.sessionId = "test_session";
+    const record = {
+      id: "cb_test_1",
+      tool: "send_slack",
+      args: { text: "hello" },
+      channel: "slack",
+      recipient: "C123",
+      mode: "initiating",
+    };
+    await env.KV.put("comms_blocked:cb_test_1", JSON.stringify(record));
+    brain.executeAction = vi.fn(async () => ({ ok: true }));
+
+    const result = await brain.processCommsVerdict("cb_test_1", "send");
+    expect(result.ok).toBe(true);
+    expect(brain.executeAction).toHaveBeenCalledWith(expect.objectContaining({ tool: "send_slack" }));
+    // Record should be deleted
+    const afterDelete = await env.KV.get("comms_blocked:cb_test_1");
+    expect(afterDelete).toBeNull();
+  });
+
+  it("processCommsVerdict drop — deletes record, records karma", async () => {
+    const { brain, env } = makeBrain();
+    brain.sessionId = "test_session";
+    const record = {
+      id: "cb_test_2",
+      tool: "send_email",
+      args: { to: "a@b.com", body: "hi" },
+      channel: "email",
+      recipient: "a@b.com",
+      mode: "initiating",
+    };
+    await env.KV.put("comms_blocked:cb_test_2", JSON.stringify(record));
+
+    const result = await brain.processCommsVerdict("cb_test_2", "drop", { reason: "not needed" });
+    expect(result.ok).toBe(true);
+    expect(result.dropped).toBe(true);
+    const afterDelete = await env.KV.get("comms_blocked:cb_test_2");
+    expect(afterDelete).toBeNull();
+  });
+
+  it("executeAction rejects communication tool without gate approval", async () => {
+    const { brain } = makeBrain();
+    brain._loadTool = vi.fn(async () => ({
+      meta: slackMeta,
+      moduleCode: "module.exports = { execute: async () => ({ ok: true }) }",
+    }));
+    const result = await brain.executeAction({ tool: "send_slack", input: { text: "hi" }, id: "t1" });
+    expect(result.error).toContain("gate approval");
+  });
+
+  it("executeAction allows communication tool with gate approval flag", async () => {
+    const { brain } = makeBrain();
+    brain._loadTool = vi.fn(async () => ({
+      meta: slackMeta,
+      moduleCode: "module.exports = { execute: async () => ({ ok: true }) }",
+    }));
+    brain.buildToolContext = vi.fn(async () => ({}));
+    brain._executeTool = vi.fn(async () => ({ ok: true }));
+    brain._commsGateApproved = true;
+    const result = await brain.executeAction({ tool: "send_slack", input: { text: "hi" }, id: "t1" });
+    expect(result).toEqual({ ok: true });
+    expect(brain._executeTool).toHaveBeenCalled();
+  });
+
+  it("executeAction allows non-communication tool without gate approval", async () => {
+    const { brain } = makeBrain();
+    brain._loadTool = vi.fn(async () => ({
+      meta: noCommMeta,
+      moduleCode: "module.exports = { execute: async () => ({ ok: true }) }",
+    }));
+    brain.buildToolContext = vi.fn(async () => ({}));
+    brain._executeTool = vi.fn(async () => ({ result: 42 }));
+    const result = await brain.executeAction({ tool: "kv_query", input: {}, id: "t2" });
+    expect(result).toEqual({ result: 42 });
+    expect(brain._executeTool).toHaveBeenCalled();
+  });
+
+  it("gate approval flag is cleared after executeToolCall", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    // Gate approves send
+    brain.communicationGate = vi.fn(async () => ({ verdict: "send", reasoning: "ok" }));
+    brain.executeAction = vi.fn(async () => ({ ok: true }));
+    brain.callHook = vi.fn(async () => null);
+    brain._loadTool = vi.fn(async () => ({ meta: slackMeta, moduleCode: "" }));
+
+    await brain.executeToolCall({
+      id: "tc1",
+      function: { name: "send_slack", arguments: JSON.stringify({ text: "hi", channel: "C1" }) },
+    });
+    expect(brain._commsGateApproved).toBe(false);
+  });
+
+  it("executeToolCall blocks communication tool when gate returns block", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.communicationGate = vi.fn(async () => ({ verdict: "block", reasoning: "unsafe content" }));
+    brain.queueBlockedComm = vi.fn(async () => "cb_1");
+    brain._loadTool = vi.fn(async () => ({ meta: slackMeta, moduleCode: "" }));
+    brain.executeAction = vi.fn(async () => ({ ok: true }));
+
+    const result = await brain.executeToolCall({
+      id: "tc1",
+      function: { name: "send_slack", arguments: JSON.stringify({ text: "bad", channel: "C1" }) },
+    });
+    expect(result.error).toContain("blocked");
+    expect(brain.queueBlockedComm).toHaveBeenCalled();
+    expect(brain.executeAction).not.toHaveBeenCalled();
+  });
+
+  it("executeToolCall queues communication tool when gate returns queue", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.communicationGate = vi.fn(async () => ({ verdict: "queue", reasoning: "not comms_gate_capable" }));
+    brain.queueBlockedComm = vi.fn(async () => "cb_2");
+    brain._loadTool = vi.fn(async () => ({ meta: slackMeta, moduleCode: "" }));
+    brain.executeAction = vi.fn(async () => ({ ok: true }));
+
+    const result = await brain.executeToolCall({
+      id: "tc2",
+      function: { name: "send_slack", arguments: JSON.stringify({ text: "hi", channel: "C1" }) },
+    });
+    expect(result.error).toContain("queued");
+    expect(brain.executeAction).not.toHaveBeenCalled();
+  });
+
+  it("executeToolCall applies revision via content_field when gate returns revise", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.communicationGate = vi.fn(async () => ({
+      verdict: "revise", reasoning: "tone", revision: { text: "polished message" },
+    }));
+    brain._loadTool = vi.fn(async () => ({ meta: slackMeta, moduleCode: "" }));
+    brain.executeAction = vi.fn(async (step) => ({ ok: true, sent_text: step.input.text }));
+    brain.callHook = vi.fn(async () => null);
+
+    const result = await brain.executeToolCall({
+      id: "tc3",
+      function: { name: "send_slack", arguments: JSON.stringify({ text: "rough draft", channel: "C1" }) },
+    });
+    // executeAction should receive the revised text
+    expect(brain.executeAction).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ text: "polished message" }) }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("executeToolCall lets non-communication tool through without gate", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain._loadTool = vi.fn(async () => ({ meta: noCommMeta, moduleCode: "" }));
+    brain.executeAction = vi.fn(async () => ({ result: 42 }));
+    brain.callHook = vi.fn(async () => null);
+    brain.communicationGate = vi.fn();
+
+    const result = await brain.executeToolCall({
+      id: "tc4",
+      function: { name: "kv_query", arguments: JSON.stringify({ key: "foo" }) },
+    });
+    expect(result).toEqual({ result: 42 });
+    expect(brain.communicationGate).not.toHaveBeenCalled();
+  });
+
+  it("processCommsVerdict revise_and_send applies revision via content_field", async () => {
+    const { brain, env } = makeBrain();
+    brain.sessionId = "test_session";
+    const record = {
+      id: "cb_rev_1",
+      tool: "send_email",
+      args: { to: "a@b.com", body: "original text" },
+      channel: "email",
+      content_field: "body",
+      recipient: "a@b.com",
+      mode: "initiating",
+    };
+    await env.KV.put("comms_blocked:cb_rev_1", JSON.stringify(record));
+    brain.executeAction = vi.fn(async () => ({ ok: true }));
+
+    await brain.processCommsVerdict("cb_rev_1", "revise_and_send", { text: "revised text" });
+    expect(brain.executeAction).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ body: "revised text" }) }),
+    );
+  });
+
+  it("listBlockedComms returns all blocked records", async () => {
+    const { brain, env } = makeBrain();
+    const record1 = { id: "cb_1", tool: "send_slack", args: { text: "a" } };
+    const record2 = { id: "cb_2", tool: "send_email", args: { body: "b" } };
+    await env.KV.put("comms_blocked:cb_1", JSON.stringify(record1));
+    await env.KV.put("comms_blocked:cb_2", JSON.stringify(record2));
+
+    const list = await brain.listBlockedComms();
+    expect(list).toHaveLength(2);
+    expect(list.map(r => r.id).sort()).toEqual(["cb_1", "cb_2"]);
   });
 });

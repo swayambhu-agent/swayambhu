@@ -1,7 +1,7 @@
 // Swayambhu Kernel
 // Hardcoded primitives + safety + alerting + hook dispatch.
-// Policy (wake flow, reflection, mutation protocol) lives in hook-main.js
-// (+ hook-reflect.js, hook-mutations.js, hook-protect.js), stored in KV
+// Policy (wake flow, reflection, Modification Protocol) lives in hook-main.js
+// (+ hook-reflect.js, hook-modifications.js, hook-protect.js), stored in KV
 // via hook:wake:manifest, and executed via Worker Loader isolate.
 //
 // The kernel exposes primitives via KernelRPC (WorkerEntrypoint).
@@ -77,6 +77,10 @@ export class KernelRPC extends WorkerEntrypoint {
   async buildToolDefinitions(extra) { return this._brain().buildToolDefinitions(extra); }
   async spawnSubplan(args, depth) { return this._brain().spawnSubplan(args, depth); }
   async callHook(name, ctx) { return this._brain().callHook(name, ctx); }
+
+  // Blocked communications
+  async listBlockedComms() { return this._brain().listBlockedComms(); }
+  async processCommsVerdict(id, verdict, revision) { return this._brain().processCommsVerdict(id, verdict, revision); }
 
   // Sandbox
   async executeAction(step) { return this._brain().executeAction(step); }
@@ -298,15 +302,18 @@ class Brainstem {
     this.yamas = null;         // Cached yama principles (loaded at boot)
     this.niyamas = null;       // Cached niyama principles (loaded at boot)
     this.lastCallModel = null; // Last model used in callLLM (for capability gates)
+    this._commsGateApproved = false; // Transient flag: set by executeToolCall/processCommsVerdict around executeAction
   }
 
   static SYSTEM_KEY_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'mutation_staged:', 'mutation_rollback:', 'hook:', 'doc:', 'git_pending:',
+    'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
     'yama:', 'niyama:',
+    'viveka:', 'prajna:',
+    'comms_blocked:',
   ];
   static KERNEL_ONLY_PREFIXES = ['kernel:'];
-  static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'wisdom'];
+  static SYSTEM_KEY_EXACT = ['providers', 'wallets'];
   static DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
   static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
@@ -353,6 +360,230 @@ class Brainstem {
   isNiyamaCapable(modelId) {
     const model = this.modelsConfig?.models?.find(m => m.id === modelId || m.alias === modelId);
     return !!model?.niyama_capable;
+  }
+
+  isCommsGateCapable(modelId) {
+    const model = this.modelsConfig?.models?.find(m => m.id === modelId || m.alias === modelId);
+    return !!model?.comms_gate_capable;
+  }
+
+  // ── Communication gate (kernel-enforced) ────────────────────
+
+  static COMMS_GATE_PROMPT = `You are evaluating an outbound communication attempt. Based on your principles and the wisdom context provided, determine whether this message should be sent.
+
+Consider:
+- Standing: is this a response to someone who contacted you, or are you initiating contact?
+- Recipient: what does your accumulated wisdom say about them and your relationship?
+- Content: is the message appropriate for this recipient and channel?
+- Tone: does it match what this context requires?
+- Authority: do you have standing to communicate this in this context?
+
+[COMMUNICATION WISDOM]
+{{viveka}}
+[/COMMUNICATION WISDOM]
+
+Respond with JSON only:
+{
+  "verdict": "send" | "revise" | "block",
+  "reasoning": "brief explanation",
+  "revision": { "text": "revised message" }
+}
+
+"revision" required only when verdict is "revise".`;
+
+  resolveRecipient(args, meta) {
+    const comm = meta.communication;
+    if (!comm?.recipient_field) return null;
+    return args[comm.recipient_field] || null;
+  }
+
+  resolveCommsMode(args, meta) {
+    const comm = meta.communication;
+    if (!comm?.reply_field) return 'initiating';
+    return args[comm.reply_field] ? 'responding' : 'initiating';
+  }
+
+  async loadCommsViveka() {
+    const entries = {};
+    for (const prefix of ['viveka:contact:', 'viveka:channel:', 'viveka:comms:']) {
+      const result = await this.kv.list({ prefix });
+      for (const { name: key } of result.keys) {
+        const value = await this.kvGet(key);
+        if (value !== null) entries[key] = value;
+      }
+    }
+    return entries;
+  }
+
+  generateCommsBlockedId() {
+    return `cb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async queueBlockedComm(toolName, args, meta, reason, gateResult) {
+    const id = this.generateCommsBlockedId();
+    const record = {
+      id,
+      tool: toolName,
+      args,
+      channel: meta.communication.channel,
+      content_field: meta.communication.content_field || null,
+      recipient: this.resolveRecipient(args, meta),
+      mode: this.resolveCommsMode(args, meta),
+      reason,
+      gate_verdict: gateResult,
+      session_id: this.sessionId,
+      model: this.lastCallModel,
+      timestamp: new Date().toISOString(),
+    };
+    // Kernel-internal write — not exposed via RPC
+    await this.kvPut(`comms_blocked:${id}`, record);
+    await this.karmaRecord({
+      event: "comms_blocked",
+      id, tool: toolName,
+      channel: meta.communication.channel,
+      recipient: record.recipient,
+      mode: record.mode,
+      reason,
+    });
+    return id;
+  }
+
+  async communicationGate(toolName, args, meta) {
+    const recipient = this.resolveRecipient(args, meta);
+    const mode = this.resolveCommsMode(args, meta);
+
+    // 1. Mechanical floor: initiating + no viveka about recipient → block
+    if (mode === 'initiating') {
+      const contactKeys = await this.kv.list({ prefix: 'viveka:contact:' });
+      const hasViveka = contactKeys.keys.some(k => {
+        const entry = k.name.replace('viveka:contact:', '');
+        return recipient && (
+          recipient.toLowerCase().includes(entry.toLowerCase()) ||
+          entry.toLowerCase().includes(recipient.toLowerCase())
+        );
+      });
+      if (!hasViveka) {
+        return {
+          verdict: 'block',
+          reasoning: `No viveka about recipient "${recipient}" — cannot initiate contact with unknown entity`,
+          mechanical: true,
+        };
+      }
+    }
+
+    // 2. Model gate: current model must be comms_gate_capable
+    const currentModel = this.lastCallModel || this.defaults?.orient?.model;
+    if (!this.isCommsGateCapable(currentModel)) {
+      return {
+        verdict: 'queue',
+        reasoning: `Model ${currentModel} not comms_gate_capable — queuing for deep reflect`,
+      };
+    }
+
+    // 3. Load viveka context
+    const viveka = await this.loadCommsViveka();
+    const vivekaBlock = Object.entries(viveka).length > 0
+      ? Object.entries(viveka).map(([k, v]) => {
+          const text = typeof v === 'object' ? (v.text || JSON.stringify(v)) : String(v);
+          return `[${k}]\n${text}\n[/${k}]`;
+        }).join('\n')
+      : '(No accumulated communication wisdom yet. Be conservative.)';
+
+    // 4. Gate LLM call
+    const gatePrompt = Brainstem.COMMS_GATE_PROMPT.replace('{{viveka}}', vivekaBlock);
+    const contextMessage = JSON.stringify({
+      tool: toolName,
+      channel: meta.communication.channel,
+      mode,
+      recipient: recipient || '(default channel)',
+      message_content: args.text || args.body || '',
+      subject: args.subject || null,
+      is_reply: mode === 'responding',
+      reply_to: meta.communication.reply_field ? args[meta.communication.reply_field] : null,
+    });
+
+    const gateResult = await this.callLLM({
+      model: currentModel,
+      effort: 'low',
+      maxTokens: 500,
+      systemPrompt: gatePrompt,
+      messages: [{ role: 'user', content: contextMessage }],
+      step: `comms_gate:${toolName}`,
+    });
+
+    // 5. Parse verdict
+    try {
+      const parsed = JSON.parse(gateResult.content);
+      return {
+        verdict: parsed.verdict || 'block',
+        reasoning: parsed.reasoning || '',
+        revision: parsed.revision || null,
+        gate_model: currentModel,
+        gate_cost: gateResult.cost,
+      };
+    } catch {
+      return {
+        verdict: 'block',
+        reasoning: 'Gate response not valid JSON — blocking as safety default',
+        raw: gateResult.content,
+      };
+    }
+  }
+
+  async listBlockedComms() {
+    const result = await this.kv.list({ prefix: 'comms_blocked:' });
+    const entries = [];
+    for (const { name: key } of result.keys) {
+      const value = await this.kvGet(key);
+      if (value !== null) entries.push(typeof value === 'string' ? JSON.parse(value) : value);
+    }
+    return entries;
+  }
+
+  async processCommsVerdict(id, verdict, revision) {
+    const key = `comms_blocked:${id}`;
+    const raw = await this.kvGet(key);
+    if (!raw) return { error: `No blocked comm: ${id}` };
+    const record = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+    if (verdict === 'send' || verdict === 'revise_and_send') {
+      let sendArgs = { ...record.args };
+      if (verdict === 'revise_and_send' && revision?.text) {
+        const cf = record.content_field;
+        if (cf && sendArgs[cf] !== undefined) sendArgs[cf] = revision.text;
+      }
+      // Execute via executeAction — set gate flag (already approved by deep reflect)
+      this._commsGateApproved = true;
+      let result;
+      try {
+        result = await this.executeAction({
+          tool: record.tool,
+          input: sendArgs,
+          id: `comms_verdict_${id}`,
+        });
+      } finally {
+        this._commsGateApproved = false;
+      }
+      await this.karmaRecord({
+        event: 'comms_verdict_sent', id, tool: record.tool,
+        recipient: record.recipient, verdict,
+        revised: verdict === 'revise_and_send',
+      });
+      await this.kv.delete(key);
+      return { ok: true, result };
+    }
+
+    if (verdict === 'drop') {
+      await this.karmaRecord({
+        event: 'comms_verdict_dropped', id, tool: record.tool,
+        recipient: record.recipient,
+        reason: revision?.reason || 'dropped by deep reflect',
+      });
+      await this.kv.delete(key);
+      return { ok: true, dropped: true };
+    }
+
+    return { error: `Unknown verdict: ${verdict}` };
   }
 
   // ── Karma log ────────────────────────────────────────────────
@@ -807,6 +1038,11 @@ class Brainstem {
     // Load tool code + meta (platform-specific, overridable)
     const { meta, moduleCode } = await this._loadTool(toolName);
 
+    // Communication tools require gate approval — cannot be called via RPC directly
+    if (meta?.communication && !this._commsGateApproved) {
+      return { error: 'Communication tools require gate approval — cannot call executeAction directly' };
+    }
+
     // Build sandboxed context based on function metadata
     const ctx = await this.buildToolContext(toolName, meta || {}, step.input || {});
 
@@ -1056,7 +1292,7 @@ export default {
 
     const startMs = Date.now();
 
-    // Kernel-enforced dharma injection — no hook or prompt mutation can bypass this
+    // Kernel-enforced dharma injection — no hook or prompt modification can bypass this
     const dharmaPrefix = this.dharma ? `[DHARMA]\n${this.dharma}\n[/DHARMA]\n\n` : '';
 
     // Kernel-enforced yama/niyama injection — mutable but always present
@@ -1298,6 +1534,41 @@ export default {
       return this.checkBalance(args);
     }
 
+    // ── Communication gate (kernel-enforced) ──────────────────
+    // Must be before special-case tools so communication tools can't masquerade
+    let isCommsTool = false;
+    {
+      const { meta: toolMeta } = await this._loadTool(name).catch(() => ({ meta: null }));
+      if (toolMeta?.communication) {
+        isCommsTool = true;
+        const gateResult = await this.communicationGate(name, args, toolMeta);
+
+        if (gateResult.verdict === 'block' || gateResult.verdict === 'queue') {
+          await this.queueBlockedComm(name, args, toolMeta, gateResult.reasoning, gateResult);
+          return { error: `Communication ${gateResult.verdict === 'queue' ? 'queued for review' : 'blocked'}: ${gateResult.reasoning}` };
+        }
+
+        if (gateResult.verdict === 'revise' && gateResult.revision?.text) {
+          const cf = toolMeta.communication.content_field;
+          if (cf && args[cf] !== undefined) args[cf] = gateResult.revision.text;
+          await this.karmaRecord({
+            event: 'comms_revised', tool: name,
+            recipient: this.resolveRecipient(args, toolMeta),
+            reasoning: gateResult.reasoning,
+          });
+        }
+
+        if (gateResult.verdict === 'send') {
+          await this.karmaRecord({
+            event: 'comms_approved', tool: name,
+            recipient: this.resolveRecipient(args, toolMeta),
+            reasoning: gateResult.reasoning,
+          });
+        }
+      }
+    }
+    // ── End communication gate ────────────────────────────────
+
     // Pre-validation hook
     const schema = this.toolRegistry?.tools?.find(t => t.name === name)?.input;
     const preCheck = await this.callHook('validate', { tool: name, args, schema });
@@ -1307,20 +1578,26 @@ export default {
     }
     if (preCheck?.args) args = preCheck.args;
 
-    const result = await this.executeAction({
-      tool: name,
-      input: args,
-      id: toolCall.id,
-    });
+    // Set gate approval flag so executeAction allows communication tools
+    if (isCommsTool) this._commsGateApproved = true;
+    try {
+      const result = await this.executeAction({
+        tool: name,
+        input: args,
+        id: toolCall.id,
+      });
 
-    // Post-validation hook
-    const postCheck = await this.callHook('validate_result', { tool: name, args, result });
-    if (postCheck && !postCheck.ok) {
-      await this.karmaRecord({ event: "hook_rejected", hook: "validate_result", tool: name, error: postCheck.error });
-      return { error: postCheck.error };
+      // Post-validation hook
+      const postCheck = await this.callHook('validate_result', { tool: name, args, result });
+      if (postCheck && !postCheck.ok) {
+        await this.karmaRecord({ event: "hook_rejected", hook: "validate_result", tool: name, error: postCheck.error });
+        return { error: postCheck.error };
+      }
+
+      return result;
+    } finally {
+      if (isCommsTool) this._commsGateApproved = false;
     }
-
-    return result;
   }
 
   async callHook(hookName, ctx) {
@@ -1559,13 +1836,15 @@ export default {
       reflect:    { type: "reflect_output", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
-      wisdom:     { type: "core", format: "text" },
-      mutation_staged:    { type: "mutation", format: "json" },
-      mutation_rollback: { type: "mutation", format: "json" },
+      modification_staged:    { type: "modification", format: "json" },
+      modification_snapshot: { type: "modification", format: "json" },
+      viveka:     { type: "wisdom", format: "json" },
+      prajna:     { type: "wisdom", format: "json" },
       git_pending:    { type: "git_sync", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       yama:       { type: "yama", format: "text" },
       niyama:     { type: "niyama", format: "text" },
+      comms_blocked: { type: "comms", format: "json" },
     };
     const finalMetadata = {
       ...defaults[prefix],
