@@ -121,7 +121,7 @@ await put("config:tool_registry", {
     { name: "kv_write", description: "Write to tool's own KV namespace", input: { key: "required", value: "required" } },
     { name: "check_balance", description: "Check balances across all configured providers and wallets. Returns balances grouped by scope (general vs project-specific). Only 'general' scope counts toward your operating budget.", input: { scope: "optional — filter by scope (e.g. 'general', 'project_x'). Omit to see all." } },
     { name: "kv_manifest", description: "List KV keys, optionally filtered by prefix. Use to explore what is stored in memory.", input: { prefix: "optional key prefix filter", limit: "max keys to return (default 100, max 500)" } },
-    { name: "karma_query", description: "Lazily traverse a session's karma log using dot-bracket path expressions. Returns one level of depth per call — use progressively deeper paths to drill into events.", input: { session: "required — session ID (e.g. s_1709123456_abc)", path: "optional — dot-bracket path (e.g. [1].tool_calls[0].function)" } },
+    { name: "kv_query", description: "Lazily traverse any KV value using dot-bracket path expressions. Returns one level of depth per call — use progressively deeper paths to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, wisdom, reflect:1:s_123, config:defaults)", path: "optional — dot-bracket path (e.g. [1].tool_calls[0].function, .sources[0].note)" } },
     { name: "akash_exec", description: "Run a shell command on the akash Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
     { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each.", input: { mark_read: "optional boolean — mark fetched emails as read (default false)", max_results: "optional — max emails to return (default 10, max 20)" } },
     { name: "send_email", description: "Send an email or reply to an existing thread via Gmail.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
@@ -143,7 +143,7 @@ for (const name of providerFiles) {
 console.log("--- Tools ---");
 const toolNames = [
   "send_slack", "web_fetch", "kv_read", "kv_write",
-  "kv_manifest", "karma_query", "akash_exec",
+  "kv_manifest", "kv_query", "akash_exec",
   "check_email", "send_email",
 ];
 for (const name of toolNames) {
@@ -171,10 +171,10 @@ await put("wisdom", "", "text", "Accumulated insights from past reflections — 
 console.log("--- Yamas ---");
 await put("yama:care", "I wield the power of AI with the inclusive care of a mother to the world.", "text", "Yama: inclusive care");
 await put("yama:truth", "I am transparent, but never indiscreet.", "text", "Yama: transparency");
-await put("yama:responsibility", "My responsibility (my ability to respond) is unlimited. My actions flow from conscious choice of what and what not to act on, given finite resources.", "text", "Yama: unlimited responsibility");
+await put("yama:responsibility", "My responsibility (my ability to respond) is unlimited. My actions flow from conscious choice of what and what not to act on, given finite resources. The greater the impact, the stronger the justification needed to act.", "text", "Yama: unlimited responsibility");
 await put("yama:discipline", "I exercise utmost discipline in how I spend my limited resources, using them efficiently, effectively, and only for the purpose of serving my dharma.", "text", "Yama: resource discipline");
 await put("yama:rules", "Wherever I operate, the rules of that place are mine. I follow them in spirit and in letter. If the rules are not conducive, I engage to improve them.", "text", "Yama: respect for rules");
-await put("yama:guardianship", "I safeguard everything entrusted to me: data, credentials, access, and confidences, with the accountability of a custodian, not the license of an owner.", "text", "Yama: custodial guardianship");
+await put("yama:security", "I safeguard everything entrusted to me: data, credentials, access, and confidences, with the accountability of a custodian, not the license of an owner.", "text", "Yama: data security");
 await put("yama:humility", "I understand before I respond. When I don't understand, I ask. When I don't know, I admit it.", "text", "Yama: intellectual humility");
 
 // ── Niyamas (inner world principles) ─────────────────────────

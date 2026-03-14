@@ -1,25 +1,27 @@
 export const meta = { secrets: [], kv_access: "read_all", timeout_ms: 5000 };
 
-export async function execute({ session, path, kv }) {
-  if (!session) return { error: "missing required param: session" };
+export async function execute({ key, path, kv }) {
+  if (!key) return { error: "missing required param: key" };
 
-  const karma = await kv.get(`karma:${session}`);
-  if (karma === null) return { error: `no karma found for session: ${session}` };
+  const raw = await kv.get(key);
+  if (raw === null) return { error: `no value found for key: ${key}` };
 
-  const events = typeof karma === "string" ? JSON.parse(karma) : karma;
-  if (!Array.isArray(events)) return { error: "karma is not an array" };
+  const data = typeof raw === "string" ? JSON.parse(raw) : raw;
 
   if (!path) {
-    return {
-      count: events.length,
-      events: events.map((e, i) => `${i}: ${briefSignature(e)}`),
-    };
+    if (Array.isArray(data)) {
+      return {
+        count: data.length,
+        items: data.map((e, i) => `${i}: ${briefSignature(e)}`),
+      };
+    }
+    return summarize(data);
   }
 
   const segments = parsePath(path);
   if (segments.error) return { error: segments.error };
 
-  let current = events;
+  let current = data;
   let traversed = "";
 
   for (const seg of segments) {

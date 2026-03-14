@@ -9,7 +9,7 @@ import * as web_fetch from "../tools/web_fetch.js";
 import * as kv_read from "../tools/kv_read.js";
 import * as kv_write from "../tools/kv_write.js";
 import * as kv_manifest from "../tools/kv_manifest.js";
-import * as karma_query from "../tools/karma_query.js";
+import * as kv_query from "../tools/kv_query.js";
 import * as check_email from "../tools/check_email.js";
 import * as send_email from "../tools/send_email.js";
 import * as akash_exec from "../tools/akash_exec.js";
@@ -100,7 +100,7 @@ function mockKV(initial = {}) {
 
 const allTools = {
   send_slack, web_fetch, kv_read, kv_write,
-  kv_manifest, karma_query, check_email, send_email, akash_exec,
+  kv_manifest, kv_query, check_email, send_email, akash_exec,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail };
@@ -334,7 +334,7 @@ describe("provider:wallet_balance", () => {
   });
 });
 
-// ── 5. karma_query tests ──────────────────────────────────────
+// ── 5. kv_query tests ──────────────────────────────────────
 
 const SAMPLE_KARMA = [
   { event: "session_start", session_id: "s_123", effort: "low" },
@@ -351,35 +351,31 @@ const SAMPLE_KARMA = [
   { event: "tool_result", tool: "kv_manifest", ok: true },
 ];
 
-describe("karma_query", () => {
-  function karmaKV(sessionId, karma) {
-    return mockKV({ [`karma:${sessionId}`]: karma });
-  }
-
-  it("returns error for missing session param", async () => {
-    const result = await karma_query.execute({ kv: mockKV() });
+describe("kv_query", () => {
+  it("returns error for missing key param", async () => {
+    const result = await kv_query.execute({ kv: mockKV() });
     expect(result.error).toContain("missing required param");
   });
 
-  it("returns error for missing session in KV", async () => {
-    const result = await karma_query.execute({ session: "s_none", kv: mockKV() });
-    expect(result.error).toContain("no karma found");
+  it("returns error for missing key in KV", async () => {
+    const result = await kv_query.execute({ key: "karma:s_none", kv: mockKV() });
+    expect(result.error).toContain("no value found");
   });
 
-  it("returns event index with no path", async () => {
-    const kv = karmaKV("s_123", SAMPLE_KARMA);
-    const result = await karma_query.execute({ session: "s_123", kv });
+  it("returns item index with no path", async () => {
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({ key: "karma:s_123", kv });
     expect(result.count).toBe(3);
-    expect(result.events).toHaveLength(3);
-    expect(result.events[0]).toBe("0: session_start");
-    expect(result.events[1]).toContain("llm_call");
-    expect(result.events[1]).toContain("orient_turn_0");
-    expect(result.events[1]).toContain("ok=true");
+    expect(result.items).toHaveLength(3);
+    expect(result.items[0]).toBe("0: session_start");
+    expect(result.items[1]).toContain("llm_call");
+    expect(result.items[1]).toContain("orient_turn_0");
+    expect(result.items[1]).toContain("ok=true");
   });
 
   it("returns object summary for [1]", async () => {
-    const kv = karmaKV("s_123", SAMPLE_KARMA);
-    const result = await karma_query.execute({ session: "s_123", path: "[1]", kv });
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({ key: "karma:s_123", path: "[1]", kv });
     expect(result.type).toBe("object");
     expect(result.fields.event).toBe('"llm_call"');
     expect(result.fields.cost).toBe("0.0155");
@@ -388,8 +384,8 @@ describe("karma_query", () => {
   });
 
   it("returns array summary for [1].tool_calls", async () => {
-    const kv = karmaKV("s_123", SAMPLE_KARMA);
-    const result = await karma_query.execute({ session: "s_123", path: "[1].tool_calls", kv });
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({ key: "karma:s_123", path: "[1].tool_calls", kv });
     expect(result.type).toBe("array");
     expect(result.count).toBe(2);
     expect(result.items[0]).toContain("kv_manifest");
@@ -397,9 +393,9 @@ describe("karma_query", () => {
   });
 
   it("returns leaf value for deep path", async () => {
-    const kv = karmaKV("s_123", SAMPLE_KARMA);
-    const result = await karma_query.execute({
-      session: "s_123",
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({
+      key: "karma:s_123",
       path: "[1].tool_calls[0].function.name",
       kv,
     });
@@ -407,44 +403,49 @@ describe("karma_query", () => {
   });
 
   it("returns leaf for numeric value", async () => {
-    const kv = karmaKV("s_123", SAMPLE_KARMA);
-    const result = await karma_query.execute({ session: "s_123", path: "[1].cost", kv });
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({ key: "karma:s_123", path: "[1].cost", kv });
     expect(result.value).toBe(0.0155);
   });
 
   it("returns error for out-of-bounds index", async () => {
-    const kv = karmaKV("s_123", SAMPLE_KARMA);
-    const result = await karma_query.execute({ session: "s_123", path: "[99]", kv });
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({ key: "karma:s_123", path: "[99]", kv });
     expect(result.error).toContain("out of bounds");
   });
 
   it("returns error with available_keys for missing key", async () => {
-    const kv = karmaKV("s_123", SAMPLE_KARMA);
-    const result = await karma_query.execute({ session: "s_123", path: "[0].nonexistent", kv });
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({ key: "karma:s_123", path: "[0].nonexistent", kv });
     expect(result.error).toContain("not found");
     expect(result.available_keys).toContain("event");
   });
 
   it("returns error for bad path syntax", async () => {
-    const kv = karmaKV("s_123", SAMPLE_KARMA);
-    const result = await karma_query.execute({ session: "s_123", path: "[abc]", kv });
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({ key: "karma:s_123", path: "[abc]", kv });
     expect(result.error).toContain("non-numeric");
   });
 
   it("truncates long strings with full_length", async () => {
     const longKarma = [{ event: "test", data: "x".repeat(200) }];
-    const kv = karmaKV("s_long", longKarma);
-    const result = await karma_query.execute({ session: "s_long", path: "[0].data", kv });
+    const kv = mockKV({ "karma:s_long": longKarma });
+    const result = await kv_query.execute({ key: "karma:s_long", path: "[0].data", kv });
     expect(result.value.length).toBeLessThan(200);
     expect(result.full_length).toBe(200);
   });
 
-  it("handles string-encoded karma (JSON string in KV)", async () => {
+  it("handles string-encoded JSON in KV", async () => {
     const kv = mockKV({ "karma:s_str": JSON.stringify(SAMPLE_KARMA) });
-    // mockKV.get returns raw value — but real KV might return parsed or string
-    // karma_query handles both cases
-    const result = await karma_query.execute({ session: "s_str", kv });
+    const result = await kv_query.execute({ key: "karma:s_str", kv });
     expect(result.count).toBe(3);
+  });
+
+  it("works with non-karma keys", async () => {
+    const kv = mockKV({ "config:defaults": { orient: { model: "haiku" }, reflect: { model: "sonnet" } } });
+    const result = await kv_query.execute({ key: "config:defaults", kv });
+    expect(result.type).toBe("object");
+    expect(result.fields.orient).toContain("object");
   });
 });
 
