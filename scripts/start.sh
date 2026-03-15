@@ -181,7 +181,7 @@ if $RESET; then
     echo "WARNING: --reset-all-state will PERMANENTLY DELETE all local state:"
     echo "  - All sessions and karma logs"
     echo "  - Accumulated wisdom"
-    echo "  - Mutation history and rollback records"
+    echo "  - Modification history and rollback records"
     echo "  - All config overrides"
     echo "  - Chat history"
     echo ""

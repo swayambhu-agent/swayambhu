@@ -2382,3 +2382,215 @@ describe("Patron identity monitor", () => {
     expect(result.platforms).toEqual({ slack: "U_SWAMI" });
   });
 });
+
+// ── Sealed namespace enforcement ────────────────────────────
+
+describe("sealed namespace", () => {
+  describe("isSystemKey / isKernelOnly recognize sealed:", () => {
+    it("sealed: is a system key", () => {
+      expect(Brainstem.isSystemKey("sealed:quarantine:email:foo:123")).toBe(true);
+    });
+
+    it("sealed: is kernel-only", () => {
+      expect(Brainstem.isKernelOnly("sealed:quarantine:email:foo:123")).toBe(true);
+    });
+  });
+
+  describe("kvPutSafe blocks sealed: keys", () => {
+    it("blocks writes to sealed: keys", async () => {
+      const { brain } = makeBrain();
+      await expect(brain.kvPutSafe("sealed:quarantine:test", { data: 1 }))
+        .rejects.toThrow("kernel-only");
+    });
+  });
+
+  describe("kvWritePrivileged blocks sealed: keys", () => {
+    it("blocks writes to sealed: keys", async () => {
+      const { brain } = makeBrain();
+      brain.sessionId = "test_session";
+      await expect(brain.kvWritePrivileged([
+        { op: "put", key: "sealed:quarantine:test", value: { data: 1 } },
+      ])).rejects.toThrow("kernel-only");
+    });
+  });
+});
+
+// ── Inbound content gate ────────────────────────────────────
+
+describe("inbound content gate", () => {
+  async function setupBrainForInbound(kvInit = {}, contacts = {}) {
+    const { brain, env } = makeBrain(kvInit);
+    brain.sessionId = "test_session";
+    brain.karma = [];
+    brain.defaults = {
+      orient: { model: "test-model", max_steps: 10, max_cost: 1.0 },
+    };
+
+    // Mock _loadTool to return a tool with inbound meta
+    brain._loadTool = vi.fn(async (name) => {
+      if (name === "check_email") {
+        return {
+          meta: {
+            inbound: {
+              channel: "email",
+              sender_field: "sender_email",
+              content_field: "body",
+              result_array: "emails",
+            },
+          },
+          execute: async () => ({
+            emails: [
+              {
+                id: "msg_1",
+                from: "Alice <alice@example.com>",
+                sender_email: "alice@example.com",
+                subject: "Hello",
+                body: "Hi, this is Alice!",
+              },
+              {
+                id: "msg_2",
+                from: "Bob <bob@unknown.com>",
+                sender_email: "bob@unknown.com",
+                subject: "Spam?",
+                body: "Buy my product!",
+              },
+            ],
+          }),
+        };
+      }
+      if (name === "kv_read") {
+        return {
+          meta: {},
+          execute: async () => ({ value: "test" }),
+        };
+      }
+      throw new Error(`Unknown tool: ${name}`);
+    });
+
+    // Mock resolveContact
+    brain.resolveContact = vi.fn(async (channel, senderId) => {
+      return contacts[`${channel}:${senderId}`] || null;
+    });
+
+    // Mock executeAction to use the tool's execute
+    brain.executeAction = vi.fn(async ({ tool }) => {
+      const { execute } = await brain._loadTool(tool);
+      return execute();
+    });
+
+    // Mock callHook (validate_result) to pass through
+    brain.callHook = vi.fn(async () => null);
+
+    // Stub karmaRecord
+    brain.karmaRecord = vi.fn(async () => {});
+
+    // Stub kvPut for quarantine writes
+    brain.kvPut = vi.fn(async () => {});
+
+    // Stub communication gate methods
+    brain._commsGateApproved = false;
+    brain.loadCommsWisdom = vi.fn(async () => null);
+
+    return { brain, env };
+  }
+
+  it("redacts content from unknown senders", async () => {
+    const { brain } = await setupBrainForInbound({}, {
+      "email:alice@example.com": { name: "Alice", slug: "alice" },
+      // bob@unknown.com is NOT in contacts
+    });
+
+    const result = await brain.executeToolCall({
+      id: "tc_1",
+      function: { name: "check_email", arguments: "{}" },
+    });
+
+    // Alice's email should be untouched
+    expect(result.emails[0].body).toBe("Hi, this is Alice!");
+    // Bob's email should be redacted
+    expect(result.emails[1].body).toBe("[content redacted — unknown sender]");
+  });
+
+  it("quarantines unknown sender content under sealed: key", async () => {
+    const { brain } = await setupBrainForInbound({}, {
+      "email:alice@example.com": { name: "Alice", slug: "alice" },
+    });
+
+    await brain.executeToolCall({
+      id: "tc_1",
+      function: { name: "check_email", arguments: "{}" },
+    });
+
+    // kvPut should have been called with a sealed:quarantine: key for Bob
+    const quarantineCall = brain.kvPut.mock.calls.find(
+      ([key]) => key.startsWith("sealed:quarantine:")
+    );
+    expect(quarantineCall).toBeDefined();
+    const [key, value] = quarantineCall;
+    expect(key).toMatch(/^sealed:quarantine:email:bob%40unknown\.com:\d+$/);
+    expect(value.sender).toBe("bob@unknown.com");
+    expect(value.content).toBe("Buy my product!");
+    expect(value.tool).toBe("check_email");
+    expect(value.subject).toBe("Spam?");
+    expect(value.from).toBe("Bob <bob@unknown.com>");
+  });
+
+  it("records inbound_redacted karma for unknown senders", async () => {
+    const { brain } = await setupBrainForInbound({}, {
+      "email:alice@example.com": { name: "Alice", slug: "alice" },
+    });
+
+    await brain.executeToolCall({
+      id: "tc_1",
+      function: { name: "check_email", arguments: "{}" },
+    });
+
+    const redactedKarma = brain.karmaRecord.mock.calls.find(
+      ([entry]) => entry.event === "inbound_redacted"
+    );
+    expect(redactedKarma).toBeDefined();
+    expect(redactedKarma[0].sender_id).toBe("bob@unknown.com");
+    expect(redactedKarma[0].channel).toBe("email");
+    expect(redactedKarma[0].quarantine_key).toMatch(/^sealed:quarantine:/);
+  });
+
+  it("passes through content from known senders without redaction", async () => {
+    const { brain } = await setupBrainForInbound({}, {
+      "email:alice@example.com": { name: "Alice", slug: "alice" },
+      "email:bob@unknown.com": { name: "Bob", slug: "bob" },
+    });
+
+    const result = await brain.executeToolCall({
+      id: "tc_1",
+      function: { name: "check_email", arguments: "{}" },
+    });
+
+    // Both emails should be untouched
+    expect(result.emails[0].body).toBe("Hi, this is Alice!");
+    expect(result.emails[1].body).toBe("Buy my product!");
+
+    // No quarantine writes
+    const quarantineCall = brain.kvPut.mock.calls.find(
+      ([key]) => key.startsWith("sealed:quarantine:")
+    );
+    expect(quarantineCall).toBeUndefined();
+  });
+
+  it("skips inbound gate for tools without inbound meta", async () => {
+    const { brain } = await setupBrainForInbound();
+
+    brain._loadTool = vi.fn(async () => ({
+      meta: {},
+      execute: async () => ({ data: "some result" }),
+    }));
+    brain.executeAction = vi.fn(async () => ({ data: "some result" }));
+
+    const result = await brain.executeToolCall({
+      id: "tc_1",
+      function: { name: "kv_read", arguments: '{"key":"test"}' },
+    });
+
+    expect(result.data).toBe("some result");
+    expect(brain.resolveContact).not.toHaveBeenCalled();
+  });
+});

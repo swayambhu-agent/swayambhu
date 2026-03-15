@@ -133,8 +133,8 @@ export async function check({ secrets, fetch: fetchFn }) {
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function extractBody(payload) {
-  if (!payload) return "";
+function extractBody(payload, depth = 0) {
+  if (!payload || depth > 10) return "";
 
   // Simple text/plain body
   if (payload.mimeType === "text/plain" && payload.body?.data) {
@@ -157,7 +157,7 @@ function extractBody(payload) {
     // Nested multipart
     for (const part of payload.parts) {
       if (part.parts) {
-        const nested = extractBody(part);
+        const nested = extractBody(part, depth + 1);
         if (nested) return nested;
       }
     }

@@ -271,6 +271,7 @@ class Brainstem {
     'comms_blocked:',
     'contact:',
     'contact_index:',
+    'sealed:',
   ];
   static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -354,10 +355,12 @@ class Brainstem {
   async kvListAll(opts = {}) {
     const keys = [];
     let cursor;
+    let pages = 0;
     do {
       const result = await this.kv.list({ ...opts, cursor });
       keys.push(...result.keys);
       cursor = result.list_complete ? undefined : result.cursor;
+      if (++pages > 100) { console.error("[KERNEL] kvListAll: hit 100-page safety limit"); break; }
     } while (cursor);
     return keys;
   }

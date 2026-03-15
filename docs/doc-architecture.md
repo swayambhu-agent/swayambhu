@@ -84,7 +84,25 @@ When a tool is called:
 KV access levels for tools:
 - `"none"` — no KV access
 - `"own"` — reads/writes scoped to `tooldata:{toolName}:*`
-- `"read_all"` — can read any key, writes scoped to own namespace
+- `"read_all"` — can read any key (except `sealed:*`), writes scoped to own namespace
+
+### Inbound Content Gate
+
+Tools that return external messages declare an `inbound` meta field:
+```json
+{ "channel": "email", "sender_field": "sender_email", "content_field": "body", "result_array": "emails" }
+```
+
+After tool execution, the kernel post-processes results: for each item in `result[result_array]`, resolves `item[sender_field]` against the contact registry via `resolveContact(channel, senderId)`. Unknown senders have `item[content_field]` replaced with `[content redacted — unknown sender]` and the original content quarantined at `sealed:quarantine:{channel}:{sender}:{timestamp}`. Known senders pass through unmodified. This is generic — any inbound tool declares the same meta shape.
+
+### Sealed Namespace
+
+`sealed:*` keys are mechanically unreadable by tools:
+- `ScopedKV.get()` returns `null` for any key starting with `sealed:`
+- `ScopedKV.list()` filters out `sealed:*` keys from results
+- `kvPutSafe` and `kvDeleteSafe` block writes (via `KERNEL_ONLY_PREFIXES`)
+
+Hook code CAN read sealed keys via `K.kvGet()` — hooks are the trusted policy layer. The dashboard API reads KV directly (bypasses ScopedKV) and can display quarantined content to the patron.
 
 ### Validation Hooks
 
@@ -146,7 +164,7 @@ Each cron invocation has a **15-minute wall-clock limit** regardless of cron int
 
 ## KV Namespace Layout
 
-### Kernel-only (cannot be written by hook)
+### Kernel-only (cannot be written by hook or tools)
 - `dharma` — immutable identity
 - `kernel:active_session` — crash detection breadcrumb
 - `kernel:last_sessions` — last 5 session outcomes
@@ -155,6 +173,7 @@ Each cron invocation has a **15-minute wall-clock limit** regardless of cron int
 - `kernel:alert_config` — alerting configuration (URL template, body template, headers)
 - `kernel:llm_fallback` + `:meta` — Tier 3 LLM adapter
 - `kernel:fallback_model` — fallback model string
+- `sealed:quarantine:{channel}:{sender}:{timestamp}` — quarantined inbound content from unknown senders (readable by hooks via `K.kvGet()`, unreadable by tools via ScopedKV)
 
 ### Yamas and Niyamas (writable via kvWritePrivileged with deliberation + model gate)
 - `yama:{name}` — outer world operating principles (e.g. `yama:care`, `yama:truth`)
@@ -187,6 +206,8 @@ Each cron invocation has a **15-minute wall-clock limit** regardless of cron int
 - `viveka:{topic}` — outer wisdom / discernment about the external world (available during orient)
 - `prajna:{topic}` — inner wisdom / self-knowledge (available during deep reflect)
 - `comms_blocked:{id}` — blocked communication records (kernel-internal, queued for deep reflect review)
+- `contact:{slug}` — contact records with platforms, relationship, notes
+- `contact_index:{platform}:{userId}` — reverse lookup cache for `resolveContact`
 
 ### Regular keys (writable via kvPutSafe)
 - `wake_config` — next wake timing, effort overrides, alerts

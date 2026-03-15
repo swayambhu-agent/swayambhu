@@ -21,10 +21,12 @@ function auth(request, env) {
 async function kvListAll(kv, opts = {}) {
   const keys = [];
   let cursor;
+  let pages = 0;
   do {
     const result = await kv.list({ ...opts, cursor });
     keys.push(...result.keys);
     cursor = result.list_complete ? undefined : result.cursor;
+    if (++pages > 100) { console.error("[DASHBOARD] kvListAll: hit 100-page safety limit"); break; }
   } while (cursor);
   return keys;
 }
@@ -153,6 +155,13 @@ export default {
       const body = await request.json().catch(() => null);
       if (!body?.slug || !body?.name || !body?.platforms) {
         return json({ error: "missing required fields: slug, name, platforms" }, 400);
+      }
+      if (typeof body.platforms !== "object" || Array.isArray(body.platforms)) {
+        return json({ error: "platforms must be an object (e.g. { email: 'user@example.com' })" }, 400);
+      }
+      const invalidPlatforms = Object.entries(body.platforms).filter(([k, v]) => !k || !v || typeof v !== "string");
+      if (invalidPlatforms.length) {
+        return json({ error: `invalid platform entries: ${invalidPlatforms.map(([k]) => k || "(empty)").join(", ")}` }, 400);
       }
       const contactKey = `contact:${body.slug}`;
       const existing = await env.KV.get(contactKey, "json");

@@ -80,6 +80,16 @@ For code modifications, **checks** are verifiable conditions that the runtime ev
 
 **Communication gating.** Outbound messages pass through a kernel-enforced gate before sending. The gate checks for accumulated wisdom about the recipient (`viveka:contact:*`), requires a capable model for judgment, and evaluates each message against communication wisdom. Messages can be sent, revised, or blocked and queued for deep reflect review. The mechanism is hardcoded in the kernel; the policy is encoded in viveka entries that the agent accumulates through experience. This prevents the agent from bypassing communication checks through self-modification.
 
+**Inbound access control.** Inbound content from external senders is gated by contact status. The kernel maintains a contact registry (`contact:*` keys with `contact_index:*` lookup cache). Two enforcement layers:
+
+*Chat path:* Unknown senders (no contact record) get a toolless chat session — conversational only, no tools available. Even if a jailbreak manipulates the LLM, there are no tools to exploit. Known senders get full tool access, gated by the communication gate as usual. The tool allowlist for unknown contacts is configurable via `config:defaults.chat.unknown_contact_tools`.
+
+*Tool path:* Inbound tools (e.g. `check_email`) declare an `inbound` meta field (`{ channel, sender_field, content_field, result_array }`). After tool execution, the kernel post-processes results: for each item, resolves the sender against contacts. Unknown sender content is redacted from the LLM-facing result and quarantined under `sealed:*` keys. The kernel stays channel-agnostic — tools extract platform-specific sender identifiers, the kernel just calls `resolveContact`.
+
+**Sealed namespace.** `sealed:*` keys are mechanically unreadable by tools — `ScopedKV.get()` returns null, `ScopedKV.list()` filters them out. Writes are blocked by `KERNEL_ONLY_PREFIXES`. Only the kernel (internal `kvPut`) can write sealed keys, and the dashboard API (which reads KV directly) can display them to the patron. Hook code can read sealed keys via `K.kvGet()` — this is intentional, as hooks are the trusted policy layer and may need audit access.
+
+**Trust model.** The kernel enforces a two-tier trust boundary: *tools* are sandboxed (ScopedKV, no direct kernel access) and handle untrusted external input. *Hooks* are trusted policy code (full KernelRPC access, go through Modification Protocol review). Sealed keys protect against tool-level jailbreak propagation, not against hook self-modification — the Modification Protocol governs that.
+
 ## Provider resilience
 
 LLM calls go through a three-tier cascade. First, a dynamic adapter loaded from the store — Swayambhu writes and maintains his own provider integration code. If that fails, the runtime falls back to a snapshot of the last working adapter. If that fails too, a hardcoded OpenRouter call serves as the absolute last resort. This means a bad adapter update can't permanently lock the agent out of LLM access. The model tier also cascades — if the requested model fails on all providers, the call retries on a cheaper fallback model.

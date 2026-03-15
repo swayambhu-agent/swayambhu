@@ -318,4 +318,75 @@ describe("handleChat", () => {
     const saved = K.kvPutSafe.mock.calls[0][1];
     expect(saved.total_cost).toBeCloseTo(0.03);
   });
+
+  describe("unknown contact tool filtering", () => {
+    it("gives empty tools to unknown contacts (default)", async () => {
+      K.resolveContact = vi.fn(async () => null);
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "Hi", userId: "stranger",
+      }, adapter);
+
+      const callArgs = K.callLLM.mock.calls[0][0];
+      expect(callArgs.tools).toEqual([]);
+    });
+
+    it("records inbound_unknown karma for unknown contacts", async () => {
+      K.resolveContact = vi.fn(async () => null);
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "Hi", userId: "stranger",
+      }, adapter);
+
+      expect(K.karmaRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "inbound_unknown",
+          sender_id: "stranger",
+          channel: "slack",
+        })
+      );
+    });
+
+    it("gives full tools to known contacts", async () => {
+      K.resolveContact = vi.fn(async () => ({
+        name: "Alice",
+        slug: "alice",
+      }));
+      K.buildToolDefinitions = vi.fn(() => [
+        { function: { name: "kv_read" } },
+        { function: { name: "web_fetch" } },
+      ]);
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "Hi", userId: "alice_id",
+      }, adapter);
+
+      const callArgs = K.callLLM.mock.calls[0][0];
+      expect(callArgs.tools).toHaveLength(2);
+    });
+
+    it("filters tools by allowlist for unknown contacts when configured", async () => {
+      K.resolveContact = vi.fn(async () => null);
+      K.getDefaults.mockResolvedValue({
+        chat: {
+          model: "sonnet",
+          unknown_contact_tools: ["kv_read"],
+        },
+        orient: { model: "sonnet" },
+      });
+      K.buildToolDefinitions = vi.fn(() => [
+        { function: { name: "kv_read" } },
+        { function: { name: "web_fetch" } },
+        { function: { name: "check_email" } },
+      ]);
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "Hi", userId: "stranger",
+      }, adapter);
+
+      const callArgs = K.callLLM.mock.calls[0][0];
+      expect(callArgs.tools).toHaveLength(1);
+      expect(callArgs.tools[0].function.name).toBe("kv_read");
+    });
+  });
 });
