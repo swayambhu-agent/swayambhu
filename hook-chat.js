@@ -30,12 +30,12 @@ export async function handleChat(K, channel, inbound, adapter) {
     return { ok: true, reason: "clear" };
   }
 
-  // Load config: global defaults + person profile overrides
+  // Load config: global defaults + contact overrides
   const defaults = await K.getDefaults();
-  const person = await K.kvGet(`person:${inbound.userId}`);
+  const contact = await K.resolveContact(channel, inbound.userId);
   const chatDefaults = defaults?.chat || {};
-  const personConfig = person?.config || {};
-  const chatConfig = { ...chatDefaults, ...personConfig };
+  const contactConfig = contact?.chat || {};
+  const chatConfig = { ...chatDefaults, ...contactConfig };
   const maxCost = chatConfig.max_cost_per_conversation || 0.50;
   if (conv.total_cost >= maxCost) {
     await adapter.sendReply(chatId, "Budget reached. Send /reset to refill or /clear to start fresh.");
@@ -43,17 +43,13 @@ export async function handleChat(K, channel, inbound, adapter) {
   }
 
   // Build system prompt (dharma injected by kernel in callLLM)
-  const [wisdom, chatPrompt] = await Promise.all([
-    K.kvGet("wisdom"),
-    K.kvGet("prompt:chat"),
-  ]);
-  const personContext = person
-    ? `\n\nPerson profile:\n${JSON.stringify(person)}`
+  const chatPrompt = await K.kvGet("prompt:chat");
+  const contactContext = contact
+    ? `\n\nContact:\n${JSON.stringify(contact)}`
     : "";
   const systemPrompt = [
-    wisdom ? `Wisdom:\n${wisdom}` : "",
     chatPrompt || "You are in a live chat. Respond conversationally.",
-    personContext,
+    contactContext,
   ].join("\n\n").trim();
 
   // Append user message

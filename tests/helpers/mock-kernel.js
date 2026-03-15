@@ -56,6 +56,10 @@ export function makeMockK(kvInit = {}, opts = {}) {
       }
     }),
 
+    // Blocked communications
+    listBlockedComms: vi.fn(async () => []),
+    processCommsVerdict: vi.fn(async () => ({ ok: true })),
+
     // Agent loop
     runAgentLoop: vi.fn(async () => ({})),
     executeToolCall: vi.fn(async () => ({})),
@@ -95,6 +99,10 @@ export function makeMockK(kvInit = {}, opts = {}) {
     getToolRegistry: vi.fn(async () => opts.toolRegistry || null),
     getYamas: vi.fn(async () => opts.yamas || null),
     getNiyamas: vi.fn(async () => opts.niyamas || null),
+    getPatronId: vi.fn(async () => opts.patronId || null),
+    getPatronContact: vi.fn(async () => opts.patronContact || null),
+    isPatronIdentityDisputed: vi.fn(async () => opts.patronIdentityDisputed || false),
+    resolveContact: vi.fn(async (platform, userId) => null),
     elapsed: vi.fn(async () => 0),
 
     // Internal — expose KV store for assertions

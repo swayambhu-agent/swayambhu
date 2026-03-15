@@ -130,36 +130,36 @@ for (const pw of privilegedWrites) {
   }
 }
 
-// 3. Mutation rollback records created this session — restore snapshots, delete record
-const mutationApplied = karma.filter(e => e.event === "mutation_applied");
-for (const ma of mutationApplied) {
-  const rollbackKey = `mutation_rollback:${ma.mutation_id}`;
-  const rollback = await kvGet(rollbackKey);
-  if (rollback?.snapshots) {
-    for (const [key, snapshot] of Object.entries(rollback.snapshots)) {
-      if (snapshot.value === null) {
+// 3. Modification snapshot records created this session — restore snapshots, delete record
+const modificationAccepted = karma.filter(e => e.event === "modification_accepted");
+for (const ma of modificationAccepted) {
+  const snapshotKey = `modification_snapshot:${ma.modification_id}`;
+  const snapshot = await kvGet(snapshotKey);
+  if (snapshot?.snapshots) {
+    for (const [key, snap] of Object.entries(snapshot.snapshots)) {
+      if (snap.value === null) {
         plan.deletes.push(key);
       } else {
         plan.restores.push({
           key,
-          value: snapshot.value,
-          metadata: snapshot.metadata,
-          reason: `mutation ${ma.mutation_id} snapshot restore`,
+          value: snap.value,
+          metadata: snap.metadata,
+          reason: `modification ${ma.modification_id} snapshot restore`,
         });
       }
     }
   }
-  // The rollback record itself should already be in privileged_write reversals,
+  // The snapshot record itself should already be in privileged_write reversals,
   // but ensure it's deleted
-  if (!plan.deletes.includes(rollbackKey)) {
-    plan.deletes.push(rollbackKey);
+  if (!plan.deletes.includes(snapshotKey)) {
+    plan.deletes.push(snapshotKey);
   }
 }
 
-// 4. Staged mutations created this session
-const mutationStaged = karma.filter(e => e.event === "mutation_staged");
-for (const ms of mutationStaged) {
-  const key = `mutation_staged:${ms.mutation_id}`;
+// 4. Staged modifications created this session
+const modificationStaged = karma.filter(e => e.event === "modification_staged");
+for (const ms of modificationStaged) {
+  const key = `modification_staged:${ms.modification_id}`;
   if (!plan.deletes.includes(key)) {
     plan.deletes.push(key);
   }

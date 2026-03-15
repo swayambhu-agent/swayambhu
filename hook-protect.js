@@ -6,10 +6,14 @@
 
 export const SYSTEM_KEY_PREFIXES = [
   'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-  'mutation_staged:', 'mutation_rollback:', 'hook:', 'git_pending:',
+  'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
   'yama:', 'niyama:',
+  'viveka:', 'prajna:',
+  'comms_blocked:',
+  'contact:',
+  'contact_index:',
 ];
-export const SYSTEM_KEY_EXACT = ['providers', 'wallets', 'wisdom'];
+export const SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:public_key', 'patron:identity_snapshot'];
 export const DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
 
 export function isSystemKey(key) {
@@ -31,7 +35,7 @@ export async function applyKVOperation(K, op) {
 
   if (isSystemKey(key)) {
     await K.karmaRecord({
-      event: "mutation_blocked",
+      event: "modification_blocked",
       key,
       op: op.op,
       reason: "system_key",
@@ -44,7 +48,7 @@ export async function applyKVOperation(K, op) {
   const { value: existing, metadata } = await K.kvGetWithMeta(key);
   if (existing !== null && !metadata?.unprotected) {
     await K.karmaRecord({
-      event: "mutation_blocked",
+      event: "modification_blocked",
       key,
       op: op.op,
       reason: "protected_key",

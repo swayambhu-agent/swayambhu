@@ -9,8 +9,8 @@ Fast, no network, no Workers runtime. Uses vitest with mock KV and mock fetch.
 **What's tested:**
 - Kernel logic (brainstem.test.js): parseAgentOutput, buildPrompt, budget
   enforcement, karma recording, tool definitions, session management
-- Wake hook (wake-hook.test.js): orient context, reflect scheduling, mutation
-  protocol, circuit breaker, tripwire evaluation
+- Wake hook (wake-hook.test.js): orient context, reflect scheduling, Modification
+  Protocol, circuit breaker, tripwire evaluation
 - Tools (tools.test.js): each tool's execute() with mock context, module
   structure validation, wrapAsModule compatibility
 

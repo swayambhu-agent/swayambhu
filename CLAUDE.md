@@ -74,7 +74,7 @@ npm test          # vitest — all unit tests, no network, no Workers runtime
 
 Tests cover:
 - `tests/brainstem.test.js` — kernel logic (104 tests)
-- `tests/wake-hook.test.js` — wake flow, reflect, mutations (62 tests)
+- `tests/wake-hook.test.js` — wake flow, reflect, modifications (62 tests)
 - `tests/tools.test.js` — tool/provider execute(), module structure (100 tests)
 - `tests/chat.test.js` — chat system (12 tests)
 
@@ -110,7 +110,7 @@ at runtime via `config:models` alias_map. You can also use full model IDs.
 **Use cheap models for:** tool wiring, orient flow, KV ops, prompt rendering,
 budget enforcement, basic wake cycles.
 
-**Use real models for:** reflection hierarchy, mutation protocol, deep reflect,
+**Use real models for:** reflection hierarchy, Modification Protocol, deep reflect,
 anything needing structured JSON adherence.
 
 ## Code Layout
@@ -123,14 +123,14 @@ The wake hook is split into 4 ES modules loaded via manifest:
 |-------------|--------|----------|
 | `hook-main.js` | `hook:wake:code` | Entry point: `wake()`, `runSession()`, `detectCrash()`, Worker Loader export |
 | `hook-reflect.js` | `hook:wake:reflect` | `executeReflect()`, `runReflect()`, scheduling, default prompts |
-| `hook-mutations.js` | `hook:wake:mutations` | Mutation protocol: staging, candidates, circuit breaker, verdicts |
+| `hook-modifications.js` | `hook:wake:modifications` | Modification Protocol: staging, inflight, circuit breaker, verdicts |
 | `hook-protect.js` | `hook:wake:protect` | Constants, `isSystemKey()`, `applyKVOperation()` |
 
 Manifest at `hook:wake:manifest` maps filenames to KV keys. The kernel
 loads all modules and passes them to Worker Loader. Dependency graph
-(no cycles): protect ← mutations ← reflect ← main.
+(no cycles): protect ← modifications ← reflect ← main.
 
-Mutations support a `patch` op (`{ op: "patch", key, old_string, new_string }`)
+Modifications support a `patch` op (`{ op: "patch", key, old_string, new_string }`)
 for surgical find-and-replace edits within a KV value. Rejects if old_string
 is missing or ambiguous. Rollback restores the full pre-patch snapshot.
 

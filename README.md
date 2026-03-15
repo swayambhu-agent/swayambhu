@@ -26,7 +26,7 @@ This is where all operational work happens — checking balances, searching the 
 
 When the agent identifies independent threads of work, it can spawn **subplans** — nested agent loops running on cheaper models, executing in parallel, reporting results back to the parent.
 
-After the agent loop completes, **session reflect** runs — a single evaluation call that reviews the session's karma log (the flight recorder of every LLM call and tool execution), produces a summary, and can propose mutations or adjust the next wake schedule. Session reflect answers: *"what just happened, and what should I tell my future self?"*
+After the agent loop completes, **session reflect** runs — a single evaluation call that reviews the session's karma log (the flight recorder of every LLM call and tool execution), produces a summary, and can propose modifications or adjust the next wake schedule. Session reflect answers: *"what just happened, and what should I tell my future self?"*
 
 The runtime then shuts down. Nothing persists except what's in the store. Next wake cycle, a fresh runtime boots and loads whatever the agent left behind.
 
@@ -34,11 +34,11 @@ The runtime then shuts down. Nothing persists except what's in the store. Next w
 
 Periodically, instead of a normal session, the brainstem triggers a **deep reflection**. Normal sessions and deep reflect sessions are mutually exclusive — when reflection fires, it replaces the normal act cycle entirely, because the point is to step back and examine the pattern rather than continue acting within it.
 
-**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose mutations to prompts, config, and tools through the mutation protocol — and its mutation requests are applied directly as inflight (no staging required). Depth 1 also writes the wake config and schedule that govern normal sessions.
+**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose modifications to prompts, config, and tools through the Modification Protocol — and its modification requests are applied directly as inflight (no staging required). Depth 1 also writes the wake config and schedule that govern normal sessions.
 
 **Depth 2** fires less often (~100 sessions by default, but self-determined after first run). It reads depth 1's stored outputs, looking for patterns in *how depth 1 is reflecting*. Is depth 1 over-correcting? Missing systemic issues? Fixating on symptoms instead of causes?
 
-This extends to arbitrary depth. Each level reads the outputs of the level below, identifies patterns, and can propose changes to the level below's prompt through the mutation protocol.
+This extends to arbitrary depth. Each level reads the outputs of the level below, identifies patterns, and can propose changes to the level below's prompt through the Modification Protocol.
 
 A critical constraint: **each depth can only target the level directly below.** Depth 2 cannot rewrite the orient prompt — only depth 1 can. If depth 2 sees a problem with how the agent plans, it has to adjust depth 1's behavior so that *depth 1* catches and fixes the planning issue. This prevents write conflicts (each prompt has exactly one author) and forces higher levels to improve the system's self-correcting capability rather than issuing one-off patches.
 
@@ -66,15 +66,15 @@ Self-modification is the point. But ungoverned self-modification is how you bric
 
 **Yamas and niyamas.** Operating principles that sit between immutable dharma and mutable config. Yamas (`yama:*`) govern how Swayambhu engages the outer world; niyamas (`niyama:*`) govern inner practice. They're kernel-injected into every LLM prompt like dharma, but mutable — with friction. Modifications require a deliberation field (min 200 chars for yamas, 100 for niyamas), a capable model, and produce an audit trail. The kernel enforces all of this; the hook can't bypass it.
 
-**Protected keys.** All writes from the agent loop pass through a protection gate. System keys — prompts, config, tools, credentials, the wisdom document — are blocked from direct writes. They can only be modified through the mutation protocol. Agent-created data keys pass through freely.
+**Protected keys.** All writes from the agent loop pass through a protection gate. System keys — prompts, config, tools, credentials — are blocked from direct writes. They can only be modified through the Modification Protocol. Agent-created data keys pass through freely.
 
-**The mutation protocol.** Changes to protected keys go through a staged lifecycle. Session reflect proposes mutations, which are staged. Deep reflect reviews staged mutations and issues verdicts: apply, reject, modify, defer, or withdraw. Applied mutations become inflight — the changes take effect, but old values are snapshotted for rollback. Only after deep reflect explicitly promotes an inflight mutation does the snapshot get deleted and the change become permanent. Deep reflect's own mutations skip staging and become inflight immediately — it's the highest-trust context.
+**The Modification Protocol.** Changes to protected keys go through a staged lifecycle. Session reflect proposes modifications, which are staged. Deep reflect reviews staged modifications and issues verdicts: accept, reject, modify, defer, or withdraw. Accepted modifications become inflight — the changes take effect, but old values are snapshotted for rollback. Only after deep reflect explicitly promotes an inflight modification does the snapshot get deleted and the change become permanent. Deep reflect's own modifications skip staging and become inflight immediately — it's the highest-trust context.
 
-Each mutation carries **checks** — verifiable conditions that the runtime evaluates mechanically. These might assert that a KV key has a certain value, or that a tool produces a certain result. Check results are shown in context whenever mutations are loaded, so the model sees whether its changes are working before deciding to promote or roll back.
+Each modification carries **checks** — verifiable conditions that the runtime evaluates mechanically. These might assert that a KV key has a certain value, or that a tool produces a certain result. Check results are shown in context whenever modifications are loaded, so the model sees whether its changes are working before deciding to promote or roll back.
 
-**The circuit breaker.** On every wake, before anything else runs, the runtime scans karma logs for danger signals — fatal errors, parse failures, all providers failing — that occurred after any inflight mutation was activated. If found, it rolls back the inflight mutation automatically. This catches the case where a bad mutation breaks the system so badly that no LLM call succeeds. The runtime handles recovery mechanically without needing a model.
+**The circuit breaker.** On every wake, before anything else runs, the runtime scans karma logs for danger signals — fatal errors, parse failures, all providers failing — that occurred after any inflight modification was activated. If found, it rolls back the inflight modification automatically. This catches the case where a bad modification breaks the system so badly that no LLM call succeeds. The runtime handles recovery mechanically without needing a model.
 
-**Conflict detection.** Two mutations targeting the same key can't both be inflight simultaneously. The second is rejected until the first is promoted or rolled back.
+**Conflict detection.** Two modifications targeting the same key can't both be inflight simultaneously. The second is rejected until the first is promoted or rolled back.
 
 **Conservative seed defaults.** The system starts with tight constraints — low step limits, cautious budgets. As it gains experience, the reflection hierarchy can loosen these constraints via config updates. Safer to start tight and self-relax than start loose and self-correct after making expensive mistakes.
 
@@ -98,7 +98,7 @@ Swayambhu's layered architecture changes the leverage curve. When a more capable
 
 Each level multiplies through the levels below it. The system is a compiler that writes programs that write programs. Upgrading the compiler doesn't improve one output — it improves the factory.
 
-The same gearing works in reverse for mistakes, which is why the dharma and mutation protocol exist. The fixed attractor and staged changes prevent the compounding from going in the wrong direction.
+The same gearing works in reverse for mistakes, which is why the dharma and Modification Protocol exist. The fixed attractor and staged changes prevent the compounding from going in the wrong direction.
 
 ## Design principles
 
@@ -112,13 +112,13 @@ The same gearing works in reverse for mistakes, which is why the dharma and muta
 
 ## Kernel / hook architecture
 
-The runtime is split into two layers: a **kernel** (`brainstem.js`) and a **wake hook** (modular: `hook-main.js`, `hook-reflect.js`, `hook-mutations.js`, `hook-protect.js`).
+The runtime is split into two layers: a **kernel** (`brainstem.js`) and a **wake hook** (modular: `hook-main.js`, `hook-reflect.js`, `hook-modifications.js`, `hook-protect.js`).
 
 The kernel contains hardcoded primitives and safety invariants — LLM calls, KV access, tool execution, the agent loop, sandbox isolation, karma logging, and provider cascading. It's deployed code; changes require a redeploy.
 
-The wake hook contains all session policy — wake flow, crash detection, reflect scheduling, the mutation protocol, circuit breaker, and session orchestration. It's stored in KV as `hook:wake:code` and executed in an isolate via the Worker Loader API. Swayambhu can rewrite it through the mutation protocol, restructuring his own control flow without a deploy.
+The wake hook contains all session policy — wake flow, crash detection, reflect scheduling, the Modification Protocol, circuit breaker, and session orchestration. It's stored in KV as `hook:wake:code` and executed in an isolate via the Worker Loader API. Swayambhu can rewrite it through the Modification Protocol, restructuring his own control flow without a deploy.
 
-The hook calls kernel primitives via RPC (`K.callLLM()`, `K.runAgentLoop()`, etc.) through a `KernelRPC` entrypoint. The kernel enforces write protection on every call: routine data goes through `kvPutSafe`, system key mutations go through `kvWritePrivileged` (snapshotted, rate-limited, audited). `kernel:*` keys and `dharma` are unconditionally blocked — only the kernel's internal write path can touch them.
+The hook calls kernel primitives via RPC (`K.callLLM()`, `K.runAgentLoop()`, etc.) through a `KernelRPC` entrypoint. The kernel enforces write protection on every call: routine data goes through `kvPutSafe`, system key modifications go through `kvWritePrivileged` (snapshotted, rate-limited, audited). `kernel:*` keys and `dharma` are unconditionally blocked — only the kernel's internal write path can touch them.
 
 A meta-safety tripwire watches for consecutive crashes. If the last 3 sessions all crashed or were platform-killed, the kernel deletes the hook, sends an alert, and runs a hardcoded minimal fallback until the hook is manually re-seeded. This catches the case where a bad hook rewrite breaks the system — recovery is mechanical, no working LLM call required.
 

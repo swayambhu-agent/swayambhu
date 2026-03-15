@@ -2,7 +2,7 @@ export const meta = {
   secrets: ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"],
   kv_access: "none",
   timeout_ms: 10000,
-  communication: { channel: "slack", recipient_field: "channel", reply_field: null, content_field: "text" },
+  communication: { channel: "slack", recipient_field: "channel", reply_field: null, content_field: "text", recipient_type: "destination" },
 };
 
 export async function execute({ text, channel, secrets, fetch }) {

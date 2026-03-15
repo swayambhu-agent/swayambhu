@@ -9,7 +9,7 @@ available in deployed Workers.
 
 Dev (`brainstem-dev.js` + `wrangler.dev.toml`) subclasses the production
 `Brainstem` class and overrides only the 4 methods that depend on isolates.
-Everything else — the entire kernel, wake flow, mutation protocol, reflection
+Everything else — the entire kernel, wake flow, Modification Protocol, reflection
 hierarchy, budget enforcement, karma — is inherited unchanged.
 
 ```
@@ -30,7 +30,7 @@ brainstem-dev.js
 | Code | Location | How prod uses it | How dev uses it |
 |------|----------|------------------|-----------------|
 | Kernel (KV, karma, agent loop, budget) | `brainstem.js` | Direct | Inherited via `extends` |
-| Wake flow, reflection, mutations | `hook-main.js` + modules | Loaded from KV via isolate | `import { wake }` |
+| Wake flow, reflection, modifications | `hook-main.js` + modules | Loaded from KV via isolate | `import { wake }` |
 | Tool implementations | `tools/*.js` | Seeded to KV, loaded via isolate | `import * as ...` |
 | Provider adapters | `providers/*.js` | Seeded to KV, loaded via isolate | Direct `fetch()` in override |
 | Prompts, config, dharma | `scripts/seed-local-kv.mjs` | KV | KV (same seed script) |
@@ -74,7 +74,7 @@ at runtime via `config:models` alias_map.
 **When to use cheap models:** tool execution, orient sessions, basic wake
 cycles, KV read/write, prompt template rendering, budget enforcement.
 
-**When to use real models:** reflection hierarchy, mutation
+**When to use real models:** reflection hierarchy, modification
 staging/promotion/rollback, deep reflect, anything where output quality
 and structured JSON adherence matter.
 
@@ -89,12 +89,12 @@ session outcome tracking, hook safety checks.
 **Propagation:** Automatic. Dev inherits via `extends Brainstem`.
 **Nothing else to do.**
 
-### 2. Wake flow / reflection / mutation protocol (hook modules)
+### 2. Wake flow / reflection / Modification Protocol (hook modules)
 
-Examples: orient session, reflect hierarchy, mutation staging/promotion/rollback,
+Examples: orient session, reflect hierarchy, modification staging/promotion/rollback,
 circuit breaker, tripwire evaluation, session results.
 
-**Edit:** `hook-main.js`, `hook-reflect.js`, `hook-mutations.js`, or `hook-protect.js`
+**Edit:** `hook-main.js`, `hook-reflect.js`, `hook-modifications.js`, or `hook-protect.js`
 **Propagation:** Automatic. Dev imports `wake` from `hook-main.js` directly.
 **For prod deploy:** Re-seed KV so hook modules pick up the new version:
 ```bash

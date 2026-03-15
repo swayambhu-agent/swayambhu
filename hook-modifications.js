@@ -1,8 +1,8 @@
-// Swayambhu Wake Hook — Mutation Protocol
+// Swayambhu Wake Hook — Modification Protocol
 // Staging, inflight management, circuit breaker, verdict processing.
-// KV key: hook:wake:mutations
+// KV key: hook:wake:modifications
 
-// ── Mutation tracking (hook-local state) ───────────────────
+// ── Modification tracking (hook-local state) ───────────────────
 
 let activeStaged = [];
 let activeInflight = [];
@@ -25,7 +25,7 @@ function _trackRemove(list, id) {
   }
 }
 
-function generateMutationId() {
+function generateModificationId() {
   return `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -52,7 +52,7 @@ export async function evaluateCheck(K, check) {
           value = check.path.split(".").reduce((o, k) => o?.[k], value);
         }
         const passed = evaluatePredicate(value, check.predicate, check.expected);
-        return { passed, detail: `${check.key}${check.path ? '.' + check.path : ''} ${check.predicate} ${JSON.stringify(check.expected)} \u2192 actual: ${JSON.stringify(value)}` };
+        return { passed, detail: `${check.key}${check.path ? '.' + check.path : ''} ${check.predicate} ${JSON.stringify(check.expected)} → actual: ${JSON.stringify(value)}` };
       }
       case "tool_call": {
         const result = await K.executeAction({
@@ -62,7 +62,7 @@ export async function evaluateCheck(K, check) {
         });
         if (check.assert) {
           const passed = evaluatePredicate(result, check.assert.predicate, check.assert.expected);
-          return { passed, detail: `${check.tool} result ${check.assert.predicate} ${JSON.stringify(check.assert.expected)} \u2192 actual: ${JSON.stringify(result)}` };
+          return { passed, detail: `${check.tool} result ${check.assert.predicate} ${JSON.stringify(check.assert.expected)} → actual: ${JSON.stringify(result)}` };
         }
         return { passed: true, detail: `${check.tool} executed successfully` };
       }
@@ -87,7 +87,7 @@ export async function evaluateChecks(K, checks) {
 
 // ── Bookkeeping guard ───────────────────────────────────────
 
-const BOOKKEEPING_PREFIXES = ['mutation_staged:', 'mutation_rollback:'];
+const BOOKKEEPING_PREFIXES = ['modification_staged:', 'modification_snapshot:'];
 
 function opsTargetBookkeeping(ops) {
   return ops.find(op => BOOKKEEPING_PREFIXES.some(p => op.key.startsWith(p)));
@@ -95,31 +95,56 @@ function opsTargetBookkeeping(ops) {
 
 // ── Staging ─────────────────────────────────────────────────
 
-export async function stageMutation(K, request, sessionId) {
-  if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
-    await K.karmaRecord({ event: "mutation_invalid", reason: "missing required fields (claims, ops, checks)" });
+export async function stageModification(K, request, sessionId, depth = 0) {
+  const type = request.type || 'code';
+
+  // Wisdom can only be staged by deep reflect (depth >= 1)
+  if (type === 'wisdom' && depth < 1) {
+    await K.karmaRecord({ event: "modification_invalid", reason: "wisdom can only be staged by deep reflect" });
     return null;
   }
+
+  // Validate required fields based on type
+  if (type === 'code') {
+    if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
+      await K.karmaRecord({ event: "modification_invalid", reason: "missing required fields (claims, ops, checks)" });
+      return null;
+    }
+  } else if (type === 'wisdom') {
+    if (!request.validation || !request.ops?.length) {
+      await K.karmaRecord({ event: "modification_invalid", reason: "missing required fields (validation, ops)" });
+      return null;
+    }
+  } else {
+    if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
+      await K.karmaRecord({ event: "modification_invalid", reason: "missing required fields (claims, ops, checks)" });
+      return null;
+    }
+  }
+
   const bad = opsTargetBookkeeping(request.ops);
   if (bad) {
-    await K.karmaRecord({ event: "mutation_invalid", reason: `ops target bookkeeping key: ${bad.key}` });
+    await K.karmaRecord({ event: "modification_invalid", reason: `ops target bookkeeping key: ${bad.key}` });
     return null;
   }
-  const id = generateMutationId();
+  const id = generateModificationId();
   await K.kvWritePrivileged([{
     op: "put",
-    key: `mutation_staged:${id}`,
+    key: `modification_staged:${id}`,
     value: {
       id,
+      type,
       claims: request.claims,
       ops: request.ops,
       checks: request.checks,
+      validation: request.validation,
       staged_at: new Date().toISOString(),
       staged_by_session: sessionId,
+      staged_by_depth: depth,
     },
   }]);
   _trackAdd('activeStaged', id);
-  await K.karmaRecord({ event: "mutation_staged", mutation_id: id, claims: request.claims });
+  await K.karmaRecord({ event: "modification_staged", modification_id: id, claims: request.claims });
   return id;
 }
 
@@ -134,20 +159,20 @@ function buildWriteOps(ops) {
   });
 }
 
-export async function applyStaged(K, mutationId) {
-  const record = await K.kvGet(`mutation_staged:${mutationId}`);
-  if (!record) throw new Error(`No staged mutation: ${mutationId}`);
+export async function acceptStaged(K, modificationId) {
+  const record = await K.kvGet(`modification_staged:${modificationId}`);
+  if (!record) throw new Error(`No staged modification: ${modificationId}`);
 
   const bad = opsTargetBookkeeping(record.ops);
   if (bad) {
-    await K.karmaRecord({ event: "mutation_invalid", mutation_id: mutationId, reason: `ops target bookkeeping key: ${bad.key}` });
-    throw new Error(`Mutation ops target bookkeeping key: ${bad.key}`);
+    await K.karmaRecord({ event: "modification_invalid", modification_id: modificationId, reason: `ops target bookkeeping key: ${bad.key}` });
+    throw new Error(`Modification ops target bookkeeping key: ${bad.key}`);
   }
 
   const targetKeys = record.ops.map(op => op.key);
   const conflict = await findInflightConflict(K, targetKeys);
   if (conflict) {
-    await K.karmaRecord({ event: "mutation_conflict", mutation_id: mutationId, conflicting_mutation: conflict.id, overlapping_keys: conflict.keys });
+    await K.karmaRecord({ event: "modification_conflict", modification_id: modificationId, conflicting_modification: conflict.id, overlapping_keys: conflict.keys });
     throw new Error(`Conflict with inflight ${conflict.id} on keys: ${conflict.keys.join(", ")}`);
   }
 
@@ -158,14 +183,25 @@ export async function applyStaged(K, mutationId) {
     snapshots[key] = { value: value !== null ? value : null, metadata };
   }
 
-  // Apply ops via privileged writes
+  // Build write ops
   const writeOps = buildWriteOps(record.ops);
+
+  // For wisdom type: inject validation from staged record into op values
+  if (record.type === 'wisdom' && record.validation) {
+    for (const op of writeOps) {
+      if (op.value && typeof op.value === 'object') {
+        op.value.validation = record.validation;
+      }
+    }
+  }
+
+  // Apply ops via privileged writes
   await K.kvWritePrivileged(writeOps);
 
-  // Write rollback record
+  // Write snapshot record
   await K.kvWritePrivileged([{
     op: "put",
-    key: `mutation_rollback:${mutationId}`,
+    key: `modification_snapshot:${modificationId}`,
     value: {
       ...record,
       snapshots,
@@ -174,35 +210,41 @@ export async function applyStaged(K, mutationId) {
   }]);
 
   // Delete staged record
-  await K.kvWritePrivileged([{ op: "delete", key: `mutation_staged:${mutationId}` }]);
-  _trackRemove('activeStaged', mutationId);
-  _trackAdd('activeInflight', mutationId);
+  await K.kvWritePrivileged([{ op: "delete", key: `modification_staged:${modificationId}` }]);
+  _trackRemove('activeStaged', modificationId);
+  _trackAdd('activeInflight', modificationId);
 
   // Refresh defaults if ops touch config:defaults
   if (targetKeys.some(k => k === "config:defaults")) {
     // Config auto-refreshed by kernel after privileged write
   }
 
-  await K.karmaRecord({ event: "mutation_applied", mutation_id: mutationId, target_keys: targetKeys });
-  return mutationId;
+  await K.karmaRecord({ event: "modification_accepted", modification_id: modificationId, target_keys: targetKeys });
+  return modificationId;
 }
 
-export async function applyDirect(K, request, sessionId) {
+export async function acceptDirect(K, request, sessionId) {
+  // Wisdom must go through staging — no same-session accept
+  if (request.type === 'wisdom') {
+    await K.karmaRecord({ event: "modification_invalid", reason: "wisdom cannot use acceptDirect — must be staged" });
+    return null;
+  }
+
   if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
-    await K.karmaRecord({ event: "mutation_invalid", reason: "missing required fields (claims, ops, checks)" });
+    await K.karmaRecord({ event: "modification_invalid", reason: "missing required fields (claims, ops, checks)" });
     return null;
   }
   const bad = opsTargetBookkeeping(request.ops);
   if (bad) {
-    await K.karmaRecord({ event: "mutation_invalid", reason: `ops target bookkeeping key: ${bad.key}` });
+    await K.karmaRecord({ event: "modification_invalid", reason: `ops target bookkeeping key: ${bad.key}` });
     return null;
   }
-  const id = generateMutationId();
+  const id = generateModificationId();
   const targetKeys = request.ops.map(op => op.key);
 
   const conflict = await findInflightConflict(K, targetKeys);
   if (conflict) {
-    await K.karmaRecord({ event: "mutation_conflict", mutation_id: id, conflicting_mutation: conflict.id, overlapping_keys: conflict.keys });
+    await K.karmaRecord({ event: "modification_conflict", modification_id: id, conflicting_modification: conflict.id, overlapping_keys: conflict.keys });
     return null;
   }
 
@@ -216,10 +258,10 @@ export async function applyDirect(K, request, sessionId) {
   const writeOps = buildWriteOps(request.ops);
   await K.kvWritePrivileged(writeOps);
 
-  // Write rollback record
+  // Write snapshot record
   await K.kvWritePrivileged([{
     op: "put",
-    key: `mutation_rollback:${id}`,
+    key: `modification_snapshot:${id}`,
     value: {
       id,
       claims: request.claims,
@@ -232,24 +274,29 @@ export async function applyDirect(K, request, sessionId) {
   }]);
   _trackAdd('activeInflight', id);
 
-  await K.karmaRecord({ event: "mutation_applied", mutation_id: id, target_keys: targetKeys });
+  await K.karmaRecord({ event: "modification_accepted", modification_id: id, target_keys: targetKeys });
   return id;
 }
 
-export async function promoteInflight(K, mutationId) {
-  const record = await K.kvGet(`mutation_rollback:${mutationId}`);
-  await K.kvWritePrivileged([{ op: "delete", key: `mutation_rollback:${mutationId}` }]);
-  _trackRemove('activeInflight', mutationId);
-  await K.karmaRecord({ event: "mutation_promoted", mutation_id: mutationId });
+export async function promoteInflight(K, modificationId, depth) {
+  const record = await K.kvGet(`modification_snapshot:${modificationId}`);
+  await K.kvWritePrivileged([{ op: "delete", key: `modification_snapshot:${modificationId}` }]);
+  _trackRemove('activeInflight', modificationId);
+  await K.karmaRecord({
+    event: "modification_promoted",
+    modification_id: modificationId,
+    target_keys: record?.ops?.map(op => op.key),
+    depth,
+  });
 
-  // Best-effort git sync — never throws
-  if (record?.ops) {
-    await syncToGit(K, mutationId, record.ops, record.claims);
+  // Best-effort git sync — never throws; skip for wisdom
+  if (record?.type !== 'wisdom' && record?.ops) {
+    await syncToGit(K, modificationId, record.ops, record.claims);
   }
 }
 
-export async function rollbackInflight(K, mutationId, reason) {
-  const record = await K.kvGet(`mutation_rollback:${mutationId}`);
+export async function rollbackInflight(K, modificationId, reason) {
+  const record = await K.kvGet(`modification_snapshot:${modificationId}`);
   if (!record) return;
 
   // Restore snapshotted values via privileged writes
@@ -263,14 +310,14 @@ export async function rollbackInflight(K, mutationId, reason) {
   }
   if (restoreOps.length) await K.kvWritePrivileged(restoreOps);
 
-  await K.kvWritePrivileged([{ op: "delete", key: `mutation_rollback:${mutationId}` }]);
-  _trackRemove('activeInflight', mutationId);
-  await K.karmaRecord({ event: "mutation_rolled_back", mutation_id: mutationId, reason });
+  await K.kvWritePrivileged([{ op: "delete", key: `modification_snapshot:${modificationId}` }]);
+  _trackRemove('activeInflight', modificationId);
+  await K.karmaRecord({ event: "modification_rolled_back", modification_id: modificationId, reason });
 }
 
 export async function findInflightConflict(K, targetKeys) {
   for (const id of activeInflight) {
-    const record = await K.kvGet(`mutation_rollback:${id}`);
+    const record = await K.kvGet(`modification_snapshot:${id}`);
     if (!record?.snapshots) continue;
     const overlap = targetKeys.filter(k => k in record.snapshots);
     if (overlap.length > 0) return { id: record.id, keys: overlap };
@@ -280,22 +327,32 @@ export async function findInflightConflict(K, targetKeys) {
 
 // ── Loading ─────────────────────────────────────────────────
 
-export async function loadStagedMutations(K) {
+export async function loadStagedModifications(K) {
   const result = {};
   for (const id of activeStaged) {
-    const record = await K.kvGet(`mutation_staged:${id}`);
+    const record = await K.kvGet(`modification_staged:${id}`);
     if (!record) continue;
+    // For wisdom type: skip check evaluation (no checks field)
+    if (record.type === 'wisdom') {
+      result[record.id] = { record, check_results: null };
+      continue;
+    }
     const checkResults = await evaluateChecks(K, record.checks || []);
     result[record.id] = { record, check_results: checkResults };
   }
   return result;
 }
 
-export async function loadInflightMutations(K) {
+export async function loadInflightModifications(K) {
   const result = {};
   for (const id of activeInflight) {
-    const record = await K.kvGet(`mutation_rollback:${id}`);
+    const record = await K.kvGet(`modification_snapshot:${id}`);
     if (!record) continue;
+    // For wisdom type: skip check evaluation (no checks field)
+    if (record.type === 'wisdom') {
+      result[record.id] = { record, check_results: null };
+      continue;
+    }
     const checkResults = await evaluateChecks(K, record.checks || []);
     result[record.id] = { record, check_results: checkResults };
   }
@@ -308,16 +365,16 @@ export async function processReflectVerdicts(K, verdicts) {
   for (const v of verdicts || []) {
     switch (v.verdict) {
       case "withdraw":
-        await K.kvWritePrivileged([{ op: "delete", key: `mutation_staged:${v.mutation_id}` }]);
-        _trackRemove('activeStaged', v.mutation_id);
-        await K.karmaRecord({ event: "mutation_withdrawn", mutation_id: v.mutation_id });
+        await K.kvWritePrivileged([{ op: "delete", key: `modification_staged:${v.modification_id}` }]);
+        _trackRemove('activeStaged', v.modification_id);
+        await K.karmaRecord({ event: "modification_withdrawn", modification_id: v.modification_id });
         break;
       case "modify": {
-        const record = await K.kvGet(`mutation_staged:${v.mutation_id}`);
+        const record = await K.kvGet(`modification_staged:${v.modification_id}`);
         if (record) {
           await K.kvWritePrivileged([{
             op: "put",
-            key: `mutation_staged:${v.mutation_id}`,
+            key: `modification_staged:${v.modification_id}`,
             value: {
               ...record,
               ...(v.updated_ops ? { ops: v.updated_ops } : {}),
@@ -326,7 +383,7 @@ export async function processReflectVerdicts(K, verdicts) {
               modified_at: new Date().toISOString(),
             },
           }]);
-          await K.karmaRecord({ event: "mutation_modified", mutation_id: v.mutation_id });
+          await K.karmaRecord({ event: "modification_modified", modification_id: v.modification_id });
         }
         break;
       }
@@ -334,29 +391,29 @@ export async function processReflectVerdicts(K, verdicts) {
   }
 }
 
-export async function processDeepReflectVerdicts(K, verdicts) {
+export async function processDeepReflectVerdicts(K, verdicts, depth) {
   for (const v of verdicts || []) {
     switch (v.verdict) {
       case "apply":
-        try { await applyStaged(K, v.mutation_id); }
-        catch (err) { await K.karmaRecord({ event: "mutation_apply_failed", mutation_id: v.mutation_id, error: err.message }); }
+        try { await acceptStaged(K, v.modification_id); }
+        catch (err) { await K.karmaRecord({ event: "modification_accept_failed", modification_id: v.modification_id, error: err.message }); }
         break;
       case "reject":
-        await K.kvWritePrivileged([{ op: "delete", key: `mutation_staged:${v.mutation_id}` }]);
-        _trackRemove('activeStaged', v.mutation_id);
-        await K.karmaRecord({ event: "mutation_rejected", mutation_id: v.mutation_id, reason: v.reason });
+        await K.kvWritePrivileged([{ op: "delete", key: `modification_staged:${v.modification_id}` }]);
+        _trackRemove('activeStaged', v.modification_id);
+        await K.karmaRecord({ event: "modification_rejected", modification_id: v.modification_id, reason: v.reason });
         break;
       case "withdraw":
-        await K.kvWritePrivileged([{ op: "delete", key: `mutation_staged:${v.mutation_id}` }]);
-        _trackRemove('activeStaged', v.mutation_id);
-        await K.karmaRecord({ event: "mutation_withdrawn", mutation_id: v.mutation_id });
+        await K.kvWritePrivileged([{ op: "delete", key: `modification_staged:${v.modification_id}` }]);
+        _trackRemove('activeStaged', v.modification_id);
+        await K.karmaRecord({ event: "modification_withdrawn", modification_id: v.modification_id });
         break;
       case "modify": {
-        const record = await K.kvGet(`mutation_staged:${v.mutation_id}`);
+        const record = await K.kvGet(`modification_staged:${v.modification_id}`);
         if (record) {
           await K.kvWritePrivileged([{
             op: "put",
-            key: `mutation_staged:${v.mutation_id}`,
+            key: `modification_staged:${v.modification_id}`,
             value: {
               ...record,
               ...(v.updated_ops ? { ops: v.updated_ops } : {}),
@@ -365,18 +422,18 @@ export async function processDeepReflectVerdicts(K, verdicts) {
               modified_at: new Date().toISOString(),
             },
           }]);
-          await K.karmaRecord({ event: "mutation_modified", mutation_id: v.mutation_id });
+          await K.karmaRecord({ event: "modification_modified", modification_id: v.modification_id });
         }
         break;
       }
       case "promote":
-        await promoteInflight(K, v.mutation_id);
+        await promoteInflight(K, v.modification_id, depth);
         break;
       case "rollback":
-        await rollbackInflight(K, v.mutation_id, v.reason || "deep_reflect_verdict");
+        await rollbackInflight(K, v.modification_id, v.reason || "deep_reflect_verdict");
         break;
       case "defer":
-        await K.karmaRecord({ event: "mutation_deferred", mutation_id: v.mutation_id, reason: v.reason });
+        await K.karmaRecord({ event: "modification_deferred", modification_id: v.modification_id, reason: v.reason });
         break;
     }
   }
@@ -389,12 +446,15 @@ export async function runCircuitBreaker(K) {
   if (!lastDanger) return;
 
   for (const id of [...activeInflight]) {
-    const record = await K.kvGet(`mutation_rollback:${id}`);
+    const record = await K.kvGet(`modification_snapshot:${id}`);
     if (!record?.activated_at) continue;
+
+    // Only auto-rollback code modifications on fatal error
+    if (record.type === 'wisdom') continue;
 
     if (lastDanger.t >= new Date(record.activated_at).getTime()) {
       await rollbackInflight(K, record.id, "circuit_breaker");
-      await K.karmaRecord({ event: "circuit_breaker_fired", mutation_id: record.id });
+      await K.karmaRecord({ event: "circuit_breaker_fired", modification_id: record.id });
     }
   }
 
@@ -455,7 +515,6 @@ export function kvToPath(key) {
 
   if (key.startsWith('doc:')) return `docs/${key.slice(4)}.md`;
 
-  if (key === 'wisdom') return 'wisdom.md';
   if (key === 'providers') return 'config/providers.json';
   if (key === 'wallets') return 'config/wallets.json';
 
@@ -474,7 +533,7 @@ function toBase64(str) {
   return btoa(binary);
 }
 
-export async function syncToGit(K, mutationId, ops, claims) {
+export async function syncToGit(K, modificationId, ops, claims) {
   try {
     const writes = [];
     const deletes = [];
@@ -493,11 +552,11 @@ export async function syncToGit(K, mutationId, ops, claims) {
 
     if (writes.length === 0 && deletes.length === 0) return;
 
-    const message = `mutation promoted: ${mutationId}` +
+    const message = `modification promoted: ${modificationId}` +
       (claims?.length ? ` — ${claims.join('; ')}` : '');
 
     const pending = {
-      mutation_id: mutationId,
+      modification_id: modificationId,
       writes,
       deletes,
       message,
@@ -506,17 +565,17 @@ export async function syncToGit(K, mutationId, ops, claims) {
 
     await K.kvWritePrivileged([{
       op: 'put',
-      key: `git_pending:${mutationId}`,
+      key: `git_pending:${modificationId}`,
       value: pending,
     }]);
 
-    await attemptGitSync(K, mutationId, pending);
+    await attemptGitSync(K, modificationId, pending);
   } catch (err) {
-    await K.karmaRecord({ event: 'git_sync_error', mutation_id: mutationId, error: err.message });
+    await K.karmaRecord({ event: 'git_sync_error', modification_id: modificationId, error: err.message });
   }
 }
 
-export async function attemptGitSync(K, mutationId, pending) {
+export async function attemptGitSync(K, modificationId, pending) {
   try {
     const dirs = new Set();
     for (const w of pending.writes) {
@@ -560,25 +619,25 @@ export async function attemptGitSync(K, mutationId, pending) {
     const result = await K.executeAction({
       tool: 'akash_exec',
       input: { command: script, timeout: 30 },
-      id: `git_sync_${mutationId}`,
+      id: `git_sync_${modificationId}`,
     });
 
     if (result?.ok && (result?.exit_code === 0 || result?.output?.includes('NO_CHANGES'))) {
-      await K.kvWritePrivileged([{ op: 'delete', key: `git_pending:${mutationId}` }]);
+      await K.kvWritePrivileged([{ op: 'delete', key: `git_pending:${modificationId}` }]);
       await K.karmaRecord({
         event: 'git_sync_ok',
-        mutation_id: mutationId,
+        modification_id: modificationId,
         files: allPaths,
       });
     } else {
       await K.karmaRecord({
         event: 'git_sync_failed',
-        mutation_id: mutationId,
+        modification_id: modificationId,
         error: result?.output?.slice(0, 500) || 'unknown',
       });
     }
   } catch (err) {
-    await K.karmaRecord({ event: 'git_sync_error', mutation_id: mutationId, error: err.message });
+    await K.karmaRecord({ event: 'git_sync_error', modification_id: modificationId, error: err.message });
   }
 }
 
@@ -587,7 +646,7 @@ export async function retryPendingGitSyncs(K) {
   for (const { name } of list.keys) {
     const pending = await K.kvGet(name);
     if (!pending) continue;
-    const mutationId = name.slice('git_pending:'.length);
-    await attemptGitSync(K, mutationId, pending);
+    const modificationId = name.slice('git_pending:'.length);
+    await attemptGitSync(K, modificationId, pending);
   }
 }

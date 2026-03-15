@@ -10,7 +10,7 @@
 // KV key: hook:wake:code
 
 import { applyKVOperation } from './hook-protect.js';
-import { initTracking, runCircuitBreaker, retryPendingGitSyncs } from './hook-mutations.js';
+import { initTracking, runCircuitBreaker, retryPendingGitSyncs } from './hook-modifications.js';
 import { executeReflect, runReflect, highestReflectDepthDue, getMaxSteps } from './hook-reflect.js';
 
 // ── Wake flow ──────────────────────────────────────────────
@@ -51,14 +51,14 @@ export async function wake(K, input) {
     // 1. Crash detection
     const crashData = await detectCrash(K);
 
-    // 1a-pre. Initialize mutation tracking from targeted prefix scans
-    const [stagedList, rollbackList] = await Promise.all([
-      K.kvList({ prefix: "mutation_staged:", limit: 200 }),
-      K.kvList({ prefix: "mutation_rollback:", limit: 200 }),
+    // 1a-pre. Initialize modification tracking from targeted prefix scans
+    const [stagedList, snapshotList] = await Promise.all([
+      K.kvList({ prefix: "modification_staged:", limit: 200 }),
+      K.kvList({ prefix: "modification_snapshot:", limit: 200 }),
     ]);
     initTracking(
-      stagedList.keys.map(k => k.name.slice("mutation_staged:".length)),
-      rollbackList.keys.map(k => k.name.slice("mutation_rollback:".length)),
+      stagedList.keys.map(k => k.name.slice("modification_staged:".length)),
+      snapshotList.keys.map(k => k.name.slice("modification_snapshot:".length)),
     );
 
     // 1a-cache. Cache full KV index for dashboard (avoids list() calls from API)

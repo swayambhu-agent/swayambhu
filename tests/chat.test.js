@@ -65,7 +65,6 @@ describe("handleChat", () => {
       if (key === "chat:state:slack:123") return conv;
       if (key === "wisdom") return null;
       if (key === "prompt:chat") return null;
-      if (key.startsWith("person:")) return null;
       return null;
     });
 
@@ -275,14 +274,18 @@ describe("handleChat", () => {
     expect(adapter.sendReply).toHaveBeenCalledWith("123", "(no response)");
   });
 
-  it("includes person profile in system prompt when available", async () => {
-    K.kvGet.mockImplementation(async (key) => {
-      if (key === "person:user1") return {
-        label: "Operator",
-        notes: "Prefers concise answers",
-        config: { model: "haiku", effort: "low" },
+  it("includes contact in system prompt when available", async () => {
+    K.resolveContact = vi.fn(async (platform, userId) => {
+      if (userId === "user1") return {
+        id: "swami",
+        name: "Swami",
+        relationship: "patron",
+        chat: { model: "haiku", effort: "low" },
+        communication: "Inner circle.",
       };
-      if (key === "wisdom") return "be wise";
+      return null;
+    });
+    K.kvGet.mockImplementation(async (key) => {
       if (key === "prompt:chat") return "\n\nChat mode.";
       return null;
     });
@@ -292,9 +295,9 @@ describe("handleChat", () => {
     }, adapter);
 
     const callArgs = K.callLLM.mock.calls[0][0];
-    expect(callArgs.systemPrompt).toContain("Person profile:");
-    expect(callArgs.systemPrompt).toContain("Operator");
-    // Person config should override model
+    expect(callArgs.systemPrompt).toContain("Contact:");
+    expect(callArgs.systemPrompt).toContain("Swami");
+    // Contact chat config should override model
     expect(callArgs.model).toBe("haiku");
   });
 

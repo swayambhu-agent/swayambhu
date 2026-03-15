@@ -72,7 +72,7 @@ await put("config:defaults", {
   },
   failure_handling: { retries: 1, on_fail: "skip_and_cascade" },
   wake: { sleep_seconds: 21600, default_effort: "low" },
-  memory: { default_load_keys: ["wisdom", "config:models", "config:resources"], max_context_budget_tokens: 8000 },
+  memory: { default_load_keys: ["config:models", "config:resources"], max_context_budget_tokens: 8000 },
   execution: {
     max_subplan_depth: 3, max_reflect_depth: 1, reflect_interval_multiplier: 5,
     max_steps: { orient: 12, reflect: 5, deep_reflect: 10 },
@@ -86,8 +86,8 @@ await put("config:defaults", {
 
 await put("config:models", {
   models: [
-    { id: "anthropic/claude-opus-4.6", alias: "opus", input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection", yama_capable: true, niyama_capable: true },
-    { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning", yama_capable: true, niyama_capable: true },
+    { id: "anthropic/claude-opus-4.6", alias: "opus", input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection", yama_capable: true, niyama_capable: true, comms_gate_capable: true },
+    { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning", yama_capable: true, niyama_capable: true, comms_gate_capable: true },
     { id: "anthropic/claude-haiku-4.5", alias: "haiku", input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
     { id: "deepseek/deepseek-v3.2", alias: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, orient flow, KV ops, prompt rendering" },
   ],
@@ -121,7 +121,7 @@ await put("config:tool_registry", {
     { name: "kv_write", description: "Write to tool's own KV namespace", input: { key: "required", value: "required" } },
     { name: "check_balance", description: "Check balances across all configured providers and wallets. Returns balances grouped by scope (general vs project-specific). Only 'general' scope counts toward your operating budget.", input: { scope: "optional — filter by scope (e.g. 'general', 'project_x'). Omit to see all." } },
     { name: "kv_manifest", description: "List KV keys, optionally filtered by prefix. Use to explore what is stored in memory.", input: { prefix: "optional key prefix filter", limit: "max keys to return (default 100, max 500)" } },
-    { name: "kv_query", description: "Lazily traverse any KV value using dot-bracket path expressions. Returns one level of depth per call — use progressively deeper paths to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, wisdom, reflect:1:s_123, config:defaults)", path: "optional — dot-bracket path (e.g. [1].tool_calls[0].function, .sources[0].note)" } },
+    { name: "kv_query", description: "Lazily traverse any KV value using dot-bracket path expressions. Returns one level of depth per call — use progressively deeper paths to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, viveka:timing:urgency, reflect:1:s_123, config:defaults)", path: "optional — dot-bracket path (e.g. [1].tool_calls[0].function, .sources[0].note)" } },
     { name: "akash_exec", description: "Run a shell command on the akash Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
     { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each.", input: { mark_read: "optional boolean — mark fetched emails as read (default false)", max_results: "optional — max emails to return (default 10, max 20)" } },
     { name: "send_email", description: "Send an email or reply to an existing thread via Gmail.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
@@ -160,11 +160,10 @@ await put("prompt:subplan", read("prompts/subplan.md"), "text", "Subplan agent s
 await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
 await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1) — examines alignment, patterns, structures");
 
-// ── Dharma, wisdom ────────────────────────────────────────────
+// ── Dharma ───────────────────────────────────────────────────
 
 console.log("--- Identity ---");
 await put("dharma", read("DHARMA.md"), "text", "Core identity and purpose — what Swayambhu is and why it exists");
-await put("wisdom", "", "text", "Accumulated insights from past reflections — grows over time");
 
 // ── Yamas (outer world principles) ───────────────────────────
 
@@ -193,12 +192,12 @@ await put("niyama:organization", "I keep my workspace (my projects, notes, recor
 console.log("--- Wake Hook ---");
 await put("hook:wake:code", read("hook-main.js"), "text", "Wake hook entry point — wake flow, session, crash detection");
 await put("hook:wake:reflect", read("hook-reflect.js"), "text", "Wake hook reflect module — session/deep reflect, scheduling, prompts");
-await put("hook:wake:mutations", read("hook-mutations.js"), "text", "Wake hook mutations module — staging, candidates, circuit breaker");
+await put("hook:wake:modifications", read("hook-modifications.js"), "text", "Wake hook modifications module — staging, inflight, circuit breaker");
 await put("hook:wake:protect", read("hook-protect.js"), "text", "Wake hook protect module — constants, protection gate");
 await put("hook:wake:manifest", {
   "main": "hook:wake:code",
   "hook-reflect.js": "hook:wake:reflect",
-  "hook-mutations.js": "hook:wake:mutations",
+  "hook-modifications.js": "hook:wake:modifications",
   "hook-protect.js": "hook:wake:protect",
 }, "json", "Wake hook module manifest — maps filenames to KV keys");
 
@@ -240,8 +239,42 @@ await put("kernel:fallback_model", '"anthropic/claude-haiku-4.5"', "json", "Mode
 // ── Reference docs ────────────────────────────────────────────
 
 console.log("--- Docs ---");
-await put("doc:mutation_guide", read("docs/doc-mutation-guide.md"), "text", "Reference: how the mutation protocol works (staging, candidates, rollback)");
+await put("doc:modification_guide", read("docs/doc-modification-guide.md"), "text", "Reference: how the Modification Protocol works (staging, inflight, rollback)");
 await put("doc:architecture", read("docs/doc-architecture.md"), "text", "Reference: system architecture overview (kernel, hooks, KV, tools)");
+
+// ── Contacts ─────────────────────────────────────────────────
+
+console.log("--- Contacts ---");
+await put("contact:swami", {
+  name: "Swami",
+  relationship: "patron",
+  public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...",
+  key_type: "ssh-ed25519",
+  platforms: {
+    slack: "U_SWAMI",  // replaced with real ID in prod
+  },
+  chat: {
+    model: "sonnet",
+    effort: "high",
+    max_cost_per_conversation: 1.00,
+    max_output_tokens: 2000,
+  },
+  communication: "Inner circle. Full communication latitude — casual, experimental, direct. Can discuss anything including system internals, budget, failures.",
+}, "json", "Contact: Swami (patron)");
+
+await put("patron:contact", "swami", "text", "Pointer to patron contact slug");
+await put("patron:public_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...", "text", "Patron public key — immutable, kernel-enforced");
+
+// ── Communication wisdom (seed) ──────────────────────────
+
+console.log("--- Communication wisdom (seed) ---");
+
+await put("viveka:comms:defaults", {
+  text: "When in doubt, do not send. Silence is safer than a poorly judged message. A blocked message can be reviewed later; a sent message cannot be unsent. Be especially cautious when initiating — responding carries implicit standing, initiating requires justification.",
+  type: "viveka",
+  created: new Date().toISOString(),
+  sources: [{ session: "seed", depth: 0, turn: 0, topic: "Initial seed — conservative communication baseline" }],
+}, "json", "Viveka: default communication stance");
 
 // ── Done ──────────────────────────────────────────────────────
 

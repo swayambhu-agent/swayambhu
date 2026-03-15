@@ -1001,6 +1001,14 @@ describe("kvWritePrivileged", () => {
     ])).rejects.toThrow("immutable");
   });
 
+  it("blocks immutable keys (patron:public_key)", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.kvWritePrivileged([
+      { op: "put", key: "patron:public_key", value: "attacker-key" },
+    ])).rejects.toThrow("immutable");
+  });
+
   it("blocks kernel-only keys", async () => {
     const { brain } = makeBrain();
     brain.karmaRecord = vi.fn(async () => {});
@@ -1855,13 +1863,13 @@ describe("Communication gate", () => {
   const slackMeta = {
     secrets: ["SLACK_BOT_TOKEN"],
     kv_access: "none",
-    communication: { channel: "slack", recipient_field: "channel", reply_field: null, content_field: "text" },
+    communication: { channel: "slack", recipient_field: "channel", reply_field: null, content_field: "text", recipient_type: "destination" },
   };
 
   const emailMeta = {
     secrets: ["GMAIL_CLIENT_ID"],
     kv_access: "none",
-    communication: { channel: "email", recipient_field: "to", reply_field: "reply_to_id", content_field: "body" },
+    communication: { channel: "email", recipient_field: "to", reply_field: "reply_to_id", content_field: "body", recipient_type: "person" },
   };
 
   const noCommMeta = {
@@ -1905,14 +1913,49 @@ describe("Communication gate", () => {
     expect(brain.isCommsGateCapable("deepseek/deepseek-v3.2")).toBe(false);
   });
 
-  it("mechanical floor blocks initiating to unknown recipient", async () => {
+  it("mechanical floor blocks person-type initiating to unknown recipient", async () => {
     const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
-    // No viveka:contact:* entries in KV
-    const result = await brain.communicationGate("send_slack", { text: "hello", channel: "C123" }, slackMeta);
+    // No contact:* entries in KV
+    const result = await brain.communicationGate("send_email", { to: "unknown@example.com", body: "hello" }, emailMeta);
     expect(result.verdict).toBe("block");
     expect(result.mechanical).toBe(true);
-    expect(result.reasoning).toContain("No viveka");
+    expect(result.reasoning).toContain("No contact record");
+  });
+
+  it("mechanical floor skips for destination-type (slack to unknown channel)", async () => {
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"channel post ok"}', cost: 0.001 }));
+    const result = await brain.communicationGate("send_slack", { text: "hello", channel: "C_UNKNOWN" }, slackMeta);
+    expect(result.verdict).toBe("send");
+    expect(result.mechanical).toBeUndefined();
+    expect(brain.callLLM).toHaveBeenCalled();
+  });
+
+  it("destination-type loads contact context when recipient matches", async () => {
+    const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    await env.KV.put("contact:dev", JSON.stringify({ name: "Dev", platforms: { slack: "U_DEV" }, communication: "Team member." }));
+    brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"known person"}', cost: 0.001 }));
+    const result = await brain.communicationGate("send_slack", { text: "hello", channel: "U_DEV" }, slackMeta);
+    expect(result.verdict).toBe("send");
+    const systemPrompt = brain.callLLM.mock.calls[0][0].systemPrompt;
+    expect(systemPrompt).toContain("Team member.");
+  });
+
+  it("defaults to destination when recipient_type not specified", async () => {
+    const legacyMeta = {
+      secrets: [],
+      kv_access: "none",
+      communication: { channel: "custom", recipient_field: "target", reply_field: null, content_field: "msg" },
+    };
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"ok"}', cost: 0.001 }));
+    const result = await brain.communicationGate("send_custom", { msg: "hi", target: "X" }, legacyMeta);
+    expect(result.mechanical).toBeUndefined();
+    expect(brain.callLLM).toHaveBeenCalled();
   });
 
   it("mechanical floor allows responding to unknown (email with reply)", async () => {
@@ -1933,8 +1976,8 @@ describe("Communication gate", () => {
     const kvInit = {};
     const { brain, env } = makeBrain(kvInit, { modelsConfig: commsModelsConfig });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
-    // Add a viveka:contact: entry
-    await env.KV.put("viveka:contact:swami", JSON.stringify({ text: "creator" }));
+    // Add a contact record
+    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", platforms: { slack: "swami" }, communication: "Inner circle." }));
     brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"known contact"}', cost: 0.001 }));
     const result = await brain.communicationGate(
       "send_slack",
@@ -1948,8 +1991,8 @@ describe("Communication gate", () => {
   it("model gate queues when not comms_gate_capable", async () => {
     const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig });
     brain.lastCallModel = "anthropic/claude-haiku-4.5";
-    // Add viveka entry so it passes mechanical floor
-    await env.KV.put("viveka:contact:swami", JSON.stringify({ text: "creator" }));
+    // Add contact record so it passes mechanical floor
+    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", platforms: { slack: "swami" }, communication: "creator" }));
     const result = await brain.communicationGate(
       "send_slack",
       { text: "hello", channel: "swami" },
@@ -2232,5 +2275,110 @@ describe("Communication gate", () => {
     const list = await brain.listBlockedComms();
     expect(list).toHaveLength(2);
     expect(list.map(r => r.id).sort()).toEqual(["cb_1", "cb_2"]);
+  });
+});
+
+// ── Patron identity monitor ─────────────────────────────────
+
+describe("Patron identity monitor", () => {
+  const patronContact = {
+    name: "Swami",
+    relationship: "patron",
+    platforms: { slack: "U_SWAMI" },
+    communication: "Inner circle.",
+  };
+
+  it("creates snapshot on first boot when none exists", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await env.KV.put("patron:contact", JSON.stringify("swami"));
+    await env.KV.put("contact:swami", JSON.stringify(patronContact));
+
+    await brain.loadPatronContext();
+
+    expect(brain.patronId).toBe("swami");
+    expect(brain.patronIdentityDisputed).toBe(false);
+    expect(brain.patronSnapshot.name).toBe("Swami");
+    expect(brain.patronSnapshot.platforms).toEqual({ slack: "U_SWAMI" });
+  });
+
+  it("no dispute when contact matches snapshot", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await env.KV.put("patron:contact", JSON.stringify("swami"));
+    await env.KV.put("contact:swami", JSON.stringify(patronContact));
+    await env.KV.put("patron:identity_snapshot", JSON.stringify({
+      name: "Swami",
+      platforms: { slack: "U_SWAMI" },
+      verified_at: "2026-03-14T00:00:00Z",
+    }));
+
+    await brain.loadPatronContext();
+
+    expect(brain.patronIdentityDisputed).toBe(false);
+    expect(brain.karmaRecord).not.toHaveBeenCalled();
+  });
+
+  it("disputes when name changes", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    const changed = { ...patronContact, name: "Attacker" };
+    await env.KV.put("patron:contact", JSON.stringify("swami"));
+    await env.KV.put("contact:swami", JSON.stringify(changed));
+    await env.KV.put("patron:identity_snapshot", JSON.stringify({
+      name: "Swami",
+      platforms: { slack: "U_SWAMI" },
+      verified_at: "2026-03-14T00:00:00Z",
+    }));
+
+    await brain.loadPatronContext();
+
+    expect(brain.patronIdentityDisputed).toBe(true);
+    expect(brain.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "patron_identity_disputed",
+        old: expect.objectContaining({ name: "Swami" }),
+        new: expect.objectContaining({ name: "Attacker" }),
+      })
+    );
+  });
+
+  it("disputes when platforms change", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    const changed = { ...patronContact, platforms: { slack: "U_ATTACKER" } };
+    await env.KV.put("patron:contact", JSON.stringify("swami"));
+    await env.KV.put("contact:swami", JSON.stringify(changed));
+    await env.KV.put("patron:identity_snapshot", JSON.stringify({
+      name: "Swami",
+      platforms: { slack: "U_SWAMI" },
+      verified_at: "2026-03-14T00:00:00Z",
+    }));
+
+    await brain.loadPatronContext();
+
+    expect(brain.patronIdentityDisputed).toBe(true);
+  });
+
+  it("resolveContact uses snapshot when identity is disputed", async () => {
+    const { brain, env } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    const changed = { ...patronContact, name: "Attacker", platforms: { slack: "U_ATTACKER" } };
+    await env.KV.put("patron:contact", JSON.stringify("swami"));
+    await env.KV.put("contact:swami", JSON.stringify(changed));
+    await env.KV.put("patron:identity_snapshot", JSON.stringify({
+      name: "Swami",
+      platforms: { slack: "U_SWAMI" },
+      verified_at: "2026-03-14T00:00:00Z",
+    }));
+    // Pre-populate index cache (contact platforms changed, so scan won't match old ID)
+    await env.KV.put("contact_index:slack:U_SWAMI", JSON.stringify("swami"));
+
+    await brain.loadPatronContext();
+    expect(brain.patronIdentityDisputed).toBe(true);
+
+    const result = await brain.resolveContact("slack", "U_SWAMI");
+    expect(result.name).toBe("Swami");
+    expect(result.platforms).toEqual({ slack: "U_SWAMI" });
   });
 });

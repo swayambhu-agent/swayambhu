@@ -12,19 +12,19 @@ import {
 } from "../hook-protect.js";
 import {
   evaluatePredicate,
-  stageMutation,
+  stageModification,
   findInflightConflict,
   promoteInflight,
   rollbackInflight,
   processReflectVerdicts,
   processDeepReflectVerdicts,
   runCircuitBreaker,
-  loadStagedMutations,
-  loadInflightMutations,
+  loadStagedModifications,
+  loadInflightModifications,
   initTracking,
-  applyStaged,
-  applyDirect,
-} from "../hook-mutations.js";
+  acceptStaged,
+  acceptDirect,
+} from "../hook-modifications.js";
 import {
   getMaxSteps,
   getReflectModel,
@@ -33,6 +33,7 @@ import {
   defaultReflectPrompt,
   defaultDeepReflectPrompt,
   applyReflectOutput,
+  gatherReflectContext,
   loadReflectPrompt,
   loadBelowPrompt,
   loadReflectHistory,
@@ -40,7 +41,7 @@ import {
 } from "../hook-reflect.js";
 import { makeMockK } from "./helpers/mock-kernel.js";
 
-// Reset mutation tracking state before each test
+// Reset modification tracking state before each test
 beforeEach(() => {
   initTracking([], []);
 });
@@ -694,44 +695,44 @@ describe("runReflect budget_multiplier", () => {
 
 describe("patch op", () => {
   it("replaces old_string with new_string in KV value", async () => {
-    const K = makeMockK({ "hook:wake:mutations": "function old() { return 1; }" });
+    const K = makeMockK({ "hook:wake:modifications": "function old() { return 1; }" });
     await K.kvWritePrivileged([{
       op: "patch",
-      key: "hook:wake:mutations",
+      key: "hook:wake:modifications",
       old_string: "return 1",
       new_string: "return 2",
     }]);
-    const result = K._kv._store.get("hook:wake:mutations");
+    const result = K._kv._store.get("hook:wake:modifications");
     expect(result).toBe("function old() { return 2; }");
   });
 
   it("rejects when old_string not found", async () => {
-    const K = makeMockK({ "hook:wake:mutations": "function old() { return 1; }" });
+    const K = makeMockK({ "hook:wake:modifications": "function old() { return 1; }" });
     await expect(K.kvWritePrivileged([{
       op: "patch",
-      key: "hook:wake:mutations",
+      key: "hook:wake:modifications",
       old_string: "nonexistent string",
       new_string: "replacement",
     }])).rejects.toThrow("old_string not found");
   });
 
   it("rejects when old_string matches multiple locations", async () => {
-    const K = makeMockK({ "hook:wake:mutations": "aaa bbb aaa" });
+    const K = makeMockK({ "hook:wake:modifications": "aaa bbb aaa" });
     await expect(K.kvWritePrivileged([{
       op: "patch",
-      key: "hook:wake:mutations",
+      key: "hook:wake:modifications",
       old_string: "aaa",
       new_string: "ccc",
     }])).rejects.toThrow("matches multiple locations");
   });
 
   it("rejects when value is not a string", async () => {
-    const K = makeMockK({ "hook:wake:mutations": JSON.stringify({ a: 1 }) });
+    const K = makeMockK({ "hook:wake:modifications": JSON.stringify({ a: 1 }) });
     // The mock stores it as a string via JSON.stringify, so set a non-string
-    K._kv._store.set("hook:wake:mutations", 42);
+    K._kv._store.set("hook:wake:modifications", 42);
     await expect(K.kvWritePrivileged([{
       op: "patch",
-      key: "hook:wake:mutations",
+      key: "hook:wake:modifications",
       old_string: "something",
       new_string: "else",
     }])).rejects.toThrow("not a string value");
@@ -745,7 +746,7 @@ describe("applyKVOperation blocks yama/niyama", () => {
     const K = makeMockK();
     await applyKVOperation(K, { op: "put", key: "yama:care", value: "new value" });
     expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "mutation_blocked", key: "yama:care", reason: "system_key" })
+      expect.objectContaining({ event: "modification_blocked", key: "yama:care", reason: "system_key" })
     );
     // Should NOT have written the value
     expect(K.kvPutSafe).not.toHaveBeenCalled();
@@ -755,34 +756,112 @@ describe("applyKVOperation blocks yama/niyama", () => {
     const K = makeMockK();
     await applyKVOperation(K, { op: "put", key: "niyama:health", value: "new value" });
     expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "mutation_blocked", key: "niyama:health", reason: "system_key" })
+      expect.objectContaining({ event: "modification_blocked", key: "niyama:health", reason: "system_key" })
     );
     expect(K.kvPutSafe).not.toHaveBeenCalled();
   });
 });
 
-// ── 20. applyStaged with patch op ────────────────
+// ── 20. acceptStaged with patch op ────────────────
 
-describe("applyStaged with patch op", () => {
+describe("acceptStaged with patch op", () => {
   it("forwards patch ops through to kvWritePrivileged", async () => {
     const K = makeMockK({
-      "hook:wake:mutations": "function old() { return 1; }",
+      "hook:wake:modifications": "function old() { return 1; }",
     });
 
-    // Stage a mutation with a patch op
-    const mutationId = await stageMutation(K, {
+    // Stage a modification with a patch op
+    const modificationId = await stageModification(K, {
       claims: ["test patch"],
-      ops: [{ op: "patch", key: "hook:wake:mutations", old_string: "return 1", new_string: "return 2" }],
-      checks: [{ type: "kv_assert", key: "hook:wake:mutations", predicate: "exists" }],
+      ops: [{ op: "patch", key: "hook:wake:modifications", old_string: "return 1", new_string: "return 2" }],
+      checks: [{ type: "kv_assert", key: "hook:wake:modifications", predicate: "exists" }],
     }, "test_session");
 
-    expect(mutationId).toBeTruthy();
+    expect(modificationId).toBeTruthy();
 
-    // Apply staged mutation
-    await applyStaged(K, mutationId);
+    // Accept staged modification
+    await acceptStaged(K, modificationId);
 
     // Check that the patch was applied
-    const afterValue = K._kv._store.get("hook:wake:mutations");
+    const afterValue = K._kv._store.get("hook:wake:modifications");
     expect(afterValue).toBe("function old() { return 2; }");
+  });
+});
+
+// ── Communication gate integration ─────────────────────────
+
+describe("Communication gate in reflect", () => {
+  it("blocked comms loaded in gatherReflectContext", async () => {
+    const record1 = { id: "cb_1", tool: "send_slack", args: { text: "hello" }, channel: "slack" };
+    const record2 = { id: "cb_2", tool: "send_email", args: { body: "hi" }, channel: "email" };
+    const K = makeMockK({
+      "comms_blocked:cb_1": JSON.stringify(record1),
+      "comms_blocked:cb_2": JSON.stringify(record2),
+    });
+    K.listBlockedComms = vi.fn(async () => [record1, record2]);
+    const state = makeState();
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    expect(result.templateVars.blockedComms).toContain("cb_1");
+    expect(result.templateVars.blockedComms).toContain("cb_2");
+  });
+
+  it("blockedComms is '(none)' when no blocked comms exist", async () => {
+    const K = makeMockK();
+    K.listBlockedComms = vi.fn(async () => []);
+    const state = makeState();
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    expect(result.templateVars.blockedComms).toBe("(none)");
+  });
+
+  it("comms_verdicts processed from applyReflectOutput", async () => {
+    const K = makeMockK();
+    K.processCommsVerdict = vi.fn(async () => ({ ok: true }));
+    const state = makeState();
+    const output = {
+      reflection: "test reflection",
+      note_to_future_self: "remember",
+      comms_verdicts: [
+        { id: "cb_1", verdict: "send" },
+        { id: "cb_2", verdict: "drop", revision: { reason: "not needed" } },
+      ],
+    };
+
+    await applyReflectOutput(K, state, 1, output, {});
+    expect(K.processCommsVerdict).toHaveBeenCalledTimes(2);
+    expect(K.processCommsVerdict).toHaveBeenCalledWith("cb_1", "send", undefined);
+    expect(K.processCommsVerdict).toHaveBeenCalledWith("cb_2", "drop", { reason: "not needed" });
+  });
+});
+
+// ── Patron context in reflect ─────────────────────────────
+
+describe("Patron context in reflect", () => {
+  it("patron context loaded in gatherReflectContext", async () => {
+    const K = makeMockK({
+      "patron:contact": "swami",
+      "contact:swami": JSON.stringify({
+        name: "Swami",
+        relationship: "patron",
+        communication: "Inner circle.",
+      }),
+    });
+    K.listBlockedComms = vi.fn(async () => []);
+    const state = makeState();
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    expect(result.templateVars.patron_contact).toContain("Swami");
+    expect(result.templateVars.patron_id).toBe("swami");
+  });
+
+  it("patron context is '(no patron configured)' when missing", async () => {
+    const K = makeMockK();
+    K.listBlockedComms = vi.fn(async () => []);
+    const state = makeState();
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    expect(result.templateVars.patron_contact).toBe("(no patron configured)");
+    expect(result.templateVars.patron_id).toBeNull();
   });
 });

@@ -5,7 +5,7 @@ export const meta = {
   secrets: ["GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN"],
   kv_access: "none",
   timeout_ms: 15000,
-  communication: { channel: "email", recipient_field: "to", reply_field: "reply_to_id", content_field: "body" },
+  communication: { channel: "email", recipient_field: "to", reply_field: "reply_to_id", content_field: "body", recipient_type: "person" },
 };
 
 export async function execute({ to, subject, body, reply_to_id, secrets, fetch }) {

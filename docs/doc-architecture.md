@@ -8,7 +8,7 @@ The system is split into two layers with a hard boundary between them.
 
 **Kernel** (`brainstem.js`): Deployed as a Cloudflare Worker. Contains hardcoded primitives — KV access, LLM calls, isolate execution, alerting, budget enforcement, hook dispatch, and safety mechanisms (tripwire, auto-restore, platform kill detection). The kernel never changes after deployment. It has no opinions about what you should do — it only provides capabilities and enforces safety.
 
-**Hook** (`hook:wake:code` in KV): Your policy layer. Contains the entire wake flow — orient, reflect, deep reflect, mutation protocol, circuit breaker, balance checks, tripwire evaluation. The kernel loads this code from KV and executes it in a Worker Loader isolate. You can modify this code through `kvWritePrivileged`. See `doc:mutation_guide` for how to do that safely.
+**Hook** (`hook:wake:code` in KV): Your policy layer. Contains the entire wake flow — orient, reflect, deep reflect, Modification Protocol, circuit breaker, balance checks, tripwire evaluation. The kernel loads this code from KV and executes it in a Worker Loader isolate. You can modify this code through `kvWritePrivileged`. See `doc:modification_guide` for how to do that safely.
 
 The boundary is enforced by isolation. The hook runs in a separate isolate and communicates with the kernel exclusively through `K` (the KernelRPC binding). The hook cannot access `this.env`, `this.kv`, or any kernel internals directly.
 
@@ -18,7 +18,7 @@ When the cron trigger fires:
 
 1. **Kernel boots** — creates a Brainstem instance, generates session ID
 2. **Platform kill detection** — checks `kernel:active_session` for a stale marker from a previous session that was killed by the platform (wall-time, CPU, OOM). If found, injects "killed" outcome into `kernel:last_sessions`
-3. **Hook safety check** — reads `kernel:last_sessions`. If the last 3 outcomes are all crash/killed, the tripwire fires (see `doc:mutation_guide` for details)
+3. **Hook safety check** — reads `kernel:last_sessions`. If the last 3 outcomes are all crash/killed, the tripwire fires (see `doc:modification_guide` for details)
 4. **Hook loading** — checks for `hook:wake:manifest` (multi-module) or `hook:wake:code` (single module). If neither exists, runs minimal fallback
 5. **Hook execution** — writes `kernel:active_session` breadcrumb, creates a Worker Loader isolate with the hook code, passes `K` (KernelRPC) as `env.KERNEL`, calls `fetch("https://internal/wake")`
 6. **Hook runs wake flow** — the hook's default export handles the request, calls `wake(K, input)`, which runs the full session (orient → tools → reflect) or deep reflect
@@ -36,7 +36,7 @@ Every kernel capability the hook uses goes through `K`. The methods:
 
 **KV writes (safe)**: `K.kvPutSafe(key, value, metadata)`, `K.kvDeleteSafe(key)` — blocks writes to `dharma`, `kernel:*`, and all system keys. Use for regular keys like `wake_config`, `session_counter`, `last_reflect`, `reflect:*`.
 
-**KV writes (privileged)**: `K.kvWritePrivileged(ops)` — for system keys (`config:*`, `prompt:*`, `hook:*`, `tool:*`, `provider:*`, `secret:*`, `mutation_*`). Snapshots old value to karma, rate-limited to 50/session, alerts on `hook:*` writes. Still blocks `dharma` and `kernel:*`.
+**KV writes (privileged)**: `K.kvWritePrivileged(ops)` — for system keys (`config:*`, `prompt:*`, `hook:*`, `tool:*`, `provider:*`, `secret:*`, `modification_*`). Snapshots old value to karma, rate-limited to 50/session, alerts on `hook:*` writes. Still blocks `dharma` and `kernel:*`.
 
 **Agent loop**: `K.runAgentLoop({ systemPrompt, initialContext, tools, model, effort, maxTokens, maxSteps, step })` — the tool-calling execution primitive. Runs a multi-turn conversation where the LLM can call tools. Returns parsed JSON output. Includes one automatic JSON repair retry.
 
@@ -179,12 +179,14 @@ Each cron invocation has a **15-minute wall-clock limit** regardless of cron int
 - `hook:wake:manifest` — multi-module manifest
 - `hook:wake:{module}` — additional hook modules
 - `secret:{name}` — KV-stored secrets (accessible by tools/adapters via meta.kv_secrets)
-- `mutation_staged:{id}` — staged mutation records
-- `mutation_rollback:{id}` — rollback records for inflight mutations (applied but unverified)
-- `doc:{name}` — reference documents (this file, mutation guide, etc.)
+- `modification_staged:{id}` — staged modification records
+- `modification_snapshot:{id}` — snapshot records for inflight modifications (applied but unverified)
+- `doc:{name}` — reference documents (this file, modification guide, etc.)
 - `providers` — provider config map (adapter references, secret names)
 - `wallets` — wallet config map
-- `wisdom` — accumulated wisdom text
+- `viveka:{topic}` — outer wisdom / discernment about the external world (available during orient)
+- `prajna:{topic}` — inner wisdom / self-knowledge (available during deep reflect)
+- `comms_blocked:{id}` — blocked communication records (kernel-internal, queued for deep reflect review)
 
 ### Regular keys (writable via kvPutSafe)
 - `wake_config` — next wake timing, effort overrides, alerts
@@ -209,8 +211,8 @@ The hook (`hook:wake:code`) exports a default fetch handler and a `wake(K, input
 
 1. **Wake gate** — checks `wake_config.next_wake_after`, skips if not time yet
 2. **Crash detection** — checks for stale `session` key from a previous hook-level crash
-3. **Mutation tracking init** — prefix-scans `mutation_staged:*` and `mutation_rollback:*` to build in-memory tracking lists
-4. **Circuit breaker** — checks `last_danger` against inflight mutation activation times, rolls back inflight mutations that activated before danger signals
+3. **Modification tracking init** — prefix-scans `modification_staged:*` and `modification_snapshot:*` to build in-memory tracking lists
+4. **Circuit breaker** — checks `last_danger` against inflight modification activation times, rolls back inflight modifications that activated before danger signals
 5. **Ground truth** — loads balances (via provider/wallet adapters), KV usage
 6. **State loading** — loads `config:defaults`, `last_reflect`, `config:models`, `dharma`, `config:tool_registry`
 7. **Reflect check** — determines if any reflection depth is due (based on session count and time intervals)
@@ -224,29 +226,37 @@ Builds a system prompt from `prompt:orient` with dharma, models, resources, and 
 
 ### Session Reflect (depth 0)
 
-A single LLM call (maxSteps: 1, no tools) that reviews the session's karma log and cost. Produces: `session_summary`, `note_to_future_self`, `next_orient_context.load_keys`, and optionally `kv_operations`, `mutation_verdicts`, `mutation_requests`, `next_wake_config`. Output stored at `last_reflect` and `reflect:0:{sessionId}`.
+A single LLM call (maxSteps: 1, no tools) that reviews the session's karma log and cost. Produces: `session_summary`, `note_to_future_self`, `next_orient_context.load_keys`, and optionally `kv_operations`, `modification_verdicts`, `modification_requests`, `next_wake_config`. Output stored at `last_reflect` and `reflect:0:{sessionId}`.
 
 ### Deep Reflect (depth 1+)
 
-A multi-turn agent loop with tool access (excluding `spawn_subplan`). Depth 1 examines recent karma logs, the orient prompt, and session history. Depth N examines depth N-1 outputs and the below-level prompt. Each depth can propose mutations (applied directly as inflight at depth 1+, or staged at depth 0). Output stored at `reflect:{depth}:{sessionId}`.
+A multi-turn agent loop with tool access (excluding `spawn_subplan`). Depth 1 examines recent karma logs, the orient prompt, and session history. Depth N examines depth N-1 outputs and the below-level prompt. Each depth can propose modifications (applied directly as inflight at depth 1+, or staged at depth 0). Output stored at `reflect:{depth}:{sessionId}`.
 
 Deep reflect cascades downward: depth N runs first, then depth N-1, then ... depth 1. Each level's output is available to the next via `reflect:{depth}:{sessionId}` keys.
 
-## Mutation Protocol
+## Modification Protocol
 
 The lifecycle: **staged → inflight → promoted** (or rolled back at any stage).
 
-**Staged** (`mutation_staged:{id}`): A proposal with claims (why), ops (what to change), and checks (how to verify). Created by session reflect via `stageMutation`. Can be withdrawn or modified by session reflect, or applied/rejected by deep reflect.
+Modifications have a `type` field: `"code"` (default) or `"wisdom"`.
 
-**Inflight** (`mutation_rollback:{id}`): Applied to KV but not yet verified. Contains snapshots of all affected keys before modification. Created either by promoting a staged mutation (`applyStaged`) or directly by deep reflect (`applyDirect`). Can be promoted (delete the rollback record, changes persist) or rolled back (restore snapshots).
+**Code modifications** (`type: "code"`): For prompts, config, tools, hook modules. Require `claims` (why), `ops` (what to change), and `checks` (how to verify). Support `acceptDirect` (deep reflect can apply without staging). Subject to circuit breaker auto-rollback and git sync on promotion.
 
-**Promoted**: The rollback record is deleted. The changes are now permanent. No rollback possible — the snapshots are gone.
+**Wisdom modifications** (`type: "wisdom"`): For `viveka:*` and `prajna:*` keys. Require `validation` (how to evaluate the wisdom entry) instead of claims + checks. Cannot use `acceptDirect` — must always be staged first. Not subject to circuit breaker (wisdom changes can't crash the system). No git sync. Can only be staged by deep reflect (depth >= 1); session reflect (depth 0) cannot stage wisdom.
 
-One inflight mutation per key enforced: if a new mutation targets a key that already has an inflight mutation, it's rejected as a conflict.
+When a wisdom modification is accepted (staged → inflight), the `validation` field from the staged record is injected into the value, so each wisdom entry carries its own evaluation criteria.
+
+**Staged** (`modification_staged:{id}`): A proposal. For code type: claims, ops, checks. For wisdom type: validation, ops. Created by session reflect (code only) or deep reflect (both types) via `stageModification`. Can be withdrawn or modified by session reflect, or applied/rejected by deep reflect.
+
+**Inflight** (`modification_snapshot:{id}`): Applied to KV but not yet verified. Contains snapshots of all affected keys before modification. Created either by promoting a staged modification (`acceptStaged`) or directly by deep reflect (`acceptDirect`, code type only). Can be promoted (delete the snapshot record, changes persist) or rolled back (restore snapshots).
+
+**Promoted**: The snapshot record is deleted. The changes are now permanent. No rollback possible — the snapshots are gone.
+
+One inflight modification per key enforced: if a new modification targets a key that already has an inflight modification, it's rejected as a conflict.
 
 ### Circuit Breaker
 
-On each wake, before the hook runs, the hook checks `last_danger` (written by the kernel on danger signals). If any inflight mutation was activated before the danger signal timestamp, it's automatically rolled back. This catches cases where a mutation causes LLM failures or fatal errors.
+On each wake, before the hook runs, the hook checks `last_danger` (written by the kernel on danger signals). If any inflight modification was activated before the danger signal timestamp, it's automatically rolled back. This catches cases where a modification causes LLM failures or fatal errors.
 
 ## Isolate Execution
 
@@ -268,7 +278,7 @@ Every significant event is recorded in the karma log — an array that grows thr
 - `tool_start` / `tool_complete` — tool name, input summary, result summary or error
 - `provider_fallback` — cascade tier transitions
 - `privileged_write` — key, old value, new value (full snapshot)
-- `mutation_*` — staged, applied, promoted, rolled back, rejected, etc.
+- `modification_*` — staged, accepted, promoted, rolled back, rejected, etc.
 - `budget_exceeded` — which budget limit was hit
 - `fatal_error` — unhandled errors (triggers danger signal)
 - `hook_execution_error` — hook crashed
@@ -289,6 +299,18 @@ Cost is estimated per LLM call using the model's `input_cost_per_mtok` and `outp
 
 **Graceful degradation.** Hook crash → minimal fallback. Adapter crash → last working adapter → kernel fallback. Model failure → fallback model. Tool hook failure → no hook. Parse failure → repair hook → raw output. Every failure mode has a degradation path, not a crash.
 
-**Observability through karma.** Every LLM call, tool execution, KV write, mutation operation, and error is logged with timestamps, costs, and context. The karma log survives crashes (flushed after each entry) and is the primary input for reflect sessions.
+**Observability through karma.** Every LLM call, tool execution, KV write, modification operation, and error is logged with timestamps, costs, and context. The karma log survives crashes (flushed after each entry) and is the primary input for reflect sessions.
 
-**Self-modification is safe by default.** Every system key write is snapshotted, every hook write is alerted, crashes auto-revert, and the kernel enforces protection regardless of hook behavior. See `doc:mutation_guide` for the full modification protocol.
+**Self-modification is safe by default.** Every system key write is snapshotted, every hook write is alerted, crashes auto-revert, and the kernel enforces protection regardless of hook behavior. See `doc:modification_guide` for the full Modification Protocol.
+
+## Communication Gate
+
+Outbound communication tools (those with a `communication` field in their meta) pass through a kernel-enforced gate before execution. The gate applies three layers:
+
+1. **Mechanical floor** — if the tool is initiating contact (not replying) and no `viveka:contact:*` entry matches the recipient, the message is blocked without an LLM call. Unknown recipients require viveka entries before the agent can reach out.
+
+2. **Model gate** — the current model must have `comms_gate_capable: true` in `config:models`. If not, the message is queued for review during deep reflect rather than evaluated immediately.
+
+3. **LLM judgment** — a gate LLM call evaluates the message against accumulated communication wisdom (`viveka:contact:*`, `viveka:channel:*`, `viveka:comms:*`). The gate can approve, revise (rewrite the message text), or block.
+
+Blocked and queued messages are stored as `comms_blocked:{id}` records (system keys, kernel-internal write). Deep reflect reviews these records and issues verdicts: `send`, `revise_and_send`, or `drop`. The `listBlockedComms` and `processCommsVerdict` RPC methods expose this to the hook.

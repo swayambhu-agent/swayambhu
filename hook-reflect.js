@@ -4,10 +4,10 @@
 
 import { SYSTEM_KEY_PREFIXES, SYSTEM_KEY_EXACT, applyKVOperation } from './hook-protect.js';
 import {
-  loadStagedMutations, loadInflightMutations,
-  stageMutation, applyDirect,
+  loadStagedModifications, loadInflightModifications,
+  stageModification, acceptDirect,
   processReflectVerdicts, processDeepReflectVerdicts,
-} from './hook-mutations.js';
+} from './hook-modifications.js';
 
 // ── Session reflect ─────────────────────────────────────────
 
@@ -16,7 +16,7 @@ export async function executeReflect(K, state, step) {
   const sessionId = await K.getSessionId();
 
   const reflectPrompt = await K.kvGet("prompt:reflect");
-  const stagedMutations = await loadStagedMutations(K);
+  const stagedModifications = await loadStagedModifications(K);
 
   const systemKeyPatterns = {
     prefixes: SYSTEM_KEY_PREFIXES,
@@ -42,7 +42,7 @@ export async function executeReflect(K, state, step) {
   const initialContext = JSON.stringify({
     karma,
     sessionCost,
-    stagedMutations,
+    stagedModifications,
   });
 
   const model = await K.resolveModel(
@@ -96,13 +96,13 @@ export async function executeReflect(K, state, step) {
     }
   }
 
-  if (output.mutation_verdicts) {
-    await processReflectVerdicts(K, output.mutation_verdicts);
+  if (output.modification_verdicts) {
+    await processReflectVerdicts(K, output.modification_verdicts);
   }
 
-  if (output.mutation_requests) {
-    for (const req of output.mutation_requests) {
-      await stageMutation(K, req, sessionId);
+  if (output.modification_requests) {
+    for (const req of output.modification_requests) {
+      await stageModification(K, req, sessionId, 0);
     }
   }
 
@@ -170,10 +170,10 @@ export async function runReflect(K, state, depth, context) {
 export async function gatherReflectContext(K, state, depth, context) {
   const { defaults, modelsConfig } = state;
 
-  const wisdom = await K.kvGet("wisdom");
   const orientPrompt = await K.kvGet("prompt:orient");
-  const stagedMutations = await loadStagedMutations(K);
-  const inflightMutations = await loadInflightMutations(K);
+  const stagedModifications = await loadStagedModifications(K);
+  const inflightModifications = await loadInflightModifications(K);
+  const blockedComms = await K.listBlockedComms();
   const systemKeyPatterns = {
     prefixes: SYSTEM_KEY_PREFIXES,
     exact: SYSTEM_KEY_EXACT,
@@ -181,13 +181,22 @@ export async function gatherReflectContext(K, state, depth, context) {
 
   const recentSessionIds = await K.kvGet("cache:session_ids") || [];
 
+  const patronSlug = await K.kvGet("patron:contact");
+  const patronContact = patronSlug ? await K.kvGet(`contact:${patronSlug}`) : null;
+  const patronIdentityDisputed = patronSlug ? await K.isPatronIdentityDisputed() : false;
+
   const templateVars = {
-    wisdom,
     orientPrompt,
     currentDefaults: defaults,
     models: modelsConfig,
-    stagedMutations,
-    inflightMutations,
+    stagedModifications,
+    inflightModifications,
+    blockedComms: blockedComms.length > 0
+      ? JSON.stringify(blockedComms, null, 2)
+      : '(none)',
+    patron_contact: patronContact ? JSON.stringify(patronContact, null, 2) : '(no patron configured)',
+    patron_id: patronSlug || null,
+    patron_identity_disputed: patronIdentityDisputed,
     systemKeyPatterns,
     recentSessionIds,
     context: {
@@ -218,14 +227,25 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   }
 
   // 2. Verdicts BEFORE new requests — clears conflicts first
-  if (output.mutation_verdicts) {
-    await processDeepReflectVerdicts(K, output.mutation_verdicts);
+  if (output.modification_verdicts) {
+    await processDeepReflectVerdicts(K, output.modification_verdicts, depth);
   }
 
-  // 3. New mutation requests — applied directly as inflight
-  if (output.mutation_requests) {
-    for (const req of output.mutation_requests) {
-      await applyDirect(K, req, sessionId);
+  // 2b. Communication verdicts
+  if (output.comms_verdicts) {
+    for (const cv of output.comms_verdicts) {
+      try {
+        await K.processCommsVerdict(cv.id, cv.verdict, cv.revision);
+      } catch (err) {
+        await K.karmaRecord({ event: "comms_verdict_error", id: cv.id, error: err.message });
+      }
+    }
+  }
+
+  // 3. New modification requests — applied directly as inflight
+  if (output.modification_requests) {
+    for (const req of output.modification_requests) {
+      await acceptDirect(K, req, sessionId);
     }
   }
 
@@ -375,7 +395,7 @@ Review the session karma log and cost provided in the user message.
 
 Produce a JSON object with: session_summary, note_to_future_self,
 next_orient_context (with load_keys array), and optionally
-next_wake_config, kv_operations, mutation_verdicts, and mutation_requests.`;
+next_wake_config, kv_operations, modification_verdicts, and modification_requests.`;
 }
 
 export function defaultDeepReflectPrompt(depth) {
@@ -391,13 +411,13 @@ Examine your karma, your orient prompt, your patterns. Produce a JSON object:
   "reflection": "What you see when you look at yourself as a system",
   "note_to_future_self": "Orientation, not action items",
   "kv_operations": [],
-  "mutation_requests": [],
-  "mutation_verdicts": [],
+  "modification_requests": [],
+  "modification_verdicts": [],
   "next_reflect": { "after_sessions": 20, "after_days": 7, "reason": "..." },
   "next_wake_config": { "sleep_seconds": 21600, "effort": "low" }
 }
 
-mutation_requests go through applyDirect. mutation_verdicts for staged/inflight mutations.
+modification_requests go through acceptDirect. modification_verdicts for staged/inflight modifications.
 Required: reflection, note_to_future_self. Everything else optional.`;
   }
 
@@ -408,7 +428,7 @@ You have tools available for investigation \u2014 use kv_read, web_fetch, etc. t
 Your output is stored at reflect:${depth}:{sessionId}.
 
 ## One-level-below write discipline
-You can only propose mutations targeting prompt:reflect:${depth - 1} (the prompt for the level below you).
+You can only propose modifications targeting prompt:reflect:${depth - 1} (the prompt for the level below you).
 
 Below-level prompt: {{belowPrompt}}
 
@@ -417,8 +437,8 @@ Examine the depth-${depth - 1} outputs for patterns, drift, and alignment. Produ
   "reflection": "What you see in the level-below patterns",
   "note_to_future_self": "Orientation for next depth-${depth} reflection",
   "kv_operations": [],
-  "mutation_requests": [],
-  "mutation_verdicts": [],
+  "modification_requests": [],
+  "modification_verdicts": [],
   "next_reflect": { "after_sessions": 100, "after_days": 30, "reason": "..." }
 }
 

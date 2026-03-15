@@ -112,6 +112,10 @@ export class KernelRPC extends WorkerEntrypoint {
   async getToolRegistry() { return this._brain().toolRegistry; }
   async getYamas() { return this._brain().yamas; }
   async getNiyamas() { return this._brain().niyamas; }
+  async getPatronId() { return this._brain().patronId; }
+  async getPatronContact() { return this._brain().patronContact; }
+  async isPatronIdentityDisputed() { return this._brain().patronIdentityDisputed; }
+  async resolveContact(platform, platformUserId) { return this._brain().resolveContact(platform, platformUserId); }
   async elapsed() { return this._brain().elapsed(); }
 }
 
@@ -259,6 +263,7 @@ export default {
         brain.dharma = await brain.kvGet("dharma");
         brain.toolRegistry = await brain.kvGet("config:tool_registry");
         await brain.loadYamasNiyamas();
+        await brain.loadPatronContext();
 
         const adapter = {
           sendReply: async (chatId, text) => {
@@ -301,6 +306,11 @@ class Brainstem {
     this._alertConfigCache = undefined; // undefined = not loaded, null = doesn't exist
     this.yamas = null;         // Cached yama principles (loaded at boot)
     this.niyamas = null;       // Cached niyama principles (loaded at boot)
+    this.patronId = null;      // Contact slug of patron (loaded at boot)
+    this.patronContact = null; // Full patron contact record (loaded at boot)
+    this.patronPublicKey = null; // Immutable public key (loaded at boot)
+    this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
+    this.patronIdentityDisputed = false; // True if monitored fields changed unverified
     this.lastCallModel = null; // Last model used in callLLM (for capability gates)
     this._commsGateApproved = false; // Transient flag: set by executeToolCall/processCommsVerdict around executeAction
   }
@@ -311,9 +321,12 @@ class Brainstem {
     'yama:', 'niyama:',
     'viveka:', 'prajna:',
     'comms_blocked:',
+    'contact:',
+    'contact_index:',
   ];
   static KERNEL_ONLY_PREFIXES = ['kernel:'];
-  static SYSTEM_KEY_EXACT = ['providers', 'wallets'];
+  static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
+  static IMMUTABLE_KEYS = ['patron:public_key'];
   static DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
   static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
@@ -352,6 +365,74 @@ class Brainstem {
     }
   }
 
+  // ── Patron context ──────────────────────────────────────
+
+  async loadPatronContext() {
+    const patronSlug = await this.kvGet("patron:contact");
+    if (!patronSlug) return;
+
+    this.patronId = patronSlug;
+    this.patronPublicKey = await this.kvGet("patron:public_key");
+    this.patronContact = await this.kvGet(`contact:${patronSlug}`);
+    if (!this.patronContact) return;
+
+    // Identity monitor — compare monitored fields against last verified snapshot
+    const snapshot = await this.kvGet("patron:identity_snapshot");
+    if (!snapshot) {
+      // First boot — create snapshot from seed
+      const initial = {
+        name: this.patronContact.name,
+        platforms: this.patronContact.platforms,
+        verified_at: new Date().toISOString(),
+      };
+      await this.kvPut("patron:identity_snapshot", initial);
+      this.patronSnapshot = initial;
+      this.patronIdentityDisputed = false;
+    } else {
+      this.patronSnapshot = snapshot;
+      const nameChanged = this.patronContact.name !== snapshot.name;
+      const platformsChanged = JSON.stringify(this.patronContact.platforms) !== JSON.stringify(snapshot.platforms);
+      this.patronIdentityDisputed = nameChanged || platformsChanged;
+      if (this.patronIdentityDisputed) {
+        await this.karmaRecord({
+          event: "patron_identity_disputed",
+          old: { name: snapshot.name, platforms: snapshot.platforms },
+          new: { name: this.patronContact.name, platforms: this.patronContact.platforms },
+        });
+      }
+    }
+  }
+
+  async resolveContact(platform, platformUserId) {
+    // Check index cache first
+    const cached = await this.kvGet(`contact_index:${platform}:${platformUserId}`);
+    if (cached) {
+      const contact = await this.kvGet(`contact:${cached}`);
+      if (!contact) return null;
+      return this._applyPatronSnapshot(cached, contact);
+    }
+
+    // Scan contacts on miss (small set for v0.1)
+    const result = await this.kv.list({ prefix: "contact:" });
+    for (const { name: key } of result.keys) {
+      const contact = await this.kvGet(key);
+      if (contact?.platforms?.[platform] === platformUserId) {
+        const id = key.replace("contact:", "");
+        await this.kvPut(`contact_index:${platform}:${platformUserId}`, id);
+        return this._applyPatronSnapshot(id, contact);
+      }
+    }
+    return null;
+  }
+
+  _applyPatronSnapshot(id, contact) {
+    // When patron identity is disputed, override monitored fields with last-known-good values
+    if (this.patronIdentityDisputed && id === this.patronId && this.patronSnapshot) {
+      return { id, ...contact, name: this.patronSnapshot.name, platforms: this.patronSnapshot.platforms };
+    }
+    return { id, ...contact };
+  }
+
   isYamaCapable(modelId) {
     const model = this.modelsConfig?.models?.find(m => m.id === modelId || m.alias === modelId);
     return !!model?.yama_capable;
@@ -373,8 +454,9 @@ class Brainstem {
 
 Consider:
 - Standing: is this a response to someone who contacted you, or are you initiating contact?
+- Recipient type: is this going to a specific person ("person") or a destination like a channel ("destination")? For destinations, focus on whether the content suits that venue.
 - Recipient: what does your accumulated wisdom say about them and your relationship?
-- Content: is the message appropriate for this recipient and channel?
+- Content: is the message appropriate for this recipient and context?
 - Tone: does it match what this context requires?
 - Authority: do you have standing to communicate this in this context?
 
@@ -405,7 +487,8 @@ Respond with JSON only:
 
   async loadCommsViveka() {
     const entries = {};
-    for (const prefix of ['viveka:contact:', 'viveka:channel:', 'viveka:comms:']) {
+    // General communication wisdom (not contact-specific)
+    for (const prefix of ['viveka:channel:', 'viveka:comms:']) {
       const result = await this.kv.list({ prefix });
       for (const { name: key } of result.keys) {
         const value = await this.kvGet(key);
@@ -452,23 +535,17 @@ Respond with JSON only:
     const recipient = this.resolveRecipient(args, meta);
     const mode = this.resolveCommsMode(args, meta);
 
-    // 1. Mechanical floor: initiating + no viveka about recipient → block
-    if (mode === 'initiating') {
-      const contactKeys = await this.kv.list({ prefix: 'viveka:contact:' });
-      const hasViveka = contactKeys.keys.some(k => {
-        const entry = k.name.replace('viveka:contact:', '');
-        return recipient && (
-          recipient.toLowerCase().includes(entry.toLowerCase()) ||
-          entry.toLowerCase().includes(recipient.toLowerCase())
-        );
-      });
-      if (!hasViveka) {
-        return {
-          verdict: 'block',
-          reasoning: `No viveka about recipient "${recipient}" — cannot initiate contact with unknown entity`,
-          mechanical: true,
-        };
-      }
+    // 1. Mechanical floor — only blocks person-targeted tools (email)
+    //    Destination-targeted tools (Slack) proceed to LLM gate regardless
+    const channel = meta.communication?.channel;
+    const recipientType = meta.communication?.recipient_type || 'destination';
+    const recipientContact = recipient ? await this.resolveContact(channel, recipient) : null;
+    if (mode === 'initiating' && recipient && !recipientContact && recipientType === 'person') {
+      return {
+        verdict: 'block',
+        reasoning: `No contact record for recipient "${recipient}" — cannot initiate contact with unknown person`,
+        mechanical: true,
+      };
     }
 
     // 2. Model gate: current model must be comms_gate_capable
@@ -480,8 +557,11 @@ Respond with JSON only:
       };
     }
 
-    // 3. Load viveka context
+    // 3. Load viveka context + recipient contact
     const viveka = await this.loadCommsViveka();
+    if (recipientContact) {
+      viveka[`contact:${recipientContact.id}`] = recipientContact.communication || recipientContact;
+    }
     const vivekaBlock = Object.entries(viveka).length > 0
       ? Object.entries(viveka).map(([k, v]) => {
           const text = typeof v === 'object' ? (v.text || JSON.stringify(v)) : String(v);
@@ -491,12 +571,14 @@ Respond with JSON only:
 
     // 4. Gate LLM call
     const gatePrompt = Brainstem.COMMS_GATE_PROMPT.replace('{{viveka}}', vivekaBlock);
+    const contentField = meta.communication?.content_field || 'text';
     const contextMessage = JSON.stringify({
       tool: toolName,
       channel: meta.communication.channel,
+      recipient_type: recipientType,
       mode,
       recipient: recipient || '(default channel)',
-      message_content: args.text || args.body || '',
+      message_content: args[contentField] || '',
       subject: args.subject || null,
       is_reply: mode === 'responding',
       reply_to: meta.communication.reply_field ? args[meta.communication.reply_field] : null,
@@ -655,7 +737,9 @@ Respond with JSON only:
 
     // ── Pre-validation: reject entire batch before any writes ──
     for (const op of ops) {
-      if (op.key === "dharma") throw new Error("Cannot write dharma — immutable key");
+      if (op.key === "dharma" || Brainstem.IMMUTABLE_KEYS.includes(op.key)) {
+        throw new Error(`Cannot write "${op.key}" — immutable key`);
+      }
       if (Brainstem.isKernelOnly(op.key)) throw new Error(`Blocked: kernel-only key "${op.key}"`);
 
       // Yama/Niyama gates — validate before any writes execute
@@ -987,6 +1071,7 @@ Respond with JSON only:
     this.toolRegistry = this.toolRegistry || await this.kvGet("config:tool_registry");
     this.dharma = this.dharma || await this.kvGet("dharma");
     await this.loadYamasNiyamas();
+    await this.loadPatronContext();
 
     const tools = this.buildToolDefinitions();
     const fallbackModel = this.modelsConfig?.fallback_model
@@ -1811,8 +1896,8 @@ export default {
 
   async kvPut(key, value, metadata = {}) {
     // Protect immutable keys
-    if (key === "dharma") {
-      throw new Error("Cannot overwrite dharma — immutable key");
+    if (key === "dharma" || Brainstem.IMMUTABLE_KEYS.includes(key)) {
+      throw new Error(`Cannot write "${key}" — immutable key`);
     }
 
     // System keys cannot be marked unprotected
