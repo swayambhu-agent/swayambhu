@@ -20,6 +20,7 @@ export class ScopedKV extends WorkerEntrypoint {
   async get(key) {
     const { toolName, kvAccess } = this.ctx.props;
     const resolved = kvAccess === "own" ? `tooldata:${toolName}:${key}` : key;
+    if (resolved.startsWith('sealed:')) return null;
     try { return await this.env.KV.get(resolved, "json"); }
     catch { try { return await this.env.KV.get(resolved, "text"); } catch { return null; } }
   }
@@ -41,7 +42,11 @@ export class ScopedKV extends WorkerEntrypoint {
         list_complete: result.list_complete,
       };
     }
-    return this.env.KV.list(opts);
+    const result = await this.env.KV.list(opts);
+    return {
+      keys: result.keys.filter(k => !k.name.startsWith('sealed:')),
+      list_complete: result.list_complete,
+    };
   }
 }
 
@@ -117,49 +122,6 @@ export class KernelRPC extends WorkerEntrypoint {
   async isPatronIdentityDisputed() { return this._brain().patronIdentityDisputed; }
   async resolveContact(platform, platformUserId) { return this._brain().resolveContact(platform, platformUserId); }
   async elapsed() { return this._brain().elapsed(); }
-}
-
-// ── Channel access control ─────────────────────────────────────
-// Checks if a user is a member of the gated Slack channel (SLACK_CHANNEL_ID).
-// Caches the member list in KV for 5 minutes to avoid hitting the Slack API on every message.
-async function checkChannelAccess(brain, userId, env) {
-  const channelId = env.SLACK_CHANNEL_ID;
-  const token = env.SLACK_BOT_TOKEN;
-  if (!channelId || !token) return true; // no gating configured
-
-  const cacheKey = "cache:channel_members:slack";
-  const cached = await brain.kv.getWithMetadata(cacheKey);
-  if (cached?.value) {
-    const meta = cached.metadata || {};
-    const age = Date.now() - (meta.updated_at || 0);
-    if (age < 300_000) { // 5 minute TTL
-      const members = JSON.parse(cached.value);
-      return members.includes(userId);
-    }
-  }
-
-  // Fetch member list from Slack API (handles pagination)
-  let members = [];
-  let cursor = "";
-  do {
-    const url = `https://slack.com/api/conversations.members?channel=${channelId}&limit=200${cursor ? `&cursor=${cursor}` : ""}`;
-    const resp = await fetch(url, {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-    const data = await resp.json();
-    if (!data.ok) {
-      console.error("[CHANNEL] Slack conversations.members failed:", data.error);
-      return true; // fail open — don't block on API errors
-    }
-    members = members.concat(data.members || []);
-    cursor = data.response_metadata?.next_cursor || "";
-  } while (cursor);
-
-  await brain.kv.put(cacheKey, JSON.stringify(members), {
-    metadata: { updated_at: Date.now() },
-  });
-
-  return members.includes(userId);
 }
 
 // CF-SPECIFIC: scheduled() is the CF cron trigger entry point
@@ -243,20 +205,6 @@ export default {
     // Return 200 immediately, process in background
     ctx.waitUntil((async () => {
       try {
-        // Access control (Slack-specific: check channel membership)
-        if (channel === "slack") {
-          const allowed = await checkChannelAccess(brain, inbound.userId, env);
-          if (!allowed) {
-            await brain.runInIsolate({
-              id: `channel:${channel}:send:${brain.sessionId}`,
-              moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
-              ctx: { action: "send", chatId: inbound.chatId, text: "I'm not yet available to everyone. Message @swami.kevala to request access.", secrets },
-              timeoutMs: 10000,
-            });
-            return;
-          }
-        }
-
         // Load config eagerly for chat handler
         brain.defaults = await brain.kvGet("config:defaults");
         brain.modelsConfig = await brain.kvGet("config:models");
@@ -324,7 +272,7 @@ class Brainstem {
     'contact:',
     'contact_index:',
   ];
-  static KERNEL_ONLY_PREFIXES = ['kernel:'];
+  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   static IMMUTABLE_KEYS = ['patron:public_key'];
   static DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
@@ -354,8 +302,8 @@ class Brainstem {
     this.yamas = {};
     this.niyamas = {};
     for (const prefix of Brainstem.PRINCIPLE_PREFIXES) {
-      const result = await this.kv.list({ prefix });
-      for (const { name: key } of result.keys) {
+      const principleKeys = await this.kvListAll({ prefix });
+      for (const { name: key } of principleKeys) {
         if (key.endsWith(':audit')) continue;
         const value = await this.kvGet(key);
         if (value === null) continue;
@@ -403,6 +351,17 @@ class Brainstem {
     }
   }
 
+  async kvListAll(opts = {}) {
+    const keys = [];
+    let cursor;
+    do {
+      const result = await this.kv.list({ ...opts, cursor });
+      keys.push(...result.keys);
+      cursor = result.list_complete ? undefined : result.cursor;
+    } while (cursor);
+    return keys;
+  }
+
   async resolveContact(platform, platformUserId) {
     // Check index cache first
     const cached = await this.kvGet(`contact_index:${platform}:${platformUserId}`);
@@ -413,8 +372,8 @@ class Brainstem {
     }
 
     // Scan contacts on miss (small set for v0.1)
-    const result = await this.kv.list({ prefix: "contact:" });
-    for (const { name: key } of result.keys) {
+    const contactKeys = await this.kvListAll({ prefix: "contact:" });
+    for (const { name: key } of contactKeys) {
       const contact = await this.kvGet(key);
       if (contact?.platforms?.[platform] === platformUserId) {
         const id = key.replace("contact:", "");
@@ -489,8 +448,8 @@ Respond with JSON only:
     const entries = {};
     // General communication wisdom (not contact-specific)
     for (const prefix of ['viveka:channel:', 'viveka:comms:']) {
-      const result = await this.kv.list({ prefix });
-      for (const { name: key } of result.keys) {
+      const wisdomKeys = await this.kvListAll({ prefix });
+      for (const { name: key } of wisdomKeys) {
         const value = await this.kvGet(key);
         if (value !== null) entries[key] = value;
       }
@@ -613,9 +572,9 @@ Respond with JSON only:
   }
 
   async listBlockedComms() {
-    const result = await this.kv.list({ prefix: 'comms_blocked:' });
+    const blockedKeys = await this.kvListAll({ prefix: 'comms_blocked:' });
     const entries = [];
-    for (const { name: key } of result.keys) {
+    for (const { name: key } of blockedKeys) {
       const value = await this.kvGet(key);
       if (value !== null) entries.push(typeof value === 'string' ? JSON.parse(value) : value);
     }
@@ -1619,11 +1578,13 @@ export default {
       return this.checkBalance(args);
     }
 
+    // ── Load tool meta (shared by comms gate + inbound gate) ──
+    const { meta: toolMeta } = await this._loadTool(name).catch(() => ({ meta: null }));
+
     // ── Communication gate (kernel-enforced) ──────────────────
     // Must be before special-case tools so communication tools can't masquerade
     let isCommsTool = false;
     {
-      const { meta: toolMeta } = await this._loadTool(name).catch(() => ({ meta: null }));
       if (toolMeta?.communication) {
         isCommsTool = true;
         const gateResult = await this.communicationGate(name, args, toolMeta);
@@ -1666,7 +1627,7 @@ export default {
     // Set gate approval flag so executeAction allows communication tools
     if (isCommsTool) this._commsGateApproved = true;
     try {
-      const result = await this.executeAction({
+      let result = await this.executeAction({
         tool: name,
         input: args,
         id: toolCall.id,
@@ -1678,6 +1639,42 @@ export default {
         await this.karmaRecord({ event: "hook_rejected", hook: "validate_result", tool: name, error: postCheck.error });
         return { error: postCheck.error };
       }
+
+      // ── Inbound content gate (kernel-enforced) ──────────────────
+      // Tools with `inbound` meta return external messages. The kernel
+      // redacts content from unknown senders and quarantines it under
+      // sealed:* keys (unreadable by agent, visible to patron via dashboard).
+      {
+        if (toolMeta?.inbound && result && !result.error) {
+          const { channel, sender_field, content_field, result_array } = toolMeta.inbound;
+          const items = result[result_array];
+          if (Array.isArray(items)) {
+            for (const item of items) {
+              const senderId = item[sender_field];
+              if (!senderId) continue;
+              const contact = await this.resolveContact(channel, senderId);
+              if (!contact) {
+                const ts = Date.now();
+                const quarantineKey = `sealed:quarantine:${channel}:${encodeURIComponent(senderId)}:${ts}`;
+                await this.kvPut(quarantineKey, {
+                  sender: senderId,
+                  content: item[content_field],
+                  tool: name,
+                  timestamp: new Date(ts).toISOString(),
+                  ...(item.subject ? { subject: item.subject } : {}),
+                  ...(item.from ? { from: item.from } : {}),
+                });
+                item[content_field] = '[content redacted — unknown sender]';
+                await this.karmaRecord({
+                  event: 'inbound_redacted', sender_id: senderId, channel,
+                  quarantine_key: quarantineKey,
+                });
+              }
+            }
+          }
+        }
+      }
+      // ── End inbound content gate ────────────────────────────────
 
       return result;
     } finally {
@@ -1927,6 +1924,7 @@ export default {
       prajna:     { type: "wisdom", format: "json" },
       git_pending:    { type: "git_sync", format: "json" },
       kernel:     { type: "kernel", format: "json" },
+      sealed:     { type: "sealed", format: "json" },
       yama:       { type: "yama", format: "text" },
       niyama:     { type: "niyama", format: "text" },
       comms_blocked: { type: "comms", format: "json" },

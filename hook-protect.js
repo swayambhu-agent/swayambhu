@@ -12,6 +12,7 @@ export const SYSTEM_KEY_PREFIXES = [
   'comms_blocked:',
   'contact:',
   'contact_index:',
+  'sealed:',
 ];
 export const SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:public_key', 'patron:identity_snapshot'];
 export const DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];

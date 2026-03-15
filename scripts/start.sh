@@ -166,6 +166,9 @@ process.exit(0);
 # ── 1. Kill stale processes ────────────────────────────────────
 echo "=== Killing stale processes ==="
 pkill -f workerd 2>/dev/null || true
+sleep 1
+# SIGKILL any survivors (workerd can ignore SIGTERM when stuck)
+pkill -9 -f workerd 2>/dev/null || true
 pkill -f "dev-serve.mjs" 2>/dev/null || true
 
 # ── 2. Wait for ports to actually free ─────────────────────────

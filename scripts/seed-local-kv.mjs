@@ -69,6 +69,7 @@ await put("config:defaults", {
     max_tool_rounds: 5,
     max_output_tokens: 1000,
     max_history_messages: 40,
+    unknown_contact_tools: [],
   },
   failure_handling: { retries: 1, on_fail: "skip_and_cascade" },
   wake: { sleep_seconds: 21600, default_effort: "low" },

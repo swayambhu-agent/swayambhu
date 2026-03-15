@@ -5,6 +5,7 @@ export const meta = {
   secrets: ["GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN"],
   kv_access: "none",
   timeout_ms: 15000,
+  inbound: { channel: "email", sender_field: "sender_email", content_field: "body", result_array: "emails" },
 };
 
 export async function execute({ mark_read, max_results, secrets, fetch }) {
@@ -18,16 +19,14 @@ export async function execute({ mark_read, max_results, secrets, fetch }) {
   const emails = [];
   for (const stub of stubs) {
     const msg = await getMessage(token, fetch, stub.id);
-    const snippet = msg.body.length > 500
-      ? msg.body.slice(0, 500) + "...[truncated]"
-      : msg.body;
     emails.push({
       id: msg.id,
       threadId: msg.threadId,
       from: msg.from,
+      sender_email: extractEmailAddress(msg.from),
       subject: msg.subject,
       date: msg.date,
-      snippet,
+      body: msg.body,
     });
     if (mark_read) await markAsRead(token, fetch, stub.id);
   }
@@ -138,6 +137,10 @@ function extractBody(payload) {
 function decodeBase64Url(data) {
   const padded = data.replace(/-/g, "+").replace(/_/g, "/");
   return decodeURIComponent(escape(atob(padded)));
+}
+
+function extractEmailAddress(from) {
+  return from.match(/<(.+)>/)?.[1] || from;
 }
 
 function stripHtml(html) {

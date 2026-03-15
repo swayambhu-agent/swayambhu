@@ -2,7 +2,7 @@
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-Operator-Key",
 };
 
@@ -18,6 +18,17 @@ function auth(request, env) {
   return key && key === env.OPERATOR_KEY;
 }
 
+async function kvListAll(kv, opts = {}) {
+  const keys = [];
+  let cursor;
+  do {
+    const result = await kv.list({ ...opts, cursor });
+    keys.push(...result.keys);
+    cursor = result.list_complete ? undefined : result.cursor;
+  } while (cursor);
+  return keys;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -30,8 +41,8 @@ export default {
 
     // GET /reflections — public, no auth required
     if (path === "/reflections") {
-      const result = await env.KV.list({ prefix: "reflect:1:" });
-      const keys = result.keys
+      const allKeys = await kvListAll(env.KV, { prefix: "reflect:1:" });
+      const keys = allKeys
         .filter(k => !k.name.startsWith("reflect:1:schedule"))
         .sort((a, b) => b.name.localeCompare(a.name));
       const reflections = await Promise.all(
@@ -69,19 +80,19 @@ export default {
 
     // GET /sessions — discover all sessions (orient + deep reflect)
     if (path === "/sessions") {
-      const [karmaList, reflectList, cached] = await Promise.all([
-        env.KV.list({ prefix: "karma:" }),
-        env.KV.list({ prefix: "reflect:1:" }),
+      const [karmaKeys, reflectKeys, cached] = await Promise.all([
+        kvListAll(env.KV, { prefix: "karma:" }),
+        kvListAll(env.KV, { prefix: "reflect:1:" }),
         env.KV.get("cache:session_ids", "json"),
       ]);
 
       // Build set of deep reflect session IDs from reflect:1:* keys
       const deepReflectIds = new Set(
-        reflectList.keys.map(k => k.name.replace("reflect:1:", ""))
+        reflectKeys.map(k => k.name.replace("reflect:1:", ""))
       );
 
       // Build session list from karma keys (ground truth)
-      const sessions = karmaList.keys.map(k => {
+      const sessions = karmaKeys.map(k => {
         const id = k.name.replace("karma:", "");
         return {
           id,
@@ -100,8 +111,8 @@ export default {
     //   Always uses live KV.list() — no cache dependency.
     if (path === "/kv") {
       const prefix = url.searchParams.get("prefix") || undefined;
-      const result = await env.KV.list({ prefix });
-      const keys = result.keys.map(k => ({ key: k.name, metadata: k.metadata }));
+      const allKeys = await kvListAll(env.KV, { prefix });
+      const keys = allKeys.map(k => ({ key: k.name, metadata: k.metadata }));
       return json({ keys });
     }
 
@@ -123,6 +134,62 @@ export default {
         })
       );
       return json(results);
+    }
+
+    // GET /quarantine — list quarantined inbound messages (sealed:* keys, patron-only)
+    if (path === "/quarantine") {
+      const allKeys = await kvListAll(env.KV, { prefix: "sealed:quarantine:" });
+      const items = await Promise.all(
+        allKeys.map(async (k) => {
+          const value = await env.KV.get(k.name, "json");
+          return value ? { key: k.name, ...value } : null;
+        })
+      );
+      return json({ items: items.filter(Boolean).sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || "")) });
+    }
+
+    // POST /contacts — create a new contact record
+    if (path === "/contacts" && request.method === "POST") {
+      const body = await request.json().catch(() => null);
+      if (!body?.slug || !body?.name || !body?.platforms) {
+        return json({ error: "missing required fields: slug, name, platforms" }, 400);
+      }
+      const contactKey = `contact:${body.slug}`;
+      const existing = await env.KV.get(contactKey, "json");
+      if (existing) return json({ error: `contact "${body.slug}" already exists` }, 409);
+
+      const contact = {
+        name: body.name,
+        platforms: body.platforms,
+        relationship: body.relationship || "",
+        notes: body.notes || "",
+        created_at: new Date().toISOString(),
+        created_by: "patron",
+      };
+      await env.KV.put(contactKey, JSON.stringify(contact), {
+        metadata: { type: "contact", format: "json", updated_at: new Date().toISOString() },
+      });
+
+      // Write contact index entries for each platform
+      for (const [platform, userId] of Object.entries(body.platforms)) {
+        const indexKey = `contact_index:${platform}:${userId}`;
+        await env.KV.put(indexKey, JSON.stringify(body.slug), {
+          metadata: { type: "contact_index", format: "json", updated_at: new Date().toISOString() },
+        });
+      }
+
+      return json({ ok: true, slug: body.slug, contact });
+    }
+
+    // DELETE /quarantine/:key — remove a quarantine entry after patron review
+    const quarantineMatch = path.match(/^\/quarantine\/(.+)$/);
+    if (quarantineMatch && request.method === "DELETE") {
+      const key = decodeURIComponent(quarantineMatch[1]);
+      if (!key.startsWith("sealed:quarantine:")) {
+        return json({ error: "can only delete quarantine entries" }, 400);
+      }
+      await env.KV.delete(key);
+      return json({ ok: true });
     }
 
     // GET /kv/:key — single key read

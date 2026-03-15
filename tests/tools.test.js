@@ -461,7 +461,7 @@ describe("check_email", () => {
     expect(result).toEqual({ emails: [], count: 0 });
   });
 
-  it("fetches unread emails with from, subject, snippet", async () => {
+  it("fetches unread emails with from, subject, body", async () => {
     const f = mockFetchSequence([
       { json: { access_token: "tok" } },
       { json: { messages: [{ id: "msg_1" }, { id: "msg_2" }] } },
@@ -472,11 +472,11 @@ describe("check_email", () => {
     expect(result.count).toBe(2);
     expect(result.emails[0].from).toBe("alice@test.com");
     expect(result.emails[0].subject).toBe("Hi");
-    expect(result.emails[0].snippet).toBe("Hello");
+    expect(result.emails[0].body).toBe("Hello");
     expect(result.emails[1].from).toBe("bob@test.com");
   });
 
-  it("truncates long email bodies at 500 chars", async () => {
+  it("returns full body without truncation", async () => {
     const longBody = "x".repeat(600);
     const f = mockFetchSequence([
       { json: { access_token: "tok" } },
@@ -484,8 +484,7 @@ describe("check_email", () => {
       { json: gmailMessage({ id: "msg_1", body: longBody }) },
     ]);
     const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
-    expect(result.emails[0].snippet.length).toBeLessThan(600);
-    expect(result.emails[0].snippet).toContain("...[truncated]");
+    expect(result.emails[0].body).toBe(longBody);
   });
 
   it("respects max_results param", async () => {
@@ -575,7 +574,7 @@ describe("check_email", () => {
       { json: msg },
     ]);
     const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
-    expect(result.emails[0].snippet).toBe("Plain text body");
+    expect(result.emails[0].body).toBe("Plain text body");
   });
 
   it("falls back to stripped HTML when no text/plain", async () => {
@@ -600,9 +599,9 @@ describe("check_email", () => {
       { json: msg },
     ]);
     const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
-    expect(result.emails[0].snippet).toContain("Hello");
-    expect(result.emails[0].snippet).toContain("World");
-    expect(result.emails[0].snippet).not.toContain("<p>");
+    expect(result.emails[0].body).toContain("Hello");
+    expect(result.emails[0].body).toContain("World");
+    expect(result.emails[0].body).not.toContain("<p>");
   });
 
   it("returns id and threadId for each email", async () => {

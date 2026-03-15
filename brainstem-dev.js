@@ -41,47 +41,6 @@ const PROVIDER_MODULES = {
   'provider:wallet_balance': wallet_balance,
 };
 
-// ── Channel access control ──────────────────────────────────────
-
-async function checkChannelAccess(brain, userId, env) {
-  const channelId = env.SLACK_CHANNEL_ID;
-  const token = env.SLACK_BOT_TOKEN;
-  if (!channelId || !token) return true;
-
-  const cacheKey = "cache:channel_members:slack";
-  const cached = await brain.kv.getWithMetadata(cacheKey);
-  if (cached?.value) {
-    const meta = cached.metadata || {};
-    const age = Date.now() - (meta.updated_at || 0);
-    if (age < 300_000) {
-      const members = JSON.parse(cached.value);
-      return members.includes(userId);
-    }
-  }
-
-  let members = [];
-  let cursor = "";
-  do {
-    const url = `https://slack.com/api/conversations.members?channel=${channelId}&limit=200${cursor ? `&cursor=${cursor}` : ""}`;
-    const resp = await fetch(url, {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-    const data = await resp.json();
-    if (!data.ok) {
-      console.error("[CHANNEL] Slack conversations.members failed:", data.error);
-      return true;
-    }
-    members = members.concat(data.members || []);
-    cursor = data.response_metadata?.next_cursor || "";
-  } while (cursor);
-
-  await brain.kv.put(cacheKey, JSON.stringify(members), {
-    metadata: { updated_at: Date.now() },
-  });
-
-  return members.includes(userId);
-}
-
 // ── Entry point ─────────────────────────────────────────────────
 
 export default {
@@ -126,15 +85,6 @@ export default {
     // Process in background, return 200 immediately
     const work = (async () => {
       try {
-        // Access control (Slack-specific: check channel membership)
-        if (channel === "slack") {
-          const allowed = await checkChannelAccess(brain, inbound.userId, env);
-          if (!allowed) {
-            await adapterMod.sendReply(inbound.chatId, "I'm not yet available to everyone. Message @swami.kevala to request access.", { SLACK_BOT_TOKEN: env.SLACK_BOT_TOKEN }, fetch);
-            return;
-          }
-        }
-
         // Load config eagerly (same as _invokeHookModules)
         brain.defaults = await brain.kvGet("config:defaults");
         brain.modelsConfig = await brain.kvGet("config:models");
@@ -243,6 +193,7 @@ class DevBrainstem extends Brainstem {
     return {
       async get(key) {
         const resolved = kvAccess === "own" ? `${scope}${key}` : key;
+        if (resolved.startsWith('sealed:')) return null;
         try { return await kv.get(resolved, "json"); }
         catch { try { return await kv.get(resolved, "text"); } catch { return null; } }
       },
@@ -261,7 +212,11 @@ class DevBrainstem extends Brainstem {
             list_complete: result.list_complete,
           };
         }
-        return kv.list(opts);
+        const result = await kv.list(opts);
+        return {
+          keys: result.keys.filter(k => !k.name.startsWith('sealed:')),
+          list_complete: result.list_complete,
+        };
       },
     };
   }
