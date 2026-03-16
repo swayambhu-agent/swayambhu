@@ -1,26 +1,6 @@
 // Swayambhu Wake Hook — Protection Gate
-// Constants and KV operation gating. Standalone module (no imports).
+// KV operation gating. Standalone module (no imports).
 // KV key: hook:wake:protect
-
-// ── Constants (mirrored from kernel for local checks) ──────
-
-export const SYSTEM_KEY_PREFIXES = [
-  'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-  'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
-  'yama:', 'niyama:',
-  'viveka:', 'prajna:',
-  'comms_blocked:',
-  'contact:',
-  'contact_index:',
-  'sealed:',
-];
-export const SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:public_key', 'patron:identity_snapshot'];
-export const DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
-
-export function isSystemKey(key) {
-  if (SYSTEM_KEY_EXACT.includes(key)) return true;
-  return SYSTEM_KEY_PREFIXES.some(p => key.startsWith(p));
-}
 
 // ── Protection gate ────────────────────────────────────────
 
@@ -34,7 +14,7 @@ export async function applyKVOperation(K, op) {
         : JSON.stringify(op.value).slice(0, 500))
     : undefined;
 
-  if (isSystemKey(key)) {
+  if (await K.isSystemKey(key)) {
     await K.karmaRecord({
       event: "modification_blocked",
       key,

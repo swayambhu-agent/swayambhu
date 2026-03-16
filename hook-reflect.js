@@ -2,7 +2,7 @@
 // Session reflect, deep reflect (recursive, depth-aware), scheduling, default prompts.
 // KV key: hook:wake:reflect
 
-import { SYSTEM_KEY_PREFIXES, SYSTEM_KEY_EXACT, applyKVOperation } from './hook-protect.js';
+import { applyKVOperation } from './hook-protect.js';
 import {
   loadStagedModifications, loadInflightModifications,
   stageModification, acceptDirect,
@@ -18,10 +18,7 @@ export async function executeReflect(K, state, step) {
   const reflectPrompt = await K.kvGet("prompt:reflect");
   const stagedModifications = await loadStagedModifications(K);
 
-  const systemKeyPatterns = {
-    prefixes: SYSTEM_KEY_PREFIXES,
-    exact: SYSTEM_KEY_EXACT,
-  };
+  const systemKeyPatterns = await K.getSystemKeyPatterns();
 
   const systemPrompt = await K.buildPrompt(
     reflectPrompt || defaultReflectPrompt(),
@@ -174,16 +171,13 @@ export async function gatherReflectContext(K, state, depth, context) {
   const stagedModifications = await loadStagedModifications(K);
   const inflightModifications = await loadInflightModifications(K);
   const blockedComms = await K.listBlockedComms();
-  const systemKeyPatterns = {
-    prefixes: SYSTEM_KEY_PREFIXES,
-    exact: SYSTEM_KEY_EXACT,
-  };
+  const systemKeyPatterns = await K.getSystemKeyPatterns();
 
   const recentSessionIds = await K.kvGet("cache:session_ids") || [];
 
-  const patronSlug = await K.kvGet("patron:contact");
-  const patronContact = patronSlug ? await K.kvGet(`contact:${patronSlug}`) : null;
-  const patronIdentityDisputed = patronSlug ? await K.isPatronIdentityDisputed() : false;
+  const patronId = await K.getPatronId();
+  const patronContact = await K.getPatronContact();
+  const patronIdentityDisputed = patronId ? await K.isPatronIdentityDisputed() : false;
 
   const templateVars = {
     orientPrompt,
@@ -195,7 +189,7 @@ export async function gatherReflectContext(K, state, depth, context) {
       ? JSON.stringify(blockedComms, null, 2)
       : '(none)',
     patron_contact: patronContact ? JSON.stringify(patronContact, null, 2) : '(no patron configured)',
-    patron_id: patronSlug || null,
+    patron_id: patronId || null,
     patron_identity_disputed: patronIdentityDisputed,
     systemKeyPatterns,
     recentSessionIds,
@@ -298,11 +292,14 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   // 7. Refresh defaults after every depth (cascade visibility)
   await state.refreshDefaults();
 
-  // 8. Karma
+  // 8. Karma (includes refreshed balances for dashboard)
+  let endBalances;
+  try { endBalances = await K.checkBalance({}); } catch {}
   await K.karmaRecord({
     event: "reflect_complete",
     depth,
     session_id: sessionId,
+    ...(endBalances ? { balances: endBalances } : {}),
   });
 }
 
@@ -402,7 +399,7 @@ export function defaultDeepReflectPrompt(depth) {
   if (depth === 1) {
     return `You are performing a depth-1 reflection. This is a deep examination of your recent operations.
 
-You have tools available for investigation \u2014 use kv_read, web_fetch, etc. to gather data before drawing conclusions.
+You have tools available for investigation \u2014 use kv_query, web_fetch, etc. to gather data before drawing conclusions.
 
 Your output is stored at reflect:1:{sessionId} and read by higher-depth reflections.
 
@@ -423,7 +420,7 @@ Required: reflection, note_to_future_self. Everything else optional.`;
 
   return `You are performing a depth-${depth} reflection. You examine the outputs of depth-${depth - 1} reflections.
 
-You have tools available for investigation \u2014 use kv_read, web_fetch, etc. to gather data.
+You have tools available for investigation \u2014 use kv_query, web_fetch, etc. to gather data.
 
 Your output is stored at reflect:${depth}:{sessionId}.
 

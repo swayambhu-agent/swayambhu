@@ -839,13 +839,14 @@ describe("Communication gate in reflect", () => {
 
 describe("Patron context in reflect", () => {
   it("patron context loaded in gatherReflectContext", async () => {
-    const K = makeMockK({
-      "patron:contact": "swami",
-      "contact:swami": JSON.stringify({
-        name: "Swami",
-        relationship: "patron",
-        communication: "Inner circle.",
-      }),
+    const patronContact = {
+      name: "Swami",
+      relationship: "patron",
+      communication: "Inner circle.",
+    };
+    const K = makeMockK({}, {
+      patronId: "swami",
+      patronContact,
     });
     K.listBlockedComms = vi.fn(async () => []);
     const state = makeState();

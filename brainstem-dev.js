@@ -34,10 +34,12 @@ const TOOL_MODULES = {
 
 import * as llm_balance from './providers/llm_balance.js';
 import * as wallet_balance from './providers/wallet_balance.js';
+import * as gmail from './providers/gmail.js';
 
 const PROVIDER_MODULES = {
   'provider:llm_balance': llm_balance,
   'provider:wallet_balance': wallet_balance,
+  'provider:gmail': gmail,
 };
 
 // ── Entry point ─────────────────────────────────────────────────
@@ -84,12 +86,7 @@ export default {
     // Process in background, return 200 immediately
     const work = (async () => {
       try {
-        // Load config eagerly (same as _invokeHookModules)
-        brain.defaults = await brain.kvGet("config:defaults");
-        brain.modelsConfig = await brain.kvGet("config:models");
-        brain.dharma = await brain.kvGet("dharma");
-        brain.toolRegistry = await brain.kvGet("config:tool_registry");
-        await brain.loadYamasNiyamas();
+        await brain.loadEagerConfig();
 
         const adapter = {
           sendReply: async (chatId, text) => {
@@ -136,12 +133,7 @@ class DevBrainstem extends Brainstem {
   // Calls wake() directly instead of Worker Loader isolate.
 
   async _invokeHookModules(modules, mainModule) {
-    // Load config eagerly (hook-main expects these via getters)
-    this.defaults = await this.kvGet("config:defaults");
-    this.modelsConfig = await this.kvGet("config:models");
-    this.dharma = await this.kvGet("dharma");
-    this.toolRegistry = await this.kvGet("config:tool_registry");
-    await this.loadYamasNiyamas();
+    await this.loadEagerConfig();
 
     console.log(`[HOOK] Calling wake() for session ${this.sessionId}`);
     const result = await wake(this, { sessionId: this.sessionId });
@@ -179,6 +171,9 @@ class DevBrainstem extends Brainstem {
 
     if (meta.kv_access && meta.kv_access !== "none") {
       ctx.kv = this._buildScopedKV(toolName, meta.kv_access);
+    }
+    if (meta.provider) {
+      ctx.provider = PROVIDER_MODULES[`provider:${meta.provider}`];
     }
 
     return TOOL_MODULES[toolName].execute(ctx);

@@ -87,7 +87,26 @@ export function makeMockK(kvInit = {}, opts = {}) {
     }),
     getSessionCount: vi.fn(async () => opts.sessionCount || 0),
     mergeDefaults: vi.fn(async (d, o) => ({ ...d, ...o })),
-    isSystemKey: vi.fn(async (key) => false),
+    isSystemKey: vi.fn(async (key) => {
+      const prefixes = [
+        'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
+        'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
+        'yama:', 'niyama:', 'viveka:', 'prajna:', 'comms_blocked:',
+        'contact:', 'contact_index:', 'sealed:',
+      ];
+      const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
+      if (exact.includes(key)) return true;
+      return prefixes.some(p => key.startsWith(p));
+    }),
+    getSystemKeyPatterns: vi.fn(async () => ({
+      prefixes: [
+        'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
+        'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
+        'yama:', 'niyama:', 'viveka:', 'prajna:', 'comms_blocked:',
+        'contact:', 'contact_index:', 'sealed:',
+      ],
+      exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
+    })),
 
     // State
     getSessionId: vi.fn(async () => opts.sessionId || "test_session"),

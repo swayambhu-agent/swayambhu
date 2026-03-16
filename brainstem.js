@@ -106,6 +106,9 @@ export class KernelRPC extends WorkerEntrypoint {
   async getSessionCount() { return this._brain().getSessionCount(); }
   async mergeDefaults(defaults, overrides) { return this._brain().mergeDefaults(defaults, overrides); }
   async isSystemKey(key) { return Brainstem.isSystemKey(key); }
+  async getSystemKeyPatterns() {
+    return { prefixes: Brainstem.SYSTEM_KEY_PREFIXES, exact: Brainstem.SYSTEM_KEY_EXACT };
+  }
 
   // State (read-only)
   async getSessionId() { return this._brain().sessionId; }
@@ -205,13 +208,7 @@ export default {
     // Return 200 immediately, process in background
     ctx.waitUntil((async () => {
       try {
-        // Load config eagerly for chat handler
-        brain.defaults = await brain.kvGet("config:defaults");
-        brain.modelsConfig = await brain.kvGet("config:models");
-        brain.dharma = await brain.kvGet("dharma");
-        brain.toolRegistry = await brain.kvGet("config:tool_registry");
-        await brain.loadYamasNiyamas();
-        await brain.loadPatronContext();
+        await brain.loadEagerConfig();
 
         const adapter = {
           sendReply: async (chatId, text) => {
@@ -298,6 +295,15 @@ class Brainstem {
   }
 
   // ── Yamas and Niyamas (operating principles) ─────────────
+
+  async loadEagerConfig() {
+    this.defaults = await this.kvGet("config:defaults");
+    this.modelsConfig = await this.kvGet("config:models");
+    this.dharma = await this.kvGet("dharma");
+    this.toolRegistry = await this.kvGet("config:tool_registry");
+    await this.loadYamasNiyamas();
+    await this.loadPatronContext();
+  }
 
   async loadYamasNiyamas() {
     this.yamas = {};
@@ -1028,12 +1034,8 @@ Respond with JSON only:
 
     const hardcodedPrompt = `You are Swayambhu in recovery mode. Your wake hook has been reset due to repeated failures. Check your balances and report your status. Do not attempt complex operations.`;
 
+    await this.loadEagerConfig();
     this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 120 } };
-    this.modelsConfig = this.modelsConfig || await this.kvGet("config:models");
-    this.toolRegistry = this.toolRegistry || await this.kvGet("config:tool_registry");
-    this.dharma = this.dharma || await this.kvGet("dharma");
-    await this.loadYamasNiyamas();
-    await this.loadPatronContext();
 
     const tools = this.buildToolDefinitions();
     const fallbackModel = this.modelsConfig?.fallback_model
@@ -1206,9 +1208,14 @@ Respond with JSON only:
 
   // Platform-specific: execute tool code in CF Worker Loader isolate
   async _executeTool(toolName, moduleCode, meta, ctx) {
+    let providerCode = null;
+    if (meta?.provider) {
+      providerCode = await this.kvGet(`provider:${meta.provider}:code`);
+    }
     return this.runInIsolate({
       id: `fn:${toolName}:${this.sessionId}`,
       moduleCode,
+      providerCode,
       ctx,
       kvAccess: meta?.kv_access,
       toolName,
@@ -1262,6 +1269,33 @@ export default {
 `;
   }
 
+  static wrapAsModuleWithProvider(rawCode) {
+    return `import * as provider from "./provider.js";
+${rawCode}
+
+const _fn = typeof execute === "function" ? execute
+          : typeof call === "function" ? call
+          : typeof check === "function" ? check
+          : null;
+
+export default {
+  async fetch(request, env) {
+    try {
+      if (!_fn) return Response.json({ ok: false, error: "No execute/call/check function found" });
+      const ctx = await request.json();
+      ctx.fetch = fetch;
+      ctx.provider = provider;
+      if (env.KV_BRIDGE) ctx.kv = env.KV_BRIDGE;
+      const result = await _fn(ctx);
+      return Response.json({ ok: true, result });
+    } catch (e) {
+      return Response.json({ ok: false, error: e.message || String(e) });
+    }
+  },
+};
+`;
+  }
+
   static wrapChannelAdapter(rawCode) {
     return `${rawCode}
 
@@ -1293,18 +1327,23 @@ export default {
 
   // ── Isolate execution (Worker Loader API) ───────────────────
 
-  async runInIsolate({ id, moduleCode, ctx, kvAccess, toolName, timeoutMs }) {
+  async runInIsolate({ id, moduleCode, providerCode, ctx, kvAccess, toolName, timeoutMs }) {
     const hasKV = kvAccess && kvAccess !== "none";
 
     // Wrap raw functions as ES modules if needed (Worker Loader requires export default)
     const isESModule = /export\s+default\s/.test(moduleCode);
-    const finalCode = isESModule ? moduleCode : Brainstem.wrapAsModule(moduleCode);
+    const finalCode = isESModule ? moduleCode
+      : providerCode ? Brainstem.wrapAsModuleWithProvider(moduleCode)
+      : Brainstem.wrapAsModule(moduleCode);
+
+    const modules = { "fn.js": finalCode };
+    if (providerCode) modules["provider.js"] = providerCode;
 
     // CF-SPECIFIC: env.LOADER is a [[worker_loaders]] binding; ctx.exports.* are loopback bindings
     const worker = this.env.LOADER.get(id, () => ({
       compatibilityDate: "2025-06-01",
       mainModule: "fn.js",
-      modules: { "fn.js": finalCode },
+      modules,
       env: {
         ...(hasKV ? { KV_BRIDGE: this.ctx.exports.ScopedKV({ props: { toolName, kvAccess } }) } : {}),
       },

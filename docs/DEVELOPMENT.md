@@ -167,10 +167,90 @@ The `ctx` object passed to `execute` contains:
 - `ctx.secrets` — object with resolved secret values
 - `ctx.fetch` — global fetch
 - `ctx.kv` — scoped KV accessor (only if `kv_access !== "none"`)
+- `ctx.provider` — provider module (only if `meta.provider` is set)
 
 **No `export default`.** This is critical. The prod isolate loader uses
 `wrapAsModule()` which detects `export default` to decide whether to wrap.
 Tool files must use only named exports so the wrapper appends correctly.
+
+## Provider adapters and `meta.provider`
+
+Provider code lives in `providers/*.js`. Each provider exports `meta` and
+a callable function (`call`, `check`, or `execute`). Providers handle
+external API transport — authentication, request construction, response
+parsing, error handling.
+
+### When to use a provider
+
+Use `meta.provider` when a tool needs to call an external API that involves:
+- **Authentication** (OAuth token refresh, API key management)
+- **Protocol details** (RFC 2822 email construction, base64url encoding)
+- **Shared API surface** (multiple tools calling the same service)
+
+The rule: **tools own business logic, providers own transport.** A tool
+decides *what* to do (fetch unread emails, send a reply). A provider
+knows *how* to talk to the API (refresh OAuth tokens, construct HTTP
+requests, parse responses).
+
+### When NOT to use a provider
+
+Don't create a provider for:
+- **Simple single-endpoint calls** (e.g. `send_slack` — one POST to one URL)
+- **Tool-specific logic** (e.g. `extractEmailAddress` parsing a From header)
+- **Anything that doesn't benefit from reuse** across tools
+
+### How it works
+
+Tools declare a provider dependency via `meta.provider`:
+
+```js
+// tools/check_email.js
+export const meta = {
+  secrets: ["GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN"],
+  kv_access: "none",
+  timeout_ms: 15000,
+  provider: "gmail",    // ← kernel loads providers/gmail.js into the isolate
+};
+
+export async function execute({ mark_read, max_results, secrets, fetch, provider }) {
+  const token = await provider.getAccessToken(secrets, fetch);
+  const stubs = await provider.listUnread(token, fetch, limit);
+  // ... tool logic using provider functions
+}
+```
+
+**In prod:** The kernel reads `provider:gmail:code` from KV and loads it
+as a second ES module (`provider.js`) in the Worker Loader isolate. The
+wrapper generates `import * as provider from "./provider.js"` and injects
+`ctx.provider` automatically. The tool calls provider functions directly —
+they share the same isolate sandbox.
+
+**In dev:** `brainstem-dev.js` looks up the provider in `PROVIDER_MODULES`
+and injects it as `ctx.provider`. Same interface, no isolate.
+
+### Adding a provider-backed tool
+
+1. Create `providers/{name}.js` with exported functions (no `export default`)
+2. Create `tools/{tool_name}.js` with `meta.provider: "{name}"`
+3. The tool's `meta.secrets` should declare secrets the provider needs
+   (the tool passes `secrets` to provider functions)
+4. In `brainstem-dev.js`: import the provider and add to `PROVIDER_MODULES`
+5. In `brainstem-dev.js`: import the tool and add to `TOOL_MODULES`
+6. Add the tool to `config:tool_registry` in the seed script
+7. Re-seed: `node scripts/seed-local-kv.mjs`
+
+### Why secrets stay on the tool meta
+
+The tool declares `meta.secrets` (not the provider) because secret
+resolution happens in `buildToolContext` before the isolate runs. The
+kernel reads the tool's `meta.secrets`, resolves them from env/KV, and
+passes them as `ctx.secrets`. The tool then threads `secrets` into
+provider function calls.
+
+Providers also declare `meta.secrets` on their own — this is used when
+the provider is called independently via `executeAdapter` (e.g. for
+balance checks in the orient context). The two declarations serve
+different call paths.
 
 ## ScopedKV behavior
 

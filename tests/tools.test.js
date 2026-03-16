@@ -442,7 +442,7 @@ describe("check_email", () => {
       { json: { access_token: "tok" } },        // token refresh
       { json: { messages: [] } },                // list unread
     ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     expect(result).toEqual({ emails: [], count: 0 });
   });
 
@@ -453,7 +453,7 @@ describe("check_email", () => {
       { json: gmailMessage({ id: "msg_1", from: "alice@test.com", subject: "Hi", body: "Hello" }) },
       { json: gmailMessage({ id: "msg_2", from: "bob@test.com", subject: "Re: Hi", body: "Hey there" }) },
     ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     expect(result.count).toBe(2);
     expect(result.emails[0].from).toBe("alice@test.com");
     expect(result.emails[0].subject).toBe("Hi");
@@ -468,7 +468,7 @@ describe("check_email", () => {
       { json: { messages: [{ id: "msg_1" }] } },
       { json: gmailMessage({ id: "msg_1", body: longBody }) },
     ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     expect(result.emails[0].body).toBe(longBody);
   });
 
@@ -478,7 +478,7 @@ describe("check_email", () => {
       { json: { messages: [{ id: "msg_1" }] } },
       { json: gmailMessage({ id: "msg_1" }) },
     ]);
-    await check_email.execute({ max_results: 5, secrets: GMAIL_SECRETS, fetch: f });
+    await check_email.execute({ max_results: 5, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     // Second call is listUnread — check the URL contains maxResults=5
     const listUrl = f.mock.calls[1][0];
     expect(listUrl).toContain("maxResults=5");
@@ -489,7 +489,7 @@ describe("check_email", () => {
       { json: { access_token: "tok" } },
       { json: { messages: [] } },
     ]);
-    await check_email.execute({ max_results: 100, secrets: GMAIL_SECRETS, fetch: f });
+    await check_email.execute({ max_results: 100, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     const listUrl = f.mock.calls[1][0];
     expect(listUrl).toContain("maxResults=20");
   });
@@ -501,7 +501,7 @@ describe("check_email", () => {
       { json: gmailMessage({ id: "msg_1" }) },
       { json: {} },  // markAsRead response
     ]);
-    await check_email.execute({ mark_read: true, secrets: GMAIL_SECRETS, fetch: f });
+    await check_email.execute({ mark_read: true, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     expect(f).toHaveBeenCalledTimes(4);
     const markUrl = f.mock.calls[3][0];
     expect(markUrl).toContain("msg_1/modify");
@@ -513,7 +513,7 @@ describe("check_email", () => {
       { json: { messages: [{ id: "msg_1" }] } },
       { json: gmailMessage({ id: "msg_1" }) },
     ]);
-    await check_email.execute({ mark_read: false, secrets: GMAIL_SECRETS, fetch: f });
+    await check_email.execute({ mark_read: false, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     expect(f).toHaveBeenCalledTimes(3);
   });
 
@@ -522,7 +522,7 @@ describe("check_email", () => {
       { ok: false, status: 401, json: {}, text: "Unauthorized" },
     ]);
     await expect(
-      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f })
+      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
     ).rejects.toThrow("Gmail token refresh failed");
   });
 
@@ -532,7 +532,7 @@ describe("check_email", () => {
       { ok: false, status: 500, json: {}, text: "Internal error" },
     ]);
     await expect(
-      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f })
+      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
     ).rejects.toThrow("Gmail list failed");
   });
 
@@ -558,7 +558,7 @@ describe("check_email", () => {
       { json: { messages: [{ id: "msg_1" }] } },
       { json: msg },
     ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     expect(result.emails[0].body).toBe("Plain text body");
   });
 
@@ -583,7 +583,7 @@ describe("check_email", () => {
       { json: { messages: [{ id: "msg_1" }] } },
       { json: msg },
     ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     expect(result.emails[0].body).toContain("Hello");
     expect(result.emails[0].body).toContain("World");
     expect(result.emails[0].body).not.toContain("<p>");
@@ -595,7 +595,7 @@ describe("check_email", () => {
       { json: { messages: [{ id: "msg_42" }] } },
       { json: gmailMessage({ id: "msg_42", threadId: "thread_7" }) },
     ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f });
+    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
     expect(result.emails[0].id).toBe("msg_42");
     expect(result.emails[0].threadId).toBe("thread_7");
   });
@@ -615,6 +615,7 @@ describe("send_email", () => {
       body: "Hi Bob",
       secrets: GMAIL_SECRETS,
       fetch: f,
+      provider: gmail,
     });
     expect(result).toEqual({ sent: true, messageId: "sent_1", threadId: "new_thread" });
   });
@@ -630,6 +631,7 @@ describe("send_email", () => {
       body: "Body",
       secrets: GMAIL_SECRETS,
       fetch: f,
+      provider: gmail,
     });
     const sendCall = f.mock.calls[1];
     const payload = JSON.parse(sendCall[1].body);
@@ -649,6 +651,7 @@ describe("send_email", () => {
       body: "test",
       secrets: GMAIL_SECRETS,
       fetch: mockFetch({}),
+      provider: gmail,
     });
     expect(result.error).toContain("to");
   });
@@ -659,6 +662,7 @@ describe("send_email", () => {
       body: "test",
       secrets: GMAIL_SECRETS,
       fetch: mockFetch({}),
+      provider: gmail,
     });
     expect(result.error).toContain("subject");
   });
@@ -669,6 +673,7 @@ describe("send_email", () => {
       subject: "Hi",
       secrets: GMAIL_SECRETS,
       fetch: mockFetch({}),
+      provider: gmail,
     });
     expect(result.error).toContain("body");
   });
@@ -694,6 +699,7 @@ describe("send_email", () => {
       reply_to_id: "orig_1",
       secrets: GMAIL_SECRETS,
       fetch: f,
+      provider: gmail,
     });
     expect(result.sent).toBe(true);
     expect(result.threadId).toBe("thread_1");
@@ -719,6 +725,7 @@ describe("send_email", () => {
       reply_to_id: "orig_1",
       secrets: GMAIL_SECRETS,
       fetch: f,
+      provider: gmail,
     });
     const sendCall = f.mock.calls[2];
     const payload = JSON.parse(sendCall[1].body);
@@ -747,6 +754,7 @@ describe("send_email", () => {
       reply_to_id: "orig_1",
       secrets: GMAIL_SECRETS,
       fetch: f,
+      provider: gmail,
     });
     const sendCall = f.mock.calls[2];
     const payload = JSON.parse(sendCall[1].body);
@@ -776,6 +784,7 @@ describe("send_email", () => {
       reply_to_id: "orig_1",
       secrets: GMAIL_SECRETS,
       fetch: f,
+      provider: gmail,
     });
     const sendCall = f.mock.calls[2];
     const payload = JSON.parse(sendCall[1].body);
@@ -807,6 +816,7 @@ describe("send_email", () => {
       reply_to_id: "orig_1",
       secrets: GMAIL_SECRETS,
       fetch: f,
+      provider: gmail,
     });
     const sendCall = f.mock.calls[2];
     const payload = JSON.parse(sendCall[1].body);
@@ -820,7 +830,7 @@ describe("send_email", () => {
       { ok: false, status: 401, json: {}, text: "Unauthorized" },
     ]);
     await expect(
-      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f })
+      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
     ).rejects.toThrow("Gmail token refresh failed");
   });
 
@@ -830,7 +840,7 @@ describe("send_email", () => {
       { ok: false, status: 400, json: {}, text: "Bad request" },
     ]);
     await expect(
-      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f })
+      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
     ).rejects.toThrow("Gmail send failed");
   });
 });
