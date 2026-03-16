@@ -2,22 +2,9 @@
 // Reset wake_config.next_wake_after to the past so the next wake isn't skipped.
 // Uses Miniflare with a hard process.exit() to avoid dispose() hangs.
 
-import { Miniflare } from "miniflare";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import { getKV } from "./shared.mjs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = resolve(__dirname, "..");
-const KV_NAMESPACE_ID = "05720444f9654ed4985fb67af4aea24d";
-
-const mf = new Miniflare({
-  modules: true,
-  script: "export default { fetch() { return new Response('ok'); } }",
-  kvPersist: resolve(root, ".wrangler/shared-state/v3/kv"),
-  kvNamespaces: { KV: KV_NAMESPACE_ID },
-});
-
-const kv = await mf.getKVNamespace("KV");
+const kv = await getKV();
 const raw = await kv.get("wake_config");
 
 if (raw) {

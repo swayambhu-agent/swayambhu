@@ -1,18 +1,6 @@
-import { Miniflare } from "miniflare";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import { getKV, dispose } from "./shared.mjs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = resolve(__dirname, "..");
-
-const mf = new Miniflare({
-  modules: true,
-  script: 'export default { fetch() { return new Response("ok"); } }',
-  kvPersist: resolve(root, ".wrangler/shared-state/v3/kv"),
-  kvNamespaces: { KV: "05720444f9654ed4985fb67af4aea24d" },
-});
-
-const kv = await mf.getKVNamespace("KV");
+const kv = await getKV();
 const ids = JSON.parse(await kv.get("cache:session_ids"));
 
 for (const id of ids) {
@@ -42,4 +30,4 @@ const tools = JSON.parse(await kv.get("config:tool_registry"));
 console.log("=== TOOLS ===");
 console.log(tools.tools.map(x => x.name).join(", "));
 
-await mf.dispose();
+await dispose();

@@ -904,7 +904,7 @@ describe("isSystemKey / isKernelOnly", () => {
   it("recognizes system key prefixes", () => {
     expect(Brainstem.isSystemKey("config:defaults")).toBe(true);
     expect(Brainstem.isSystemKey("prompt:orient")).toBe(true);
-    expect(Brainstem.isSystemKey("tool:kv_read:code")).toBe(true);
+    expect(Brainstem.isSystemKey("tool:kv_query:code")).toBe(true);
     expect(Brainstem.isSystemKey("hook:wake:code")).toBe(true);
     expect(Brainstem.isSystemKey("modification_staged:m_1")).toBe(true);
     expect(Brainstem.isSystemKey("doc:modification_guide")).toBe(true);

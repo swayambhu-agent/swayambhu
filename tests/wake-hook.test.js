@@ -64,7 +64,6 @@ describe("buildOrientContext", () => {
   it("returns JSON string with all expected keys", () => {
     const context = {
       balances: { providers: {}, wallets: {} },
-      kvUsage: { writes_this_session: 0 },
       lastReflect: { session_summary: "test" },
       additionalContext: { foo: "bar" },
       effort: "medium",
@@ -72,7 +71,6 @@ describe("buildOrientContext", () => {
     };
     const result = JSON.parse(buildOrientContext(context));
     expect(result).toHaveProperty("balances");
-    expect(result).toHaveProperty("kv_usage");
     expect(result).toHaveProperty("last_reflect");
     expect(result).toHaveProperty("additional_context");
     expect(result).toHaveProperty("effort");
@@ -175,13 +173,6 @@ describe("loadReflectPrompt", () => {
     expect(result).toBe("depth-2 prompt");
   });
 
-  it("falls back to prompt:deep for depth 1", async () => {
-    const K = makeMockK({ "prompt:deep": JSON.stringify("deep prompt") });
-    const state = makeState();
-    const result = await loadReflectPrompt(K, state, 1);
-    expect(result).toBe("deep prompt");
-  });
-
   it("falls back to hardcoded defaultDeepReflectPrompt", async () => {
     const K = makeMockK();
     const state = makeState();
@@ -189,8 +180,8 @@ describe("loadReflectPrompt", () => {
     expect(result).toContain("depth-1 reflection");
   });
 
-  it("does NOT fall back to prompt:deep for depth > 1", async () => {
-    const K = makeMockK({ "prompt:deep": JSON.stringify("deep prompt") });
+  it("falls back to hardcoded for all depths", async () => {
+    const K = makeMockK();
     const state = makeState();
     const result = await loadReflectPrompt(K, state, 3);
     expect(result).toContain("depth-3 reflection");
@@ -260,17 +251,18 @@ describe("isReflectDue", () => {
     expect(await isReflectDue(K, state, 1)).toBe(false);
   });
 
-  it("backward compat: depth 1 reads deep_reflect_schedule", async () => {
+  it("depth 1 uses reflect:schedule:1 only (no legacy fallback)", async () => {
+    // deep_reflect_schedule is ignored — only reflect:schedule:1 is checked
     const K = makeMockK({
       deep_reflect_schedule: JSON.stringify({
         after_sessions: 5,
-        after_days: 999,
-        last_deep_reflect_session: 10,
-        last_deep_reflect: new Date().toISOString(),
+        last_reflect_session: 10,
+        last_reflect: new Date().toISOString(),
       }),
     }, { sessionCount: 15 });
     const state = makeState({ defaults: { deep_reflect: { default_interval_sessions: 20 } } });
-    expect(await isReflectDue(K, state, 1)).toBe(true);
+    // Falls through to cold-start since reflect:schedule:1 doesn't exist
+    expect(await isReflectDue(K, state, 1)).toBe(false);
   });
 });
 
@@ -576,7 +568,6 @@ describe("runSession reflect_reserve_pct", () => {
     K.getSessionCost = vi.fn(async () => 0);
     const context = {
       balances: { providers: {}, wallets: {} },
-      kvUsage: { writes_this_session: 0 },
       lastReflect: null,
       additionalContext: null,
       effort: "low",
@@ -657,7 +648,6 @@ describe("runReflect budget_multiplier", () => {
     K.getSessionCount = vi.fn(async () => 5);
     const context = {
       balances: { providers: {}, wallets: {} },
-      kvUsage: { writes_this_session: 0 },
       effort: "high",
       crashData: null,
     };

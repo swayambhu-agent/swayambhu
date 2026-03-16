@@ -7,26 +7,13 @@
 //   node scripts/read-kv.mjs karma:s_123_abc     # read a specific key's value
 //   node scripts/read-kv.mjs --json karma:s_123  # output raw JSON (for piping)
 
-import { Miniflare } from "miniflare";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = resolve(__dirname, "..");
-const KV_NAMESPACE_ID = "05720444f9654ed4985fb67af4aea24d";
+import { getKV, dispose } from "./shared.mjs";
 
 const args = process.argv.slice(2);
 const jsonFlag = args.includes("--json");
 const query = args.find(a => a !== "--json") || "";
 
-const mf = new Miniflare({
-  modules: true,
-  script: "export default { fetch() { return new Response('ok'); } }",
-  kvPersist: resolve(root, ".wrangler/shared-state/v3/kv"),
-  kvNamespaces: { KV: KV_NAMESPACE_ID },
-});
-
-const kv = await mf.getKVNamespace("KV");
+const kv = await getKV();
 
 try {
   // Try reading as exact key first
@@ -40,7 +27,7 @@ try {
         console.log(`=== ${query} ===`);
         console.log(typeof val === "string" ? val : JSON.stringify(val, null, 2));
       }
-      await mf.dispose();
+      await dispose();
       process.exit(0);
     }
   }
@@ -57,7 +44,7 @@ try {
     } else {
       console.error(`No keys found${prefix ? ` with prefix "${prefix}"` : ""}`);
     }
-    await mf.dispose();
+    await dispose();
     process.exit(1);
   }
 
@@ -71,5 +58,5 @@ try {
     }
   }
 } finally {
-  await mf.dispose();
+  await dispose();
 }

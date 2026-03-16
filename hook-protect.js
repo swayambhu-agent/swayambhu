@@ -41,7 +41,7 @@ export async function applyKVOperation(K, op) {
   await applyKVOperationDirect(K, op);
 }
 
-export async function applyKVOperationDirect(K, op) {
+async function applyKVOperationDirect(K, op) {
   switch (op.op) {
     case "put":
       await K.kvPutSafe(op.key, op.value, { unprotected: true, ...op.metadata });

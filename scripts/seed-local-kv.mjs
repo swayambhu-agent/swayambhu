@@ -5,26 +5,15 @@
 // Replaces ~50 wrangler subprocess spawns with one Miniflare instance.
 // Single source of truth for local KV seeding.
 
-import { Miniflare } from "miniflare";
 import { readFileSync } from "fs";
-import { resolve, dirname } from "path";
-import { fileURLToPath, pathToFileURL } from "url";
+import { resolve } from "path";
+import { pathToFileURL } from "url";
+import { getKV, root } from "./shared.mjs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = resolve(__dirname, "..");
 const importLocal = (rel) => import(pathToFileURL(resolve(root, rel)).href);
 const read = (rel) => readFileSync(resolve(root, rel), "utf8");
 
-const KV_NAMESPACE_ID = "05720444f9654ed4985fb67af4aea24d";
-
-const mf = new Miniflare({
-  modules: true,
-  script: "export default { fetch() { return new Response('ok'); } }",
-  kvPersist: resolve(root, ".wrangler/shared-state/v3/kv"),
-  kvNamespaces: { KV: KV_NAMESPACE_ID },
-});
-
-const kv = await mf.getKVNamespace("KV");
+const kv = await getKV();
 
 let count = 0;
 

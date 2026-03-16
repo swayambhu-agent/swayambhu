@@ -6,27 +6,14 @@
 //   node scripts/rollback-session.mjs --dry-run    # show what would be undone
 //   node scripts/rollback-session.mjs --yes        # skip confirmation prompt
 
-import { Miniflare } from "miniflare";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
 import { createInterface } from "readline";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = resolve(__dirname, "..");
-const KV_NAMESPACE_ID = "05720444f9654ed4985fb67af4aea24d";
+import { getKV, dispose } from "./shared.mjs";
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const autoYes = args.includes("--yes");
 
-const mf = new Miniflare({
-  modules: true,
-  script: "export default { fetch() { return new Response('ok'); } }",
-  kvPersist: resolve(root, ".wrangler/shared-state/v3/kv"),
-  kvNamespaces: { KV: KV_NAMESPACE_ID },
-});
-
-const kv = await mf.getKVNamespace("KV");
+const kv = await getKV();
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -75,7 +62,7 @@ function summarize(value) {
 const sessionIds = await kvGet("cache:session_ids");
 if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
   console.error("No sessions found in cache:session_ids. Nothing to roll back.");
-  await mf.dispose();
+  await dispose();
   process.exit(1);
 }
 
@@ -91,7 +78,7 @@ console.log();
 const karma = await kvGet(`karma:${targetId}`);
 if (!Array.isArray(karma)) {
   console.error(`No karma log found for session ${targetId}. Cannot determine what to undo.`);
-  await mf.dispose();
+  await dispose();
   process.exit(1);
 }
 
@@ -300,13 +287,13 @@ console.log(`Total: ${totalOps} operation(s)\n`);
 
 if (dryRun) {
   console.log("Dry run — no changes applied.");
-  await mf.dispose();
+  await dispose();
   process.exit(0);
 }
 
 if (totalOps === 0) {
   console.log("Nothing to do.");
-  await mf.dispose();
+  await dispose();
   process.exit(0);
 }
 
@@ -316,7 +303,7 @@ if (!autoYes) {
   const answer = await confirm("Apply rollback? [y/N] ");
   if (answer !== "y" && answer !== "yes") {
     console.log("Aborted.");
-    await mf.dispose();
+    await dispose();
     process.exit(0);
   }
 }
@@ -337,4 +324,4 @@ for (const r of plan.restores) {
 
 console.log(`\nRollback complete. Session ${targetId} has been undone.`);
 
-await mf.dispose();
+await dispose();

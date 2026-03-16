@@ -241,7 +241,6 @@ class Brainstem {
     this.sessionCost = 0;
     this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
-    this.kvWritesThisSession = 0;
     this.modelsConfig = null;
     this.defaults = null;
     this.dharma = null;
@@ -253,7 +252,6 @@ class Brainstem {
     this.niyamas = null;       // Cached niyama principles (loaded at boot)
     this.patronId = null;      // Contact slug of patron (loaded at boot)
     this.patronContact = null; // Full patron contact record (loaded at boot)
-    this.patronPublicKey = null; // Immutable public key (loaded at boot)
     this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
     this.lastCallModel = null; // Last model used in callLLM (for capability gates)
@@ -327,7 +325,6 @@ class Brainstem {
     if (!patronSlug) return;
 
     this.patronId = patronSlug;
-    this.patronPublicKey = await this.kvGet("patron:public_key");
     this.patronContact = await this.kvGet(`contact:${patronSlug}`);
     if (!this.patronContact) return;
 
@@ -1979,7 +1976,6 @@ export default {
 
     const data = typeof value === "string" ? value : JSON.stringify(value);
     await this.kv.put(key, data, { metadata: finalMetadata });
-    this.kvWritesThisSession++;
   }
 
   async loadKeys(keys) {

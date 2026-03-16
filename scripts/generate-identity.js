@@ -15,8 +15,6 @@
 //   node scripts/generate-identity.js --seed-kv       # write to local KV
 
 import { ethers } from "ethers";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
 
 const CHAIN_ID = 8453; // Base mainnet
 const CHAIN_NAME = "base";
@@ -98,23 +96,13 @@ console.log(`
 `);
 
 if (seedKV) {
-  const { Miniflare } = await import("miniflare");
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const root = resolve(__dirname, "..");
-
-  const mf = new Miniflare({
-    modules: true,
-    script: 'export default { fetch() { return new Response("ok"); } }',
-    kvPersist: resolve(root, ".wrangler/shared-state/v3/kv"),
-    kvNamespaces: { KV: "05720444f9654ed4985fb67af4aea24d" },
-  });
-
-  const kvStore = await mf.getKVNamespace("KV");
+  const { getKV, dispose } = await import("./shared.mjs");
+  const kvStore = await getKV();
   await kvStore.put("identity:did", JSON.stringify(kv, null, 2), {
     metadata: { format: "json", description: "Swayambhu DID identity" },
   });
   console.log("  ✓ identity:did written to local KV\n");
-  await mf.dispose();
+  await dispose();
 } else {
   console.log(`── To seed into local KV ───────────────────────────────────
 

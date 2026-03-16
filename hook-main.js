@@ -61,12 +61,6 @@ export async function wake(K, input) {
       snapshotList.keys.map(k => k.name.slice("modification_snapshot:".length)),
     );
 
-    // 1a-cache. Cache full KV index for dashboard (avoids list() calls from API)
-    const allKeys = await K.kvList({ limit: 1000 });
-    await K.kvPutSafe("cache:kv_index", allKeys.keys.map(k => ({
-      key: k.name, metadata: k.metadata
-    })));
-
     // 1b. Circuit breaker
     await runCircuitBreaker(K);
 
@@ -74,10 +68,7 @@ export async function wake(K, input) {
     await retryPendingGitSyncs(K);
 
     // 2. Load ground truth
-    const [balances, kvUsage] = await Promise.all([
-      getBalances(K, state),
-      getKVUsage(K),
-    ]);
+    const balances = await getBalances(K, state);
 
     // 3. Load core state from KV
     defaults = await K.kvGet("config:defaults");
@@ -97,7 +88,7 @@ export async function wake(K, input) {
     const reflectDepth = await highestReflectDepthDue(K, state);
 
     // 6. Evaluate tripwires
-    const effort = evaluateTripwires(config, { balances, kvUsage });
+    const effort = evaluateTripwires(config, { balances });
 
     // 7. Load context keys
     const loadKeys = lastReflect?.next_orient_context?.load_keys
@@ -107,7 +98,7 @@ export async function wake(K, input) {
 
     // 8. Build context
     const context = {
-      balances, kvUsage, lastReflect, additionalContext,
+      balances, lastReflect, additionalContext,
       effort, reflectDepth,
       crashData,
     };
@@ -226,7 +217,6 @@ export function buildOrientContext(context) {
     last_reflect: context.lastReflect,
     effort: context.effort,
     crash_data: context.crashData,
-    kv_usage: context.kvUsage,
     balances: context.balances,
     current_time: new Date().toISOString(),
   });
@@ -258,10 +248,6 @@ export async function writeSessionResults(K, plan, config) {
 
 export async function getBalances(K, state) {
   return K.checkBalance({});
-}
-
-export async function getKVUsage(K) {
-  return { writes_this_session: 0 };
 }
 
 export function evaluateTripwires(config, liveData) {

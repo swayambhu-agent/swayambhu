@@ -196,8 +196,6 @@ export async function gatherReflectContext(K, state, depth, context) {
     context: {
       orBalance: context?.balances?.providers?.openrouter?.balance ?? "unknown",
       walletBalance: context?.balances?.wallets?.base_usdc?.balance ?? 0,
-      kvUsage: context?.kvUsage ?? "unknown",
-      kvIndex: context?.kvIndex ?? "not loaded",
       effort: context?.effort || defaults?.deep_reflect?.effort || "high",
       crashData: context?.crashData || "none",
     },
@@ -252,13 +250,6 @@ export async function applyReflectOutput(K, state, depth, output, context) {
       last_reflect: new Date().toISOString(),
       last_reflect_session: sessionCount,
     });
-    if (depth === 1) {
-      await K.kvPutSafe("deep_reflect_schedule", {
-        ...schedule,
-        last_deep_reflect: new Date().toISOString(),
-        last_deep_reflect_session: sessionCount,
-      });
-    }
   }
 
   // 5. Store output as reflect:{depth}:{sessionId}
@@ -308,10 +299,6 @@ export async function applyReflectOutput(K, state, depth, output, context) {
 export async function loadReflectPrompt(K, state, depth) {
   const specific = await K.kvGet(`prompt:reflect:${depth}`);
   if (specific) return specific;
-  if (depth === 1) {
-    const legacy = await K.kvGet("prompt:deep");
-    if (legacy) return legacy;
-  }
   return defaultDeepReflectPrompt(depth);
 }
 
@@ -351,15 +338,14 @@ export function getMaxSteps(state, role, depth) {
 export async function isReflectDue(K, state, depth) {
   const { defaults } = state;
 
-  const schedule = await K.kvGet(`reflect:schedule:${depth}`)
-    || (depth === 1 ? await K.kvGet("deep_reflect_schedule") : null);
+  const schedule = await K.kvGet(`reflect:schedule:${depth}`);
 
   const sessionCount = await K.getSessionCount();
 
   if (schedule) {
-    const sessionsSince = sessionCount - (schedule.last_deep_reflect_session || schedule.last_reflect_session || 0);
-    const daysSince = schedule.last_deep_reflect || schedule.last_reflect
-      ? (Date.now() - new Date(schedule.last_deep_reflect || schedule.last_reflect).getTime()) / 86400000
+    const sessionsSince = sessionCount - (schedule.last_reflect_session || 0);
+    const daysSince = schedule.last_reflect
+      ? (Date.now() - new Date(schedule.last_reflect).getTime()) / 86400000
       : Infinity;
     const maxSessions = schedule.after_sessions
       || defaults?.deep_reflect?.default_interval_sessions || 20;

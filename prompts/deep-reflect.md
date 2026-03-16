@@ -80,8 +80,6 @@ Contact IDs are permanent — pick something stable (first name, handle, or role
 
 - **OpenRouter balance:** ${{context.orBalance}}
 - **Wallet balance:** ${{context.walletBalance}} USDC
-- **KV usage:** {{context.kvUsage}}
-- **KV index:** {{context.kvIndex}}
 - **Effort level for this reflection:** {{context.effort}}
 - **Crash data:** {{context.crashData}}
 
