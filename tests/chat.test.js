@@ -153,7 +153,7 @@ describe("handleChat", () => {
   it("tool calls execute mid-conversation and feed back to LLM", async () => {
     const toolCall = {
       id: "tc_1",
-      function: { name: "kv_read", arguments: '{"key":"wisdom"}' },
+      function: { name: "kv_query", arguments: '{"key":"wisdom"}' },
     };
     K.callLLM
       .mockResolvedValueOnce(makeLLMResponse(null, [toolCall]))
@@ -256,7 +256,7 @@ describe("handleChat", () => {
     // All rounds return tool calls, never a text response
     const toolCall = {
       id: "tc_loop",
-      function: { name: "kv_read", arguments: '{"key":"x"}' },
+      function: { name: "kv_query", arguments: '{"key":"x"}' },
     };
     K.callLLM.mockResolvedValue(makeLLMResponse(null, [toolCall]));
     K.executeToolCall.mockResolvedValue({ value: "data" });
@@ -304,7 +304,7 @@ describe("handleChat", () => {
   it("accumulates cost across tool-calling rounds", async () => {
     const toolCall = {
       id: "tc_1",
-      function: { name: "kv_read", arguments: '{"key":"x"}' },
+      function: { name: "kv_query", arguments: '{"key":"x"}' },
     };
     K.callLLM
       .mockResolvedValueOnce({ content: null, cost: 0.01, toolCalls: [toolCall], usage: {} })
@@ -353,7 +353,7 @@ describe("handleChat", () => {
         slug: "alice",
       }));
       K.buildToolDefinitions = vi.fn(() => [
-        { function: { name: "kv_read" } },
+        { function: { name: "kv_query" } },
         { function: { name: "web_fetch" } },
       ]);
 
@@ -370,12 +370,12 @@ describe("handleChat", () => {
       K.getDefaults.mockResolvedValue({
         chat: {
           model: "sonnet",
-          unknown_contact_tools: ["kv_read"],
+          unknown_contact_tools: ["kv_query"],
         },
         orient: { model: "sonnet" },
       });
       K.buildToolDefinitions = vi.fn(() => [
-        { function: { name: "kv_read" } },
+        { function: { name: "kv_query" } },
         { function: { name: "web_fetch" } },
         { function: { name: "check_email" } },
       ]);
@@ -386,7 +386,7 @@ describe("handleChat", () => {
 
       const callArgs = K.callLLM.mock.calls[0][0];
       expect(callArgs.tools).toHaveLength(1);
-      expect(callArgs.tools[0].function.name).toBe("kv_read");
+      expect(callArgs.tools[0].function.name).toBe("kv_query");
     });
   });
 });

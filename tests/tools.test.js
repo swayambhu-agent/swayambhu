@@ -6,7 +6,6 @@ import { resolve } from "path";
 
 import * as send_slack from "../tools/send_slack.js";
 import * as web_fetch from "../tools/web_fetch.js";
-import * as kv_read from "../tools/kv_read.js";
 import * as kv_write from "../tools/kv_write.js";
 import * as kv_manifest from "../tools/kv_manifest.js";
 import * as kv_query from "../tools/kv_query.js";
@@ -99,7 +98,7 @@ function mockKV(initial = {}) {
 // ── 1. Module structure ──────────────────────────────────────
 
 const allTools = {
-  send_slack, web_fetch, kv_read, kv_write,
+  send_slack, web_fetch, kv_write,
   kv_manifest, kv_query, check_email, send_email, akash_exec,
 };
 
@@ -249,20 +248,6 @@ describe("akash_exec", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("500");
     expect(result.detail).toBe("server error detail");
-  });
-});
-
-describe("kv_read", () => {
-  it("reads key from KV", async () => {
-    const kv = mockKV({ mykey: "myval" });
-    const result = await kv_read.execute({ key: "mykey", kv });
-    expect(result).toEqual({ key: "mykey", value: "myval" });
-  });
-
-  it("returns null for missing key", async () => {
-    const kv = mockKV();
-    const result = await kv_read.execute({ key: "missing", kv });
-    expect(result).toEqual({ key: "missing", value: null });
   });
 });
 
@@ -427,12 +412,11 @@ describe("kv_query", () => {
     expect(result.error).toContain("non-numeric");
   });
 
-  it("truncates long strings with full_length", async () => {
-    const longKarma = [{ event: "test", data: "x".repeat(200) }];
+  it("returns full string values without truncation", async () => {
+    const longKarma = [{ event: "test", data: "x".repeat(500) }];
     const kv = mockKV({ "karma:s_long": longKarma });
     const result = await kv_query.execute({ key: "karma:s_long", path: "[0].data", kv });
-    expect(result.value.length).toBeLessThan(200);
-    expect(result.full_length).toBe(200);
+    expect(result.value).toBe("x".repeat(500));
   });
 
   it("handles string-encoded JSON in KV", async () => {
@@ -441,11 +425,12 @@ describe("kv_query", () => {
     expect(result.count).toBe(3);
   });
 
-  it("works with non-karma keys", async () => {
-    const kv = mockKV({ "config:defaults": { orient: { model: "haiku" }, reflect: { model: "sonnet" } } });
+  it("returns small objects directly", async () => {
+    const data = { orient: { model: "haiku" }, reflect: { model: "sonnet" } };
+    const kv = mockKV({ "config:defaults": data });
     const result = await kv_query.execute({ key: "config:defaults", kv });
-    expect(result.type).toBe("object");
-    expect(result.fields.orient).toContain("object");
+    expect(result.orient).toEqual({ model: "haiku" });
+    expect(result.reflect).toEqual({ model: "sonnet" });
   });
 });
 

@@ -17,17 +17,16 @@ const CHANNEL_ADAPTERS = { slack: slackAdapter };
 
 import * as send_slack from './tools/send_slack.js';
 import * as web_fetch from './tools/web_fetch.js';
-import * as kv_read from './tools/kv_read.js';
 import * as kv_write from './tools/kv_write.js';
 import * as kv_manifest from './tools/kv_manifest.js';
-import * as karma_query from './tools/karma_query.js';
+import * as kv_query from './tools/kv_query.js';
 import * as akash_exec from './tools/akash_exec.js';
 import * as check_email from './tools/check_email.js';
 import * as send_email from './tools/send_email.js';
 
 const TOOL_MODULES = {
-  send_slack, web_fetch, kv_read, kv_write,
-  kv_manifest, karma_query, akash_exec,
+  send_slack, web_fetch, kv_write,
+  kv_manifest, kv_query, akash_exec,
   check_email, send_email,
 };
 

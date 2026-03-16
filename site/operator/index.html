@@ -1029,7 +1029,7 @@
         rolled_back: { bar: 'bg-red-500', text: 'text-red-400', label: 'Rolled Back' },
       };
 
-      if (loading) return <p className="text-gray-500 text-sm">Loading mutations...</p>;
+      if (loading) return <p className="text-gray-500 text-sm">Loading modifications...</p>;
       if (error) return <LoadError error={error} onRetry={loadMutations} />;
 
       return (
@@ -1054,7 +1054,7 @@
           </div>
 
           <div className="space-y-2">
-            {filtered.length === 0 && <p className="text-gray-500 text-xs">No mutations found</p>}
+            {filtered.length === 0 && <p className="text-gray-500 text-xs">No modifications found</p>}
             {filtered.map(m => {
               const sc = STATUS_COLORS[m.status] || STATUS_COLORS.staged;
               return (
@@ -1149,6 +1149,8 @@
             try {
               const k = await api(`/kv/karma:${sid}`, operatorKey);
               const entries = k.value || [];
+              const reflect = [...entries].reverse().find(e => e.event === 'reflect_complete' && e.balances);
+              if (reflect?.balances) { setBalances(reflect.balances); return true; }
               const start = entries.find(e => e.event === 'session_start' && e.balances);
               if (start?.balances) { setBalances(start.balances); return true; }
             } catch {}
@@ -1196,7 +1198,7 @@
         { id: 'timeline', label: 'Timeline' },
         { id: 'kv', label: 'KV Explorer' },
         { id: 'reflections', label: 'Reflections' },
-        { id: 'mutations', label: 'Mutations' },
+        { id: 'mutations', label: 'Modifications' },
       ];
 
       return (

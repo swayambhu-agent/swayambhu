@@ -132,7 +132,7 @@ describe("buildToolDefinitions", () => {
       toolRegistry: {
         tools: [
           { name: "web_fetch", description: "Fetch a URL", input: { url: "The URL to fetch" } },
-          { name: "kv_read", description: "Read KV", input: { key: "KV key" } },
+          { name: "kv_query", description: "Read KV", input: { key: "KV key" } },
         ],
       },
     });
@@ -2458,7 +2458,7 @@ describe("inbound content gate", () => {
           }),
         };
       }
-      if (name === "kv_read") {
+      if (name === "kv_query") {
         return {
           meta: {},
           execute: async () => ({ value: "test" }),
@@ -2587,7 +2587,7 @@ describe("inbound content gate", () => {
 
     const result = await brain.executeToolCall({
       id: "tc_1",
-      function: { name: "kv_read", arguments: '{"key":"test"}' },
+      function: { name: "kv_query", arguments: '{"key":"test"}' },
     });
 
     expect(result.data).toBe("some result");

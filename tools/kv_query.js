@@ -8,15 +8,7 @@ export async function execute({ key, path, kv }) {
 
   const data = typeof raw === "string" ? JSON.parse(raw) : raw;
 
-  if (!path) {
-    if (Array.isArray(data)) {
-      return {
-        count: data.length,
-        items: data.map((e, i) => `${i}: ${briefSignature(e)}`),
-      };
-    }
-    return summarize(data);
-  }
+  if (!path) return present(data);
 
   const segments = parsePath(path);
   if (segments.error) return { error: segments.error };
@@ -49,7 +41,7 @@ export async function execute({ key, path, kv }) {
     }
   }
 
-  return summarize(current);
+  return present(current);
 }
 
 function parsePath(path) {
@@ -78,13 +70,12 @@ function parsePath(path) {
   return segments;
 }
 
-function summarize(value) {
+// Return the value directly for small/simple data, summarize for large structures.
+function present(value) {
   if (value === null || value === undefined) return { value: null };
   if (typeof value === "boolean" || typeof value === "number") return { value };
-  if (typeof value === "string") {
-    if (value.length <= 80) return { value };
-    return { value: value.slice(0, 80) + "...", full_length: value.length };
-  }
+  if (typeof value === "string") return { value };
+
   if (Array.isArray(value)) {
     return {
       type: "array",
@@ -92,7 +83,12 @@ function summarize(value) {
       items: value.map((item, i) => `${i}: ${briefSignature(item)}`),
     };
   }
+
   if (typeof value === "object") {
+    const keys = Object.keys(value);
+    const hasNestedArray = keys.some(k => Array.isArray(value[k]));
+    if (keys.length <= 10 && !hasNestedArray) return value;
+    // Large or complex object — summarize fields
     const fields = {};
     for (const [k, v] of Object.entries(value)) {
       fields[k] = describeValue(v);
@@ -107,7 +103,7 @@ function describeValue(v) {
   if (typeof v === "boolean") return String(v);
   if (typeof v === "number") return String(v);
   if (typeof v === "string") {
-    if (v.length <= 80) return JSON.stringify(v);
+    if (v.length <= 120) return JSON.stringify(v);
     return `string (${v.length} chars)`;
   }
   if (Array.isArray(v)) return `array (${v.length} items)`;

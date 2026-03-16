@@ -118,13 +118,12 @@ await put("config:tool_registry", {
   tools: [
     { name: "send_slack", description: "Post a message to the Slack channel", input: { text: "required", channel: "optional — override default channel" } },
     { name: "web_fetch", description: "Fetch contents of a URL", input: { url: "required", method: "GET|POST", headers: "optional", max_length: "default 10000" } },
-    { name: "kv_read", description: "Read a value from memory (any key)", input: { key: "required" } },
     { name: "kv_write", description: "Write to tool's own KV namespace", input: { key: "required", value: "required" } },
     { name: "check_balance", description: "Check balances across all configured providers and wallets. Returns balances grouped by scope (general vs project-specific). Only 'general' scope counts toward your operating budget.", input: { scope: "optional — filter by scope (e.g. 'general', 'project_x'). Omit to see all." } },
     { name: "kv_manifest", description: "List KV keys, optionally filtered by prefix. Use to explore what is stored in memory.", input: { prefix: "optional key prefix filter", limit: "max keys to return (default 100, max 500)" } },
-    { name: "kv_query", description: "Lazily traverse any KV value using dot-bracket path expressions. Returns one level of depth per call — use progressively deeper paths to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, viveka:timing:urgency, reflect:1:s_123, config:defaults)", path: "optional — dot-bracket path (e.g. [1].tool_calls[0].function, .sources[0].note)" } },
+    { name: "kv_query", description: "Read a KV value. Returns small values directly. For large arrays/objects, returns a summary — use path to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, viveka:timing:urgency, config:defaults)", path: "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)" } },
     { name: "akash_exec", description: "Run a shell command on the akash Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
-    { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each.", input: { mark_read: "optional boolean — mark fetched emails as read (default false)", max_results: "optional — max emails to return (default 10, max 20)" } },
+    { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each.", input: { mark_read: "optional boolean — mark fetched emails as read (default true)", max_results: "optional — max emails to return (default 10, max 20)" } },
     { name: "send_email", description: "Send an email or reply to an existing thread via Gmail.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
   ],
 }, "json", "Tool definitions — names, descriptions, and input schemas for function calling");
@@ -143,7 +142,7 @@ for (const name of providerFiles) {
 
 console.log("--- Tools ---");
 const toolNames = [
-  "send_slack", "web_fetch", "kv_read", "kv_write",
+  "send_slack", "web_fetch", "kv_write",
   "kv_manifest", "kv_query", "akash_exec",
   "check_email", "send_email",
 ];
@@ -246,13 +245,14 @@ await put("doc:architecture", read("docs/doc-architecture.md"), "text", "Referen
 // ── Contacts ─────────────────────────────────────────────────
 
 console.log("--- Contacts ---");
-await put("contact:swami", {
-  name: "Swami",
+await put("contact:swami_kevala", {
+  name: "Swami Kevala",
   relationship: "patron",
-  public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...",
-  key_type: "ssh-ed25519",
+  about: "Bramhachari at Isha.",
+  timezone: "Asia/Kolkata",
+  location: "Isha Yoga Center, Coimbatore",
   platforms: {
-    slack: "U_SWAMI",  // replaced with real ID in prod
+    slack: "U084ASKBXB7",  
   },
   chat: {
     model: "sonnet",
@@ -260,11 +260,11 @@ await put("contact:swami", {
     max_cost_per_conversation: 1.00,
     max_output_tokens: 2000,
   },
-  communication: "Inner circle. Full communication latitude — casual, experimental, direct. Can discuss anything including system internals, budget, failures.",
+  communication: "Feel free to discuss absolutely anything. Nothing is off limits.",
 }, "json", "Contact: Swami (patron)");
 
-await put("patron:contact", "swami", "text", "Pointer to patron contact slug");
-await put("patron:public_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...", "text", "Patron public key — immutable, kernel-enforced");
+await put("patron:contact", "swami_kevala", "text", "Pointer to patron contact slug");
+await put("patron:public_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPRTP/9Jr6J1uoDSmN/SvmcoORMhHXHxgS0c4zehDNIW swayambhu patron key", "text", "Patron public key — immutable, kernel-enforced");
 
 // ── Communication wisdom (seed) ──────────────────────────
 
