@@ -26,7 +26,7 @@ they all hit the same SQLite-backed store that `wrangler dev` uses.
 
 ## scripts/seed-local-kv.mjs — KV Seeder
 
-Seeds 69 keys into local KV. Runs in ~2s via Miniflare API (replacing
+Seeds 70 keys into local KV. Runs in ~2s via Miniflare API (replacing
 ~50 wrangler subprocess spawns from an earlier approach).
 
 ### How it works
@@ -45,18 +45,18 @@ Seeds 69 keys into local KV. Runs in ~2s via Miniflare API (replacing
 | Identity | 1 | `identity:did` — hardcoded DID document |
 | Config | 7 | `config:defaults`, `config:models`, `config:model_capabilities`, `config:resources`, `config:tool_registry`, `providers`, `wallets` — inline JSON |
 | Providers | 8 | 4 providers × (`provider:{name}:code` from file + `provider:{name}:meta` from import) |
-| Tools | 16 | 8 tools × (`tool:{name}:code` from file + `tool:{name}:meta` from import) |
+| Tools | 17 | 8 tools × (`tool:{name}:code` from file + `tool:{name}:meta` from import) + 1 `kernel:tool_grants` |
 | Prompts | 5 | `prompt:orient`, `prompt:subplan`, `prompt:reflect`, `prompt:reflect:1`, `prompt:chat` — from `prompts/*.md` or inline |
 | Dharma | 1 | `dharma` — from `DHARMA.md` |
 | Yamas | 7 | `yama:care`, `yama:truth`, `yama:responsibility`, `yama:discipline`, `yama:rules`, `yama:security`, `yama:humility` — inline text |
 | Niyamas | 7 | `niyama:health`, `niyama:acceptance`, `niyama:transformation`, `niyama:reflection`, `niyama:alignment`, `niyama:nonidentification`, `niyama:organization` — inline text |
 | Wake hook | 5 | `hook:wake:code`, `hook:wake:reflect`, `hook:wake:modifications`, `hook:wake:protect` (from source files) + `hook:wake:manifest` (inline JSON) |
 | Channel | 2 | `channel:slack:code` (from file), `channel:slack:config` (inline) |
-| Kernel | 4 | `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`, `kernel:fallback_model` |
+| Kernel | 5 | `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`, `kernel:fallback_model`, `kernel:tool_grants` |
 | Docs | 2 | `doc:modification_guide`, `doc:architecture` — from `docs/doc-*.md` |
 | Contacts | 3 | `contact:swami_kevala`, `patron:contact`, `patron:public_key` |
 | Viveka | 1 | `viveka:comms:defaults` — seed communication wisdom |
-| **Total** | **69** | |
+| **Total** | **70** | |
 
 ### Source file reading
 
@@ -64,8 +64,76 @@ Tool and provider code is read as raw text (`readFileSync`) for the
 `:code` keys, and dynamically imported for the `:meta` keys. This means
 the seed script validates that all tool/provider modules parse correctly.
 
+### Tool meta splitting
+
+For each tool, the seed script splits `export const meta` into two
+destinations:
+
+- **Grant fields** (`secrets`, `communication`, `inbound`, `provider`) →
+  accumulated into `kernel:tool_grants` (kernel-only, agent cannot modify)
+- **Operational fields** (`kv_access`, `timeout_ms`, `kv_secrets`) →
+  stored in `tool:{name}:meta` (agent-modifiable via Modification Protocol)
+
+The tool source files remain the single source of truth — they still
+declare all fields. The split only happens at seed time and in
+`sync-tool-grants.mjs`.
+
 Prompts are read from `prompts/` directory. Hook modules are read from
 the repo root (`hook-main.js`, etc.). Channel adapters from `channels/`.
+
+---
+
+## scripts/sync-tool-grants.mjs — Grant Sync
+
+Syncs `kernel:tool_grants` from tool source files without re-seeding all
+KV state. Use this after adding a new tool, changing a tool's security
+fields (secrets, communication, inbound, provider), or when you want to
+update grants without wiping runtime state.
+
+```bash
+node scripts/sync-tool-grants.mjs
+```
+
+Output shows which tools have grants and which fields:
+
+```
+kernel:tool_grants synced:
+  send_slack: secrets, communication
+  check_email: secrets, inbound, provider
+  send_email: secrets, communication, provider
+  ...
+```
+
+The script reads each `tools/*.js` module, extracts the grant fields from
+`export const meta`, assembles the grants object, and writes it to
+`kernel:tool_grants` in local KV.
+
+---
+
+## scripts/patron-sign.mjs — Patron Signature
+
+Signs messages with the patron's Ed25519 private key. Used to prove
+identity to the agent (via `verify_patron` tool) or to authorize key
+rotation.
+
+```bash
+# Sign a challenge message
+node scripts/patron-sign.mjs "challenge-nonce-12345"
+
+# Sign with a non-default key
+node scripts/patron-sign.mjs --key ~/.ssh/swayambhu_ed25519 "message"
+
+# Generate a rotation signature for a new public key
+node scripts/patron-sign.mjs --rotate "ssh-ed25519 AAAA... new-key"
+```
+
+The script reads the private key from `~/.ssh/id_ed25519` by default
+(override with `--key`). Uses Node's `crypto.createPrivateKey` which
+handles OpenSSH format natively. Outputs a base64-encoded Ed25519
+signature to stdout.
+
+In `--rotate` mode, signs the canonical message `rotate:{newPublicKey}`
+which `rotatePatronKey()` in the kernel expects.
 
 ---
 

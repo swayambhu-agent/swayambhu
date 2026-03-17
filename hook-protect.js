@@ -49,6 +49,15 @@ async function applyKVOperationDirect(K, op) {
     case "delete":
       await K.kvDeleteSafe(op.key);
       break;
+    case "patch": {
+      const current = await K.kvGet(op.key);
+      if (typeof current !== "string") break;
+      if (!current.includes(op.old_string)) break;
+      if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) break;
+      const patched = current.replace(op.old_string, op.new_string);
+      await K.kvPutSafe(op.key, patched, { unprotected: true, ...op.metadata });
+      break;
+    }
     case "rename": {
       const { value, metadata } = await K.kvGetWithMeta(op.key);
       if (value !== null) {

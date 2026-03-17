@@ -264,6 +264,7 @@ export async function acceptDirect(K, request, sessionId) {
     key: `modification_snapshot:${id}`,
     value: {
       id,
+      type: "direct",
       claims: request.claims,
       ops: request.ops,
       checks: request.checks,

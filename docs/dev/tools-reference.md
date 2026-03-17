@@ -184,8 +184,8 @@ Used by git sync to push modifications to the self-repository.
 
 ## Built-in Tools
 
-Two tools are hardcoded in the kernel — not loaded from KV, not executed
-in isolates.
+Three tools are hardcoded in the kernel — not loaded from KV, not
+executed in isolates.
 
 ### spawn_subplan
 
@@ -229,6 +229,39 @@ Checks balances for all configured providers and wallets.
    from KV at runtime
 4. Returns `{ providers: { name: { balance, scope } }, wallets: { ... } }`
 
+### verify_patron
+
+`brainstem.js` (definition in `buildToolDefinitions`, dispatch in
+`executeToolCall`, implementation in `verifyPatron`)
+
+Verifies the patron's identity by checking an Ed25519 signature against
+the immutable `patron:public_key`.
+
+**Parameters:**
+- `message` (required) — the exact message that was signed
+- `signature` (required) — base64-encoded Ed25519 signature
+
+**Behavior:**
+
+1. Loads `patron:public_key` from KV
+2. Parses SSH ed25519 wire format to extract 32-byte raw key
+   (`Brainstem.parseSSHEd25519`)
+3. Imports key via `crypto.subtle.importKey("raw", ..., "Ed25519")`
+4. Verifies signature via `crypto.subtle.verify("Ed25519", ...)`
+5. Records `patron_verified` or `patron_verification_failed` karma event
+6. Returns `{ verified: true }` or `{ verified: false }`
+
+The agent uses this when it needs to confirm someone is really the
+patron — e.g. after the patron identity monitor detects unusual
+behavior from the patron's Slack account. The patron signs a challenge
+message locally with `scripts/patron-sign.mjs` and sends the signature
+in chat.
+
+**Key rotation** is handled by `rotatePatronKey()` (exposed on
+`KernelRPC`, not as a tool). It requires a signature from the current
+key holder proving they authorize the rotation. The new key is written
+directly to KV, bypassing the immutability guard.
+
 ---
 
 ## Tool Availability Matrix
@@ -245,6 +278,7 @@ Checks balances for all configured providers and wallets.
 | akash_exec | yes | no | yes | yes | allowlist | yes |
 | spawn_subplan | yes | no | **no** | yes | allowlist | yes |
 | check_balance | yes | no | yes | yes | allowlist | yes |
+| verify_patron | yes | no | yes | yes | allowlist | yes |
 
 **Session reflect:** `tools: []` — no tools at all (`hook-reflect.js:52`).
 
@@ -254,7 +288,8 @@ Checks balances for all configured providers and wallets.
 **Chat (unknown):** Only tools in `config:defaults.chat.unknown_contact_tools`
 allowlist. Empty by default = no tools.
 
-**Chat (known):** Full `buildToolDefinitions()` including `spawn_subplan`.
+**Chat (known):** Full `buildToolDefinitions()` including `spawn_subplan`
+and `verify_patron`.
 
 ---
 
@@ -387,18 +422,19 @@ headers.
 > **NOTE:** `gmail.check()` is exported and follows the provider `check`
 > pattern, but it is not currently called at runtime. No entry in the
 > `providers` KV config points to gmail as a balance-check adapter. The
-> gmail provider is only used via tool `meta.provider` references from
+> gmail provider is only used via tool grant `provider` references from
 > `check_email` and `send_email`.
 
 ---
 
 ## Provider Dependencies
 
-Tools that declare `meta.provider` receive the provider module in their
-execution context as `ctx.provider`:
+Tools whose `kernel:tool_grants` entry includes a `provider` field receive
+the provider module in their execution context as `ctx.provider`. The
+provider binding is controlled by the kernel — the agent cannot modify it.
 
-| Tool | Provider | Functions used |
-|------|----------|---------------|
+| Tool | Grant `provider` | Functions used |
+|------|-----------------|---------------|
 | `check_email` | `gmail` | `getAccessToken`, `listUnread`, `getMessage`, `markAsRead` |
 | `send_email` | `gmail` | `getAccessToken`, `getMessage` (for replies), `sendMessage` |
 
@@ -406,3 +442,8 @@ In prod, the provider code is loaded from `provider:{name}:code` KV and
 injected into the isolate. In dev, `PROVIDER_MODULES` maps
 `provider:{name}` to the imported module and passes it directly
 (`brainstem-dev.js:177`).
+
+> **NOTE:** Tool source files still declare `provider` in `export const
+> meta`, but this field is stripped from KV-stored `tool:{name}:meta` at
+> seed time. The runtime reads provider bindings exclusively from
+> `kernel:tool_grants`.

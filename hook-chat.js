@@ -57,14 +57,14 @@ export async function handleChat(K, channel, inbound, adapter) {
 
   // Resolve model + tools (unknown contacts get no tools — mechanical jailbreak prevention)
   const chatModel = chatConfig.model || defaults?.orient?.model || "sonnet";
-  const model = K.resolveModel(chatModel);
+  const model = await K.resolveModel(chatModel);
   let tools;
   if (contact) {
-    tools = K.buildToolDefinitions();
+    tools = await K.buildToolDefinitions();
   } else {
     const allowlist = chatConfig.unknown_contact_tools || [];
     tools = allowlist.length
-      ? K.buildToolDefinitions().filter(t => allowlist.includes(t.function?.name))
+      ? (await K.buildToolDefinitions()).filter(t => allowlist.includes(t.function?.name))
       : [];
     await K.karmaRecord({
       event: 'inbound_unknown', sender_id: inbound.userId, channel,

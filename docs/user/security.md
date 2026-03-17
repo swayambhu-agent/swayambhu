@@ -83,6 +83,35 @@ path) and `kvWritePrivileged` (the system key write path) reject writes
 to `dharma`. No code path in the system can change it. It can only be
 changed by redeploying with a different `DHARMA.md`.
 
+### Forge Your Identity
+
+The agent has a `verify_patron` tool that can cryptographically verify
+your identity using Ed25519 signatures. Your public key is stored in KV
+as an immutable key — the agent cannot modify it.
+
+If the agent suspects anomalous behavior from your account (e.g.
+different tone, unusual requests), it can ask you to prove your identity
+by signing a challenge message. You sign it locally with your private
+key:
+
+```bash
+node scripts/patron-sign.mjs "the challenge message"
+```
+
+Then paste the signature in chat. The agent verifies it against your
+public key in the kernel — no LLM judgment, pure cryptographic proof.
+
+**Key rotation:** If you need to change your key (compromised key, new
+device), sign a rotation request with your current key:
+
+```bash
+node scripts/patron-sign.mjs --rotate "ssh-ed25519 AAAA... your-new-key"
+```
+
+Send the signature through the dashboard API. The kernel verifies it
+against the current key before accepting the new one. A kernel alert is
+sent to Slack whenever a rotation occurs.
+
 ### Bypass the Communication Gate
 
 Every outbound message from a communication tool passes through a
@@ -108,10 +137,30 @@ The kernel (`brainstem.js`) is deployed as a Cloudflare Worker. It is not
 stored in KV. The agent cannot read, modify, or replace it. Only a
 `wrangler deploy` from the repository changes the kernel.
 
+### Modify Tool Security Grants
+
+Each tool's security-critical properties — which environment secrets it
+can access, whether it goes through the communication gate, whether its
+results go through inbound content redaction, and which provider adapter
+it receives — are stored in `kernel:tool_grants`. This is a kernel key,
+so the agent cannot read or modify it.
+
+This means the agent cannot:
+- Grant itself access to new environment secrets (e.g. API keys)
+- Remove a tool's communication gate classification to bypass the gate
+- Remove inbound content redaction from a tool to see quarantined content
+- Bind a provider adapter to a tool that shouldn't have one
+
+Tool source files declare all metadata fields, but the seed script splits
+them: security grants go to `kernel:tool_grants`, operational config goes
+to modifiable tool metadata. Even if the agent modifies the tool metadata
+through the Modification Protocol, the security grants remain unchanged.
+
 ### Write to Kernel Keys
 
 All `kernel:*` keys are blocked from both `kvPutSafe` and
 `kvWritePrivileged`. The agent cannot modify:
+- `kernel:tool_grants` — tool security grants (secrets, gate classification)
 - `kernel:active_session` — crash detection breadcrumb
 - `kernel:last_sessions` — session outcome history (drives the tripwire)
 - `kernel:last_good_hook` — the backup hook code for auto-restore
@@ -389,8 +438,10 @@ agent starts over with its original configuration.
 
 | Layer | What It Protects | How It Works |
 |-------|-----------------|-------------|
-| **Immutable keys** | Dharma, patron public key | Kernel rejects all writes |
-| **Kernel keys** | Crash history, alert config, fallback code | Kernel rejects agent writes |
+| **Immutable keys** | Dharma, patron public key | Kernel rejects all writes (patron key rotatable via signed request) |
+| **Patron verification** | Patron identity assurance | Ed25519 signature verification — kernel-hardcoded, agent cannot modify |
+| **Kernel keys** | Crash history, alert config, fallback code, tool security grants | Kernel rejects agent writes |
+| **Tool security grants** | Env secret access, gate classification, provider bindings | Stored in kernel-only `kernel:tool_grants`; agent cannot escalate tool privileges |
 | **Sealed namespace** | Quarantined content from unknown senders | Tools return null, list filters out |
 | **Communication gate** | Outbound messages | Three-layer kernel-enforced gate |
 | **Inbound redaction** | Email content from unknown senders | Content replaced, original quarantined |

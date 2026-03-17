@@ -38,13 +38,13 @@ The kernel enforces a hierarchy of write access. From most restrictive to least:
 | Field | Value |
 |-------|-------|
 | Format | text |
-| Value | SSH ed25519 public key string |
-| Read by | Not currently read by any runtime code |
-| Written by | Seed script only |
-| Protection | Immutable — in `Brainstem.IMMUTABLE_KEYS`. Both `kvPut()` and `kvWritePrivileged()` reject. |
+| Value | SSH ed25519 public key string (e.g. `ssh-ed25519 AAAA... comment`) |
+| Read by | `verifyPatronSignature()` — parses SSH wire format, extracts 32-byte raw key, verifies Ed25519 signatures via `crypto.subtle` |
+| Written by | Seed script; `rotatePatronKey()` (self-authenticating — must be signed by current key holder) |
+| Protection | Immutable — in `Brainstem.IMMUTABLE_KEYS`. Both `kvPut()` and `kvWritePrivileged()` reject. `rotatePatronKey()` bypasses via direct `this.kv.put()` after verifying the rotation signature. |
 | Seeded | Yes |
 
-**NOTE:** `patron:public_key` is seeded and immutable but no runtime code reads it. It exists for future identity verification.
+Used by the `verify_patron` built-in tool (kernel-hardcoded, not in `config:tool_registry`). The agent calls it when it needs to confirm the patron's identity — e.g. after noticing unusual behavior from the patron's Slack account.
 
 ---
 
@@ -134,7 +134,7 @@ All JSON. Read by kernel and hooks at session start. Writable via `kvWritePrivil
 | Key pattern | Format | Value | Read by | Seeded |
 |-------------|--------|-------|---------|--------|
 | `tool:{name}:code` | text | Tool source code (JS) | `_loadTool()` in brainstem.js (cached per session) | Yes (8 tools) |
-| `tool:{name}:meta` | JSON | Tool metadata: `secrets`, `kv_secrets`, `kv_access`, `timeout_ms`, `communication`, `inbound`, `provider` | `_loadTool()`, `executeToolCall()` (comms gate, inbound gate) | Yes (8 tools) |
+| `tool:{name}:meta` | JSON | Operational tool metadata: `kv_access`, `timeout_ms`, `kv_secrets`. Security grant fields (`secrets`, `communication`, `inbound`, `provider`) are stripped at seed time and stored in `kernel:tool_grants` instead. | `_loadTool()`, `buildToolContext()` (for `kv_secrets`, `kv_access`) | Yes (8 tools) |
 
 Seeded tools: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `akash_exec`, `check_email`, `send_email`.
 
@@ -323,8 +323,11 @@ Prefix `kernel:` is in `KERNEL_ONLY_PREFIXES`. `kvPutSafe()` and `kvWritePrivile
 | `kernel:llm_fallback` | text | LLM provider adapter source code (copy of `providers/llm.js`) | `callViaKernelFallback()` — tier 3 of provider cascade | Seed |
 | `kernel:llm_fallback:meta` | JSON | Metadata for fallback LLM adapter | `callViaKernelFallback()` | Seed |
 | `kernel:fallback_model` | JSON | Model ID string (e.g. `"anthropic/claude-haiku-4.5"`) | `getFallbackModel()` — checked after `config:models.fallback_model` | Seed |
+| `kernel:tool_grants` | JSON | Map of tool name → security grants: `{ secrets, communication, inbound, provider }`. Controls which env vars each tool can access, which tools are communication/inbound gated, and which provider adapter each tool receives. | `loadEagerConfig()` → `this.toolGrants`; `executeToolCall()` (comms + inbound gates); `executeAction()` (comms gate check); `buildToolContext()` (env secret injection); `_executeTool()` (provider binding) | Seed, `scripts/sync-tool-grants.mjs` |
 
-Seeded: `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`, `kernel:fallback_model` (4 keys).
+Seeded: `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`, `kernel:fallback_model`, `kernel:tool_grants` (5 keys).
+
+**Security note:** `kernel:tool_grants` is the single source of truth for tool security classification at runtime. Tool source files (`tools/*.js`) declare all fields in `export const meta`, but the seed script splits them: grant fields (`secrets`, `communication`, `inbound`, `provider`) go to `kernel:tool_grants`, operational fields (`kv_access`, `timeout_ms`, `kv_secrets`) go to `tool:{name}:meta`. Because `kernel:*` keys are blocked from both `kvPutSafe` and `kvWritePrivileged`, the agent cannot grant itself new env secrets, bypass the communication gate, or bypass inbound content redaction by modifying tool metadata.
 
 ---
 
@@ -428,9 +431,9 @@ Which prefixes are listed where, by which code, and why.
 
 ## Seed audit
 
-The seed script (`scripts/seed-local-kv.mjs`) produces **69 keys** total:
+The seed script (`scripts/seed-local-kv.mjs`) produces **70 keys** total:
 
-### Static keys (45)
+### Static keys (46)
 
 | # | Key | Category |
 |---|-----|----------|
@@ -473,29 +476,30 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **69 keys** total:
 | 37 | `kernel:llm_fallback` | Kernel |
 | 38 | `kernel:llm_fallback:meta` | Kernel |
 | 39 | `kernel:fallback_model` | Kernel |
-| 40 | `doc:modification_guide` | Docs |
-| 41 | `doc:architecture` | Docs |
-| 42 | `contact:swami_kevala` | Contacts |
-| 43 | `patron:contact` | Identity |
-| 44 | `patron:public_key` | Identity |
-| 45 | `viveka:comms:defaults` | Wisdom |
+| 40 | `kernel:tool_grants` | Kernel |
+| 41 | `doc:modification_guide` | Docs |
+| 42 | `doc:architecture` | Docs |
+| 43 | `contact:swami_kevala` | Contacts |
+| 44 | `patron:contact` | Identity |
+| 45 | `patron:public_key` | Identity |
+| 46 | `viveka:comms:defaults` | Wisdom |
 
 ### Loop-generated keys (24)
 
 | # | Key pattern | Count | Category |
 |---|------------|-------|----------|
-| 46–53 | `provider:{name}:code` | 4 (llm, llm_balance, wallet_balance, gmail) | Providers |
-| 54–61 | `provider:{name}:meta` | 4 | Providers |
-| 62–69 | `tool:{name}:code` | 8 (send_slack, web_fetch, kv_write, kv_manifest, kv_query, akash_exec, check_email, send_email) | Tools |
+| 47–54 | `provider:{name}:code` | 4 (llm, llm_balance, wallet_balance, gmail) | Providers |
+| 55–62 | `provider:{name}:meta` | 4 | Providers |
+| 63–70 | `tool:{name}:code` | 8 (send_slack, web_fetch, kv_write, kv_manifest, kv_query, akash_exec, check_email, send_email) | Tools |
 
-**Wait — that's only 61.** The tool loop also seeds `tool:{name}:meta` for each tool:
+**Wait — that's only 62.** The tool loop also seeds `tool:{name}:meta` for each tool:
 
 | # | Key pattern | Count | Category |
 |---|------------|-------|----------|
-| 62–69 | `tool:{name}:code` | 8 | Tools |
-| 70–77 | `tool:{name}:meta` | 8 | Tools |
+| 63–70 | `tool:{name}:code` | 8 | Tools |
+| 71–78 | `tool:{name}:meta` | 8 | Tools |
 
-**Corrected total: 45 static + 8 provider pairs + 16 tool pairs = 69 keys.**
+**Corrected total: 46 static + 8 provider pairs + 16 tool pairs = 70 keys.**
 
 ### Keys NOT seeded (created at runtime)
 

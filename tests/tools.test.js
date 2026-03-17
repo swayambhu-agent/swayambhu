@@ -968,6 +968,20 @@ describe("channel:slack", () => {
   });
 
   describe("verify", () => {
+    const secret = "test_signing_secret";
+
+    async function signRequest(timestamp, rawBody) {
+      const encoder = new TextEncoder();
+      const sigBase = `v0:${timestamp}:${rawBody}`;
+      const key = await crypto.subtle.importKey(
+        "raw", encoder.encode(secret),
+        { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+      );
+      const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(sigBase));
+      const hex = [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+      return `v0=${hex}`;
+    }
+
     function makeHeaders(timestamp, signature) {
       return {
         "x-slack-request-timestamp": timestamp,
@@ -975,34 +989,43 @@ describe("channel:slack", () => {
       };
     }
 
-    it("returns true when headers and env are present and timestamp is fresh", () => {
+    it("returns true for valid HMAC signature with fresh timestamp", async () => {
       const ts = String(Math.floor(Date.now() / 1000));
-      const headers = makeHeaders(ts, "v0=abc123");
-      const env = { SLACK_SIGNING_SECRET: "secret" };
-      expect(slack.verify(headers, {}, env)).toBe(true);
+      const rawBody = '{"event":"test"}';
+      const sig = await signRequest(ts, rawBody);
+      const headers = makeHeaders(ts, sig);
+      expect(await slack.verify(headers, rawBody, { SLACK_SIGNING_SECRET: secret })).toBe(true);
     });
 
-    it("returns false when timestamp is missing", () => {
+    it("returns false for invalid signature", async () => {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const headers = makeHeaders(ts, "v0=0000000000000000000000000000000000000000000000000000000000000000");
+      expect(await slack.verify(headers, '{"event":"test"}', { SLACK_SIGNING_SECRET: secret })).toBe(false);
+    });
+
+    it("returns false when timestamp is missing", async () => {
       const headers = { "x-slack-signature": "v0=abc" };
-      expect(slack.verify(headers, {}, { SLACK_SIGNING_SECRET: "s" })).toBe(false);
+      expect(await slack.verify(headers, "{}", { SLACK_SIGNING_SECRET: secret })).toBe(false);
     });
 
-    it("returns false when signature is missing", () => {
+    it("returns false when signature is missing", async () => {
       const ts = String(Math.floor(Date.now() / 1000));
       const headers = { "x-slack-request-timestamp": ts };
-      expect(slack.verify(headers, {}, { SLACK_SIGNING_SECRET: "s" })).toBe(false);
+      expect(await slack.verify(headers, "{}", { SLACK_SIGNING_SECRET: secret })).toBe(false);
     });
 
-    it("returns false when signing secret is not set", () => {
+    it("returns false when signing secret is not set", async () => {
       const ts = String(Math.floor(Date.now() / 1000));
       const headers = makeHeaders(ts, "v0=abc");
-      expect(slack.verify(headers, {}, {})).toBe(false);
+      expect(await slack.verify(headers, "{}", {})).toBe(false);
     });
 
-    it("returns false when timestamp is too old (replay protection)", () => {
+    it("returns false when timestamp is too old (replay protection)", async () => {
       const oldTs = String(Math.floor(Date.now() / 1000) - 600);
-      const headers = makeHeaders(oldTs, "v0=abc");
-      expect(slack.verify(headers, {}, { SLACK_SIGNING_SECRET: "s" })).toBe(false);
+      const rawBody = '{}';
+      const sig = await signRequest(oldTs, rawBody);
+      const headers = makeHeaders(oldTs, sig);
+      expect(await slack.verify(headers, rawBody, { SLACK_SIGNING_SECRET: secret })).toBe(false);
     });
   });
 

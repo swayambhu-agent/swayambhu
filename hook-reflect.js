@@ -43,7 +43,7 @@ export async function executeReflect(K, state, step) {
   });
 
   const model = await K.resolveModel(
-    step.model || defaults.reflect.model
+    step.model || defaults?.reflect?.model
   );
 
   const output = await K.runAgentLoop({
@@ -51,8 +51,8 @@ export async function executeReflect(K, state, step) {
     initialContext,
     tools: [],
     model,
-    effort: step.effort || defaults.reflect.effort,
-    maxTokens: step.max_output_tokens || defaults.reflect.max_output_tokens,
+    effort: step.effort || defaults?.reflect?.effort,
+    maxTokens: step.max_output_tokens || defaults?.reflect?.max_output_tokens,
     maxSteps: 1,
     step: "reflect",
   });

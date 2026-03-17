@@ -7,21 +7,36 @@ export const config = {
   webhook_secret_env: "SLACK_SIGNING_SECRET",
 };
 
-export function verify(headers, body, env) {
-  // Slack signs requests with HMAC-SHA256: v0:timestamp:body
-  // Full verification requires crypto.subtle (available in CF Workers).
-  // For now, check the signature header exists and timestamp is fresh.
-  const timestamp = headers["x-slack-request-timestamp"]
-    || headers.get?.("X-Slack-Request-Timestamp");
-  const signature = headers["x-slack-signature"]
-    || headers.get?.("X-Slack-Signature");
+export async function verify(headers, rawBody, env) {
+  const timestamp = headers.get?.("X-Slack-Request-Timestamp")
+    || headers["x-slack-request-timestamp"];
+  const signature = headers.get?.("X-Slack-Signature")
+    || headers["x-slack-signature"];
   if (!timestamp || !signature || !env.SLACK_SIGNING_SECRET) return false;
 
   // Reject requests older than 5 minutes (replay protection)
   const age = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
   if (age > 300) return false;
 
-  return true;
+  // HMAC-SHA256: v0:timestamp:rawBody
+  const sigBasestring = `v0:${timestamp}:${rawBody}`;
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw", encoder.encode(env.SLACK_SIGNING_SECRET),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(sigBasestring));
+  const hex = [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+  const computed = `v0=${hex}`;
+
+  // Constant-time comparison to prevent timing attacks
+  if (computed.length !== signature.length) return false;
+  const enc = new TextEncoder();
+  const a = enc.encode(computed);
+  const b = enc.encode(signature);
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) mismatch |= a[i] ^ b[i];
+  return mismatch === 0;
 }
 
 export function parseInbound(body) {

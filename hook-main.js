@@ -167,7 +167,7 @@ export async function runSession(K, state, context, config) {
   const initialContext = buildOrientContext(context);
 
   const orientModel = await K.resolveModel(
-    config.orient?.model || defaults.orient.model
+    config.orient?.model || defaults?.orient?.model
   );
 
   const tools = await K.buildToolDefinitions();
@@ -184,8 +184,8 @@ export async function runSession(K, state, context, config) {
     initialContext,
     tools,
     model: orientModel,
-    effort: context.effort || config.orient?.effort || defaults.orient.effort,
-    maxTokens: config.orient?.max_output_tokens || defaults.orient.max_output_tokens,
+    effort: context.effort || config.orient?.effort || defaults?.orient?.effort,
+    maxTokens: config.orient?.max_output_tokens || defaults?.orient?.max_output_tokens,
     maxSteps: getMaxSteps(state, 'orient'),
     step: 'orient',
     budgetCap: orientBudgetCap,
@@ -202,7 +202,7 @@ export async function runSession(K, state, context, config) {
   // orient was soft-capped by reflect_reserve_pct)
   const skipReflect = output.budget_exceeded && !reservePct;
   if (!skipReflect) {
-    await executeReflect(K, state, { model: defaults.reflect.model });
+    await executeReflect(K, state, { model: defaults?.reflect?.model });
   }
 
   await writeSessionResults(K, output, config);

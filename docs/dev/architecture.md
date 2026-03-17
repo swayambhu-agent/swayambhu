@@ -75,25 +75,27 @@ static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
    - `kvDeleteSafe(key)` — same blocks as `kvPutSafe`.
    - `kvWritePrivileged(ops)` — for system keys. Pre-validates the entire batch before any writes execute. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact:*`/`contact_index:*` keys (operator-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on hook writes. Auto-reloads cached config after writing config keys.
 
-4. **Communication gate** — `communicationGate()` (`brainstem.js:515`) intercepts every tool call to a tool with `meta.communication`. Three checks in sequence:
+4. **Communication gate** — `communicationGate()` (`brainstem.js:515`) intercepts every tool call to a tool with a `communication` grant in `kernel:tool_grants`. Three checks in sequence:
    - Mechanical floor: blocks initiating contact with unknown persons (no contact record).
    - Model gate: current model must have `comms_gate_capable` flag.
    - LLM gate: calls an LLM with viveka context to get a send/revise/block/queue verdict.
    Blocked messages are stored as `comms_blocked:{id}` for deep reflect to review later.
 
-5. **Inbound content gate** — tools with `meta.inbound` return external content. The kernel redacts content from unknown senders (no matching contact) and quarantines it under `sealed:*` keys (`brainstem.js:1722-1751`). Sealed keys are unreadable by tools and hooks.
+5. **Inbound content gate** — tools with an `inbound` grant in `kernel:tool_grants` return external content. The kernel redacts content from unknown senders (no matching contact) and quarantines it under `sealed:*` keys (`brainstem.js:1722-1751`). Sealed keys are unreadable by tools and hooks.
 
-6. **Hook safety tripwire** — `checkHookSafety()` (`brainstem.js:934`) checks `kernel:last_sessions`. If the last 3 outcomes are all `"crash"` or `"killed"`, the kernel deletes the current hook modules and attempts to restore from `kernel:last_good_hook`. If no good version exists, it runs a hardcoded minimal fallback.
+6. **Tool security grants** — `kernel:tool_grants` (`brainstem.js:318`) is loaded at boot and controls which env secrets each tool can access, which tools pass through the communication/inbound gates, and which provider adapter each tool receives. Because it's a `kernel:*` key, the agent cannot modify it. Tool source files declare all fields in `export const meta`, but the seed script splits them: grant fields go to `kernel:tool_grants`, operational fields go to `tool:{name}:meta`.
 
-7. **Karma log** — `karmaRecord()` appends to an in-memory array and persists to `karma:{sessionId}` on every write. If the event is a danger signal, it also writes `last_danger`.
+7. **Hook safety tripwire** — `checkHookSafety()` (`brainstem.js:934`) checks `kernel:last_sessions`. If the last 3 outcomes are all `"crash"` or `"killed"`, the kernel deletes the current hook modules and attempts to restore from `kernel:last_good_hook`. If no good version exists, it runs a hardcoded minimal fallback.
 
-8. **Budget enforcement** — `callLLM()` checks `session_budget.max_cost` and `max_duration_seconds` before every LLM call. When exceeded, `runAgentLoop()` catches the error and returns `{ budget_exceeded: true }`.
+8. **Karma log** — `karmaRecord()` appends to an in-memory array and persists to `karma:{sessionId}` on every write. If the event is a danger signal, it also writes `last_danger`.
+
+9. **Budget enforcement** — `callLLM()` checks `session_budget.max_cost` and `max_duration_seconds` before every LLM call. When exceeded, `runAgentLoop()` catches the error and returns `{ budget_exceeded: true }`.
 
 ### Key instance methods
 
 | Method | What it does |
 |--------|-------------|
-| `loadEagerConfig()` | Loads `config:defaults`, `config:models`, `config:model_capabilities`, `dharma`, `config:tool_registry`, yamas/niyamas, and patron context into instance fields. Called once at session start. |
+| `loadEagerConfig()` | Loads `config:defaults`, `config:models`, `config:model_capabilities`, `dharma`, `config:tool_registry`, `kernel:tool_grants`, yamas/niyamas, and patron context into instance fields. Called once at session start. |
 | `runScheduled()` | Top-level entry point for cron. Detects platform kills, checks hook safety, loads hook modules from KV, calls `executeHook()`. |
 | `executeHook(modules, mainModule)` | Writes `kernel:active_session`, calls `_invokeHookModules()`, catches crashes (falls back to `runMinimalFallback()`), updates session outcome, snapshots hook as `kernel:last_good_hook` on clean exit, cleans up active session marker. |
 | `callLLM(opts)` | Budget check, dharma/principles injection, build messages array, call `callWithCascade()`, record karma, track cost. Returns `{ content, usage, cost, toolCalls }`. |
@@ -103,7 +105,10 @@ static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 | `runAgentLoop(opts)` | The core execution loop (see [Agent loop](#the-agent-loop)). |
 | `checkBalance(args)` | Iterates `providers` and `wallets` KV records, calls each adapter, returns balance map. |
 | `spawnSubplan(args, depth)` | Launches a nested `runAgentLoop()` with a subplan prompt. Depth-limited by `config:defaults.execution.max_subplan_depth` (default 3). |
-| `buildToolDefinitions(extraTools)` | Reads `config:tool_registry`, builds OpenAI-format function definitions, appends built-in `spawn_subplan` tool. |
+| `verifyPatronSignature(msg, sig)` | Loads `patron:public_key`, parses SSH ed25519 format, verifies signature via `crypto.subtle.verify("Ed25519", ...)`. |
+| `verifyPatron(args)` | Built-in tool handler for `verify_patron`. Returns `{ verified: true/false }`, records karma. |
+| `rotatePatronKey(newKey, sig)` | Self-authenticating key rotation — verifies signature against current key, writes new key directly to `this.kv.put()` (bypassing immutability guard), records karma + kernel alert. |
+| `buildToolDefinitions(extraTools)` | Reads `config:tool_registry`, builds OpenAI-format function definitions, appends built-in `spawn_subplan` and `verify_patron` tools. |
 | `resolveModel(modelOrAlias)` | Looks up `config:models.alias_map[modelOrAlias]`, returns the full model ID or the input unchanged. |
 | `kvListAll(opts)` | Paginated KV list with 100-page safety limit. |
 
@@ -138,6 +143,7 @@ Exposes these categories of methods:
 | Execution | `executeAction(step)`, `executeAdapter(adapterKey, input)`, `checkBalance(args)` |
 | Karma | `karmaRecord(entry)` |
 | Utility | `resolveModel(m)`, `estimateCost(model, usage)`, `buildPrompt(template, vars)`, `parseAgentOutput(content)`, `loadKeys(keys)`, `getSessionCount()`, `mergeDefaults(defaults, overrides)`, `isSystemKey(key)`, `getSystemKeyPatterns()` |
+| Patron identity | `rotatePatronKey(newPublicKey, signature)` — self-authenticating key rotation (verifies against current key) |
 | State (read-only) | `getSessionId()`, `getSessionCost()`, `getKarma()`, `getDefaults()`, `getModelsConfig()`, `getModelCapabilities()`, `getDharma()`, `getToolRegistry()`, `getYamas()`, `getNiyamas()`, `getPatronId()`, `getPatronContact()`, `isPatronIdentityDisputed()`, `resolveContact(platform, platformUserId)`, `elapsed()` |
 
 **Not exposed:** `sendKernelAlert()` — kernel-internal only.
@@ -374,7 +380,7 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 
 | Tier | Access | Examples |
 |------|--------|---------|
-| **Immutable** | Cannot be written by anyone | `dharma`, `patron:public_key` |
+| **Immutable** | Cannot be written by anyone (except `rotatePatronKey` for `patron:public_key`) | `dharma`, `patron:public_key` |
 | **Kernel-only** | Only kernel internal code can read/write | `kernel:*`, `sealed:*` |
 | **Operator-only** | Blocked from agent writes in `kvWritePrivileged` | `contact:*`, `contact_index:*` |
 | **System (privileged)** | Writable via `kvWritePrivileged` only — snapshots to karma, rate-limited, audited | All `SYSTEM_KEY_PREFIXES` keys |

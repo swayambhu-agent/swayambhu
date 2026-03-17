@@ -1,353 +1,312 @@
-# Swayambhu — KV Schema, Tool Inventory & Provider Cascade
+# KV Schema, Tool Inventory & Provider Cascade
 
-Generated: 2026-03-16
+Generated 2026-03-17. Covers every KV key, tool, and provider in the codebase.
 
 ---
 
 ## 1. KV Schema
 
-### 1.1 System Key Protection Levels
+### 1.1 Identity
 
-The kernel enforces four protection tiers via static constants on `Brainstem` (brainstem.js:276–291):
+| Key | Stored type | Written by | Read by | Seeded | Protection |
+|-----|-------------|------------|---------|--------|------------|
+| `identity:did` | JSON `{ did, address, chain_id, chain_name, registry, ... }` | `scripts/seed-local-kv.mjs`, `scripts/generate-identity.js` | Agent via `kv_query` tool only — no runtime code reads this directly | Yes | System (`config:` would apply if prefix-matched, but this key is prefix `identity:` which is NOT in SYSTEM_KEY_PREFIXES — it is a regular key) |
+| `dharma` | Text (markdown) | `scripts/seed-local-kv.mjs` | `brainstem.js:loadEagerConfig()` → injected into every LLM call via `callLLM()` | Yes | Immutable — `kvPut()`, `kvPutSafe()`, and `kvWritePrivileged()` all reject writes to `"dharma"` |
 
-| Tier | Constant | Protection |
-|------|----------|------------|
-| System prefix | `SYSTEM_KEY_PREFIXES` | Requires `kvWritePrivileged()` — hook code cannot use `kvPutSafe()` |
-| Kernel-only prefix | `KERNEL_ONLY_PREFIXES` | Cannot be written by tools (ScopedKV blocks); sealed: also unreadable by tools |
-| System exact | `SYSTEM_KEY_EXACT` | Same rules as system prefix, matched by exact key name |
-| Immutable | `IMMUTABLE_KEYS` | Cannot be changed even via `kvWritePrivileged()` |
+### 1.2 Config
 
-**SYSTEM_KEY_PREFIXES:** `prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `modification_staged:`, `modification_snapshot:`, `hook:`, `doc:`, `git_pending:`, `yama:`, `niyama:`, `viveka:`, `prajna:`, `comms_blocked:`, `contact:`, `contact_index:`, `sealed:`
+| Key | Stored type | Written by | Read by | Seeded | Protection |
+|-----|-------------|------------|---------|--------|------------|
+| `config:defaults` | JSON (models, budgets, effort levels, execution limits) | `seed-local-kv.mjs`; agent via `kvWritePrivileged` | `brainstem.js:loadEagerConfig()`, `hook-main.js:wake()`, `hook-reflect.js`, `hook-chat.js:handleChat()` | Yes | System (prefix `config:`) — requires `kvWritePrivileged` |
+| `config:models` | JSON (model list, pricing, alias_map, fallback_model) | `seed-local-kv.mjs`; agent via `kvWritePrivileged` | `brainstem.js:loadEagerConfig()`, `hook-main.js:wake()` | Yes | System |
+| `config:model_capabilities` | JSON (yama_capable, niyama_capable, comms_gate_capable flags per model) | `seed-local-kv.mjs`; agent via `kvWritePrivileged` (requires deliberation ≥200 chars + yama_capable model) | `brainstem.js:loadEagerConfig()`, `isYamaCapable()`, `isNiyamaCapable()`, `isCommsGateCapable()` | Yes | System + extra gate (deliberation + model capability check) |
+| `config:resources` | JSON (KV limits, worker limits, OpenRouter/wallet/Slack endpoints) | `seed-local-kv.mjs` | `hook-main.js:runSession()` | Yes | System |
+| `config:tool_registry` | JSON (tool definitions for function calling) | `seed-local-kv.mjs`; agent via `kvWritePrivileged` | `brainstem.js:loadEagerConfig()`, `buildToolDefinitions()` | Yes | System |
+| `providers` | JSON (registered LLM providers with adapter bindings) | `seed-local-kv.mjs` | `brainstem.js:checkBalance()` | Yes | System (exact match in `SYSTEM_KEY_EXACT`) |
+| `wallets` | JSON (registered crypto wallets with adapter bindings) | `seed-local-kv.mjs` | `brainstem.js:checkBalance()` | Yes | System (exact match in `SYSTEM_KEY_EXACT`) |
 
-**KERNEL_ONLY_PREFIXES:** `kernel:`, `sealed:`
+### 1.3 Tools
 
-**SYSTEM_KEY_EXACT:** `providers`, `wallets`, `patron:contact`, `patron:identity_snapshot`
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `tool:{name}:code` | Text (JS source) | `seed-local-kv.mjs` | `brainstem.js:_loadTool()`, `callHook()` | Yes (8 tools) | System (prefix `tool:`) |
+| `tool:{name}:meta` | JSON (kv_access, timeout_ms — security fields stripped) | `seed-local-kv.mjs` | `brainstem.js:_loadTool()`, `callHook()` | Yes (8 tools) | System |
 
-**IMMUTABLE_KEYS:** `patron:public_key`
+Seeded tool names: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `akash_exec`, `check_email`, `send_email`.
 
-### 1.2 Complete Key Reference
+### 1.4 Providers
 
-#### Identity & Patron
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `provider:{name}:code` | Text (JS source) | `seed-local-kv.mjs` | `brainstem.js:callViaAdapter()`, `executeAdapter()`, `_executeTool()` (for provider-bound tools) | Yes (4 providers) | System (prefix `provider:`) |
+| `provider:{name}:meta` | JSON (secrets, timeout_ms) | `seed-local-kv.mjs` | `brainstem.js:callViaAdapter()`, `executeAdapter()` | Yes (4 providers) | System |
+| `provider:llm:last_working:code` | Text (JS source) | `brainstem.js:callWithCascade()` (on success, snapshots dynamic adapter) | `brainstem.js:callWithCascade()` (tier 2 fallback) | No | System |
+| `provider:llm:last_working:meta` | JSON | `brainstem.js:callWithCascade()` | `brainstem.js:callWithCascade()` | No | System |
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `identity:did` | — | seed | DID, address, chain, registry, dharma_hash | none | yes |
-| `patron:contact` | brainstem.js:`loadPatronContext()` | seed | Pointer to patron contact slug (e.g. "swami_kevala") | system exact | yes |
-| `patron:public_key` | brainstem.js:`loadPatronContext()` | seed | Patron's ssh-ed25519 public key | immutable | yes |
-| `patron:identity_snapshot` | brainstem.js:`loadPatronContext()` | brainstem.js:`loadPatronContext()` (kernel only) | Cached patron identity for deep-reflect context | system exact | no |
+Seeded provider names: `llm`, `llm_balance`, `wallet_balance`, `gmail`.
 
-#### Configuration
+### 1.5 Kernel-internal
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `config:defaults` | brainstem.js:`loadEagerConfig()`, hook-main.js:`wake()`, hook-chat.js:`handleChat()` | seed, kvWritePrivileged | Master config: orient/reflect/chat models, budgets, wake settings, execution limits | system prefix | yes |
-| `config:models` | brainstem.js:`loadEagerConfig()`, hook-main.js:`wake()` | seed | LLM model registry: ids, aliases, costs, alias_map, fallback_model | system prefix | yes |
-| `config:model_capabilities` | brainstem.js:`loadEagerConfig()` | seed | Model capability flags (yama_capable, niyama_capable, comms_gate_capable) | system prefix | yes |
-| `config:resources` | hook-main.js:`runSession()` | seed | Platform limits: KV, worker, OpenRouter, wallet, Slack | system prefix | yes |
-| `config:tool_registry` | brainstem.js:`loadEagerConfig()` | seed | Tool definitions with names, descriptions, input schemas | system prefix | yes |
+| Key | Stored type | Written by | Read by | Seeded | Protection |
+|-----|-------------|------------|---------|--------|------------|
+| `kernel:tool_grants` | JSON (per-tool security grants: secrets, communication, inbound, provider) | `seed-local-kv.mjs`, `scripts/sync-tool-grants.mjs` | `brainstem.js:loadEagerConfig()`, `executeToolCall()`, `executeAction()`, `_executeTool()` | Yes | Kernel-only (prefix `kernel:`) — agent cannot read or write via RPC |
+| `kernel:alert_config` | JSON (Slack alert template) | `seed-local-kv.mjs` | `brainstem.js:sendKernelAlert()` | Yes | Kernel-only |
+| `kernel:llm_fallback` | Text (JS source — copy of providers/llm.js) | `seed-local-kv.mjs` | `brainstem.js:callViaKernelFallback()` | Yes | Kernel-only |
+| `kernel:llm_fallback:meta` | JSON (provider metadata) | `seed-local-kv.mjs` | `brainstem.js:callViaKernelFallback()` | Yes | Kernel-only |
+| `kernel:fallback_model` | JSON string (`"anthropic/claude-haiku-4.5"`) | `seed-local-kv.mjs` | `brainstem.js:getFallbackModel()` | Yes | Kernel-only |
+| `kernel:active_session` | Text (session ID) | `brainstem.js:executeHook()` (write), `brainstem.js:executeHook()` (delete) | `brainstem.js:detectPlatformKill()`, `hook-main.js:detectCrash()`, `dashboard-api:GET /health` | No | Kernel-only |
+| `kernel:last_sessions` | JSON (array of last 5 sessions with outcome + timestamp) | `brainstem.js:detectPlatformKill()`, `updateSessionOutcome()` | `brainstem.js:checkHookSafety()` | No | Kernel-only |
+| `kernel:last_good_hook` | JSON `{ manifest, modules }` or `{ code }` | `brainstem.js:updateSessionOutcome()` (on clean outcome) | `brainstem.js:checkHookSafety()` (for auto-restore after tripwire) | No | Kernel-only |
+| `kernel:hook_dirty` | JSON boolean | `brainstem.js:kvWritePrivileged()` (on any `hook:` write) | `brainstem.js:updateSessionOutcome()` | No | Kernel-only |
 
-#### Dharma & Principles
+### 1.6 Prompts
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `dharma` | brainstem.js:`buildPrompt()` | seed | Core identity — injected into every LLM prompt | none | yes |
-| `yama:care` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Yama: inclusive care | system prefix | yes |
-| `yama:truth` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Yama: transparency | system prefix | yes |
-| `yama:responsibility` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Yama: unlimited responsibility | system prefix | yes |
-| `yama:discipline` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Yama: resource discipline | system prefix | yes |
-| `yama:rules` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Yama: respect for rules | system prefix | yes |
-| `yama:security` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Yama: data security | system prefix | yes |
-| `yama:humility` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Yama: intellectual humility | system prefix | yes |
-| `yama:*:audit` | brainstem.js:`kvWritePrivileged()` | brainstem.js:`kvWritePrivileged()` | Audit trail appended on yama modification | system prefix | runtime |
-| `niyama:health` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Niyama: code health | system prefix | yes |
-| `niyama:acceptance` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Niyama: acceptance | system prefix | yes |
-| `niyama:transformation` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Niyama: transformation | system prefix | yes |
-| `niyama:reflection` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Niyama: regular reflection | system prefix | yes |
-| `niyama:alignment` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Niyama: dharma alignment | system prefix | yes |
-| `niyama:nonidentification` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Niyama: non-identification with instruments | system prefix | yes |
-| `niyama:organization` | brainstem.js:`loadYamasNiyamas()` | seed, kvWritePrivileged | Niyama: workspace organization | system prefix | yes |
-| `niyama:*:audit` | brainstem.js:`kvWritePrivileged()` | brainstem.js:`kvWritePrivileged()` | Audit trail appended on niyama modification | system prefix | runtime |
+| Key | Stored type | Written by | Read by | Seeded | Protection |
+|-----|-------------|------------|---------|--------|------------|
+| `prompt:orient` | Text (markdown) | `seed-local-kv.mjs` | `hook-main.js:runSession()`, `hook-reflect.js:gatherReflectContext()` (passed as template var to deep reflect) | Yes | System (prefix `prompt:`) |
+| `prompt:reflect` | Text (markdown) | `seed-local-kv.mjs` | `hook-reflect.js:executeReflect()` | Yes | System |
+| `prompt:reflect:1` | Text (markdown — deep reflect prompt for depth 1) | `seed-local-kv.mjs` | `hook-reflect.js:loadReflectPrompt()`, `loadBelowPrompt()` | Yes | System |
+| `prompt:reflect:{depth}` | Text (markdown — deep reflect prompt for depth N) | Agent via `kvWritePrivileged` | `hook-reflect.js:loadReflectPrompt()`, `loadBelowPrompt()` | Only depth 1 | System |
+| `prompt:subplan` | Text (markdown) | `seed-local-kv.mjs` | `brainstem.js:spawnSubplan()` | Yes | System |
+| `prompt:chat` | Text | `seed-local-kv.mjs` | `hook-chat.js:handleChat()` | Yes | System |
 
-#### Wisdom
+### 1.7 Hook Modules (Wake Cycle)
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `viveka:comms:defaults` | brainstem.js:`communicationGate()` (via `viveka:comms:` prefix list) | seed | Default communication stance | system prefix | yes |
-| `viveka:channel:*` | brainstem.js:`communicationGate()` | kvWritePrivileged | Per-channel communication wisdom | system prefix | no |
-| `viveka:comms:*` | brainstem.js:`communicationGate()` | kvWritePrivileged | General communication wisdom | system prefix | no |
-| `prajna:*` | — (reserved prefix) | — | Reserved for future wisdom keys | system prefix | no |
+| Key | Stored type | Written by | Read by | Seeded | Protection |
+|-----|-------------|------------|---------|--------|------------|
+| `hook:wake:manifest` | JSON (filename → KV key mapping) | `seed-local-kv.mjs` | `brainstem.js:runScheduled()`, `checkHookSafety()`, `updateSessionOutcome()` | Yes | System (prefix `hook:`) |
+| `hook:wake:code` | Text (JS — hook-main.js source) | `seed-local-kv.mjs` | Via manifest; `brainstem.js:runScheduled()` (fallback if no manifest) | Yes | System |
+| `hook:wake:reflect` | Text (JS — hook-reflect.js source) | `seed-local-kv.mjs` | Via manifest | Yes | System |
+| `hook:wake:modifications` | Text (JS — hook-modifications.js source) | `seed-local-kv.mjs` | Via manifest | Yes | System |
+| `hook:wake:protect` | Text (JS — hook-protect.js source) | `seed-local-kv.mjs` | Via manifest | Yes | System |
 
-#### Prompts
+### 1.8 Channel Adapters
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `prompt:orient` | hook-main.js:`runSession()` | seed, kvWritePrivileged | Orient session system prompt | system prefix | yes |
-| `prompt:reflect` | hook-reflect.js:`loadReflectPrompt()` | seed, kvWritePrivileged | Session-level reflection prompt (depth 0) | system prefix | yes |
-| `prompt:reflect:1` | hook-reflect.js:`loadReflectPrompt()` | seed, kvWritePrivileged | Deep reflection prompt (depth 1) | system prefix | yes |
-| `prompt:reflect:{depth}` | hook-reflect.js:`loadReflectPrompt()` | kvWritePrivileged | Deep reflection prompts (depth 2+, not seeded) | system prefix | no |
-| `prompt:subplan` | brainstem.js:`spawnSubplan()` | seed, kvWritePrivileged | Subplan agent prompt template | system prefix | yes |
-| `prompt:chat` | hook-chat.js:`handleChat()` | seed, kvWritePrivileged | Chat system prompt | system prefix | yes |
+| Key | Stored type | Written by | Read by | Seeded | Protection |
+|-----|-------------|------------|---------|--------|------------|
+| `channel:slack:code` | Text (JS — channels/slack.js source) | `seed-local-kv.mjs` | `brainstem.js:fetch()` handler (prod — loads adapter from KV) | Yes | System (prefix treated as code, git-syncable) |
+| `channel:slack:config` | JSON (secrets list, webhook_secret_env) | `seed-local-kv.mjs` | `brainstem.js:fetch()` handler | Yes | System |
 
-#### Providers
+### 1.9 Contacts & Patron
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `provider:llm:code` | brainstem.js:`callWithCascade()` tier 1 | seed, kvWritePrivileged | Primary LLM provider source code | system prefix | yes |
-| `provider:llm:meta` | brainstem.js:`callWithCascade()` tier 1 | seed, kvWritePrivileged | Primary LLM provider metadata | system prefix | yes |
-| `provider:llm:last_working:code` | brainstem.js:`callWithCascade()` tier 2 | brainstem.js:`callWithCascade()` (snapshot on success) | Cached last-working LLM code | system prefix | no |
-| `provider:llm:last_working:meta` | brainstem.js:`callWithCascade()` tier 2 | brainstem.js:`callWithCascade()` (snapshot on success) | Cached last-working LLM metadata | system prefix | no |
-| `provider:llm_balance:code` | brainstem.js:`executeAdapter()` | seed | LLM balance check provider code | system prefix | yes |
-| `provider:llm_balance:meta` | brainstem.js:`executeAdapter()` | seed | LLM balance check provider metadata | system prefix | yes |
-| `provider:wallet_balance:code` | brainstem.js:`executeAdapter()` | seed | Wallet balance check provider code | system prefix | yes |
-| `provider:wallet_balance:meta` | brainstem.js:`executeAdapter()` | seed | Wallet balance check provider metadata | system prefix | yes |
-| `provider:gmail:code` | brainstem.js:`_executeTool()` (for tools with meta.provider) | seed | Gmail API adapter code | system prefix | yes |
-| `provider:gmail:meta` | brainstem.js:`_executeTool()` | seed | Gmail API adapter metadata | system prefix | yes |
-| `providers` | brainstem.js:`checkBalance()` | seed | Provider registry: maps names to adapter bindings | system exact | yes |
-| `wallets` | brainstem.js:`checkBalance()` | seed | Wallet registry: maps names to adapter bindings | system exact | yes |
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `contact:{slug}` | JSON (name, relationship, platforms, chat config, etc.) | `seed-local-kv.mjs` (swami_kevala), `dashboard-api:POST /contacts` | `brainstem.js:resolveContact()`, `loadPatronContext()`, `communicationGate()` | Yes (1 contact) | System (prefix `contact:`) + operator-only via `kvWritePrivileged` (rejects contact: writes) |
+| `contact_index:{platform}:{userId}` | JSON string (contact slug) | `brainstem.js:resolveContact()` (cache miss), `dashboard-api:POST /contacts` | `brainstem.js:resolveContact()` | No (auto-created) | System (prefix `contact_index:`) + operator-only |
+| `patron:contact` | Text (contact slug) | `seed-local-kv.mjs` | `brainstem.js:loadPatronContext()` | Yes | System (exact match in `SYSTEM_KEY_EXACT`) |
+| `patron:public_key` | Text (SSH Ed25519 public key) | `seed-local-kv.mjs`; `brainstem.js:rotatePatronKey()` (bypasses kvPut guard via direct kv.put) | `brainstem.js:verifyPatronSignature()` | Yes | Immutable (`IMMUTABLE_KEYS`) — only rotatePatronKey can write (direct KV binding, requires Ed25519 sig) |
+| `patron:identity_snapshot` | JSON `{ name, platforms, verified_at }` | `brainstem.js:loadPatronContext()` (first boot) | `brainstem.js:loadPatronContext()` | No (auto-created on first boot) | System (exact match in `SYSTEM_KEY_EXACT`) |
 
-#### Tools
+### 1.10 Yamas & Niyamas (Operating Principles)
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `tool:{name}:code` | brainstem.js:`_loadTool()` | seed, kvWritePrivileged | Tool source code (8 tools) | system prefix | yes |
-| `tool:{name}:meta` | brainstem.js:`_loadTool()` | seed, kvWritePrivileged | Tool metadata JSON (8 tools) | system prefix | yes |
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `yama:{name}` | Text (principle text) | `seed-local-kv.mjs` (7 keys); agent via `kvWritePrivileged` | `brainstem.js:loadYamasNiyamas()` → injected into every LLM call | Yes (7) | System (prefix `yama:`) + deliberation gate (min 200 chars) + yama_capable model required |
+| `yama:{name}:audit` | JSON array of audit entries | `brainstem.js:kvWritePrivileged()` (auto-created on yama write) | `brainstem.js:kvWritePrivileged()` (appends) | No | System |
+| `niyama:{name}` | Text (principle text) | `seed-local-kv.mjs` (7 keys); agent via `kvWritePrivileged` | `brainstem.js:loadYamasNiyamas()` → injected into every LLM call | Yes (7) | System (prefix `niyama:`) + deliberation gate (min 100 chars) + niyama_capable model required |
+| `niyama:{name}:audit` | JSON array of audit entries | `brainstem.js:kvWritePrivileged()` (auto-created on niyama write) | `brainstem.js:kvWritePrivileged()` (appends) | No | System |
 
-Tools seeded: send_slack, web_fetch, kv_write, kv_manifest, kv_query, akash_exec, check_email, send_email
+Seeded yamas: `care`, `truth`, `responsibility`, `discipline`, `rules`, `security`, `humility`.
+Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignment`, `nonidentification`, `organization`.
 
-#### Wake Hook
+### 1.11 Session & Runtime State
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `hook:wake:manifest` | brainstem.js:`runScheduled()` | seed, kvWritePrivileged | Module manifest: maps filenames → KV keys | system prefix | yes |
-| `hook:wake:code` | brainstem.js (via manifest) | seed, kvWritePrivileged | hook-main.js source | system prefix | yes |
-| `hook:wake:reflect` | brainstem.js (via manifest) | seed, kvWritePrivileged | hook-reflect.js source | system prefix | yes |
-| `hook:wake:modifications` | brainstem.js (via manifest) | seed, kvWritePrivileged | hook-modifications.js source | system prefix | yes |
-| `hook:wake:protect` | brainstem.js (via manifest) | seed, kvWritePrivileged | hook-protect.js source | system prefix | yes |
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `wake_config` | JSON `{ next_wake_after, sleep_seconds, effort, ... }` | `hook-main.js:writeSessionResults()`, `hook-reflect.js:executeReflect()`, `applyReflectOutput()` | `hook-main.js:wake()`, `dashboard-api:GET /health` | No | Regular (kvPutSafe) |
+| `session_counter` | JSON number | `hook-main.js:writeSessionResults()`, `brainstem.js:runMinimalFallback()` | `brainstem.js:getSessionCount()`, `dashboard-api:GET /health` | No | Regular |
+| `cache:session_ids` | JSON array of session ID strings | `hook-main.js:writeSessionResults()` | `hook-reflect.js:gatherReflectContext()`, `dashboard-api:GET /sessions` | No | Regular |
+| `karma:{sessionId}` | JSON array of karma entries | `brainstem.js:karmaRecord()` (appended every event) | `hook-main.js:detectCrash()`, `hook-reflect.js:executeReflect()` (session karma), `dashboard-api` | No | Regular (prefix `karma:` is not in SYSTEM_KEY_PREFIXES) |
+| `last_reflect` | JSON (reflection output + session_id) | `hook-reflect.js:executeReflect()` (depth 0), `applyReflectOutput()` (depth 1) | `hook-main.js:wake()` (loads for orient context), `dashboard-api:GET /health` | No | Regular |
+| `last_danger` | JSON `{ t, event, session_id }` | `brainstem.js:karmaRecord()` (on DANGER_SIGNALS: fatal_error, orient_parse_error, all_providers_failed) | `hook-modifications.js:runCircuitBreaker()` (read + delete) | No | Regular |
 
-#### Channel Adapters
+### 1.12 Reflect Output & Scheduling
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `channel:slack:code` | brainstem.js:`fetch()` handler | seed | Slack adapter source code | none | yes |
-| `channel:slack:config` | brainstem.js:`fetch()` handler | seed | Slack adapter config (secrets, webhook_secret_env) | none | yes |
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `reflect:{depth}:{sessionId}` | JSON `{ reflection, note_to_future_self, depth, session_id, timestamp }` | `hook-reflect.js:executeReflect()` (depth 0), `applyReflectOutput()` (depth 1+) | `hook-reflect.js:loadReflectHistory()`, `dashboard-api:GET /reflections`, `GET /sessions` | No | System (prefix `reflect:` — though it's not listed in SYSTEM_KEY_PREFIXES; metadata type is `reflect_output`) |
+| `reflect:schedule:{depth}` | JSON `{ after_sessions, after_days, last_reflect, last_reflect_session, ... }` | `hook-reflect.js:applyReflectOutput()` | `hook-reflect.js:isReflectDue()` | No | See above |
 
-#### Session Lifecycle
+**Note:** The `reflect:` prefix is NOT in `SYSTEM_KEY_PREFIXES`. These keys are written via `kvPutSafe` (not `kvWritePrivileged`), so they're regular keys.
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `session_counter` | hook-main.js:`writeSessionResults()`, hook-reflect.js:`isReflectDue()` | hook-main.js:`writeSessionResults()` | Global session counter (incremented each wake) | none | no |
-| `cache:session_ids` | dashboard-api/worker.js:`/sessions`, scripts/dump-sessions.mjs | hook-main.js:`writeSessionResults()` | Cached list of recent session IDs | none | no |
-| `wake_config` | hook-main.js:`wake()` (skip check), dashboard-api/worker.js:`/health` | hook-main.js:`writeSessionResults()`, hook-reflect.js:`applyReflectOutput()`, `applyDeepReflectOutput()` | Wake schedule: sleep_seconds, next_wake_after, effort | none | no |
-| `last_reflect` | dashboard-api/worker.js:`/health`, `/sessions` | hook-reflect.js:`applyDeepReflectOutput()` (depth 1 only) | Last reflection summary | none | no |
-| `last_danger` | brainstem.js | brainstem.js:`sendKernelAlert()` | Last danger signal recorded | none | no |
+### 1.13 Modification Protocol
 
-#### Kernel Internal
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `modification_staged:{id}` | JSON (modification request: id, type, claims, ops, checks, validation, staged metadata) | `hook-modifications.js:stageModification()`, `processReflectVerdicts()` ("modify"), `processDeepReflectVerdicts()` ("modify") | `hook-modifications.js:loadStagedModifications()`, `acceptStaged()`, verdict processing | No | System (prefix `modification_staged:`) — written via `kvWritePrivileged` |
+| `modification_snapshot:{id}` | JSON (activated modification: full record + snapshots of original values) | `hook-modifications.js:acceptStaged()`, `acceptDirect()` | `hook-modifications.js:loadInflightModifications()`, `rollbackInflight()`, `findInflightConflict()`, `promoteInflight()`, `runCircuitBreaker()` | No | System (prefix `modification_snapshot:`) — written via `kvWritePrivileged` |
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `kernel:active_session` | brainstem.js:`executeHook()`, hook-main.js:`detectCrash()`, dashboard-api:`/health` | brainstem.js:`executeHook()` | Current active session ID (concurrency guard) | kernel-only | no |
-| `kernel:last_sessions` | brainstem.js:`executeHook()` | brainstem.js:`executeHook()` | Recent session IDs with outcomes | kernel-only | no |
-| `kernel:hook_dirty` | brainstem.js:`checkHookSafety()` | brainstem.js:`checkHookSafety()` | Flag: hook code needs re-verification after crash | kernel-only | no |
-| `kernel:last_good_hook` | brainstem.js:`checkHookSafety()` | brainstem.js:`checkHookSafety()` | Snapshot of last verified-clean hook code | kernel-only | no |
-| `kernel:alert_config` | brainstem.js:`sendKernelAlert()` | seed | Slack alert template (URL, headers, body_template) | kernel-only | yes |
-| `kernel:llm_fallback` | brainstem.js:`callViaKernelFallback()` | seed | Fallback LLM provider code (human-managed) | kernel-only | yes |
-| `kernel:llm_fallback:meta` | brainstem.js:`callViaKernelFallback()` | seed | Fallback LLM provider metadata | kernel-only | yes |
-| `kernel:fallback_model` | brainstem.js:`callWithCascade()` | seed | Model ID used when all tiers fail (e.g. claude-haiku-4.5) | kernel-only | yes |
+### 1.14 Git Sync
 
-#### Karma
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `git_pending:{modificationId}` | JSON `{ modification_id, writes, deletes, message, created_at }` | `hook-modifications.js:syncToGit()` | `hook-modifications.js:attemptGitSync()`, `retryPendingGitSyncs()` | No | System (prefix `git_pending:`) — written via `kvWritePrivileged` |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `karma:{sessionId}` | dashboard-api:`/sessions`, scripts/rollback-session.mjs, hook-main.js:`detectCrash()` | brainstem.js:`karmaRecord()` | Array of karma events for a session (llm_call, tool_start, tool_complete, etc.) | none | no |
+### 1.15 Chat
 
-#### Reflection
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `chat:state:{channel}:{chatId}` | JSON `{ messages, total_cost, created_at, turn_count, last_activity }` | `hook-chat.js:handleChat()` | `hook-chat.js:handleChat()` (same function) | No | Regular (kvPutSafe) |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `reflect:0:{sessionId}` | dashboard-api:`/sessions`, scripts/rollback-session.mjs | hook-reflect.js:`executeReflect()` | Session-level reflection output | none | no |
-| `reflect:{depth}:{sessionId}` | hook-reflect.js:`loadReflectHistory()`, dashboard-api:`/reflections` (depth 1 only) | hook-reflect.js:`applyDeepReflectOutput()` | Deep reflection output at given depth | none | no |
-| `reflect:schedule:{depth}` | hook-reflect.js:`isReflectDue()` | hook-reflect.js:`applyReflectOutput()`, `applyDeepReflectOutput()` | Reflection schedule: after_sessions, after_days, last_reflect, last_reflect_session | none | no |
+### 1.16 Dedup
 
-#### Modifications
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `dedup:{msgId}` | Text `"1"` (TTL: 30s) | `brainstem.js:fetch()`, `brainstem-dev.js:fetch()` | Same (dedup check) | No | Regular (direct kv.put with expirationTtl) |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `modification_staged:{id}` | hook-modifications.js:`loadStagedModifications()`, `acceptStaged()` | hook-modifications.js:`stageModification()` | Staged modification record (pending reflect verdict) | system prefix | no |
-| `modification_snapshot:{id}` | hook-modifications.js:`loadInflightModifications()`, `rollbackInflight()`, `promoteInflight()` | hook-modifications.js:`acceptStaged()`, `acceptDirect()` | Inflight modification with rollback snapshot | system prefix | no |
+### 1.17 Docs (Agent-Readable Reference)
 
-#### Git Sync
+| Key | Stored type | Written by | Read by | Seeded | Protection |
+|-----|-------------|------------|---------|--------|------------|
+| `doc:modification_guide` | Text (markdown) | `seed-local-kv.mjs` | Agent via `kv_query` tool | Yes | System (prefix `doc:`) |
+| `doc:architecture` | Text (markdown) | `seed-local-kv.mjs` | Agent via `kv_query` tool | Yes | System |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `git_pending:{modificationId}` | hook-modifications.js:`retryPendingGitSyncs()` | hook-modifications.js:`syncToGit()` | Pending git sync record (retried each wake) | system prefix | no |
+### 1.18 Wisdom (Communication)
 
-#### Contacts
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `viveka:comms:defaults` | JSON `{ text, type, created, sources }` | `seed-local-kv.mjs` | `brainstem.js:loadCommsViveka()` (prefix scan `viveka:comms:`) | Yes | System (prefix `viveka:`) |
+| `viveka:comms:{topic}` | JSON | Agent via `kvWritePrivileged` | `brainstem.js:loadCommsViveka()` | No | System |
+| `viveka:channel:{name}` | JSON | Agent via `kvWritePrivileged` | `brainstem.js:loadCommsViveka()` (prefix scan `viveka:channel:`) | No | System |
+| `prajna:*` | JSON | Agent via `kvWritePrivileged` | None (prefix reserved in SYSTEM_KEY_PREFIXES and kvPut metadata defaults, but no runtime code reads it) | No | System (prefix `prajna:`) |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `contact:{slug}` | brainstem.js:`resolveContact()`, `loadPatronContext()` | seed, dashboard-api:`POST /contacts` | Contact record: name, platforms, relationship, chat config, communication | system prefix | yes (swami_kevala) |
-| `contact_index:{platform}:{userId}` | brainstem.js:`resolveContact()` | seed, dashboard-api:`POST /contacts` | Reverse lookup: platform user ID → contact slug | system prefix | yes (slack:U084ASKBXB7) |
+### 1.19 Tool Data (Scoped Tool Storage)
 
-#### Chat
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `tooldata:{toolName}:{key}` | Text or JSON | `ScopedKV.put()` (tools with `kv_access: "own"`) | `ScopedKV.get()` | No | Regular (written via direct KV binding through ScopedKV) |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `chat:state:{channel}:{chatId}` | hook-chat.js:`handleChat()` | hook-chat.js:`handleChat()` | Conversation state: messages, total_cost, turn_count | none | no |
+### 1.20 Sealed (Kernel-Only, Agent-Unreadable)
 
-#### Communications
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `sealed:quarantine:{channel}:{senderId}:{ts}` | JSON `{ sender, content, tool, timestamp, subject?, from? }` | `brainstem.js:executeToolCall()` (inbound content gate — redacts content from unknown senders) | `dashboard-api:GET /quarantine` (patron-only); agent reads blocked by `ScopedKV`, `KernelRPC.kvGet()`, and `kv.list()` filter | No | Kernel-only (prefix `sealed:`) — all read paths return null for `sealed:` prefix |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `comms_blocked:{id}` | brainstem.js:`listBlockedComms()` | brainstem.js:`queueBlockedComm()` | Blocked outbound communication record | system prefix | no |
-| `sealed:quarantine:{channel}:{senderId}:{ts}` | dashboard-api:`GET /quarantine` | brainstem.js:`executeToolCall()` (inbound gate) | Quarantined inbound content from unknown senders | kernel-only | no |
+### 1.21 Communication Blocked Queue
 
-#### Deduplication
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `comms_blocked:{id}` | JSON (blocked message record: tool, args, channel, recipient, mode, reason, gate verdict, session info) | `brainstem.js:queueBlockedComm()` | `brainstem.js:listBlockedComms()`, `processCommsVerdict()` | No | System (prefix `comms_blocked:`) |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `dedup:{msgId}` | brainstem.js:`fetch()` handler | brainstem.js:`fetch()` handler | Message dedup flag (TTL ~30s via expirationTtl) | none | no |
+### 1.22 Secrets (Agent-Provisioned)
 
-#### Tool Data
+| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
+|-------------|-------------|------------|---------|--------|------------|
+| `secret:{name}` | JSON | Agent via `kvWritePrivileged` (or operator); also `kv:secret:{name}` references from provider config | `brainstem.js:buildToolContext()` (for tools with `kv_secrets` in meta), `runAdapter()` | No | System (prefix `secret:`) |
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `tooldata:{toolName}:{key}` | tools via ScopedKV | tools via ScopedKV (kv_access: "own") | Tool-scoped data namespace | none | no |
+---
 
-#### Secrets
+## 1.23 Seed Inventory & Orphan Check
 
-| Key pattern | Read | Write | Description | Protection | Seeded |
-|-------------|------|-------|-------------|------------|--------|
-| `secret:{name}` | brainstem.js:`buildToolContext()`, `runAdapter()` (via meta.kv_secrets) | — | KV-stored secrets (alternative to env vars) | system prefix | no |
+Total keys seeded by `seed-local-kv.mjs`: **~60** (exact count depends on tool/provider files).
 
-#### Documentation
+### Seeded keys and their runtime readers
 
-| Key | Read | Write | Description | Protection | Seeded |
-|-----|------|-------|-------------|------------|--------|
-| `doc:architecture` | tools (via kv_query/kv_manifest) | seed | System architecture reference doc | system prefix | yes |
-| `doc:modification_guide` | tools (via kv_query/kv_manifest) | seed | Modification Protocol reference doc | system prefix | yes |
+| Seeded key | Read at runtime? | Notes |
+|------------|-----------------|-------|
+| `identity:did` | **No direct reader** | Available via `kv_query` tool. No source code reads this key. Informational — agent can query it. |
+| `dharma` | Yes | `brainstem.js:loadEagerConfig()` → injected in every LLM call |
+| `config:defaults` | Yes | Multiple readers |
+| `config:models` | Yes | Multiple readers |
+| `config:model_capabilities` | Yes | `brainstem.js:loadEagerConfig()` |
+| `config:resources` | Yes | `hook-main.js:runSession()` |
+| `config:tool_registry` | Yes | `brainstem.js:loadEagerConfig()`, `buildToolDefinitions()` |
+| `providers` | Yes | `brainstem.js:checkBalance()` |
+| `wallets` | Yes | `brainstem.js:checkBalance()` |
+| `tool:{name}:code` (×8) | Yes | `brainstem.js:_loadTool()` |
+| `tool:{name}:meta` (×8) | Yes | `brainstem.js:_loadTool()` |
+| `provider:{name}:code` (×4) | Yes | `brainstem.js:callViaAdapter()`, `executeAdapter()` |
+| `provider:{name}:meta` (×4) | Yes | `brainstem.js:callViaAdapter()`, `executeAdapter()` |
+| `prompt:orient` | Yes | `hook-main.js:runSession()` |
+| `prompt:subplan` | Yes | `brainstem.js:spawnSubplan()` |
+| `prompt:reflect` | Yes | `hook-reflect.js:executeReflect()` |
+| `prompt:reflect:1` | Yes | `hook-reflect.js:loadReflectPrompt()` |
+| `prompt:chat` | Yes | `hook-chat.js:handleChat()` |
+| `hook:wake:code` | Yes | Via manifest or direct |
+| `hook:wake:reflect` | Yes | Via manifest |
+| `hook:wake:modifications` | Yes | Via manifest |
+| `hook:wake:protect` | Yes | Via manifest |
+| `hook:wake:manifest` | Yes | `brainstem.js:runScheduled()` |
+| `channel:slack:code` | Yes | `brainstem.js:fetch()` (prod path) |
+| `channel:slack:config` | Yes | `brainstem.js:fetch()` (prod path) |
+| `kernel:tool_grants` | Yes | `brainstem.js:loadEagerConfig()` |
+| `kernel:alert_config` | Yes | `brainstem.js:sendKernelAlert()` |
+| `kernel:llm_fallback` | Yes | `brainstem.js:callViaKernelFallback()` |
+| `kernel:llm_fallback:meta` | Yes | `brainstem.js:callViaKernelFallback()` |
+| `kernel:fallback_model` | Yes | `brainstem.js:getFallbackModel()` |
+| `yama:*` (×7) | Yes | `brainstem.js:loadYamasNiyamas()` |
+| `niyama:*` (×7) | Yes | `brainstem.js:loadYamasNiyamas()` |
+| `contact:swami_kevala` | Yes | `brainstem.js:resolveContact()`, `loadPatronContext()` |
+| `patron:contact` | Yes | `brainstem.js:loadPatronContext()` |
+| `patron:public_key` | Yes | `brainstem.js:verifyPatronSignature()` |
+| `viveka:comms:defaults` | Yes | `brainstem.js:loadCommsViveka()` |
+| `doc:modification_guide` | **No direct reader** | Available via `kv_query` tool |
+| `doc:architecture` | **No direct reader** | Available via `kv_query` tool |
 
-### 1.3 KV List Operations (Prefix Scans)
+### Orphaned seeds
 
-| Prefix | File:Function | Purpose |
-|--------|---------------|---------|
-| `yama:` | brainstem.js:`loadYamasNiyamas()` | Load all yama principles |
-| `niyama:` | brainstem.js:`loadYamasNiyamas()` | Load all niyama principles |
-| `contact:` | brainstem.js (contact discovery) | Find all contacts |
-| `viveka:channel:` | brainstem.js:`communicationGate()` | Load channel-specific communication wisdom |
-| `viveka:comms:` | brainstem.js:`communicationGate()` | Load general communication wisdom |
-| `comms_blocked:` | brainstem.js:`listBlockedComms()` | List all blocked communications |
-| `modification_staged:` | hook-main.js:`wake()` | Load staged modifications at wake start |
-| `modification_snapshot:` | hook-main.js:`wake()` | Load inflight modifications at wake start |
-| `reflect:{depth}:` | hook-reflect.js:`loadReflectHistory()` | Load recent reflections by depth |
-| `reflect:1:` | dashboard-api/worker.js:`/reflections` | Public reflection endpoint |
-| `karma:` | dashboard-api/worker.js:`/sessions` | Discover all sessions |
-| `sealed:quarantine:` | dashboard-api/worker.js:`/quarantine` | List quarantined inbound content |
-| `git_pending:` | hook-modifications.js:`retryPendingGitSyncs()` | Find pending git syncs to retry |
-| `reflect:` | scripts/rollback-session.mjs | Find reflections to delete during rollback |
+Keys seeded but with no code-level reader (only accessible via `kv_query` tool):
 
-### 1.4 Seed Audit — Orphaned Seeds
+1. **`identity:did`** — DID identity document. No runtime code reads this. Agent can query it.
+2. **`doc:modification_guide`** — Reference doc. No runtime code reads this. Agent can query it.
+3. **`doc:architecture`** — Reference doc. No runtime code reads this. Agent can query it.
 
-All 67 keys seeded by `scripts/seed-local-kv.mjs` are read at runtime. No orphaned seeds found.
+These are intentionally available for the agent to read via tools — they are not truly orphaned, just agent-facing reference data rather than code-consumed keys.
 
-| Seeded key | Runtime reader |
-|------------|----------------|
-| `identity:did` | Available via kv_query tool; not read by kernel directly |
-| `config:defaults` | brainstem.js, hook-main.js, hook-chat.js |
-| `config:models` | brainstem.js |
-| `config:model_capabilities` | brainstem.js |
-| `config:resources` | hook-main.js |
-| `config:tool_registry` | brainstem.js |
-| `dharma` | brainstem.js (every LLM prompt) |
-| `yama:*` (7) | brainstem.js (every LLM prompt) |
-| `niyama:*` (7) | brainstem.js (every LLM prompt) |
-| `prompt:orient` | hook-main.js |
-| `prompt:reflect` | hook-reflect.js |
-| `prompt:reflect:1` | hook-reflect.js |
-| `prompt:subplan` | brainstem.js |
-| `prompt:chat` | hook-chat.js |
-| `provider:*:code/meta` (8) | brainstem.js (cascade, adapters, tool providers) |
-| `providers` | brainstem.js (`checkBalance`) |
-| `wallets` | brainstem.js (`checkBalance`) |
-| `tool:*:code/meta` (16) | brainstem.js (`_loadTool`) |
-| `hook:wake:*` (5) | brainstem.js (`runScheduled` via manifest) |
-| `channel:slack:code` | brainstem.js (`fetch` handler) |
-| `channel:slack:config` | brainstem.js (`fetch` handler) |
-| `kernel:alert_config` | brainstem.js (`sendKernelAlert`) |
-| `kernel:llm_fallback` | brainstem.js (`callViaKernelFallback`) |
-| `kernel:llm_fallback:meta` | brainstem.js (`callViaKernelFallback`) |
-| `kernel:fallback_model` | brainstem.js (`callWithCascade`) |
-| `contact:swami_kevala` | brainstem.js (`resolveContact`) |
-| `contact_index:slack:U084ASKBXB7` | brainstem.js (`resolveContact`) |
-| `patron:contact` | brainstem.js (`loadPatronContext`) |
-| `patron:public_key` | brainstem.js (`loadPatronContext`) |
-| `viveka:comms:defaults` | brainstem.js (`communicationGate`) |
-| `doc:architecture` | Available via kv_query tool |
-| `doc:modification_guide` | Available via kv_query tool |
+### Reserved prefixes (in SYSTEM_KEY_PREFIXES but no seeded keys)
 
-Note: `identity:did`, `doc:architecture`, and `doc:modification_guide` are not read by kernel code directly but are accessible to the agent via kv_query/kv_manifest tools. They are not orphaned — they serve the agent's self-knowledge.
+- `prajna:` — Wisdom prefix. In `SYSTEM_KEY_PREFIXES` and `kvPut` metadata defaults, but no code reads these keys and nothing is seeded. Reserved for future use.
+- `secret:` — Agent-provisioned secrets. In `SYSTEM_KEY_PREFIXES`, read by `buildToolContext()` and `runAdapter()`, but nothing is seeded. Created at runtime if needed.
 
 ---
 
 ## 2. Tool Inventory
 
-### 2.1 Tool List
+### 2.1 Dynamic Tools (from `tools/*.js`, loaded from KV)
 
-| Tool | Description | File | Tier | KV Access | Timeout | Secrets |
-|------|-------------|------|------|-----------|---------|---------|
-| send_slack | Post a message to Slack | tools/send_slack.js | none | none | 10s | SLACK_BOT_TOKEN, SLACK_CHANNEL_ID |
-| web_fetch | Fetch contents of a URL | tools/web_fetch.js | none | none | 15s | — |
-| kv_write | Write to tool's own KV namespace | tools/kv_write.js | none | own | 5s | — |
-| kv_manifest | List KV keys with optional prefix | tools/kv_manifest.js | none | read_all | 5s | — |
-| kv_query | Read KV value with dot-bracket path navigation | tools/kv_query.js | none | read_all | 5s | — |
-| akash_exec | Run shell commands on Akash Linux server | tools/akash_exec.js | none | none | 300s | AKASH_CF_CLIENT_ID, AKASH_API_KEY |
-| check_email | Fetch unread emails from Gmail | tools/check_email.js | none | none | 15s | GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN |
-| send_email | Send email or reply via Gmail | tools/send_email.js | none | none | 15s | GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN |
+| Tool | File | What it does | `kv_access` | Secrets (from `kernel:tool_grants`) | Gates | Provider | Sessions |
+|------|------|-------------|-------------|-------------------------------------|-------|----------|----------|
+| `kv_query` | `tools/kv_query.js` | Read a KV value with optional dot-bracket path navigation. Returns small values directly, summarizes large structures. | `read_all` | None | None | None | Wake, reflect, chat |
+| `kv_write` | `tools/kv_write.js` | Write to tool's own scoped KV namespace (`tooldata:{toolName}:{key}`). | `own` | None | None | None | Wake, reflect, chat |
+| `kv_manifest` | `tools/kv_manifest.js` | List KV keys with optional prefix filter (max 500). | `read_all` | None | None | None | Wake, reflect, chat |
+| `send_slack` | `tools/send_slack.js` | Post a message to Slack via API. | `none` | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | **Communication gate** (`channel: "slack"`, `recipient_type: "destination"`) | None | Wake, chat |
+| `web_fetch` | `tools/web_fetch.js` | Fetch URL contents (GET or POST). Returns status + body (truncated to `max_length`). | `none` | None | None | None | Wake, reflect, chat |
+| `akash_exec` | `tools/akash_exec.js` | Run a shell command on the Akash Linux server. | `none` | `AKASH_CF_CLIENT_ID`, `AKASH_API_KEY` | None | None | Wake, reflect, chat |
+| `check_email` | `tools/check_email.js` | Fetch unread emails from Gmail inbox. | `none` | `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` | **Inbound gate** (`channel: "email"`, redacts unknown senders, quarantines under `sealed:`) | `gmail` | Wake, chat |
+| `send_email` | `tools/send_email.js` | Send email or reply via Gmail. | `none` | `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` | **Communication gate** (`channel: "email"`, `recipient_type: "person"`) | `gmail` | Wake, chat |
 
-No tools have `min_tier` restrictions. All tools are available equally (filtering is per-session, not per-tool).
+### 2.2 Built-in Tools (hardcoded in `brainstem.js:buildToolDefinitions()`)
 
-### 2.2 Built-in Tools (Kernel-Defined)
+| Tool | What it does | Sessions |
+|------|-------------|----------|
+| `spawn_subplan` | Spawn a nested agent loop to handle an independent sub-task. Multiple calls execute in parallel. Respects `max_subplan_depth` (default 3). | Wake (excluded from reflect by `hook-reflect.js` filter) |
+| `verify_patron` | Verify the patron's identity by checking an Ed25519 signature against `patron:public_key`. | Wake, reflect, chat |
+| `check_balance` | Check balances across all configured providers and wallets. Returns balances grouped by scope. | Wake, reflect, chat |
 
-These are not in `config:tool_registry` — they are added by `buildToolDefinitions()` or handled directly in `executeToolCall()`:
+### 2.3 Tool Session Availability
 
-| Tool | Description | Defined in | Available in |
-|------|-------------|------------|--------------|
-| spawn_subplan | Spawn a parallel sub-agent with a goal | brainstem.js:`buildToolDefinitions()` | orient only |
-| check_balance | Query provider/wallet balances | brainstem.js:`executeToolCall()` | orient, reflect (but filtered out of reflect tools) |
+All dynamic tools are available in all sessions by default — the tool registry (`config:tool_registry`) is loaded at boot and tools are offered to every `runAgentLoop()` / `callLLM()` call. The only exception:
 
-### 2.3 Tool Availability by Session Type
+- **Deep reflect (depth ≥1):** `hook-reflect.js:runReflect()` explicitly filters out `spawn_subplan` from the tool list (`allTools.filter(t => t.function.name !== 'spawn_subplan')`).
+- **Session reflect (depth 0):** `hook-reflect.js:executeReflect()` passes `tools: []` — no tools at all.
+- **Chat (unknown contacts):** `hook-chat.js:handleChat()` gives unknown contacts either no tools or only tools in `chatConfig.unknown_contact_tools` allowlist (default `[]`).
 
-| Session | Tools available | Filtering logic |
-|---------|----------------|-----------------|
-| **Orient** (wake) | All 8 registry tools + spawn_subplan + check_balance | hook-main.js:173 — `K.buildToolDefinitions()` (no filter) |
-| **Session reflect** (depth 0) | All 8 registry tools + check_balance, **minus spawn_subplan** | hook-reflect.js:135 — filters out `spawn_subplan` |
-| **Deep reflect** (depth 1+) | All 8 registry tools + check_balance, **minus spawn_subplan** | hook-reflect.js:135 — same filter |
-| **Chat (known contact)** | All 8 registry tools + spawn_subplan + check_balance | hook-chat.js:63 — `K.buildToolDefinitions()` (no filter) |
-| **Chat (unknown contact)** | Empty by default; configurable via `config:defaults.chat.unknown_contact_tools` allowlist | hook-chat.js:65–67 — filters to allowlist |
-| **Subplan** | All 8 registry tools + check_balance, **minus spawn_subplan** (no recursive subplans) | brainstem.js:`spawnSubplan()` — depth check prevents nesting |
+### 2.4 Communication Gate Summary
 
-### 2.4 Tool Communication Metadata
+Two tools are gated by the kernel's communication gate (`brainstem.js:communicationGate()`):
 
-Tools with `communication` metadata trigger the kernel's communication gate before execution:
+| Tool | Channel | Recipient type | Gate behavior |
+|------|---------|---------------|---------------|
+| `send_slack` | slack | destination | Mechanical floor skipped (destination, not person). LLM gate runs if model is `comms_gate_capable`. Queued if model not capable. |
+| `send_email` | email | person | Mechanical floor blocks initiation to unknown recipients. LLM gate runs. Queued if model not capable. |
 
-| Tool | Channel | Recipient field | Content field | Recipient type |
-|------|---------|----------------|---------------|----------------|
-| send_slack | slack | channel | text | destination |
-| send_email | email | to | body | person |
+### 2.5 Inbound Content Gate Summary
 
-Tools with `inbound` metadata trigger the kernel's inbound content gate after execution:
+One tool has an inbound content gate:
 
-| Tool | Channel | Sender field | Content field | Result array |
-|------|---------|-------------|---------------|--------------|
-| check_email | email | sender_email | body | emails |
-
-### 2.5 Tool Provider Dependencies
-
-| Tool | Provider | Provider code key |
-|------|----------|------------------|
-| check_email | gmail | provider:gmail:code |
-| send_email | gmail | provider:gmail:code |
-
-When a tool has `meta.provider`, the kernel loads the provider code and injects it into the tool's execution context.
+| Tool | Channel | Behavior |
+|------|---------|----------|
+| `check_email` | email | After execution, kernel scans returned emails. For each email where `sender_email` doesn't resolve to a known contact: content is replaced with `[content redacted — unknown sender]`, full content is quarantined at `sealed:quarantine:email:{sender}:{ts}`. |
 
 ---
 
@@ -355,92 +314,66 @@ When a tool has `meta.provider`, the kernel loads the provider code and injects 
 
 ### 3.1 Overview
 
-The LLM provider cascade is a three-tier fallback system for LLM calls. It only applies to the primary LLM calling path (`callLLM` → `callWithCascade`). Balance checks, tool execution, and provider adapters use separate paths.
+The LLM provider cascade is a three-tier fallback mechanism for making LLM calls. It ensures the system can always make LLM calls even if the primary provider adapter is corrupted or broken.
+
+**Implementation:** `brainstem.js:callWithCascade()` (lines 1588–1634).
 
 ### 3.2 Tiers
 
+| Tier | Name | KV keys | How populated | What happens on failure |
+|------|------|---------|---------------|------------------------|
+| 1 | **Dynamic** | `provider:llm:code`, `provider:llm:meta` | Seeded by `seed-local-kv.mjs`. Agent can modify via Modification Protocol (`kvWritePrivileged`). | Falls through to Tier 2. Logs `provider_fallback` karma event. |
+| 2 | **Last working** | `provider:llm:last_working:code`, `provider:llm:last_working:meta` | Auto-snapshotted by kernel on first successful Tier 1 call per session (`callWithCascade()`, lines 1593–1603). | Falls through to Tier 3. Logs `provider_fallback` karma event. |
+| 3 | **Kernel fallback** | `kernel:llm_fallback`, `kernel:llm_fallback:meta` | Seeded by `seed-local-kv.mjs` (identical to `provider:llm:code` at seed time). Stored under `kernel:` prefix — agent cannot modify. | Returns `{ ok: false }`. Caller records `all_providers_failed` DANGER_SIGNAL. |
+
+### 3.3 Cascade flow
+
 ```
-Tier 1: Dynamic adapter (provider:llm:code from KV)
-  ↓ on failure
-Tier 2: Last known working (provider:llm:last_working:code from KV)
-  ↓ on failure
-Tier 3: Kernel fallback (kernel:llm_fallback from KV — human-managed)
-  ↓ on failure
-Return { ok: false, error, tier: "all_failed" }
+callWithCascade(request, step)
+  │
+  ├── Tier 1: callViaAdapter("llm", request)
+  │     ├── Reads provider:llm:code + provider:llm:meta from KV
+  │     ├── Runs in isolate (prod) or direct call (dev)
+  │     ├── On success:
+  │     │     ├── Snapshots provider:llm:code → provider:llm:last_working:code (once per session)
+  │     │     └── Returns { ok: true, tier: "dynamic" }
+  │     └── On failure: logs provider_fallback, falls through
+  │
+  ├── Tier 2: callViaAdapter("llm:last_working", request)
+  │     ├── Reads provider:llm:last_working:code + meta from KV
+  │     ├── On success: returns { ok: true, tier: "last_working" }
+  │     └── On failure: logs provider_fallback, falls through
+  │
+  └── Tier 3: callViaKernelFallback(request)
+        ├── Reads kernel:llm_fallback + kernel:llm_fallback:meta from KV
+        ├── On success: returns { ok: true, tier: "kernel_fallback" }
+        └── On failure: returns { ok: false, tier: "all_failed" }
 ```
 
-#### Tier 1 — Dynamic adapter
+### 3.4 Model fallback (separate from provider cascade)
 
-| Aspect | Detail |
-|--------|--------|
-| Code source | `provider:llm:code` (KV) |
-| Metadata source | `provider:llm:meta` (KV) |
-| Populated by | seed script; modifiable via Modification Protocol |
-| On success | Snapshots code+meta to `provider:llm:last_working:code` and `provider:llm:last_working:meta` |
-| On failure | Records `provider_fallback` karma event, falls through to Tier 2 |
+After the provider cascade fails (all 3 tiers), `callLLM()` (line 1554) attempts a **model fallback**: if the requested model differs from `getFallbackModel()` (defaults to `anthropic/claude-haiku-4.5`), it re-enters `callLLM()` with the fallback model. This re-runs the full 3-tier cascade with a different model.
 
-#### Tier 2 — Last known working
+```
+callLLM(model=opus, ...)
+  → callWithCascade() → all 3 tiers fail
+  → getFallbackModel() → "anthropic/claude-haiku-4.5"
+  → callLLM(model=haiku, ...) → callWithCascade() again
+```
 
-| Aspect | Detail |
-|--------|--------|
-| Code source | `provider:llm:last_working:code` (KV) |
-| Metadata source | `provider:llm:last_working:meta` (KV) |
-| Populated by | Tier 1 on first success (auto-snapshot) |
-| On success | Returns result |
-| On failure | Records karma event, falls through to Tier 3 |
+### 3.5 Dev mode override
 
-#### Tier 3 — Kernel fallback
+In `brainstem-dev.js`, `callWithCascade()` is overridden to make a direct `fetch()` call to OpenRouter, bypassing the entire cascade. There is no tier system in dev — all calls go directly to `https://openrouter.ai/api/v1/chat/completions`.
 
-| Aspect | Detail |
-|--------|--------|
-| Code source | `kernel:llm_fallback` (KV — kernel-only prefix, not modifiable by hooks) |
-| Metadata source | `kernel:llm_fallback:meta` (KV) |
-| Populated by | seed script; only human can update (kernel-only protection) |
-| Fallback model | `kernel:fallback_model` used if primary model fails |
-| On success | Returns result |
-| On failure | Returns `{ ok: false, error, tier: "all_failed" }` |
+### 3.6 Key protection boundaries
 
-### 3.3 Implementation Location
+| KV key | Who can modify | Protection mechanism |
+|--------|---------------|---------------------|
+| `provider:llm:code` | Agent (via Modification Protocol + `kvWritePrivileged`) | System key prefix `provider:` — requires privileged write |
+| `provider:llm:last_working:code` | Kernel only (auto-snapshot) | System key prefix `provider:` — written by kernel's `kvPut()` directly |
+| `kernel:llm_fallback` | Operator only (seed script or manual) | Kernel-only prefix `kernel:` — `kvWritePrivileged` rejects kernel: writes |
 
-| Method | File:Line | Role |
-|--------|-----------|------|
-| `callLLM()` | brainstem.js | Entry point — resolves model alias, builds messages, calls `callWithCascade()` |
-| `callWithCascade()` | brainstem.js | Three-tier fallback orchestrator |
-| `callViaAdapter()` | brainstem.js | Loads and runs a named provider adapter (Tier 1, Tier 2) |
-| `callViaKernelFallback()` | brainstem.js | Loads and runs kernel fallback (Tier 3) |
-| `runAdapter()` | brainstem.js | Shared execution: resolves secrets, runs in isolate, validates response |
-
-### 3.4 Model Resolution
-
-Model aliases (e.g. "sonnet", "deepseek") are resolved before the cascade runs:
-
-| Method | Location | Logic |
-|--------|----------|-------|
-| `resolveModel()` | brainstem.js | Looks up alias in `config:models.alias_map`, returns full model ID or passes through |
-
-Alias map (from seed):
-- `opus` → `anthropic/claude-opus-4-6`
-- `sonnet` → `anthropic/claude-sonnet-4-6`
-- `haiku` → `anthropic/claude-haiku-4.5`
-- `deepseek` → `deepseek/deepseek-v3.2`
-
-### 3.5 Non-LLM Provider Paths
-
-These do NOT use the cascade:
-
-| Path | Method | Used for |
-|------|--------|----------|
-| Balance checks | `executeAdapter()` → `callViaAdapter()` | check_balance built-in tool |
-| Tool providers | `_executeTool()` | Tools with `meta.provider` (check_email, send_email → gmail) |
-| Communication gate | `callLLM()` internally | Uses same cascade as primary LLM |
-
-### 3.6 Dev Mode Override
-
-In `brainstem-dev.js`, `callWithCascade()` is overridden to skip the cascade entirely:
-
-- Reads `OPENROUTER_API_KEY` from env
-- Makes a direct `fetch()` to OpenRouter
-- No fallback tiers, no snapshots
-- Single-path, direct HTTP call
-
-This applies only to local dev (`wrangler dev` with `brainstem-dev.js`).
+This means:
+- The agent **can** modify Tier 1 (dynamic adapter) — this is how it evolves its own provider code.
+- The agent **cannot** modify Tier 2 (auto-snapshotted by kernel) or Tier 3 (kernel-only).
+- If the agent breaks Tier 1, Tier 2 serves as automatic recovery. If both are broken, Tier 3 (human-managed) is the last resort.

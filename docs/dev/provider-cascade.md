@@ -261,18 +261,26 @@ The `"kv:"` prefix triggers a KV read: `kv:secret:project_x_key` → reads `secr
 | `providers.openrouter` | `provider:llm_balance` | `providers/llm_balance.js` | OpenRouter API key remaining credits via `GET /api/v1/auth/key` |
 | `wallets.base_usdc` | `provider:wallet_balance` | `providers/wallet_balance.js` | Base USDC wallet balance via `eth_call` to USDC contract (tries 3 RPC endpoints) |
 
-### Tool providers via `meta.provider`
+### Tool providers via `kernel:tool_grants`
 
-Tools can declare a `provider` field in their metadata. When present, the kernel loads the provider's source code and makes it available to the tool.
+Tools whose `kernel:tool_grants` entry includes a `provider` field receive
+the provider module in their execution context. The provider binding is
+controlled by the kernel — the agent cannot modify it.
+
+> **NOTE:** Tool source files still declare `provider` in `export const
+> meta`, but it is stripped from KV-stored `tool:{name}:meta` at seed time.
+> The runtime reads provider bindings exclusively from
+> `kernel:tool_grants`.
 
 **In production** (`_executeTool` at `brainstem.js:1245`):
 ```js
-if (meta?.provider) {
-  providerCode = await this.kvGet(`provider:${meta.provider}:code`);
+const grant = this.toolGrants?.[toolName];
+if (grant?.provider) {
+  providerCode = await this.kvGet(`provider:${grant.provider}:code`);
 }
 return this.runInIsolate({
   moduleCode,          // tool source
-  providerCode,        // provider source (if declared)
+  providerCode,        // provider source (if granted)
   ...
 });
 ```
@@ -281,8 +289,9 @@ The isolate gets the tool wrapped via `wrapAsModuleWithProvider()`, which adds `
 
 **In dev** (`_executeTool` override at `brainstem-dev.js:170`):
 ```js
-if (meta.provider) {
-  ctx.provider = PROVIDER_MODULES[`provider:${meta.provider}`];
+const grant = this.toolGrants?.[toolName];
+if (grant?.provider) {
+  ctx.provider = PROVIDER_MODULES[`provider:${grant.provider}`];
 }
 return TOOL_MODULES[toolName].execute(ctx);
 ```
@@ -291,10 +300,10 @@ The tool gets the provider module object directly on `ctx.provider`.
 
 #### Gmail provider wiring
 
-Two tools use the Gmail provider:
+Two tools have a `provider: "gmail"` grant:
 
-| Tool | `meta.provider` | Uses |
-|------|----------------|------|
+| Tool | Grant `provider` | Uses |
+|------|-----------------|------|
 | `check_email` | `"gmail"` | `provider.getAccessToken()`, `provider.listUnread()`, `provider.getMessage()`, `provider.markAsRead()` |
 | `send_email` | `"gmail"` | `provider.getAccessToken()`, `provider.getMessage()` (for reply threading), `provider.sendMessage()` |
 

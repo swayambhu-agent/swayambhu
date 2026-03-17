@@ -81,11 +81,17 @@ Loaded at boot by `loadPatronContext()`.
 
 ### patron:public_key
 
-Listed in `IMMUTABLE_KEYS` — cannot be written by any code path, ever.
-`kvWritePrivileged` throws on any write attempt.
+Listed in `IMMUTABLE_KEYS` — blocked by `kvPut`, `kvPutSafe`, and
+`kvWritePrivileged`. The only write path is `rotatePatronKey()`, which
+bypasses the guard via direct `this.kv.put()` after verifying a
+rotation signature from the current key holder.
 
-> **NOTE:** Nothing in the codebase reads `patron:public_key` at runtime.
-> It exists as an immutable anchor but has no current consumer.
+Read by the `verify_patron` built-in tool via
+`verifyPatronSignature()`. Parses the SSH ed25519 wire format to
+extract the 32-byte raw key, then verifies signatures using
+`crypto.subtle.verify("Ed25519", ...)`. The agent calls this tool
+when it needs to confirm the patron's identity — e.g. after the
+patron identity monitor detects anomalous behavior.
 
 ### patron:identity_snapshot
 
@@ -136,13 +142,13 @@ cannot invoke tools.
 
 `brainstem.js:1718-1752`
 
-Runs **after** tool execution for tools with `meta.inbound`. Currently
-only `check_email` has this flag.
+Runs **after** tool execution for tools whose `kernel:tool_grants` entry
+includes an `inbound` field. Currently only `check_email` has this grant.
 
-The inbound meta declares how to find sender/content in the result:
+The inbound grant declares how to find sender/content in the result:
 
 ```js
-// check_email meta.inbound
+// kernel:tool_grants.check_email.inbound
 {
   channel: "email",
   sender_field: "sender_email",
@@ -150,6 +156,11 @@ The inbound meta declares how to find sender/content in the result:
   result_array: "emails"
 }
 ```
+
+> **NOTE:** Tool source files still declare `inbound` in `export const
+> meta`, but it is stripped from KV-stored `tool:{name}:meta` at seed time.
+> The kernel reads inbound configuration exclusively from
+> `kernel:tool_grants`, which the agent cannot modify.
 
 For each item in `result[result_array]`:
 1. Extracts `senderId` from `item[sender_field]`
@@ -200,13 +211,21 @@ Quarantine record format:
 
 `brainstem.js:515` — `communicationGate(toolName, args, meta)`
 
-Runs **before** tool execution for tools with `meta.communication`. The
-gate is invoked from `executeToolCall` (`brainstem.js:1663`) — it
-intercepts the tool call before any side effects occur.
+Runs **before** tool execution for tools whose `kernel:tool_grants` entry
+includes a `communication` field. The gate is invoked from
+`executeToolCall` (`brainstem.js:1663`) — it intercepts the tool call
+before any side effects occur.
 
-### Communication tool meta
+> **NOTE:** Tool source files still declare `communication` in
+> `export const meta`, but it is stripped from KV-stored `tool:{name}:meta`
+> at seed time. The kernel reads communication gate configuration
+> exclusively from `kernel:tool_grants`, which the agent cannot modify.
+> This prevents the agent from bypassing the gate by removing the
+> `communication` field from tool metadata.
 
-Two tools currently have `meta.communication`:
+### Communication tool grants
+
+Two tools currently have a `communication` grant in `kernel:tool_grants`:
 
 | Tool | Channel | Recipient field | Reply field | Content field | Recipient type |
 |------|---------|----------------|-------------|---------------|----------------|
