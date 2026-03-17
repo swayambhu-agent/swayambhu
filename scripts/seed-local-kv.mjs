@@ -76,14 +76,19 @@ await put("config:defaults", {
 
 await put("config:models", {
   models: [
-    { id: "anthropic/claude-opus-4.6", alias: "opus", input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection", yama_capable: true, niyama_capable: true, comms_gate_capable: true },
-    { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning", yama_capable: true, niyama_capable: true, comms_gate_capable: true },
-    { id: "anthropic/claude-haiku-4.5", alias: "haiku", input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
-    { id: "deepseek/deepseek-v3.2", alias: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, orient flow, KV ops, prompt rendering" },
+    { id: "anthropic/claude-opus-4.6", alias: "opus", family: "anthropic", effort_map: { low: "low", medium: "medium", high: "high", max: "max" }, input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection" },
+    { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", effort_map: { low: "low", medium: "medium", high: "high", max: "max" }, input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning" },
+    { id: "anthropic/claude-haiku-4.5", alias: "haiku", family: "anthropic", effort_map: { low: "low", medium: "medium", high: "high", max: "max" }, input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
+    { id: "deepseek/deepseek-v3.2", alias: "deepseek", family: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, orient flow, KV ops, prompt rendering" },
   ],
   fallback_model: "anthropic/claude-haiku-4.5",
   alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5", deepseek: "deepseek/deepseek-v3.2" },
-}, "json", "Available LLM models with pricing, aliases, and capabilities");
+}, "json", "Available LLM models with pricing and aliases");
+
+await put("config:model_capabilities", {
+  "anthropic/claude-opus-4.6": { yama_capable: true, niyama_capable: true, comms_gate_capable: true },
+  "anthropic/claude-sonnet-4.6": { yama_capable: true, niyama_capable: true, comms_gate_capable: true },
+}, "json", "Model capability flags — separated from config:models to prevent agent self-escalation");
 
 await put("config:resources", {
   kv: { max_storage_mb: 1000, daily_read_limit: 100000, daily_write_limit: 1000, daily_list_limit: 1000, daily_delete_limit: 1000, max_value_size_mb: 25 },
@@ -105,15 +110,15 @@ await put("wallets", {
 
 await put("config:tool_registry", {
   tools: [
-    { name: "send_slack", description: "Post a message to the Slack channel", input: { text: "required", channel: "optional — override default channel" } },
+    { name: "send_slack", description: "Post a message to the Slack channel. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { text: "required", channel: "optional — override default channel" } },
     { name: "web_fetch", description: "Fetch contents of a URL", input: { url: "required", method: "GET|POST", headers: "optional", max_length: "default 10000" } },
     { name: "kv_write", description: "Write to tool's own KV namespace", input: { key: "required", value: "required" } },
     { name: "check_balance", description: "Check balances across all configured providers and wallets. Returns balances grouped by scope (general vs project-specific). Only 'general' scope counts toward your operating budget.", input: { scope: "optional — filter by scope (e.g. 'general', 'project_x'). Omit to see all." } },
     { name: "kv_manifest", description: "List KV keys, optionally filtered by prefix. Use to explore what is stored in memory.", input: { prefix: "optional key prefix filter", limit: "max keys to return (default 100, max 500)" } },
     { name: "kv_query", description: "Read a KV value. Returns small values directly. For large arrays/objects, returns a summary — use path to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, viveka:timing:urgency, config:defaults)", path: "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)" } },
     { name: "akash_exec", description: "Run a shell command on the akash Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
-    { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each.", input: { mark_read: "optional boolean — mark fetched emails as read (default true)", max_results: "optional — max emails to return (default 10, max 20)" } },
-    { name: "send_email", description: "Send an email or reply to an existing thread via Gmail.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
+    { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each. Emails from unknown senders (no contact record) have content replaced with [content redacted — unknown sender] and the original quarantined under sealed:* keys until approved by patron", input: { mark_read: "optional boolean — mark fetched emails as read (default true)", max_results: "optional — max emails to return (default 10, max 20)" } },
+    { name: "send_email", description: "Send an email or reply to an existing thread via Gmail. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
   ],
 }, "json", "Tool definitions — names, descriptions, and input schemas for function calling");
 
@@ -135,11 +140,24 @@ const toolNames = [
   "kv_manifest", "kv_query", "akash_exec",
   "check_email", "send_email",
 ];
+const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];
+const toolGrants = {};
 for (const name of toolNames) {
   const mod = await importLocal(`tools/${name}.js`);
   await put(`tool:${name}:code`, read(`tools/${name}.js`), "text", `Tool source: ${name}`);
-  await put(`tool:${name}:meta`, mod.meta, "json", `Tool metadata: ${name}`);
+  // Strip security fields from KV-stored meta — these live in kernel:tool_grants
+  const operationalMeta = { ...mod.meta };
+  const grant = {};
+  for (const field of GRANT_FIELDS) {
+    if (field in operationalMeta) {
+      grant[field] = operationalMeta[field];
+      delete operationalMeta[field];
+    }
+  }
+  if (Object.keys(grant).length) toolGrants[name] = grant;
+  await put(`tool:${name}:meta`, operationalMeta, "json", `Tool metadata: ${name}`);
 }
+await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool — secrets, communication gate, inbound gate, provider bindings (kernel-only, agent cannot modify)");
 
 // ── Prompts ───────────────────────────────────────────────────
 
@@ -224,12 +242,6 @@ await put("kernel:llm_fallback", read("providers/llm.js"), "text", "Fallback LLM
 const llmMod = await importLocal("providers/llm.js");
 await put("kernel:llm_fallback:meta", llmMod.meta, "json", "Fallback LLM provider metadata");
 await put("kernel:fallback_model", '"anthropic/claude-haiku-4.5"', "json", "Model used when primary LLM call fails");
-
-// ── Reference docs ────────────────────────────────────────────
-
-console.log("--- Docs ---");
-await put("doc:modification_guide", read("docs/doc-modification-guide.md"), "text", "Reference: how the Modification Protocol works (staging, inflight, rollback)");
-await put("doc:architecture", read("docs/doc-architecture.md"), "text", "Reference: system architecture overview (kernel, hooks, KV, tools)");
 
 // ── Contacts ─────────────────────────────────────────────────
 

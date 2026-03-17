@@ -14,7 +14,9 @@ function makeBrain(kvInit = {}, opts = {}) {
   brain.defaults = opts.defaults || {};
   brain.toolRegistry = opts.toolRegistry || null;
   brain.modelsConfig = opts.modelsConfig || null;
+  brain.modelCapabilities = opts.modelCapabilities || null;
   brain.dharma = opts.dharma || null;
+  brain.toolGrants = opts.toolGrants || {};
   return { brain, env };
 }
 
@@ -137,7 +139,7 @@ describe("buildToolDefinitions", () => {
       },
     });
     const defs = brain.buildToolDefinitions();
-    expect(defs.length).toBe(3);
+    expect(defs.length).toBe(4); // 2 registry + spawn_subplan + verify_patron
     expect(defs[0]).toEqual({
       type: "function",
       function: {
@@ -153,27 +155,27 @@ describe("buildToolDefinitions", () => {
     });
   });
 
-  it("always includes spawn_subplan", () => {
+  it("always includes spawn_subplan and verify_patron", () => {
     const { brain } = makeBrain({}, { toolRegistry: { tools: [] } });
     const defs = brain.buildToolDefinitions();
-    expect(defs.length).toBe(1);
-    expect(defs[0].function.name).toBe("spawn_subplan");
+    expect(defs.length).toBe(2); // spawn_subplan + verify_patron
+    expect(defs.map(d => d.function.name)).toContain("spawn_subplan");
+    expect(defs.map(d => d.function.name)).toContain("verify_patron");
   });
 
   it("handles missing/null registry", () => {
     const { brain } = makeBrain();
     brain.toolRegistry = null;
     const defs = brain.buildToolDefinitions();
-    expect(defs.length).toBe(1);
-    expect(defs[0].function.name).toBe("spawn_subplan");
+    expect(defs.length).toBe(2); // spawn_subplan + verify_patron
   });
 
   it("passes through extraTools", () => {
     const { brain } = makeBrain({}, { toolRegistry: { tools: [] } });
     const extra = { type: "function", function: { name: "custom" } };
     const defs = brain.buildToolDefinitions([extra]);
-    expect(defs.length).toBe(2);
-    expect(defs[1]).toBe(extra);
+    expect(defs.length).toBe(3); // spawn_subplan + verify_patron + extra
+    expect(defs[2]).toBe(extra);
   });
 });
 
@@ -272,6 +274,78 @@ describe("callLLM", () => {
       step: "test",
     });
     expect(result.toolCalls).toEqual(toolCalls);
+  });
+
+  it("maps effort through model effort_map and passes family", async () => {
+    const { brain } = makeLLMBrain();
+    brain.modelsConfig = {
+      models: [
+        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", effort_map: { low: "low", medium: "medium", high: "high", max: "max" } },
+      ],
+    };
+    await brain.callLLM({
+      model: "anthropic/claude-sonnet-4.6",
+      effort: "max",
+      messages: [{ role: "user", content: "hi" }],
+      step: "test",
+    });
+    const call = brain.callWithCascade.mock.calls[0][0];
+    expect(call.family).toBe("anthropic");
+    expect(call.effort).toBe("max");
+    expect(call).not.toHaveProperty("thinking");
+  });
+
+  it("sets effort null for model without effort_map (deepseek)", async () => {
+    const { brain } = makeLLMBrain();
+    brain.modelsConfig = {
+      models: [
+        { id: "deepseek/deepseek-v3.2", alias: "deepseek", family: "deepseek" },
+      ],
+    };
+    await brain.callLLM({
+      model: "deepseek/deepseek-v3.2",
+      effort: "high",
+      messages: [{ role: "user", content: "hi" }],
+      step: "test",
+    });
+    const call = brain.callWithCascade.mock.calls[0][0];
+    expect(call.family).toBe("deepseek");
+    expect(call.effort).toBeNull();
+  });
+
+  it("maps effort 'none' to null", async () => {
+    const { brain } = makeLLMBrain();
+    brain.modelsConfig = {
+      models: [
+        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", effort_map: { low: "low", high: "high" } },
+      ],
+    };
+    await brain.callLLM({
+      model: "anthropic/claude-sonnet-4.6",
+      effort: "none",
+      messages: [{ role: "user", content: "hi" }],
+      step: "test",
+    });
+    const call = brain.callWithCascade.mock.calls[0][0];
+    expect(call.effort).toBeNull();
+  });
+
+  it("sets family and effort null for unknown model", async () => {
+    const { brain } = makeLLMBrain();
+    brain.modelsConfig = {
+      models: [
+        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic" },
+      ],
+    };
+    await brain.callLLM({
+      model: "unknown/model-x",
+      effort: "high",
+      messages: [{ role: "user", content: "hi" }],
+      step: "test",
+    });
+    const call = brain.callWithCascade.mock.calls[0][0];
+    expect(call.family).toBeNull();
+    expect(call.effort).toBeNull();
   });
 
   it("retries with fallback model on failure", async () => {
@@ -1063,6 +1137,58 @@ describe("kvWritePrivileged", () => {
   });
 });
 
+// ── 15b. kvWritePrivileged contact write rules ─────────────
+
+describe("kvWritePrivileged contact write rules", () => {
+  it("allows put to an existing contact", async () => {
+    const { brain } = makeBrain({
+      "contact:alice": JSON.stringify({ name: "Alice", platforms: {} }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    await brain.kvWritePrivileged([
+      { op: "put", key: "contact:alice", value: { name: "Alice", platforms: {}, notes: "likes tea" } },
+    ]);
+    expect(brain.privilegedWriteCount).toBe(1);
+  });
+
+  it("allows patch to an existing contact (string value)", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    // Patch requires a string value — store directly as string
+    brain.env.KV._store.set("contact:alice", "Alice likes old tea");
+    await brain.kvWritePrivileged([
+      { op: "patch", key: "contact:alice", old_string: "old tea", new_string: "green tea" },
+    ]);
+    expect(brain.privilegedWriteCount).toBe(1);
+  });
+
+  it("rejects put to a non-existent contact (creation)", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.kvWritePrivileged([
+      { op: "put", key: "contact:newperson", value: { name: "New Person" } },
+    ])).rejects.toThrow("Contact creation is operator-only");
+  });
+
+  it("rejects delete on a contact", async () => {
+    const { brain } = makeBrain({
+      "contact:alice": JSON.stringify({ name: "Alice" }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.kvWritePrivileged([
+      { op: "delete", key: "contact:alice" },
+    ])).rejects.toThrow("Contact deletion is operator-only");
+  });
+
+  it("rejects writes to contact_index: keys", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.kvWritePrivileged([
+      { op: "put", key: "contact_index:email:alice@example.com", value: "contact:alice" },
+    ])).rejects.toThrow("Contact index keys are kernel-managed");
+  });
+});
+
 // ── 16. checkHookSafety ────────────────────────────────────
 
 describe("checkHookSafety", () => {
@@ -1671,9 +1797,13 @@ describe("Yamas and Niyamas", () => {
       const { brain, env } = makeBrain(kvInit, {
         modelsConfig: {
           models: [
-            { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", yama_capable: true, niyama_capable: true },
+            { id: "anthropic/claude-sonnet-4.6", alias: "sonnet" },
             { id: "anthropic/claude-haiku-4.5", alias: "haiku" },
           ],
+          alias_map: { sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5" },
+        },
+        modelCapabilities: {
+          "anthropic/claude-sonnet-4.6": { yama_capable: true, niyama_capable: true },
         },
       });
       brain.karmaRecord = vi.fn(async () => {});
@@ -1828,13 +1958,16 @@ describe("Yamas and Niyamas", () => {
   });
 
   describe("model capability helpers", () => {
-    it("isYamaCapable checks yama_capable flag", () => {
+    it("isYamaCapable checks yama_capable flag in modelCapabilities", () => {
       const { brain } = makeBrain({}, {
         modelsConfig: {
           models: [
-            { id: "anthropic/claude-opus-4.6", yama_capable: true },
+            { id: "anthropic/claude-opus-4.6" },
             { id: "anthropic/claude-haiku-4.5" },
           ],
+        },
+        modelCapabilities: {
+          "anthropic/claude-opus-4.6": { yama_capable: true },
         },
       });
       expect(brain.isYamaCapable("anthropic/claude-opus-4.6")).toBe(true);
@@ -1842,13 +1975,16 @@ describe("Yamas and Niyamas", () => {
       expect(brain.isYamaCapable("unknown-model")).toBe(false);
     });
 
-    it("isNiyamaCapable checks niyama_capable flag", () => {
+    it("isNiyamaCapable checks niyama_capable flag in modelCapabilities", () => {
       const { brain } = makeBrain({}, {
         modelsConfig: {
           models: [
-            { id: "anthropic/claude-sonnet-4.6", niyama_capable: true },
+            { id: "anthropic/claude-sonnet-4.6" },
             { id: "anthropic/claude-haiku-4.5" },
           ],
+        },
+        modelCapabilities: {
+          "anthropic/claude-sonnet-4.6": { niyama_capable: true },
         },
       });
       expect(brain.isNiyamaCapable("anthropic/claude-sonnet-4.6")).toBe(true);
@@ -1879,11 +2015,17 @@ describe("Communication gate", () => {
 
   const commsModelsConfig = {
     models: [
-      { id: "anthropic/claude-opus-4.6", alias: "opus", comms_gate_capable: true },
-      { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", comms_gate_capable: true },
+      { id: "anthropic/claude-opus-4.6", alias: "opus" },
+      { id: "anthropic/claude-sonnet-4.6", alias: "sonnet" },
       { id: "anthropic/claude-haiku-4.5", alias: "haiku" },
       { id: "deepseek/deepseek-v3.2", alias: "deepseek" },
     ],
+    alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5", deepseek: "deepseek/deepseek-v3.2" },
+  };
+
+  const commsModelCapabilities = {
+    "anthropic/claude-opus-4.6": { comms_gate_capable: true },
+    "anthropic/claude-sonnet-4.6": { comms_gate_capable: true },
   };
 
   it("resolveCommsMode — slack always initiating (no reply_field)", () => {
@@ -1906,7 +2048,7 @@ describe("Communication gate", () => {
   });
 
   it("isCommsGateCapable — opus/sonnet capable, haiku/deepseek not", () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     expect(brain.isCommsGateCapable("anthropic/claude-opus-4.6")).toBe(true);
     expect(brain.isCommsGateCapable("anthropic/claude-sonnet-4.6")).toBe(true);
     expect(brain.isCommsGateCapable("anthropic/claude-haiku-4.5")).toBe(false);
@@ -1914,7 +2056,7 @@ describe("Communication gate", () => {
   });
 
   it("mechanical floor blocks person-type initiating to unknown recipient", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     // No contact:* entries in KV
     const result = await brain.communicationGate("send_email", { to: "unknown@example.com", body: "hello" }, emailMeta);
@@ -1924,7 +2066,7 @@ describe("Communication gate", () => {
   });
 
   it("mechanical floor skips for destination-type (slack to unknown channel)", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"channel post ok"}', cost: 0.001 }));
     const result = await brain.communicationGate("send_slack", { text: "hello", channel: "C_UNKNOWN" }, slackMeta);
@@ -1934,7 +2076,7 @@ describe("Communication gate", () => {
   });
 
   it("destination-type loads contact context when recipient matches", async () => {
-    const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     await env.KV.put("contact:dev", JSON.stringify({ name: "Dev", platforms: { slack: "U_DEV" }, communication: "Team member." }));
     brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"known person"}', cost: 0.001 }));
@@ -1950,7 +2092,7 @@ describe("Communication gate", () => {
       kv_access: "none",
       communication: { channel: "custom", recipient_field: "target", reply_field: null, content_field: "msg" },
     };
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"ok"}', cost: 0.001 }));
     const result = await brain.communicationGate("send_custom", { msg: "hi", target: "X" }, legacyMeta);
@@ -1959,7 +2101,7 @@ describe("Communication gate", () => {
   });
 
   it("mechanical floor allows responding to unknown (email with reply)", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     // Stub callLLM for the gate
     brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"reply ok"}', cost: 0.001 }));
@@ -1974,7 +2116,7 @@ describe("Communication gate", () => {
 
   it("mechanical floor allows initiating to known recipient", async () => {
     const kvInit = {};
-    const { brain, env } = makeBrain(kvInit, { modelsConfig: commsModelsConfig });
+    const { brain, env } = makeBrain(kvInit, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     // Add a contact record
     await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", platforms: { slack: "swami" }, communication: "Inner circle." }));
@@ -1989,7 +2131,7 @@ describe("Communication gate", () => {
   });
 
   it("model gate queues when not comms_gate_capable", async () => {
-    const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-haiku-4.5";
     // Add contact record so it passes mechanical floor
     await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", platforms: { slack: "swami" }, communication: "creator" }));
@@ -2003,7 +2145,7 @@ describe("Communication gate", () => {
   });
 
   it("gate approves send — tool proceeds", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"all good"}', cost: 0.001 }));
     // responding mode — bypasses mechanical floor
@@ -2017,7 +2159,7 @@ describe("Communication gate", () => {
   });
 
   it("gate blocks send — returns block verdict", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.callLLM = vi.fn(async () => ({
       content: '{"verdict":"block","reasoning":"inappropriate content"}',
@@ -2033,7 +2175,7 @@ describe("Communication gate", () => {
   });
 
   it("gate revises message — returns revision", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.callLLM = vi.fn(async () => ({
       content: '{"verdict":"revise","reasoning":"tone","revision":{"text":"better message"}}',
@@ -2049,7 +2191,7 @@ describe("Communication gate", () => {
   });
 
   it("gate parse failure defaults to block", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.callLLM = vi.fn(async () => ({ content: "not json at all", cost: 0.001 }));
     const result = await brain.communicationGate(
@@ -2124,6 +2266,7 @@ describe("Communication gate", () => {
 
   it("executeAction rejects communication tool without gate approval", async () => {
     const { brain } = makeBrain();
+    brain.toolGrants = { send_slack: { communication: slackMeta.communication } };
     brain._loadTool = vi.fn(async () => ({
       meta: slackMeta,
       moduleCode: "module.exports = { execute: async () => ({ ok: true }) }",
@@ -2134,6 +2277,7 @@ describe("Communication gate", () => {
 
   it("executeAction allows communication tool with gate approval flag", async () => {
     const { brain } = makeBrain();
+    brain.toolGrants = { send_slack: { communication: slackMeta.communication } };
     brain._loadTool = vi.fn(async () => ({
       meta: slackMeta,
       moduleCode: "module.exports = { execute: async () => ({ ok: true }) }",
@@ -2160,7 +2304,8 @@ describe("Communication gate", () => {
   });
 
   it("gate approval flag is cleared after executeToolCall", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
+    brain.toolGrants = { send_slack: { communication: slackMeta.communication } };
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     // Gate approves send
     brain.communicationGate = vi.fn(async () => ({ verdict: "send", reasoning: "ok" }));
@@ -2176,7 +2321,8 @@ describe("Communication gate", () => {
   });
 
   it("executeToolCall blocks communication tool when gate returns block", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
+    brain.toolGrants = { send_slack: { communication: slackMeta.communication } };
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.communicationGate = vi.fn(async () => ({ verdict: "block", reasoning: "unsafe content" }));
     brain.queueBlockedComm = vi.fn(async () => "cb_1");
@@ -2193,7 +2339,8 @@ describe("Communication gate", () => {
   });
 
   it("executeToolCall queues communication tool when gate returns queue", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
+    brain.toolGrants = { send_slack: { communication: slackMeta.communication } };
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.communicationGate = vi.fn(async () => ({ verdict: "queue", reasoning: "not comms_gate_capable" }));
     brain.queueBlockedComm = vi.fn(async () => "cb_2");
@@ -2209,7 +2356,8 @@ describe("Communication gate", () => {
   });
 
   it("executeToolCall applies revision via content_field when gate returns revise", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
+    brain.toolGrants = { send_slack: { communication: slackMeta.communication } };
     brain.lastCallModel = "anthropic/claude-opus-4.6";
     brain.communicationGate = vi.fn(async () => ({
       verdict: "revise", reasoning: "tone", revision: { text: "polished message" },
@@ -2230,7 +2378,7 @@ describe("Communication gate", () => {
   });
 
   it("executeToolCall lets non-communication tool through without gate", async () => {
-    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig });
+    const { brain } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain._loadTool = vi.fn(async () => ({ meta: noCommMeta, moduleCode: "" }));
     brain.executeAction = vi.fn(async () => ({ result: 42 }));
     brain.callHook = vi.fn(async () => null);
@@ -2426,18 +2574,23 @@ describe("inbound content gate", () => {
       orient: { model: "test-model", max_steps: 10, max_cost: 1.0 },
     };
 
-    // Mock _loadTool to return a tool with inbound meta
+    // Set inbound grant in toolGrants (kernel-controlled)
+    brain.toolGrants = {
+      check_email: {
+        inbound: {
+          channel: "email",
+          sender_field: "sender_email",
+          content_field: "body",
+          result_array: "emails",
+        },
+      },
+    };
+
+    // Mock _loadTool to return a tool (inbound config now lives in toolGrants)
     brain._loadTool = vi.fn(async (name) => {
       if (name === "check_email") {
         return {
-          meta: {
-            inbound: {
-              channel: "email",
-              sender_field: "sender_email",
-              content_field: "body",
-              result_array: "emails",
-            },
-          },
+          meta: {},
           execute: async () => ({
             emails: [
               {
@@ -2592,5 +2745,150 @@ describe("inbound content gate", () => {
 
     expect(result.data).toBe("some result");
     expect(brain.resolveContact).not.toHaveBeenCalled();
+  });
+});
+
+// ── Patron identity verification ────────────────────────────
+
+describe("parseSSHEd25519", () => {
+  const testKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMz47nw9Ju5I7fprJ9GOah8avsfTJWEIqk8NW9z7iv+8 test-key";
+
+  it("extracts 32-byte raw key from SSH format", () => {
+    const raw = Brainstem.parseSSHEd25519(testKey);
+    expect(raw).toBeInstanceOf(Uint8Array);
+    expect(raw.length).toBe(32);
+  });
+
+  it("throws on non-ed25519 key", () => {
+    expect(() => Brainstem.parseSSHEd25519("ssh-rsa AAAA... comment")).toThrow("Not an ssh-ed25519 key");
+  });
+
+  it("throws on empty input", () => {
+    expect(() => Brainstem.parseSSHEd25519("")).toThrow();
+  });
+
+  it("handles keys without comments", () => {
+    const noComment = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMz47nw9Ju5I7fprJ9GOah8avsfTJWEIqk8NW9z7iv+8";
+    const raw = Brainstem.parseSSHEd25519(noComment);
+    expect(raw.length).toBe(32);
+  });
+});
+
+describe("verify_patron", () => {
+  const testKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMz47nw9Ju5I7fprJ9GOah8avsfTJWEIqk8NW9z7iv+8 test-key";
+  const testMessage = "test-challenge-123";
+  const testSignature = "gR7cF2kUYOL71kGAXaqa+Pv2MKHt1daWWbsMDJlti2E4VfTXSkOr6RjYf49uZn7Kip06VDUqWVhUi8NHyFINCg==";
+
+  it("verifyPatronSignature returns true for valid signature", async () => {
+    const { brain } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    const result = await brain.verifyPatronSignature(testMessage, testSignature);
+    expect(result).toBe(true);
+  });
+
+  it("verifyPatronSignature returns false for invalid signature", async () => {
+    const { brain } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    const result = await brain.verifyPatronSignature("wrong message", testSignature);
+    expect(result).toBe(false);
+  });
+
+  it("verifyPatronSignature throws when no public key configured", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.verifyPatronSignature(testMessage, testSignature))
+      .rejects.toThrow("No patron public key configured");
+  });
+
+  it("verifyPatron tool returns verified: true for valid signature", async () => {
+    const { brain } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    brain.karmaRecord = vi.fn(async () => {});
+    const result = await brain.verifyPatron({ message: testMessage, signature: testSignature });
+    expect(result.verified).toBe(true);
+    expect(brain.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({ event: "patron_verified" }));
+  });
+
+  it("verifyPatron tool returns verified: false for bad signature", async () => {
+    const { brain } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    brain.karmaRecord = vi.fn(async () => {});
+    const result = await brain.verifyPatron({ message: "wrong", signature: testSignature });
+    expect(result.verified).toBe(false);
+    expect(brain.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({ event: "patron_verification_failed" }));
+  });
+
+  it("verifyPatron tool returns error when args missing", async () => {
+    const { brain } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    const result = await brain.verifyPatron({});
+    expect(result.error).toContain("required");
+    expect(result.verified).toBe(false);
+  });
+
+  it("dispatches via executeToolCall", async () => {
+    const { brain } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    brain.karmaRecord = vi.fn(async () => {});
+    const result = await brain.executeToolCall({
+      id: "tc_verify",
+      function: {
+        name: "verify_patron",
+        arguments: JSON.stringify({ message: testMessage, signature: testSignature }),
+      },
+    });
+    expect(result.verified).toBe(true);
+  });
+
+  it("appears in buildToolDefinitions output", async () => {
+    const { brain } = makeBrain({}, { toolRegistry: { tools: [] } });
+    const defs = await brain.buildToolDefinitions();
+    const verifyDef = defs.find(d => d.function.name === "verify_patron");
+    expect(verifyDef).toBeDefined();
+    expect(verifyDef.function.parameters.required).toEqual(["message", "signature"]);
+  });
+});
+
+describe("rotatePatronKey", () => {
+  const testKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMz47nw9Ju5I7fprJ9GOah8avsfTJWEIqk8NW9z7iv+8 test-key";
+  const newKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF+2037HjOaLVLOJeYU06GNqUoG8hSP6uy1SDvncnFRy new-key";
+  const rotateSignature = "cWNGtDv+9DfvxGh3UZ2WqVEFM25src1SgpZKuzjdsfAACWBCIAJoJW5MPQaXvtgr1aTodBgRUPIC2DzUEjPdAg==";
+
+  it("rotates key with valid signature", async () => {
+    const { brain, env } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+    brain.sessionId = "test_session";
+
+    const result = await brain.rotatePatronKey(newKey, rotateSignature);
+    expect(result.rotated).toBe(true);
+
+    // Verify the new key was written directly to KV
+    const written = env.KV.put.mock.calls.find(([key]) => key === "patron:public_key");
+    expect(written).toBeDefined();
+    expect(written[1]).toBe(newKey);
+
+    // Verify karma and alert
+    expect(brain.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({ event: "patron_key_rotated" }));
+    expect(brain.sendKernelAlert).toHaveBeenCalledWith("patron_key_rotated", expect.any(String));
+  });
+
+  it("rejects rotation with invalid signature", async () => {
+    const { brain } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    await expect(brain.rotatePatronKey(newKey, "badsignature=="))
+      .rejects.toThrow();
+  });
+
+  it("rejects rotation with valid signature but invalid new key format", async () => {
+    const { brain } = makeBrain({ "patron:public_key": JSON.stringify(testKey) });
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.sendKernelAlert = vi.fn(async () => {});
+
+    // Sign a rotation for an invalid key
+    // This will fail at verifyPatronSignature because the message won't match
+    await expect(brain.rotatePatronKey("not-a-valid-key", rotateSignature))
+      .rejects.toThrow();
+  });
+
+  it("patron:public_key remains immutable via kvPut", async () => {
+    const { brain } = makeBrain();
+    await expect(brain.kvPut("patron:public_key", "new value"))
+      .rejects.toThrow("immutable");
   });
 });

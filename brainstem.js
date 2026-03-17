@@ -64,9 +64,15 @@ export class KernelRPC extends WorkerEntrypoint {
   // LLM
   async callLLM(opts) { return this._brain().callLLM(opts); }
 
-  // KV reads
-  async kvGet(key) { return this._brain().kvGet(key); }
-  async kvGetWithMeta(key) { return this._brain().kvGetWithMeta(key); }
+  // KV reads (sealed keys blocked — hook code must not read quarantined data)
+  async kvGet(key) {
+    if (key.startsWith("sealed:")) return null;
+    return this._brain().kvGet(key);
+  }
+  async kvGetWithMeta(key) {
+    if (key.startsWith("sealed:")) return { value: null, metadata: null };
+    return this._brain().kvGetWithMeta(key);
+  }
   async kvList(opts) { return this._brain().kv.list(opts); }
 
   // KV writes — safe tier (blocks system + kernel keys)
@@ -102,7 +108,10 @@ export class KernelRPC extends WorkerEntrypoint {
   async estimateCost(model, usage) { return this._brain().estimateCost(model, usage); }
   async buildPrompt(template, vars) { return this._brain().buildPrompt(template, vars); }
   async parseAgentOutput(content) { return this._brain().parseAgentOutput(content); }
-  async loadKeys(keys) { return this._brain().loadKeys(keys); }
+  async loadKeys(keys) {
+    const filtered = keys.filter(k => !k.startsWith("sealed:"));
+    return this._brain().loadKeys(filtered);
+  }
   async getSessionCount() { return this._brain().getSessionCount(); }
   async mergeDefaults(defaults, overrides) { return this._brain().mergeDefaults(defaults, overrides); }
   async isSystemKey(key) { return Brainstem.isSystemKey(key); }
@@ -116,6 +125,7 @@ export class KernelRPC extends WorkerEntrypoint {
   async getKarma() { return this._brain().karma; }
   async getDefaults() { return this._brain().defaults; }
   async getModelsConfig() { return this._brain().modelsConfig; }
+  async getModelCapabilities() { return this._brain().modelCapabilities; }
   async getDharma() { return this._brain().dharma; }
   async getToolRegistry() { return this._brain().toolRegistry; }
   async getYamas() { return this._brain().yamas; }
@@ -123,6 +133,7 @@ export class KernelRPC extends WorkerEntrypoint {
   async getPatronId() { return this._brain().patronId; }
   async getPatronContact() { return this._brain().patronContact; }
   async isPatronIdentityDisputed() { return this._brain().patronIdentityDisputed; }
+  async rotatePatronKey(newPublicKey, signature) { return this._brain().rotatePatronKey(newPublicKey, signature); }
   async resolveContact(platform, platformUserId) { return this._brain().resolveContact(platform, platformUserId); }
   async elapsed() { return this._brain().elapsed(); }
 }
@@ -152,9 +163,8 @@ export default {
     const adapterConfig = await brain.kvGet(`channel:${channel}:config`) || {};
 
     const rawBody = await request.text();
-    const body = JSON.parse(rawBody);
 
-    // Verify webhook authenticity via adapter isolate
+    // Verify webhook authenticity via adapter isolate (before JSON parse — needs raw body for HMAC)
     const envVars = {};
     for (const s of (adapterConfig.secrets || [])) {
       if (env[s] !== undefined) envVars[s] = env[s];
@@ -166,12 +176,17 @@ export default {
     const verified = await brain.runInIsolate({
       id: `channel:${channel}:verify:${brain.sessionId}`,
       moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
-      ctx: { action: "verify", headers: Object.fromEntries(request.headers), body, env_vars: envVars },
+      ctx: { action: "verify", headers: Object.fromEntries(request.headers), rawBody, env_vars: envVars },
       timeoutMs: 5000,
     });
     if (!verified?.ok) {
       return new Response("Unauthorized", { status: 401 });
     }
+
+    // Parse JSON after verify succeeds
+    let body;
+    try { body = JSON.parse(rawBody); }
+    catch { return new Response("Bad Request", { status: 400 }); }
 
     // Parse inbound message via adapter isolate
     const parsed = await brain.runInIsolate({
@@ -242,6 +257,7 @@ class Brainstem {
     this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
     this.modelsConfig = null;
+    this.modelCapabilities = null;
     this.defaults = null;
     this.dharma = null;
     this.toolsCache = {};      // Loaded tool code+meta, cached per session
@@ -292,13 +308,32 @@ class Brainstem {
     return Brainstem.isPrincipleKey(key) && key.endsWith(':audit');
   }
 
+  // ── SSH Ed25519 key parsing ───────────────────────────────
+
+  static parseSSHEd25519(sshKeyString) {
+    const parts = sshKeyString.trim().split(/\s+/);
+    if (parts[0] !== 'ssh-ed25519' || !parts[1]) {
+      throw new Error('Not an ssh-ed25519 key');
+    }
+    const raw = Uint8Array.from(atob(parts[1]), c => c.charCodeAt(0));
+    // SSH wire format: [4-byte len][key-type string][4-byte len][32-byte key]
+    const typeLen = (raw[0] << 24) | (raw[1] << 16) | (raw[2] << 8) | raw[3];
+    const keyOffset = 4 + typeLen + 4;
+    const keyLen = (raw[4 + typeLen] << 24) | (raw[4 + typeLen + 1] << 16) |
+                   (raw[4 + typeLen + 2] << 8) | raw[4 + typeLen + 3];
+    if (keyLen !== 32) throw new Error(`Expected 32-byte ed25519 key, got ${keyLen}`);
+    return raw.slice(keyOffset, keyOffset + 32);
+  }
+
   // ── Yamas and Niyamas (operating principles) ─────────────
 
   async loadEagerConfig() {
     this.defaults = await this.kvGet("config:defaults");
     this.modelsConfig = await this.kvGet("config:models");
+    this.modelCapabilities = await this.kvGet("config:model_capabilities");
     this.dharma = await this.kvGet("dharma");
     this.toolRegistry = await this.kvGet("config:tool_registry");
+    this.toolGrants = await this.kvGet("kernel:tool_grants") || {};
     await this.loadYamasNiyamas();
     await this.loadPatronContext();
   }
@@ -399,18 +434,18 @@ class Brainstem {
   }
 
   isYamaCapable(modelId) {
-    const model = this.modelsConfig?.models?.find(m => m.id === modelId || m.alias === modelId);
-    return !!model?.yama_capable;
+    const resolved = this.resolveModel(modelId);
+    return !!this.modelCapabilities?.[resolved]?.yama_capable;
   }
 
   isNiyamaCapable(modelId) {
-    const model = this.modelsConfig?.models?.find(m => m.id === modelId || m.alias === modelId);
-    return !!model?.niyama_capable;
+    const resolved = this.resolveModel(modelId);
+    return !!this.modelCapabilities?.[resolved]?.niyama_capable;
   }
 
   isCommsGateCapable(modelId) {
-    const model = this.modelsConfig?.models?.find(m => m.id === modelId || m.alias === modelId);
-    return !!model?.comms_gate_capable;
+    const resolved = this.resolveModel(modelId);
+    return !!this.modelCapabilities?.[resolved]?.comms_gate_capable;
   }
 
   // ── Communication gate (kernel-enforced) ────────────────────
@@ -582,7 +617,10 @@ Respond with JSON only:
     const entries = [];
     for (const { name: key } of blockedKeys) {
       const value = await this.kvGet(key);
-      if (value !== null) entries.push(typeof value === 'string' ? JSON.parse(value) : value);
+      if (value !== null) {
+        try { entries.push(typeof value === 'string' ? JSON.parse(value) : value); }
+        catch { continue; }
+      }
     }
     return entries;
   }
@@ -591,7 +629,9 @@ Respond with JSON only:
     const key = `comms_blocked:${id}`;
     const raw = await this.kvGet(key);
     if (!raw) return { error: `No blocked comm: ${id}` };
-    const record = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    let record;
+    try { record = typeof raw === 'string' ? JSON.parse(raw) : raw; }
+    catch { return { error: "corrupted record" }; }
 
     if (verdict === 'send' || verdict === 'revise_and_send') {
       let sendArgs = { ...record.args };
@@ -616,7 +656,7 @@ Respond with JSON only:
         recipient: record.recipient, verdict,
         revised: verdict === 'revise_and_send',
       });
-      await this.kv.delete(key);
+      await this.kvWritePrivileged([{ op: "delete", key }]);
       return { ok: true, result };
     }
 
@@ -626,7 +666,7 @@ Respond with JSON only:
         recipient: record.recipient,
         reason: revision?.reason || 'dropped by deep reflect',
       });
-      await this.kv.delete(key);
+      await this.kvWritePrivileged([{ op: "delete", key }]);
       return { ok: true, dropped: true };
     }
 
@@ -707,6 +747,33 @@ Respond with JSON only:
       }
       if (Brainstem.isKernelOnly(op.key)) throw new Error(`Blocked: kernel-only key "${op.key}"`);
 
+      // Contact index is kernel-managed (auto-built by resolveContact)
+      if (op.key.startsWith("contact_index:")) {
+        throw new Error(`Contact index keys are kernel-managed`);
+      }
+
+      // Contacts: allow updates to existing records, block creation and deletion
+      if (op.key.startsWith("contact:")) {
+        if (op.op === "delete") {
+          throw new Error(`Contact deletion is operator-only — use the dashboard`);
+        }
+        const existing = await this.kvGet(op.key);
+        if (existing === null) {
+          throw new Error(`Contact creation is operator-only — use the dashboard to add contacts`);
+        }
+        // Existing contact — allow update (put/patch), fall through to normal processing
+      }
+
+      // Model capabilities require deliberation + yama_capable model
+      if (op.key === "config:model_capabilities") {
+        if (!op.deliberation || op.deliberation.length < 200) {
+          throw new Error(`Model capability changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})`);
+        }
+        if (!this.isYamaCapable(this.lastCallModel)) {
+          throw new Error(`Model capability changes require a yama_capable model (last model: ${this.lastCallModel})`);
+        }
+      }
+
       // Yama/Niyama gates — validate before any writes execute
       if (Brainstem.isPrincipleKey(op.key) && !Brainstem.isPrincipleAuditKey(op.key)) {
         const isYama = op.key.startsWith('yama:');
@@ -728,7 +795,7 @@ Respond with JSON only:
       throw new Error(`Privileged write limit (${Brainstem.MAX_PRIVILEGED_WRITES}/session) exceeded`);
     }
 
-    const configKeys = ["config:defaults", "config:models", "config:tool_registry"];
+    const configKeys = ["config:defaults", "config:models", "config:tool_registry", "config:model_capabilities"];
     const principleWarnings = [];
     let touchedPrinciple = false;
 
@@ -825,6 +892,8 @@ Respond with JSON only:
         this.modelsConfig = await this.kvGet("config:models");
       if (ops.some(op => op.key === "config:tool_registry"))
         this.toolRegistry = await this.kvGet("config:tool_registry");
+      if (ops.some(op => op.key === "config:model_capabilities"))
+        this.modelCapabilities = await this.kvGet("config:model_capabilities");
     }
 
     // Reload principle cache after writes
@@ -1033,10 +1102,10 @@ Respond with JSON only:
 
     await this.loadEagerConfig();
     this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 120 } };
+    await this.karmaRecord({ event: "session_start", mode: "recovery" });
 
     const tools = this.buildToolDefinitions();
-    const fallbackModel = this.modelsConfig?.fallback_model
-      || await this.kvGet("kernel:fallback_model");
+    const fallbackModel = await this.getFallbackModel();
     if (!fallbackModel) throw new Error("No fallback model configured");
     const model = this.resolveModel(fallbackModel);
 
@@ -1085,7 +1154,9 @@ Respond with JSON only:
     const { meta, moduleCode } = await this._loadTool(toolName);
 
     // Communication tools require gate approval — cannot be called via RPC directly
-    if (meta?.communication && !this._commsGateApproved) {
+    // Gate classification comes from kernel:tool_grants (immutable to agent), not meta
+    const grant = this.toolGrants?.[toolName];
+    if (grant?.communication && !this._commsGateApproved) {
       return { error: 'Communication tools require gate approval — cannot call executeAction directly' };
     }
 
@@ -1174,6 +1245,64 @@ Respond with JSON only:
     return results;
   }
 
+  // ── Patron identity verification ────────────────────────────
+
+  async verifyPatronSignature(message, signatureBase64) {
+    const pubKeyStr = await this.kvGet("patron:public_key");
+    if (!pubKeyStr) throw new Error("No patron public key configured");
+    const rawPubKey = Brainstem.parseSSHEd25519(pubKeyStr);
+    const key = await crypto.subtle.importKey(
+      "raw", rawPubKey, { name: "Ed25519" }, false, ["verify"],
+    );
+    const sigBytes = Uint8Array.from(atob(signatureBase64), c => c.charCodeAt(0));
+    const msgBytes = new TextEncoder().encode(message);
+    return crypto.subtle.verify("Ed25519", key, sigBytes, msgBytes);
+  }
+
+  async verifyPatron(args) {
+    if (!args.message || !args.signature) {
+      return { error: "Both message and signature are required", verified: false };
+    }
+    try {
+      const verified = await this.verifyPatronSignature(args.message, args.signature);
+      await this.karmaRecord({
+        event: verified ? "patron_verified" : "patron_verification_failed",
+        message: args.message,
+      });
+      return { verified };
+    } catch (e) {
+      return { error: e.message, verified: false };
+    }
+  }
+
+  async rotatePatronKey(newPublicKey, signatureBase64) {
+    const canonicalMessage = `rotate:${newPublicKey}`;
+    const valid = await this.verifyPatronSignature(canonicalMessage, signatureBase64);
+    if (!valid) throw new Error("Invalid signature — rotation rejected");
+
+    // Validate the new key parses correctly
+    Brainstem.parseSSHEd25519(newPublicKey);
+
+    // Write directly to KV binding — bypasses kvPut immutability guard
+    await this.kv.put("patron:public_key", newPublicKey, {
+      metadata: {
+        type: "identity", format: "text",
+        updated_at: new Date().toISOString(),
+        rotated_by: "kernel:rotatePatronKey",
+      },
+    });
+
+    await this.karmaRecord({
+      event: "patron_key_rotated",
+      new_key_prefix: newPublicKey.slice(0, 30) + "...",
+    });
+
+    await this.sendKernelAlert("patron_key_rotated",
+      `Patron public key rotated in session ${this.sessionId}`);
+
+    return { rotated: true };
+  }
+
   // Resolve secret overrides from provider config
   // Supports "kv:secret:key_name" values that read from KV
   async _resolveSecretOverrides(config) {
@@ -1206,8 +1335,9 @@ Respond with JSON only:
   // Platform-specific: execute tool code in CF Worker Loader isolate
   async _executeTool(toolName, moduleCode, meta, ctx) {
     let providerCode = null;
-    if (meta?.provider) {
-      providerCode = await this.kvGet(`provider:${meta.provider}:code`);
+    const grant = this.toolGrants?.[toolName];
+    if (grant?.provider) {
+      providerCode = await this.kvGet(`provider:${grant.provider}:code`);
     }
     return this.runInIsolate({
       id: `fn:${toolName}:${this.sessionId}`,
@@ -1222,10 +1352,12 @@ Respond with JSON only:
 
   async buildToolContext(toolName, meta, input) {
     // Scoped secrets from two tiers:
-    // 1. env secrets (encrypted, human-provisioned)
+    // 1. env secrets — gated by kernel:tool_grants (kernel-only, agent can't modify)
     // 2. KV secrets (Swayambhu-provisioned, stored at secret:{name})
     const secrets = {};
-    for (const secretName of (meta.secrets || [])) {
+    const grant = this.toolGrants?.[toolName];
+    const allowedEnvSecrets = grant?.secrets || [];
+    for (const secretName of allowedEnvSecrets) {
       if (this.env[secretName] !== undefined) {
         secrets[secretName] = this.env[secretName];
       }
@@ -1302,7 +1434,7 @@ export default {
     const headers = ctx.headers ? new Headers(Object.entries(ctx.headers)) : null;
     try {
       if (ctx.action === "verify") {
-        const ok = verify(headers, ctx.body, ctx.env_vars || {});
+        const ok = await verify(headers, ctx.rawBody, ctx.env_vars || {});
         return Response.json({ ok });
       }
       if (ctx.action === "parse") {
@@ -1406,14 +1538,22 @@ export default {
       ? [{ role: "system", content: fullSystemPrompt }, ...messages]
       : [...messages];
 
+    // Resolve model family + map effort through config
+    const modelInfo = this.modelsConfig?.models?.find(
+      m => m.id === model || m.alias === model
+    );
+    const family = modelInfo?.family || null;
+    const mappedEffort = (effort && effort !== "none" && modelInfo?.effort_map)
+      ? (modelInfo.effort_map[effort] || null)
+      : null;
+
     // Standardized request — provider adapter translates this
     const request = {
       model,
       max_tokens: maxTokens || 1000,
       messages: msgs,
-      thinking: (effort && effort !== "none")
-        ? { type: "adaptive", effort }
-        : null,
+      family,
+      effort: mappedEffort,
       ...(tools?.length ? { tools } : {}),
     };
 
@@ -1432,9 +1572,7 @@ export default {
       });
 
       // Model fallback (separate from provider fallback)
-      const fallbackModel = this.modelsConfig?.fallback_model
-        || await this.kvGet("kernel:fallback_model")
-        || null;
+      const fallbackModel = await this.getFallbackModel();
       if (fallbackModel && model !== fallbackModel) {
         return this.callLLM({ model: fallbackModel, effort: "low", maxTokens,
           systemPrompt, messages, tools, step, budgetCap });
@@ -1595,6 +1733,23 @@ export default {
       },
     });
 
+    // Built-in: verify patron identity via Ed25519 signature
+    defs.push({
+      type: 'function',
+      function: {
+        name: 'verify_patron',
+        description: 'Verify the patron\'s identity by checking an Ed25519 signature against the patron public key. Use when you need to confirm someone is really the patron (e.g. after noticing unusual behavior).',
+        parameters: {
+          type: 'object',
+          properties: {
+            message: { type: 'string', description: 'The exact message that was signed' },
+            signature: { type: 'string', description: 'Base64-encoded Ed25519 signature' },
+          },
+          required: ['message', 'signature'],
+        },
+      },
+    });
+
     return [...defs, ...extraTools];
   }
 
@@ -1613,32 +1768,41 @@ export default {
       return this.spawnSubplan(args);
     }
 
+    if (name === 'verify_patron') {
+      return this.verifyPatron(args);
+    }
+
     if (name === 'check_balance') {
       return this.checkBalance(args);
     }
 
-    // ── Load tool meta (shared by comms gate + inbound gate) ──
+    // ── Load tool meta + grants (shared by comms gate + inbound gate) ──
     const { meta: toolMeta } = await this._loadTool(name).catch(() => ({ meta: null }));
+    const toolGrant = this.toolGrants?.[name] || {};
 
     // ── Communication gate (kernel-enforced) ──────────────────
-    // Must be before special-case tools so communication tools can't masquerade
+    // Gate classification comes from kernel:tool_grants (immutable to agent), not meta.
+    // The agent cannot bypass the gate by modifying tool:*:meta in KV.
     let isCommsTool = false;
     {
-      if (toolMeta?.communication) {
+      const commGrant = toolGrant.communication;
+      if (commGrant) {
         isCommsTool = true;
-        const gateResult = await this.communicationGate(name, args, toolMeta);
+        // Build a meta-like object from grants for the gate methods
+        const commMeta = { communication: commGrant };
+        const gateResult = await this.communicationGate(name, args, commMeta);
 
         if (gateResult.verdict === 'block' || gateResult.verdict === 'queue') {
-          await this.queueBlockedComm(name, args, toolMeta, gateResult.reasoning, gateResult);
+          await this.queueBlockedComm(name, args, commMeta, gateResult.reasoning, gateResult);
           return { error: `Communication ${gateResult.verdict === 'queue' ? 'queued for review' : 'blocked'}: ${gateResult.reasoning}` };
         }
 
         if (gateResult.verdict === 'revise' && gateResult.revision?.text) {
-          const cf = toolMeta.communication.content_field;
+          const cf = commGrant.content_field;
           if (cf && args[cf] !== undefined) args[cf] = gateResult.revision.text;
           await this.karmaRecord({
             event: 'comms_revised', tool: name,
-            recipient: this.resolveRecipient(args, toolMeta),
+            recipient: this.resolveRecipient(args, commMeta),
             reasoning: gateResult.reasoning,
           });
         }
@@ -1646,7 +1810,7 @@ export default {
         if (gateResult.verdict === 'send') {
           await this.karmaRecord({
             event: 'comms_approved', tool: name,
-            recipient: this.resolveRecipient(args, toolMeta),
+            recipient: this.resolveRecipient(args, commMeta),
             reasoning: gateResult.reasoning,
           });
         }
@@ -1680,12 +1844,14 @@ export default {
       }
 
       // ── Inbound content gate (kernel-enforced) ──────────────────
-      // Tools with `inbound` meta return external messages. The kernel
+      // Gate classification comes from kernel:tool_grants (immutable to agent).
+      // Tools with inbound grants return external messages. The kernel
       // redacts content from unknown senders and quarantines it under
       // sealed:* keys (unreadable by agent, visible to patron via dashboard).
       {
-        if (toolMeta?.inbound && result && !result.error) {
-          const { channel, sender_field, content_field, result_array } = toolMeta.inbound;
+        const inboundGrant = toolGrant.inbound;
+        if (inboundGrant && result && !result.error) {
+          const { channel, sender_field, content_field, result_array } = inboundGrant;
           const items = result[result_array];
           if (Array.isArray(items)) {
             for (const item of items) {
@@ -1755,7 +1921,7 @@ export default {
     }
 
     const subplanPrompt = await this.kvGet("prompt:subplan") || this.defaultSubplanPrompt();
-    const model = this.resolveModel(args.model || this.defaults?.execution?.fallback_model || 'haiku');
+    const model = this.resolveModel(args.model || await this.getFallbackModel() || 'haiku');
     const maxSteps = args.max_steps || 5;
 
     const builtPrompt = this.buildPrompt(subplanPrompt, {
@@ -1988,6 +2154,12 @@ export default {
 
   resolveModel(modelOrAlias) {
     return this.modelsConfig?.alias_map?.[modelOrAlias] || modelOrAlias;
+  }
+
+  async getFallbackModel() {
+    return this.modelsConfig?.fallback_model
+      || await this.kvGet("kernel:fallback_model")
+      || null;
   }
 
   estimateCost(model, usage) {
