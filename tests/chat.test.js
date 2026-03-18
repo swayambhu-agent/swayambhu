@@ -416,10 +416,46 @@ describe("handleChat", () => {
       );
     });
 
-    it("gives full tools to known contacts", async () => {
+    it("gives restricted tools to unapproved contacts", async () => {
       K.resolveContact = vi.fn(async () => ({
         name: "Alice",
         slug: "alice",
+        approved: false,
+      }));
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "Hi", userId: "alice_id",
+      }, adapter);
+
+      const callArgs = K.callLLM.mock.calls[0][0];
+      expect(callArgs.tools).toEqual([]);
+    });
+
+    it("records inbound_unapproved karma for unapproved contacts", async () => {
+      K.resolveContact = vi.fn(async () => ({
+        name: "Alice",
+        slug: "alice",
+        approved: false,
+      }));
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "Hi", userId: "alice_id",
+      }, adapter);
+
+      expect(K.karmaRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "inbound_unapproved",
+          sender_id: "alice_id",
+          channel: "slack",
+        })
+      );
+    });
+
+    it("gives full tools to known approved contacts", async () => {
+      K.resolveContact = vi.fn(async () => ({
+        name: "Alice",
+        slug: "alice",
+        approved: true,
       }));
       K.buildToolDefinitions = vi.fn(() => [
         { function: { name: "kv_query" } },

@@ -535,17 +535,29 @@ Respond with JSON only:
     const recipient = this.resolveRecipient(args, meta);
     const mode = this.resolveCommsMode(args, meta);
 
-    // 1. Mechanical floor — only blocks person-targeted tools (email)
+    // 1. Mechanical floor — blocks person-targeted comms to unknown/unapproved contacts
     //    Destination-targeted tools (Slack) proceed to LLM gate regardless
     const channel = meta.communication?.channel;
     const recipientType = meta.communication?.recipient_type || 'destination';
     const recipientContact = recipient ? await this.resolveContact(channel, recipient) : null;
-    if (mode === 'initiating' && recipient && !recipientContact && recipientType === 'person') {
-      return {
-        verdict: 'block',
-        reasoning: `No contact record for recipient "${recipient}" — cannot initiate contact with unknown person`,
-        mechanical: true,
-      };
+    if (recipientType === 'person' && recipient) {
+      if (!recipientContact) {
+        // No contact at all — block initiating, allow responding to reach LLM gate
+        if (mode === 'initiating') {
+          return {
+            verdict: 'block',
+            reasoning: `No contact record for recipient "${recipient}" — cannot initiate contact with unknown person`,
+            mechanical: true,
+          };
+        }
+      } else if (!recipientContact.approved) {
+        // Contact exists but unapproved — block ALL engagement
+        return {
+          verdict: 'block',
+          reasoning: `Contact "${recipient}" is not approved — all communication blocked until operator approves`,
+          mechanical: true,
+        };
+      }
     }
 
     // 2. Model gate: current model must be comms_gate_capable
@@ -752,16 +764,41 @@ Respond with JSON only:
         throw new Error(`Contact index keys are kernel-managed`);
       }
 
-      // Contacts: allow updates to existing records, block creation and deletion
+      // Contacts: agent can create (unapproved, no platforms), edit, delete unapproved
       if (op.key.startsWith("contact:")) {
-        if (op.op === "delete") {
-          throw new Error(`Contact deletion is operator-only — use the dashboard`);
+        // Patch ops on contacts could bypass approved/platforms checks — block if touching approved
+        if (op.op === "patch" && op.new_string?.includes('"approved"')) {
+          throw new Error(`Cannot patch "approved" field on contacts — use the dashboard`);
         }
         const existing = await this.kvGet(op.key);
-        if (existing === null) {
-          throw new Error(`Contact creation is operator-only — use the dashboard to add contacts`);
+        if (op.op === "delete") {
+          if (existing && existing.approved) {
+            throw new Error(`Deletion of approved contacts is operator-only`);
+          }
+          // Unapproved or non-existent — allow delete, fall through
+        } else if (existing === null) {
+          // Creation: must be unapproved with empty platforms
+          if (op.value?.approved === true) {
+            throw new Error(`Setting approved: true is operator-only`);
+          }
+          if (op.value?.platforms && Object.keys(op.value.platforms).length > 0) {
+            throw new Error(`Agent-created contacts must have empty platforms — platform IDs are operator-only`);
+          }
+          op.value = { ...op.value, approved: false, platforms: op.value?.platforms || {} };
+          // Fall through to normal processing
+        } else {
+          // Update: block setting approved: true, auto-flip if platforms changed
+          if (op.value?.approved === true) {
+            throw new Error(`Setting approved: true is operator-only`);
+          }
+          if (op.value?.platforms && JSON.stringify(op.value.platforms) !== JSON.stringify(existing.platforms)) {
+            op.value = { ...op.value, approved: false };
+          } else if (!('approved' in (op.value || {}))) {
+            // Preserve existing approved status when agent doesn't explicitly set it
+            op.value = { ...op.value, approved: existing.approved };
+          }
+          // Fall through to normal processing
         }
-        // Existing contact — allow update (put/patch), fall through to normal processing
       }
 
       // Model capabilities require deliberation + yama_capable model
@@ -1858,18 +1895,20 @@ export default {
               const senderId = item[sender_field];
               if (!senderId) continue;
               const contact = await this.resolveContact(channel, senderId);
-              if (!contact) {
+              if (!contact || !contact.approved) {
+                const reason = !contact ? 'unknown sender' : 'unapproved sender';
                 const ts = Date.now();
                 const quarantineKey = `sealed:quarantine:${channel}:${encodeURIComponent(senderId)}:${ts}`;
                 await this.kvPut(quarantineKey, {
                   sender: senderId,
                   content: item[content_field],
                   tool: name,
+                  reason,
                   timestamp: new Date(ts).toISOString(),
                   ...(item.subject ? { subject: item.subject } : {}),
                   ...(item.from ? { from: item.from } : {}),
                 });
-                item[content_field] = '[content redacted — unknown sender]';
+                item[content_field] = `[content redacted — ${reason}]`;
                 await this.karmaRecord({
                   event: 'inbound_redacted', sender_id: senderId, channel,
                   quarantine_key: quarantineKey,

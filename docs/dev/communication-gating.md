@@ -15,12 +15,14 @@ communication or inbound tools.
 
 ### Contact records
 
-Stored at `contact:{slug}` — e.g. `contact:alice`. Created via the
-dashboard API (`POST /contacts`). Fields:
+Stored at `contact:{slug}` — e.g. `contact:alice`. Can be created by the
+dashboard API (`POST /contacts`) or by the agent via `kv_operations`.
+Fields:
 
 ```json
 {
   "name": "Alice",
+  "approved": true,
   "platforms": { "email": "alice@example.com", "slack": "U12345" },
   "relationship": "collaborator",
   "notes": "",
@@ -31,10 +33,27 @@ dashboard API (`POST /contacts`). Fields:
 }
 ```
 
-Contact records are **operator-only** — `kvWritePrivileged` rejects any
-write to `contact:*` or `contact_index:*` with the error "Contact records
-are operator-only" (`brainstem.js:732`). The agent cannot create, modify,
-or delete contacts.
+The `approved` field is the primary gate for all communication. Contacts
+must be approved before the agent can send to them, receive unredacted
+content from them, or give them tool access in chat.
+
+**Agent contact rules** (enforced by `kvWritePrivileged` in
+`brainstem.js`):
+
+| Action | Allowed? | Constraints |
+|--------|----------|-------------|
+| Create contact | Yes | Must have `approved: false` and empty `platforms: {}` |
+| Edit contact fields | Yes | Cannot set `approved: true` |
+| Change `platforms` | Yes | Auto-flips `approved` to `false` (requires re-approval) |
+| Delete unapproved contact | Yes | Agent can clean up its own stubs |
+| Delete approved contact | No | Operator-only |
+| Set `approved: true` | No | Operator-only (via dashboard PATCH endpoint) |
+| Patch `approved` field | No | Blocked explicitly to prevent string-level bypass |
+
+**Write path:** Agent `kv_operations` → `applyKVOperation` in
+`hook-protect.js` → routes `contact:*` keys to `kvWritePrivileged` →
+kernel-enforced rules above. `contact_index:*` keys remain
+kernel-managed (rejected by `kvWritePrivileged`).
 
 ### Contact index (reverse lookup)
 
@@ -55,8 +74,10 @@ by the kernel on first `resolveContact` miss.
 4. On match: writes the index cache, returns contact with patron snapshot
 5. On no match: returns `null` (unknown contact)
 
-Returns `null` for unknown contacts. This is the signal used by both the
-chat handler and the inbound content gate.
+Returns `null` for unknown contacts. Returns the full contact object
+(including `approved` field) for known contacts. Both values are used by
+the chat handler, communication gate, and inbound content gate to
+enforce the three-tier access model: unknown → unapproved → approved.
 
 ### _applyPatronSnapshot(id, contact)
 
@@ -126,8 +147,14 @@ resolveContact(channel, inbound.userId)
     → contact:{slug}
 ```
 
-**Known contact** (resolveContact returns non-null): gets full tool access
+**Approved contact** (`contact?.approved === true`): gets full tool access
 via `K.buildToolDefinitions()`.
+
+**Unapproved contact** (contact exists but `approved` is false/missing):
+- Gets tools filtered by `config:defaults.chat.unknown_contact_tools`
+  allowlist (same as unknown)
+- If allowlist is empty (default): gets zero tools — pure text-only chat
+- Records `inbound_unapproved` karma event
 
 **Unknown contact** (resolveContact returns null):
 - Gets tools filtered by `config:defaults.chat.unknown_contact_tools`
@@ -135,8 +162,8 @@ via `K.buildToolDefinitions()`.
 - If allowlist is empty (default): gets zero tools — pure text-only chat
 - Records `inbound_unknown` karma event
 
-This is a mechanical gate — no LLM evaluation. Unknown senders simply
-cannot invoke tools.
+This is a mechanical gate — no LLM evaluation. Only approved contacts
+get tool access.
 
 ### Inbound content gate: redaction and quarantine
 
@@ -165,11 +192,16 @@ The inbound grant declares how to find sender/content in the result:
 For each item in `result[result_array]`:
 1. Extracts `senderId` from `item[sender_field]`
 2. Calls `resolveContact(channel, senderId)`
-3. If unknown sender:
+3. If unknown sender (`!contact`):
    - Writes full content to `sealed:quarantine:{channel}:{encodedSenderId}:{timestamp}`
+     with `reason: "unknown sender"`
    - Replaces `item[content_field]` with `'[content redacted — unknown sender]'`
    - Records `inbound_redacted` karma event
-4. If known sender: content passes through unmodified
+4. If unapproved sender (`contact` exists but `!contact.approved`):
+   - Same quarantine and redaction as unknown, but with
+     `reason: "unapproved sender"` and message
+     `'[content redacted — unapproved sender]'`
+5. If approved sender: content passes through unmodified
 
 The agent sees redacted placeholders. The original content is only
 accessible via the dashboard (patron-only).
@@ -199,6 +231,7 @@ Quarantine record format:
   "sender": "unknown@example.com",
   "content": "the original message body",
   "tool": "check_email",
+  "reason": "unknown sender",
   "timestamp": "2026-03-16T...",
   "subject": "optional email subject",
   "from": "optional from field"
@@ -240,14 +273,20 @@ Key meta fields:
 
 ### Gate flow (5 steps)
 
-**Step 1 — Mechanical floor** (`brainstem.js:519-530`)
+**Step 1 — Mechanical floor** (`brainstem.js:538-561`)
 
-Only blocks `person`-type tools. If the mode is `initiating` AND there is a
-recipient AND that recipient has no contact record AND the recipient type
-is `person`: hard block.
+Only blocks `person`-type tools. Two checks:
 
-This means `send_email` to an unknown recipient is mechanically blocked,
-but `send_slack` (destination type) always proceeds to the LLM gate.
+1. **No contact record** + initiating mode → hard block. Responding to
+   unknown contacts falls through to the LLM gate (they already reached
+   out).
+2. **Unapproved contact** (contact exists but `approved` is false) →
+   hard block for **both** initiating and responding. All communication
+   with unapproved contacts is blocked until the operator approves.
+
+This means `send_email` to an unknown or unapproved recipient is
+mechanically blocked, but `send_slack` (destination type) always
+proceeds to the LLM gate.
 
 **Step 2 — Model capability check** (`brainstem.js:532-539`)
 
@@ -409,15 +448,17 @@ INBOUND                                    OUTBOUND
 Channel message                            Agent calls send_slack / send_email
       │                                          │
       ▼                                          ▼
-resolveContact()                           ┌─ Mechanical floor ─┐
-      │                                    │ person + unknown    │
-  ┌───┴───┐                                │ = hard block        │
-known   unknown                            └─────────┬───────────┘
-  │       │                                          │
-  │       ▼                                          ▼
-  │   toolless chat                        ┌─ Model capable? ──┐
-  │   (or allowlist)                       │ no = queue for     │
-  │                                        │ deep reflect       │
+resolveContact()                           ┌─ Mechanical floor ──────┐
+      │                                    │ person + unknown         │
+  ┌───┼────────┐                           │   = block initiating     │
+  │   │        │                           │ person + unapproved      │
+approved │  unknown                        │   = block ALL            │
+  │  unapproved │                          └─────────┬────────────────┘
+  │       │     ▼                                    │
+  │       │   toolless chat                          ▼
+  │       ▼   (or allowlist)               ┌─ Model capable? ──┐
+  │   toolless chat                        │ no = queue for     │
+  │   (or allowlist)                       │ deep reflect       │
   ▼                                        └─────────┬──────────┘
 full tools                                           │
   │                                                  ▼
@@ -432,15 +473,18 @@ Tool executes                               send/revise  block/queue
   ▼                                              ▼          ▼
 ┌─ Inbound gate ──┐                        Tool executes  comms_blocked:*
 │ check results    │                                        │
-│ for unknown      │                                        ▼
-│ senders          │                                  Deep reflect
-└─────┬────────────┘                                  reviews later
+│ for unknown /    │                                        ▼
+│ unapproved       │                                  Deep reflect
+│ senders          │                                  reviews later
+└─────┬────────────┘
       │
-  ┌───┴───┐
-known   unknown
-  │       │
-  ▼       ▼
-passes  content redacted
+  ┌───┼────────┐
+  │   │        │
+approved │  unknown
+  │  unapproved │
+  │       │     ▼
+  ▼       ▼   [redacted — unknown sender]
+passes  [redacted — unapproved sender]
         → sealed:quarantine:*
           (patron reviews
            via dashboard)

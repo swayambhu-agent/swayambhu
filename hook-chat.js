@@ -56,12 +56,21 @@ export async function handleChat(K, channel, inbound, adapter) {
   // Append user message
   conv.messages.push({ role: "user", content: text });
 
-  // Resolve model + tools (unknown contacts get no tools — mechanical jailbreak prevention)
+  // Resolve model + tools (unapproved/unknown contacts get no tools — mechanical jailbreak prevention)
   const chatModel = chatConfig.model || defaults?.orient?.model || "sonnet";
   const model = await K.resolveModel(chatModel);
   let tools;
-  if (contact) {
+  if (contact?.approved) {
     tools = await K.buildToolDefinitions();
+  } else if (contact) {
+    // Contact exists but not approved — restricted tools
+    const allowlist = chatConfig.unknown_contact_tools || [];
+    tools = allowlist.length
+      ? (await K.buildToolDefinitions()).filter(t => allowlist.includes(t.function?.name))
+      : [];
+    await K.karmaRecord({
+      event: 'inbound_unapproved', sender_id: inbound.userId, channel,
+    });
   } else {
     const allowlist = chatConfig.unknown_contact_tools || [];
     tools = allowlist.length

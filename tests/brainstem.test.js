@@ -1162,22 +1162,101 @@ describe("kvWritePrivileged contact write rules", () => {
     expect(brain.privilegedWriteCount).toBe(1);
   });
 
-  it("rejects put to a non-existent contact (creation)", async () => {
+  it("allows creation with approved: false and empty platforms", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await brain.kvWritePrivileged([
+      { op: "put", key: "contact:newperson", value: { name: "New Person", approved: false, platforms: {} } },
+    ]);
+    expect(brain.privilegedWriteCount).toBe(1);
+  });
+
+  it("rejects creation with approved: true", async () => {
     const { brain } = makeBrain();
     brain.karmaRecord = vi.fn(async () => {});
     await expect(brain.kvWritePrivileged([
-      { op: "put", key: "contact:newperson", value: { name: "New Person" } },
-    ])).rejects.toThrow("Contact creation is operator-only");
+      { op: "put", key: "contact:newperson", value: { name: "New Person", approved: true, platforms: {} } },
+    ])).rejects.toThrow("Setting approved: true is operator-only");
   });
 
-  it("rejects delete on a contact", async () => {
+  it("rejects creation with non-empty platforms", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.kvWritePrivileged([
+      { op: "put", key: "contact:newperson", value: { name: "New Person", approved: false, platforms: { email: "a@b.com" } } },
+    ])).rejects.toThrow("Agent-created contacts must have empty platforms");
+  });
+
+  it("auto-flips approved to false when platforms changes", async () => {
+    const { brain, env } = makeBrain({
+      "contact:alice": JSON.stringify({ name: "Alice", approved: true, platforms: { email: "alice@old.com" } }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    // Agent updates platforms (doesn't set approved: true — that's blocked)
+    await brain.kvWritePrivileged([
+      { op: "put", key: "contact:alice", value: { name: "Alice", platforms: { email: "alice@new.com" } } },
+    ]);
+    // The value should have been auto-set to approved: false due to platforms change
+    const putCall = env.KV.put.mock.calls.find(([key]) => key === "contact:alice");
+    expect(putCall).toBeDefined();
+    const stored = JSON.parse(putCall[1]);
+    expect(stored.approved).toBe(false);
+  });
+
+  it("preserves approved from existing when agent omits it", async () => {
+    const { brain, env } = makeBrain({
+      "contact:alice": JSON.stringify({ name: "Alice", approved: true, platforms: { email: "a@b.com" } }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    // Agent updates name but omits approved — should preserve existing approved: true
+    await brain.kvWritePrivileged([
+      { op: "put", key: "contact:alice", value: { name: "Alice Updated", platforms: { email: "a@b.com" } } },
+    ]);
+    const putCall = env.KV.put.mock.calls.find(([key]) => key === "contact:alice");
+    expect(putCall).toBeDefined();
+    const stored = JSON.parse(putCall[1]);
+    expect(stored.approved).toBe(true);
+    expect(stored.name).toBe("Alice Updated");
+  });
+
+  it("blocks setting approved: true on existing contact", async () => {
     const { brain } = makeBrain({
-      "contact:alice": JSON.stringify({ name: "Alice" }),
+      "contact:alice": JSON.stringify({ name: "Alice", approved: false, platforms: {} }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    await expect(brain.kvWritePrivileged([
+      { op: "put", key: "contact:alice", value: { name: "Alice", approved: true, platforms: {} } },
+    ])).rejects.toThrow("Setting approved: true is operator-only");
+  });
+
+  it("allows delete of unapproved contacts", async () => {
+    const { brain } = makeBrain({
+      "contact:alice": JSON.stringify({ name: "Alice", approved: false }),
+    });
+    brain.karmaRecord = vi.fn(async () => {});
+    await brain.kvWritePrivileged([
+      { op: "delete", key: "contact:alice" },
+    ]);
+    expect(brain.privilegedWriteCount).toBe(1);
+  });
+
+  it("blocks patch that modifies approved field", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+    brain.env.KV._store.set("contact:alice", '"approved":false,"name":"Alice"');
+    await expect(brain.kvWritePrivileged([
+      { op: "patch", key: "contact:alice", old_string: '"approved":false', new_string: '"approved":true' },
+    ])).rejects.toThrow('Cannot patch "approved" field on contacts');
+  });
+
+  it("blocks delete of approved contacts", async () => {
+    const { brain } = makeBrain({
+      "contact:alice": JSON.stringify({ name: "Alice", approved: true }),
     });
     brain.karmaRecord = vi.fn(async () => {});
     await expect(brain.kvWritePrivileged([
       { op: "delete", key: "contact:alice" },
-    ])).rejects.toThrow("Contact deletion is operator-only");
+    ])).rejects.toThrow("Deletion of approved contacts is operator-only");
   });
 
   it("rejects writes to contact_index: keys", async () => {
@@ -2078,7 +2157,7 @@ describe("Communication gate", () => {
   it("destination-type loads contact context when recipient matches", async () => {
     const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
-    await env.KV.put("contact:dev", JSON.stringify({ name: "Dev", platforms: { slack: "U_DEV" }, communication: "Team member." }));
+    await env.KV.put("contact:dev", JSON.stringify({ name: "Dev", approved: true, platforms: { slack: "U_DEV" }, communication: "Team member." }));
     brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"known person"}', cost: 0.001 }));
     const result = await brain.communicationGate("send_slack", { text: "hello", channel: "U_DEV" }, slackMeta);
     expect(result.verdict).toBe("send");
@@ -2114,12 +2193,12 @@ describe("Communication gate", () => {
     expect(brain.callLLM).toHaveBeenCalled();
   });
 
-  it("mechanical floor allows initiating to known recipient", async () => {
+  it("mechanical floor allows initiating to known approved recipient", async () => {
     const kvInit = {};
     const { brain, env } = makeBrain(kvInit, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-opus-4.6";
-    // Add a contact record
-    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", platforms: { slack: "swami" }, communication: "Inner circle." }));
+    // Add an approved contact record
+    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", approved: true, platforms: { slack: "swami" }, communication: "Inner circle." }));
     brain.callLLM = vi.fn(async () => ({ content: '{"verdict":"send","reasoning":"known contact"}', cost: 0.001 }));
     const result = await brain.communicationGate(
       "send_slack",
@@ -2130,11 +2209,39 @@ describe("Communication gate", () => {
     expect(brain.callLLM).toHaveBeenCalled();
   });
 
+  it("mechanical floor blocks person-type to unapproved contact (initiating)", async () => {
+    const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    await env.KV.put("contact:stub", JSON.stringify({ name: "Stub", approved: false, platforms: { email: "stub@example.com" } }));
+    const result = await brain.communicationGate(
+      "send_email",
+      { to: "stub@example.com", body: "hello" },
+      emailMeta,
+    );
+    expect(result.verdict).toBe("block");
+    expect(result.mechanical).toBe(true);
+    expect(result.reasoning).toContain("not approved");
+  });
+
+  it("mechanical floor blocks person-type to unapproved contact (responding)", async () => {
+    const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
+    brain.lastCallModel = "anthropic/claude-opus-4.6";
+    await env.KV.put("contact:stub", JSON.stringify({ name: "Stub", approved: false, platforms: { email: "stub@example.com" } }));
+    const result = await brain.communicationGate(
+      "send_email",
+      { to: "stub@example.com", body: "thanks", reply_to_id: "msg123" },
+      emailMeta,
+    );
+    expect(result.verdict).toBe("block");
+    expect(result.mechanical).toBe(true);
+    expect(result.reasoning).toContain("not approved");
+  });
+
   it("model gate queues when not comms_gate_capable", async () => {
     const { brain, env } = makeBrain({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
     brain.lastCallModel = "anthropic/claude-haiku-4.5";
-    // Add contact record so it passes mechanical floor
-    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", platforms: { slack: "swami" }, communication: "creator" }));
+    // Add approved contact record so it passes mechanical floor
+    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", approved: true, platforms: { slack: "swami" }, communication: "creator" }));
     const result = await brain.communicationGate(
       "send_slack",
       { text: "hello", channel: "swami" },
@@ -2649,7 +2756,7 @@ describe("inbound content gate", () => {
 
   it("redacts content from unknown senders", async () => {
     const { brain } = await setupBrainForInbound({}, {
-      "email:alice@example.com": { name: "Alice", slug: "alice" },
+      "email:alice@example.com": { name: "Alice", slug: "alice", approved: true },
       // bob@unknown.com is NOT in contacts
     });
 
@@ -2664,9 +2771,24 @@ describe("inbound content gate", () => {
     expect(result.emails[1].body).toBe("[content redacted — unknown sender]");
   });
 
+  it("redacts content from unapproved senders", async () => {
+    const { brain } = await setupBrainForInbound({}, {
+      "email:alice@example.com": { name: "Alice", slug: "alice", approved: true },
+      "email:bob@unknown.com": { name: "Bob", slug: "bob", approved: false },
+    });
+
+    const result = await brain.executeToolCall({
+      id: "tc_1",
+      function: { name: "check_email", arguments: "{}" },
+    });
+
+    expect(result.emails[0].body).toBe("Hi, this is Alice!");
+    expect(result.emails[1].body).toBe("[content redacted — unapproved sender]");
+  });
+
   it("quarantines unknown sender content under sealed: key", async () => {
     const { brain } = await setupBrainForInbound({}, {
-      "email:alice@example.com": { name: "Alice", slug: "alice" },
+      "email:alice@example.com": { name: "Alice", slug: "alice", approved: true },
     });
 
     await brain.executeToolCall({
@@ -2690,7 +2812,7 @@ describe("inbound content gate", () => {
 
   it("records inbound_redacted karma for unknown senders", async () => {
     const { brain } = await setupBrainForInbound({}, {
-      "email:alice@example.com": { name: "Alice", slug: "alice" },
+      "email:alice@example.com": { name: "Alice", slug: "alice", approved: true },
     });
 
     await brain.executeToolCall({
@@ -2707,10 +2829,10 @@ describe("inbound content gate", () => {
     expect(redactedKarma[0].quarantine_key).toMatch(/^sealed:quarantine:/);
   });
 
-  it("passes through content from known senders without redaction", async () => {
+  it("passes through content from known approved senders without redaction", async () => {
     const { brain } = await setupBrainForInbound({}, {
-      "email:alice@example.com": { name: "Alice", slug: "alice" },
-      "email:bob@unknown.com": { name: "Bob", slug: "bob" },
+      "email:alice@example.com": { name: "Alice", slug: "alice", approved: true },
+      "email:bob@unknown.com": { name: "Bob", slug: "bob", approved: true },
     });
 
     const result = await brain.executeToolCall({

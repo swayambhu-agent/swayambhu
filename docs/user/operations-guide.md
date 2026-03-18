@@ -227,7 +227,17 @@ node scripts/read-kv.mjs modification_snapshot:
 
 ## Managing Contacts
 
-### Adding a Contact
+### How contacts work
+
+Contacts have three tiers: **unknown** (no record), **unapproved**
+(record exists, `approved: false`), and **approved** (`approved: true`).
+Only approved contacts get full access — tool use in chat, unredacted
+email content, and outbound communication.
+
+The agent can create contact stubs (unapproved, no platform IDs) when it
+encounters new people. You approve them via the dashboard.
+
+### Adding a Contact (operator)
 
 Via the dashboard API:
 
@@ -247,21 +257,47 @@ curl -X POST http://localhost:8790/contacts \
   }'
 ```
 
-The `slug` is permanent — choose something stable (name, handle, or
-role). The `platforms` map connects their platform identities so the agent
-can recognize them across channels.
+Operator-created contacts are `approved: true` by default. The `slug` is
+permanent — choose something stable (name, handle, or role). The
+`platforms` map connects their platform identities so the agent can
+recognize them across channels.
 
-### What Happens with Unknown Contacts
+### Approving agent-created contacts
 
-When someone not in the contact registry interacts with the agent:
+When the agent creates a contact stub, it appears in KV as
+`contact:{slug}` with `approved: false` and empty `platforms`. To
+activate it:
 
-- **Slack chat:** They can chat, but get no tool access (unless you've
-  configured `unknown_contact_tools` in `config:defaults.chat`). The
-  event is logged as `inbound_unknown` in karma.
-- **Email:** Their email content is redacted before the agent sees it.
-  The original is quarantined for your review.
-- **Outbound:** The agent cannot initiate messages to unknown contacts.
-  This is a mechanical block enforced by the communication gate.
+1. Add platform IDs to the contact (edit in KV Explorer or via API)
+2. Approve via the dashboard API:
+
+```bash
+curl -X PATCH http://localhost:8790/contacts/jane_doe/approve \
+  -H "X-Operator-Key: test" \
+  -H "Content-Type: application/json" \
+  -d '{ "approved": true }'
+```
+
+You can also revoke approval:
+
+```bash
+curl -X PATCH http://localhost:8790/contacts/jane_doe/approve \
+  -H "X-Operator-Key: test" \
+  -H "Content-Type: application/json" \
+  -d '{ "approved": false }'
+```
+
+### What happens at each tier
+
+| Tier | Chat tools | Inbound email | Outbound |
+|------|-----------|---------------|----------|
+| **Unknown** | None (or allowlist) | Redacted + quarantined | Initiating blocked; responding reaches LLM gate |
+| **Unapproved** | None (or allowlist) | Redacted + quarantined | All communication blocked |
+| **Approved** | Full tool access | Passes through | Proceeds to communication gate |
+
+**Note:** If the agent changes a contact's `platforms` field, `approved`
+auto-flips to `false`. This prevents the agent from re-routing an
+approved contact to a different platform identity without your review.
 
 ### Relationship Field
 
@@ -273,8 +309,8 @@ during conversations and reflections. Common values:
 - `coordinator` — Someone who manages projects or teams
 - `services` — External service provider (transactional relationship)
 
-The agent uses this field for context, but the actual security boundary is
-binary: either someone is in the contact registry or they aren't.
+The agent uses this field for context, but the security boundary is the
+`approved` field, not the relationship.
 
 ---
 

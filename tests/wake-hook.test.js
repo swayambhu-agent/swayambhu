@@ -766,6 +766,41 @@ describe("applyKVOperation blocks yama/niyama", () => {
   });
 });
 
+// ── 19b. applyKVOperation routes contact: to kvWritePrivileged ───
+
+describe("applyKVOperation routes contact: to kvWritePrivileged", () => {
+  it("routes contact: put to kvWritePrivileged", async () => {
+    const K = makeMockK();
+    await applyKVOperation(K, { op: "put", key: "contact:alice", value: { name: "Alice", approved: false, platforms: {} } });
+    expect(K.kvWritePrivileged).toHaveBeenCalledWith([
+      { op: "put", key: "contact:alice", value: { name: "Alice", approved: false, platforms: {} } },
+    ]);
+    // Should NOT go through kvPutSafe (system key path)
+    expect(K.kvPutSafe).not.toHaveBeenCalled();
+  });
+
+  it("records modification_blocked when kvWritePrivileged rejects", async () => {
+    const K = makeMockK();
+    K.kvWritePrivileged = vi.fn(async () => { throw new Error("Setting approved: true is operator-only"); });
+    await applyKVOperation(K, { op: "put", key: "contact:evil", value: { name: "Evil", approved: true, platforms: {} } });
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "modification_blocked",
+        key: "contact:evil",
+        reason: "Setting approved: true is operator-only",
+      })
+    );
+  });
+
+  it("routes contact: delete to kvWritePrivileged", async () => {
+    const K = makeMockK();
+    await applyKVOperation(K, { op: "delete", key: "contact:alice" });
+    expect(K.kvWritePrivileged).toHaveBeenCalledWith([
+      { op: "delete", key: "contact:alice" },
+    ]);
+  });
+});
+
 // ── 20. acceptStaged with patch op ────────────────
 
 describe("acceptStaged with patch op", () => {

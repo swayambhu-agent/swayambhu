@@ -2,7 +2,7 @@
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-Operator-Key",
 };
 
@@ -172,6 +172,7 @@ export default {
         platforms: body.platforms,
         relationship: body.relationship || "",
         notes: body.notes || "",
+        approved: body.approved !== false,
         created_at: new Date().toISOString(),
         created_by: "patron",
       };
@@ -199,6 +200,39 @@ export default {
       }
       await env.KV.delete(key);
       return json({ ok: true });
+    }
+
+    // PATCH /contacts/:slug/approve — set approval status on a contact
+    const approveMatch = path.match(/^\/contacts\/([^/]+)\/approve$/);
+    if (approveMatch && request.method === "PATCH") {
+      const slug = decodeURIComponent(approveMatch[1]);
+      const contactKey = `contact:${slug}`;
+      const existing = await env.KV.get(contactKey, "json");
+      if (!existing) return json({ error: `contact "${slug}" not found` }, 404);
+
+      const body = await request.json().catch(() => null);
+      if (body?.approved === undefined || typeof body.approved !== "boolean") {
+        return json({ error: "body must include { approved: true|false }" }, 400);
+      }
+
+      existing.approved = body.approved;
+      existing.approved_at = new Date().toISOString();
+      existing.approved_by = "patron";
+      await env.KV.put(contactKey, JSON.stringify(existing), {
+        metadata: { type: "contact", format: "json", updated_at: new Date().toISOString() },
+      });
+
+      // Rebuild contact_index entries for current platforms
+      if (existing.platforms && typeof existing.platforms === "object") {
+        for (const [platform, userId] of Object.entries(existing.platforms)) {
+          const indexKey = `contact_index:${platform}:${userId}`;
+          await env.KV.put(indexKey, JSON.stringify(slug), {
+            metadata: { type: "contact_index", format: "json", updated_at: new Date().toISOString() },
+          });
+        }
+      }
+
+      return json({ ok: true, slug, approved: body.approved });
     }
 
     // GET /kv/:key — single key read

@@ -63,7 +63,7 @@ overridden by secret in production).
 All responses include:
 ```
 Access-Control-Allow-Origin: *
-Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS
+Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS
 Access-Control-Allow-Headers: Content-Type, X-Operator-Key
 ```
 
@@ -160,10 +160,25 @@ Creates a new contact record. Validates:
 - No duplicate slugs (checks for existing `contact:{slug}`)
 
 Writes:
-- `contact:{slug}` — the contact record with `created_by: "patron"`
+- `contact:{slug}` — the contact record with `created_by: "patron"` and
+  `approved: true` by default (operator-created contacts are auto-approved;
+  pass `"approved": false` to create an unapproved contact)
 - `contact_index:{platform}:{userId}` — one index entry per platform
 
 Response: `{ ok: true, slug, contact }` or error (400/409)
+
+#### PATCH /contacts/:slug/approve
+
+Sets approval status on a contact. Body: `{ "approved": true|false }`.
+
+Updates the contact record with:
+- `approved` — the new status
+- `approved_at` — timestamp of the change
+- `approved_by` — `"patron"`
+
+Rebuilds `contact_index:*` entries for the contact's current platforms.
+
+Response: `{ ok: true, slug, approved }` or error (400/404)
 
 #### DELETE /quarantine/:key
 

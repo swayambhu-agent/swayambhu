@@ -7,19 +7,20 @@ and cannot do, and how you maintain oversight.
 
 ---
 
-## Unknown Contacts
+## Contact Approval
 
-When someone the agent doesn't recognize sends a message, the system
-restricts what the agent can do with that interaction:
+Contacts have three tiers of access: **unknown**, **unapproved**, and
+**approved**. The `approved` field on contact records is the primary
+security gate for all communication.
+
+### Unknown contacts (no record)
+
+When someone the agent doesn't recognize sends a message:
 
 **In Slack chat:** The agent can respond conversationally, but has no
 tools. It cannot look up KV data, check email, run commands, or send
 messages on behalf of the unknown person. The conversation is logged in
 karma as `inbound_unknown`.
-
-To give unknown contacts access to specific tools, add tool names to
-`config:defaults.chat.unknown_contact_tools`. By default this list is
-empty — no tools at all.
 
 **In email:** Content from unknown senders is redacted before the agent
 sees it. The agent receives only the sender address, subject line, and a
@@ -29,9 +30,53 @@ agent's tools cannot reach it. Only you can view quarantined content
 through the dashboard.
 
 **Outbound:** The agent cannot initiate messages to anyone without a
-contact record. This is enforced mechanically in the kernel — no prompt
-instruction, no LLM judgment. If there is no `viveka:contact:*` entry for
-the recipient, the message is blocked before any evaluation happens.
+contact record. This is enforced mechanically in the kernel.
+
+### Unapproved contacts (record exists, `approved: false`)
+
+The agent can create contact stubs — records with a name and
+relationship but no platform IDs and `approved: false`. These stubs let
+the agent note that someone exists without giving them any access.
+
+Unapproved contacts are treated similarly to unknown contacts:
+- **Chat:** No tool access (same restricted allowlist as unknown).
+  Logged as `inbound_unapproved`.
+- **Email:** Content redacted as `[content redacted — unapproved sender]`
+  and quarantined.
+- **Outbound:** All communication blocked (both initiating and
+  responding). This is stricter than unknown — responding to unknown
+  contacts can reach the LLM gate, but unapproved contacts are
+  mechanically blocked in all modes.
+
+### Approved contacts (`approved: true`)
+
+People you've approved get full access to the agent's capabilities in
+chat — tool use, KV queries, email operations, and so on. The agent also
+sees their contact record (name, relationship, notes, communication
+preferences) for context.
+
+Every outbound message to an approved contact still passes through the
+communication gate (see [Communication Gate](#communication-gate) below).
+Being approved means the agent *can* communicate with you, not that it
+will send anything unchecked.
+
+### Approval workflow
+
+1. The agent creates a contact stub via `kv_operations` (e.g. after
+   receiving email from a new person): `{ name: "Jane", approved: false,
+   platforms: {} }`
+2. You review the stub in the dashboard or KV Explorer
+3. You add platform IDs and approve via the dashboard API:
+   ```bash
+   curl -X PATCH http://localhost:8790/contacts/jane/approve \
+     -H "X-Operator-Key: test" \
+     -H "Content-Type: application/json" \
+     -d '{ "approved": true }'
+   ```
+4. Future messages from Jane pass through unredacted with full tool access
+
+If the agent later changes the contact's `platforms` field, `approved`
+auto-flips to `false` — you must re-approve after platform changes.
 
 ### Reviewing Quarantined Content
 
@@ -47,27 +92,10 @@ curl -X DELETE -H "X-Operator-Key: your-key" \
   https://your-dashboard-api/quarantine/sealed:quarantine:email:sender@example.com:1710700000
 ```
 
-If the sender is legitimate, create a contact record for them. Future
-messages from that sender will pass through unredacted.
-
----
-
-## Known Contacts
-
-People you've added to the contact registry get full access to the
-agent's capabilities in chat — tool use, KV queries, email operations, and
-so on. The agent also sees their contact record (name, relationship,
-notes, communication preferences) for context.
-
-Every outbound message to a known contact still passes through the
-communication gate (see [Communication Gate](#communication-gate) below).
-Being a known contact means the agent *can* communicate with you, not
-that it will send anything unchecked.
-
-The `relationship` and `communication` fields on a contact record give the
-agent context about how to interact with that person. The agent uses this
-for tone and judgment, but the actual security boundary is binary: you're
-either in the contact registry or you aren't.
+To give unknown contacts access to specific tools before creating a
+contact record, add tool names to
+`config:defaults.chat.unknown_contact_tools`. By default this list is
+empty — no tools at all.
 
 ---
 
@@ -175,12 +203,17 @@ logic), the kernel sends an alert to Slack using `kernel:alert_config`.
 The agent cannot prevent this. The alert config is a kernel key — the
 agent cannot read or modify it.
 
-### Modify Contact Records
+### Self-Approve Contacts
 
-Contact keys (`contact:*`) are operator-managed. The agent cannot create,
-modify, or delete contacts during normal orient sessions. During deep
-reflect, the agent can *propose* contact changes through the modification
-protocol, but they go through staged review like any other modification.
+The agent can create contact stubs (`approved: false`, empty `platforms`)
+and edit contact fields, but it **cannot** set `approved: true`. Approval
+is operator-only, enforced mechanically by the kernel. The agent also
+cannot delete approved contacts — only unapproved stubs it created.
+
+If the agent modifies a contact's `platforms` field, `approved`
+auto-flips to `false`, requiring operator re-approval. This prevents
+the agent from re-routing an approved contact to a different platform
+identity without operator review.
 
 ---
 
@@ -452,4 +485,4 @@ agent starts over with its original configuration.
 | **Tripwire** | Repeated crashes | Auto-restore last good hook, then minimal fallback |
 | **Hook write alerts** | Self-modification visibility | Slack alert on every hook:wake:* write |
 | **Karma logging** | Full audit trail | Every event recorded, viewable in dashboard |
-| **Contact registry** | Who the agent can communicate with | Operator-managed, binary trust boundary |
+| **Contact approval** | Who the agent can communicate with | Three-tier gate (unknown/unapproved/approved); agent creates stubs, operator approves |

@@ -205,21 +205,26 @@ automatically.
 
 ### Step 6: Tool filtering
 
-`hook-chat.js:58-72`
+`hook-chat.js:59-82`
 
-**Known contact** (`resolveContact` returns non-null):
+**Approved contact** (`contact?.approved === true`):
 Full tool set via `K.buildToolDefinitions()`.
 
-**Unknown contact** (`resolveContact` returns null):
+**Unapproved contact** (contact exists, `approved` is false/missing):
 - Reads `chatConfig.unknown_contact_tools` (default: `[]`)
 - If non-empty: filters `buildToolDefinitions()` to only matching names
 - If empty: no tools — pure text chat
+- Records `inbound_unapproved` karma event
+
+**Unknown contact** (`resolveContact` returns null):
+- Same tool filtering as unapproved (uses `unknown_contact_tools` allowlist)
 - Records `inbound_unknown` karma event
 
-This is a mechanical gate. Unknown senders cannot invoke tools unless
-explicitly allowlisted in config.
+This is a mechanical gate. Only approved contacts get full tool access.
+Unapproved and unknown contacts are both restricted to the allowlist
+(empty by default).
 
-> **NOTE:** Tool calls from known contacts go through the full kernel
+> **NOTE:** Tool calls from approved contacts go through the full kernel
 > pipeline including `executeToolCall`, which means the communication gate
 > and inbound content gate still apply. Chat doesn't bypass those gates.
 
@@ -286,7 +291,7 @@ cumulative cost.
 |--------|------|---------------|
 | **Trigger** | Inbound HTTP message | Cron schedule (`/__scheduled`) |
 | **Prompt** | `prompt:chat` | `prompt:orient` |
-| **Tools** | Full set (known) or filtered (unknown) | Full set + `spawn_subplan` |
+| **Tools** | Full set (approved) or filtered (unapproved/unknown) | Full set + `spawn_subplan` |
 | **Max steps** | `max_tool_rounds` (default 5) | `getMaxSteps('orient')` (default 12) |
 | **Agent loop** | Manual loop in `handleChat` calling `K.callLLM` | `K.runAgentLoop` (kernel-managed) |
 | **Reflection** | None — no reflect after chat | Session reflect after every orient |

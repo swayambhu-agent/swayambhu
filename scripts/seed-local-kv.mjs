@@ -173,6 +173,7 @@ console.log("--- Documentation ---");
 await put("doc:architecture", read("docs/dev/architecture.md"), "text", "System architecture reference doc");
 await put("doc:modification_guide", read("docs/dev/modification-protocol.md"), "text", "Modification Protocol reference doc");
 await put("doc:wisdom_guide", read("docs/dev/wisdom-guide.md"), "text", "Wisdom system reference — schema, naming, when to write, maintenance");
+await put("doc:patron", read("docs/dev/patron-relationship.md"), "text", "Patron relationship — what patron controls, what agent controls, asking for things, brainstem suggestions");
 
 // ── Dharma ───────────────────────────────────────────────────
 
@@ -256,8 +257,9 @@ await put("contact:swami_kevala", {
   about: "Bramhachari at Isha.",
   timezone: "Asia/Kolkata",
   location: "Isha Yoga Center, Coimbatore",
+  approved: true,
   platforms: {
-    slack: "U084ASKBXB7",  
+    slack: "U084ASKBXB7",
   },
   chat: {
     model: "sonnet",

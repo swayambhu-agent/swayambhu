@@ -14,6 +14,22 @@ export async function applyKVOperation(K, op) {
         : JSON.stringify(op.value).slice(0, 500))
     : undefined;
 
+  // Contact keys route through kvWritePrivileged (kernel-enforced approval rules)
+  if (key.startsWith("contact:")) {
+    try {
+      await K.kvWritePrivileged([op]);
+    } catch (err) {
+      await K.karmaRecord({
+        event: "modification_blocked",
+        key,
+        op: op.op,
+        reason: err.message,
+        attempted_value: valueSummary,
+      });
+    }
+    return;
+  }
+
   if (await K.isSystemKey(key)) {
     await K.karmaRecord({
       event: "modification_blocked",
