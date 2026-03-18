@@ -8,21 +8,22 @@ Everything that happened is below. Your job is to distill it into something your
 
 ## This session
 
-**Karma log:**
-{{karma}}
-
-**Total cost:** ${{sessionCost}}
-
-**Step results:**
-{{results}}
-
-## Staged modifications awaiting deep reflect review
-
-{{stagedModifications}}
+The session data is provided below as JSON:
+- **karma**: the full karma log for this session
+- **sessionCost**: total dollar cost of this session
+- **stagedModifications**: any modifications awaiting deep reflect review
 
 ## System key patterns
 
 {{systemKeyPatterns}}
+
+## Available wisdom
+
+{{wisdom_manifest}}
+
+You can see available wisdom entries but cannot load them this session.
+Reference relevant entries by name in your observations so deep reflect
+can follow up.
 
 ---
 
@@ -73,8 +74,7 @@ Respond with a single JSON object. Nothing outside the JSON.
       "claims": ["What this modification is supposed to achieve — human-readable"],
       "ops": [
         {"op": "put", "key": "config:defaults", "value": {"orient": {"effort": "medium"}}},
-        {"op": "delete", "key": "obsolete:key"},
-        {"op": "rename", "key": "old:name", "value": "new:name"}
+        {"op": "delete", "key": "obsolete:key"}
       ],
       "checks": [
         {"type": "kv_assert", "key": "config:defaults", "path": "orient.effort", "predicate": "equals", "expected": "medium"},
@@ -82,6 +82,10 @@ Respond with a single JSON object. Nothing outside the JSON.
       ]
     }
   ],
+
+  "modification_observations": {
+    "m_123": "Brief observation of this modification's immediate effect this session"
+  },
 
   "modification_verdicts": [
     {"modification_id": "m_...", "verdict": "withdraw"},
@@ -92,7 +96,12 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Required:** `session_summary`, `note_to_future_self`, `next_orient_context`
 
-**Optional:** `next_wake_config`, `kv_operations`, `modification_requests`, `modification_verdicts`
+**Optional:** `next_wake_config`, `kv_operations`, `modification_requests`, `modification_observations`, `modification_verdicts`
+
+### next_wake_config.effort
+
+Levels: low, medium, high, max. Higher = deeper reasoning, higher cost.
+Default to low. Scale with the complexity of what the next session faces.
 
 ### next_orient_context.load_keys
 
@@ -100,7 +109,7 @@ This is how you control your own memory. Whatever keys you list here will be loa
 
 ### kv_operations
 
-This is how you write to your own memory. Common uses: update a project state, store something you learned. The brainstem executes these after your reflection. Supported ops: `put`, `delete`. Note: you can only write to keys with `unprotected: true` metadata — protected and system keys require modification requests.
+This is how you write to your own memory. Common uses: update a project state, store something you learned. The brainstem executes these after your reflection. Supported ops: `put`, `delete`, `patch`. Note: you can only write to keys with `unprotected: true` metadata — protected and system keys require modification requests.
 
 ### note_to_future_self
 
@@ -116,7 +125,7 @@ The staged modifications section above shows any modifications currently awaitin
 
 Each modification_request must include:
 - `claims`: what the modification is supposed to achieve (human-readable, for your future self)
-- `ops`: the KV operations (`put`, `delete`, `rename`) to apply
+- `ops`: the KV operations (`put`, `delete`, `patch`) to apply
 - `checks`: verifiable conditions to evaluate later
 
 Check types: `kv_assert` (read a key with optional dot-path, test with predicate: `exists`, `equals`, `gt`, `lt`, `matches`, `type`) or `tool_call` (execute a tool, optionally assert on result).

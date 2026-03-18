@@ -98,7 +98,7 @@ static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 | `loadEagerConfig()` | Loads `config:defaults`, `config:models`, `config:model_capabilities`, `dharma`, `config:tool_registry`, `kernel:tool_grants`, yamas/niyamas, and patron context into instance fields. Called once at session start. |
 | `runScheduled()` | Top-level entry point for cron. Detects platform kills, checks hook safety, loads hook modules from KV, calls `executeHook()`. |
 | `executeHook(modules, mainModule)` | Writes `kernel:active_session`, calls `_invokeHookModules()`, catches crashes (falls back to `runMinimalFallback()`), updates session outcome, snapshots hook as `kernel:last_good_hook` on clean exit, cleans up active session marker. |
-| `callLLM(opts)` | Budget check, dharma/principles injection, build messages array, call `callWithCascade()`, record karma, track cost. Returns `{ content, usage, cost, toolCalls }`. |
+| `callLLM(opts)` | Budget check, dharma/principles injection, resolve model family + map effort via `config:models`, build messages array, call `callWithCascade()`, record karma, track cost. Returns `{ content, usage, cost, toolCalls }`. |
 | `callWithCascade(request, step)` | Three-tier provider cascade (see [Model tiering](#model-tiering)). |
 | `executeToolCall(toolCall)` | Parses args, runs communication gate if applicable, calls `callHook('validate', ...)`, executes tool via `executeAction()`, calls `callHook('validate_result', ...)`, runs inbound content gate. |
 | `executeAction(step)` | Loads tool code+meta via `_loadTool()`, checks comms gate approval flag, builds sandboxed context, records karma, calls `_executeTool()`. |
@@ -279,7 +279,7 @@ Kernel-level code (imported directly, not stored in KV). `handleChat(K, channel,
 | `_loadTool(toolName)` | Reads `tool:{name}:code` and `tool:{name}:meta` from KV | Returns `meta` from inline `TOOL_MODULES` map, `moduleCode: null` |
 | `_executeTool(...)` | Runs in Worker Loader isolate | Calls `TOOL_MODULES[toolName].execute(ctx)` directly |
 | `executeAdapter(...)` | Loads adapter code from KV, runs in isolate | Calls imported provider module directly |
-| `callWithCascade(...)` | Three-tier provider cascade via isolates | Direct `fetch()` to OpenRouter with 60s timeout |
+| `callWithCascade(...)` | Three-tier provider cascade via isolates | Direct `fetch()` to OpenRouter with 60s timeout, family adapters inlined |
 | `callHook(hookName, ctx)` | Loads hook code from KV, runs in isolate | Returns `null` (no hooks in dev) |
 
 Dev mode also:
@@ -329,6 +329,24 @@ runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
 ```
 
 If the input isn't in the alias map, it's returned unchanged (assumed to be a full model ID).
+
+### Model families and effort mapping
+
+Each model entry in `config:models.models` has a `family` field and an optional `effort_map`. `callLLM()` looks up the model to resolve these before building the standardized request:
+
+- **`family`** — identifies which API-specific adapter to use in the provider (e.g., `"anthropic"` → `thinking` + `cache_control`, `"deepseek"` → `reasoning_effort`). Passed through to the provider as `request.family`.
+- **`effort_map`** — translates internal effort levels to model-specific values. If absent (e.g., DeepSeek v3.2 doesn't support thinking), `request.effort` is `null`.
+
+As seeded:
+
+| Model | Family | Effort map |
+|-------|--------|-----------|
+| `anthropic/claude-opus-4.6` | `anthropic` | `{ low, medium, high, max }` (identity) |
+| `anthropic/claude-sonnet-4.6` | `anthropic` | `{ low, medium, high, max }` (identity) |
+| `anthropic/claude-haiku-4.5` | `anthropic` | `{ low, medium, high, max }` (identity) |
+| `deepseek/deepseek-v3.2` | `deepseek` | (none — no thinking support) |
+
+To add a new model family: add a `family` adapter in `providers/llm.js` (and inline in `brainstem-dev.js`), add the model entry in `config:models` with `family` and optional `effort_map`. No kernel changes needed.
 
 ### Model capability flags
 

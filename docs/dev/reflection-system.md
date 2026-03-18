@@ -281,6 +281,8 @@ Template variables:
 | `context.effort` | `context.effort` / `defaults.deep_reflect.effort` | Effort level (default `"high"`) |
 | `context.crashData` | `context.crashData` | Crash data from `detectCrash` (or `"none"`) |
 | `belowOutputs` | `loadReflectHistory(K, depth-1, 10)` | Last 10 outputs from one level below (depth >= 1 only) |
+| `priorReflections` | `loadReflectHistory(K, depth, count)` | Own prior outputs at same depth (depth >= 1 only, configurable count, default 3) |
+| `wisdom_manifest` | `loadWisdomManifest(K)` | Manifest of prajna/viveka key names + metadata summaries (all depths) |
 | `depth` | depth parameter | Current reflection depth |
 | `belowPrompt` | `loadBelowPrompt(K, depth)` | Prompt text for one level below |
 
@@ -297,9 +299,17 @@ Every reflection writes `reflect:{depth}:{sessionId}` with:
   "note_to_future_self": "...",
   "depth": 1,
   "session_id": "s_...",
-  "timestamp": "2026-03-16T..."
+  "timestamp": "2026-03-16T...",
+  "current_intentions": [],
+  "modification_observations": {},
+  "system_trajectory": "..."
 }
 ```
+
+The last three fields are optional — stored conditionally only when
+present in the output, omitted (not null) when absent. Deep reflect
+(depth 1+) produces all three; session reflect (depth 0) may produce
+`modification_observations` only.
 
 Session reflect (depth 0) also writes `last_reflect` — which is read by
 the next orient session as context (`hook-main.js:76, 94`).
@@ -310,7 +320,8 @@ the next orient session as context (`hook-main.js:76, 94`).
 
 Lists `reflect:{depth}:*` keys, sorts by name descending (newest first),
 takes the top `count` (default 10), and loads all values via `K.loadKeys`.
-Used by `gatherReflectContext` to populate `belowOutputs`.
+Used by `gatherReflectContext` to populate `belowOutputs` (depth-1
+outputs) and `priorReflections` (same-depth history).
 
 > **NOTE:** The list call uses `limit: count + 10` as a buffer, then
 > sorts and slices client-side. This works for small datasets but could
@@ -499,3 +510,80 @@ This is kernel-enforced — no hook or prompt modification can bypass it.
 
 **Format:** text (not JSON) — stored as plain strings in KV with type
 `"yama"` / `"niyama"`.
+
+---
+
+## Same-Depth History (priorReflections)
+
+Deep reflect (depth 1+) loads its own prior outputs via
+`loadReflectHistory(K, depth, count)`. Count is configurable via
+`config:defaults.reflect_levels[depth].prior_reflections`, default 3.
+Injected as `{{priorReflections}}` in the system prompt. This closes the
+self-awareness gap — deep reflect no longer starts fresh each session but
+reads its own previous reflections for continuity.
+
+Session reflect does not load same-depth history — its continuity is via
+`note_to_future_self` → `last_reflect`.
+
+---
+
+## Wisdom Manifest
+
+Both session reflect and deep reflect receive a manifest of prajna/viveka
+key names + metadata summaries, built by `loadWisdomManifest(K)` in
+hook-reflect.js. Deep reflect uses `kv_query` to load specific entries on
+demand. Session reflect (no tools, single-shot call) sees the manifest as
+informational only — it references entries by name in
+`modification_observations` and `note_to_future_self` for deep reflect to
+follow up.
+
+Metadata `summary` field provides a one-line description for relevance
+judgment. Falls back to key name when summary is absent. Key naming
+convention is prompt-enforced: names must be descriptive enough for
+relevance judgment from the manifest alone.
+
+The comms gate's full `viveka:comms:*` loading via `loadCommsViveka()`
+remains unchanged — safety-critical paths get full loading, reflective
+paths get manifest + on-demand.
+
+---
+
+## Observation Cycle
+
+1. **Propose with criteria** — modification requests include a `criteria`
+   field with natural-language observation instructions for what the future
+   self should look for
+2. **First observation** — session reflect notes immediate effects in
+   `modification_observations`; deep reflect compares against criteria and
+   prior observations
+3. **Longitudinal tracking** — `sessions_since_activation` and
+   `sessions_since_staged` computed in `loadInflightModifications` /
+   `loadStagedModifications`; visible in template context
+4. **Verdict or justification** — modifications exceeding 30 sessions need
+   a verdict or explicit deferral reason
+5. **Crystallization** — completed intentions become `prajna:*` entries via
+   wisdom modification requests with `type: 'wisdom'`
+
+---
+
+## Wisdom Trust Tiers
+
+Prajna/viveka are a softer trust tier than yamas/niyamas. The direct path
+(`acceptDirect`) is available for prajna/viveka but not yamas/niyamas —
+the `acceptDirect` gate checks ops for `yama:*` / `niyama:*` prefixes and
+rejects those, while allowing `viveka:*` / `prajna:*` through.
+
+Safeguards against accumulated drift through prajna:
+
+1. **Kernel-enforced gates** — yama/niyama writes require 200-char/100-char
+   deliberation + capability model, regardless of what prajna content
+   suggests
+2. **Depth hierarchy** — depth-2+ reviews depth-1's prajna entries and can
+   rollback/delete drifted entries
+3. **Manifest visibility** — all prajna/viveka key names and summaries are
+   visible in the manifest; suspiciously named entries draw scrutiny
+
+The risk is not a single malicious entry but gradual drift through many
+individually-reasonable entries that collectively shift the LLM's
+disposition. The depth hierarchy and observation cycle are the primary
+safeguards.

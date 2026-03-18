@@ -23,7 +23,8 @@ Both paths share the same execution primitive: load code + meta from KV, build a
 callLLM()
 │ Budget check (cost + duration)
 │ Prepend dharma + principles to system prompt
-│ Build standardized request { model, max_tokens, messages, thinking?, tools? }
+│ Resolve model family + map effort via config:models effort_map
+│ Build standardized request { model, max_tokens, messages, family, effort, tools? }
 │
 ▼
 callWithCascade(request, step)
@@ -183,7 +184,19 @@ Looks up model in `config:models.models` by ID or alias. Uses `input_cost_per_mt
 
 ## The standardized request
 
-`callLLM()` builds a standardized request object before passing it to `callWithCascade()`:
+`callLLM()` builds a standardized request object before passing it to `callWithCascade()`. It looks up the model in `config:models.models` to resolve the `family` and map the internal `effort` value through the model's `effort_map`:
+
+```js
+const modelInfo = this.modelsConfig?.models?.find(
+  m => m.id === model || m.alias === model
+);
+const family = modelInfo?.family || null;
+const mappedEffort = (effort && effort !== "none" && modelInfo?.effort_map)
+  ? (modelInfo.effort_map[effort] || null)
+  : null;
+```
+
+Resulting request shape:
 
 ```js
 {
@@ -194,12 +207,13 @@ Looks up model in `config:models.models` by ID or alias. Uses `input_cost_per_mt
     { role: "user", content: "..." },
     ...
   ],
-  thinking: { type: "adaptive", effort: "low" },  // null if effort is "none" or falsy
+  family: "anthropic",                       // from config:models, null if unknown model
+  effort: "low",                             // mapped through effort_map, null if no map or effort "none"
   tools: [...]                               // omitted if empty
 }
 ```
 
-The provider adapter receives this plus `{ secrets }` and translates it to the external API format. The adapter must return:
+The provider adapter receives this plus `{ secrets }` and uses `family` to select the appropriate wire format (e.g., Anthropic's `thinking` parameter vs DeepSeek's `reasoning_effort`). The adapter must return:
 
 ```js
 {
@@ -315,7 +329,7 @@ The Gmail provider (`providers/gmail.js`) also exports a `check()` function — 
 
 ## Dev mode override
 
-`DevBrainstem` at `brainstem-dev.js:222` replaces `callWithCascade()` entirely:
+`DevBrainstem` at `brainstem-dev.js:249` replaces `callWithCascade()` entirely:
 
 ```js
 async callWithCascade(request, step) {
@@ -324,21 +338,25 @@ async callWithCascade(request, step) {
     max_tokens: request.max_tokens,
     messages: request.messages,
   };
-  if (request.thinking) {
-    body.provider = { require_parameters: true };
-    body.thinking = request.thinking;
-  }
+  // Family adapter map — same as providers/llm.js
+  const families = {
+    anthropic: (b, { effort }) => {
+      b.cache_control = { type: 'ephemeral' };
+      if (effort) {
+        b.thinking = { type: 'adaptive', effort };
+        b.provider = { require_parameters: true };
+      }
+    },
+    deepseek: (b, { effort }) => {
+      if (effort) b.reasoning_effort = effort;
+    },
+  };
+  const adapt = request.family ? families[request.family] : null;
+  if (adapt) adapt(body, { effort: request.effort });
   if (request.tools?.length) body.tools = request.tools;
-  if (request.model?.startsWith('anthropic/')) body.cache_control = { type: 'ephemeral' };
 
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    signal: AbortSignal.timeout(60_000),
-    headers: {
-      "Authorization": `Bearer ${this.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+    // ... standard OpenRouter call with 60s timeout
   });
   // ... parse response, return { ok, content, usage, toolCalls, tier: "direct" }
 }
@@ -348,7 +366,7 @@ Key differences from production:
 - **No cascade** — single fetch, no fallback tiers
 - **No isolate** — runs in the same process
 - **No auto-snapshot** — `provider:llm:last_working:*` keys are never written
-- **No adapter code** — the OpenRouter API format is hardcoded inline
+- **No adapter code from KV** — family adapters are inlined (same logic as `providers/llm.js`)
 - **60s timeout** via `AbortController`
 - **API key from env** — `this.env.OPENROUTER_API_KEY` directly, no secrets resolution
 - **Tier is always `"direct"`**
@@ -379,13 +397,32 @@ All provider adapters follow the same pattern. No `export default` (required for
 ```js
 export const meta = { secrets: ["OPENROUTER_API_KEY"], timeout_ms: 60000 };
 
-export async function call({ model, messages, max_tokens, thinking, tools, secrets, fetch }) {
+const families = {
+  anthropic: (body, { effort }) => {
+    body.cache_control = { type: 'ephemeral' };
+    if (effort) {
+      body.thinking = { type: 'adaptive', effort };
+      body.provider = { require_parameters: true };
+    }
+  },
+  deepseek: (body, { effort }) => {
+    if (effort) body.reasoning_effort = effort;
+  },
+};
+
+export async function call({ model, messages, max_tokens, effort, family, tools, secrets, fetch }) {
+  const body = { model, max_tokens, messages };
+  const adapt = family ? families[family] : null;
+  if (adapt) adapt(body, { effort });
+  if (tools) body.tools = tools;
   // ... call external API ...
   return { content, usage, toolCalls };
 }
 ```
 
 Must export `call`. Receives the standardized request plus `secrets` and `fetch`. Must return `{ content, usage, toolCalls }`.
+
+The `families` map translates the generic `family` + `effort` into model-specific API parameters. To add a new model family, add an entry to this map and to the `config:models` seed (with `family` and optional `effort_map`). No kernel changes needed.
 
 ### Balance adapter
 

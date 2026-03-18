@@ -20,6 +20,7 @@ export async function handleChat(K, channel, inbound, adapter) {
   // Handle commands
   if (command === "reset") {
     conv.total_cost = 0;
+    delete conv._budget_warned;
     await K.kvPutSafe(convKey, conv);
     await adapter.sendReply(chatId, "Budget refilled. Conversation history preserved.");
     return { ok: true, reason: "reset" };
@@ -45,7 +46,7 @@ export async function handleChat(K, channel, inbound, adapter) {
   // Build system prompt (dharma injected by kernel in callLLM)
   const chatPrompt = await K.kvGet("prompt:chat");
   const contactContext = contact
-    ? `\n\nContact:\n${JSON.stringify(contact)}`
+    ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}`
     : "";
   const systemPrompt = [
     chatPrompt || "You are in a live chat. Respond conversationally.",
@@ -86,6 +87,16 @@ export async function handleChat(K, channel, inbound, adapter) {
       step: `chat_${channel}_t${conv.turn_count}_r${i}`,
     });
     conv.total_cost += response.cost || 0;
+
+    // Budget warning — inject once when cost crosses threshold
+    const warningPct = chatConfig.budget_warning_pct || 0.80;
+    if (!conv._budget_warned && conv.total_cost >= maxCost * warningPct) {
+      conv.messages.push({
+        role: "system",
+        content: "This conversation's budget is running low. Wrap up soon.",
+      });
+      conv._budget_warned = true;
+    }
 
     if (response.toolCalls?.length) {
       conv.messages.push({

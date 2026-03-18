@@ -122,12 +122,17 @@ export async function stageModification(K, request, sessionId, depth = 0) {
     }
   }
 
+  if (request.ops?.some(op => op.op === 'rename')) {
+    await K.karmaRecord({ event: "modification_invalid", reason: "rename op not supported in modifications — use delete + put" });
+    return null;
+  }
   const bad = opsTargetBookkeeping(request.ops);
   if (bad) {
     await K.karmaRecord({ event: "modification_invalid", reason: `ops target bookkeeping key: ${bad.key}` });
     return null;
   }
   const id = generateModificationId();
+  const sessionCount = await K.getSessionCount();
   await K.kvWritePrivileged([{
     op: "put",
     key: `modification_staged:${id}`,
@@ -138,9 +143,11 @@ export async function stageModification(K, request, sessionId, depth = 0) {
       ops: request.ops,
       checks: request.checks,
       validation: request.validation,
+      criteria: request.criteria,
       staged_at: new Date().toISOString(),
       staged_by_session: sessionId,
       staged_by_depth: depth,
+      staged_at_session: sessionCount,
     },
   }]);
   _trackAdd('activeStaged', id);
@@ -199,6 +206,7 @@ export async function acceptStaged(K, modificationId) {
   await K.kvWritePrivileged(writeOps);
 
   // Write snapshot record
+  const sessionCount = await K.getSessionCount();
   await K.kvWritePrivileged([{
     op: "put",
     key: `modification_snapshot:${modificationId}`,
@@ -206,6 +214,7 @@ export async function acceptStaged(K, modificationId) {
       ...record,
       snapshots,
       activated_at: new Date().toISOString(),
+      activated_at_session: sessionCount,
     },
   }]);
 
@@ -219,19 +228,37 @@ export async function acceptStaged(K, modificationId) {
     // Config auto-refreshed by kernel after privileged write
   }
 
-  await K.karmaRecord({ event: "modification_accepted", modification_id: modificationId, target_keys: targetKeys });
+  await K.karmaRecord({ event: "modification_accepted", modification_id: modificationId, target_keys: targetKeys, type: record.type });
   return modificationId;
 }
 
 export async function acceptDirect(K, request, sessionId) {
-  // Wisdom must go through staging — no same-session accept
+  // Wisdom gate — allow viveka/prajna, block yama/niyama
   if (request.type === 'wisdom') {
-    await K.karmaRecord({ event: "modification_invalid", reason: "wisdom cannot use acceptDirect — must be staged" });
-    return null;
+    const hasProtectedOps = request.ops?.some(op =>
+      op.key.startsWith('yama:') || op.key.startsWith('niyama:')
+    );
+    if (hasProtectedOps) {
+      await K.karmaRecord({ event: "modification_invalid", reason: "yama/niyama wisdom must be staged" });
+      return null;
+    }
   }
 
-  if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
-    await K.karmaRecord({ event: "modification_invalid", reason: "missing required fields (claims, ops, checks)" });
+  // Validate required fields based on type
+  if (request.type === 'wisdom') {
+    if (!request.validation || !request.ops?.length) {
+      await K.karmaRecord({ event: "modification_invalid", reason: "missing required fields (validation, ops)" });
+      return null;
+    }
+  } else {
+    if (!request.claims?.length || !request.ops?.length || !request.checks?.length) {
+      await K.karmaRecord({ event: "modification_invalid", reason: "missing required fields (claims, ops, checks)" });
+      return null;
+    }
+  }
+
+  if (request.ops?.some(op => op.op === 'rename')) {
+    await K.karmaRecord({ event: "modification_invalid", reason: "rename op not supported in modifications — use delete + put" });
     return null;
   }
   const bad = opsTargetBookkeeping(request.ops);
@@ -256,26 +283,41 @@ export async function acceptDirect(K, request, sessionId) {
 
   // Apply ops via privileged writes
   const writeOps = buildWriteOps(request.ops);
+
+  // For wisdom type: inject validation into op values (matches acceptStaged behavior)
+  if (request.type === 'wisdom' && request.validation) {
+    for (const op of writeOps) {
+      if (op.value && typeof op.value === 'object') {
+        op.value.validation = request.validation;
+      }
+    }
+  }
+
   await K.kvWritePrivileged(writeOps);
 
   // Write snapshot record
+  const snapshotType = request.type === 'wisdom' ? 'wisdom' : 'direct';
+  const sessionCount = await K.getSessionCount();
   await K.kvWritePrivileged([{
     op: "put",
     key: `modification_snapshot:${id}`,
     value: {
       id,
-      type: "direct",
+      type: snapshotType,
       claims: request.claims,
       ops: request.ops,
       checks: request.checks,
+      validation: request.validation,
+      criteria: request.criteria,
       snapshots,
       staged_by_session: sessionId,
       activated_at: new Date().toISOString(),
+      activated_at_session: sessionCount,
     },
   }]);
   _trackAdd('activeInflight', id);
 
-  await K.karmaRecord({ event: "modification_accepted", modification_id: id, target_keys: targetKeys });
+  await K.karmaRecord({ event: "modification_accepted", modification_id: id, target_keys: targetKeys, type: snapshotType });
   return id;
 }
 
@@ -329,33 +371,31 @@ export async function findInflightConflict(K, targetKeys) {
 // ── Loading ─────────────────────────────────────────────────
 
 export async function loadStagedModifications(K) {
+  const sessionCount = await K.getSessionCount();
   const result = {};
   for (const id of activeStaged) {
     const record = await K.kvGet(`modification_staged:${id}`);
     if (!record) continue;
-    // For wisdom type: skip check evaluation (no checks field)
-    if (record.type === 'wisdom') {
-      result[record.id] = { record, check_results: null };
-      continue;
-    }
-    const checkResults = await evaluateChecks(K, record.checks || []);
-    result[record.id] = { record, check_results: checkResults };
+    const checkResults = (record.type === 'wisdom') ? null : await evaluateChecks(K, record.checks || []);
+    const sessions_since_staged = record.staged_at_session != null
+      ? sessionCount - record.staged_at_session
+      : null;
+    result[record.id] = { record, check_results: checkResults, sessions_since_staged };
   }
   return result;
 }
 
 export async function loadInflightModifications(K) {
+  const sessionCount = await K.getSessionCount();
   const result = {};
   for (const id of activeInflight) {
     const record = await K.kvGet(`modification_snapshot:${id}`);
     if (!record) continue;
-    // For wisdom type: skip check evaluation (no checks field)
-    if (record.type === 'wisdom') {
-      result[record.id] = { record, check_results: null };
-      continue;
-    }
-    const checkResults = await evaluateChecks(K, record.checks || []);
-    result[record.id] = { record, check_results: checkResults };
+    const checkResults = (record.type === 'wisdom') ? null : await evaluateChecks(K, record.checks || []);
+    const sessions_since_activation = record.activated_at_session != null
+      ? sessionCount - record.activated_at_session
+      : null;
+    result[record.id] = { record, check_results: checkResults, sessions_since_activation };
   }
   return result;
 }

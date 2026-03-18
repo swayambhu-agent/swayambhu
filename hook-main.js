@@ -205,7 +205,7 @@ export async function runSession(K, state, context, config) {
     await executeReflect(K, state, { model: defaults?.reflect?.model });
   }
 
-  await writeSessionResults(K, output, config);
+  await writeSessionResults(K, config, { reflectRan: !skipReflect });
 }
 
 export function buildOrientContext(context) {
@@ -224,15 +224,15 @@ export function buildOrientContext(context) {
 
 // ── Session results ────────────────────────────────────────
 
-export async function writeSessionResults(K, plan, config) {
-  if (plan.next_wake_config) {
-    const wakeConf = { ...plan.next_wake_config };
-    if (wakeConf.sleep_seconds) {
-      wakeConf.next_wake_after = new Date(
-        Date.now() + wakeConf.sleep_seconds * 1000
-      ).toISOString();
-    }
-    await K.kvPutSafe("wake_config", wakeConf);
+export async function writeSessionResults(K, config, { reflectRan = true } = {}) {
+  // If reflect was skipped, reset wake_config to system defaults.
+  // When reflect runs, it writes wake_config itself — no override needed here.
+  if (!reflectRan) {
+    const defaults = await K.getDefaults();
+    const sleepSeconds = defaults?.wake?.sleep_seconds || 21600;
+    await K.kvPutSafe("wake_config", {
+      next_wake_after: new Date(Date.now() + sleepSeconds * 1000).toISOString(),
+    });
   }
 
   const count = await K.getSessionCount();
@@ -240,8 +240,63 @@ export async function writeSessionResults(K, plan, config) {
 
   // Cache session ID list for dashboard
   const sessionIds = await K.kvGet("cache:session_ids") || [];
-  sessionIds.push(await K.getSessionId());
+  const sessionId = await K.getSessionId();
+  sessionIds.push(sessionId);
   await K.kvPutSafe("cache:session_ids", sessionIds);
+
+  // Write karma summary for efficient investigation by reflect
+  const karma = await K.getKarma();
+  if (karma.length > 0) {
+    await K.kvPutSafe(`karma_summary:${sessionId}`, summarizeKarma(karma));
+  }
+}
+
+// ── Karma summarization ──────────────────────────────────
+
+export function summarizeKarma(karma) {
+  const events = {};
+  let total_cost = 0;
+  const models = {};
+  const tools = {};
+  let duration_total = 0;
+  let duration_count = 0;
+  const errors = [];
+  const comms = {};
+
+  for (const entry of karma) {
+    events[entry.event] = (events[entry.event] || 0) + 1;
+
+    if (entry.event === 'llm_call') {
+      if (entry.cost != null) total_cost += entry.cost;
+      if (entry.model) models[entry.model] = (models[entry.model] || 0) + 1;
+      if (entry.duration_ms != null) {
+        duration_total += entry.duration_ms;
+        duration_count++;
+      }
+    }
+
+    if (entry.event === 'tool_complete' && entry.tool) {
+      tools[entry.tool] = (tools[entry.tool] || 0) + 1;
+    }
+
+    if (entry.event === 'fatal_error' && entry.error) {
+      errors.push(entry.error);
+    }
+
+    if (entry.event?.startsWith('comms_')) {
+      comms[entry.event] = (comms[entry.event] || 0) + 1;
+    }
+  }
+
+  return {
+    events,
+    total_cost,
+    models,
+    tools,
+    duration_ms: { total: duration_total, count: duration_count },
+    errors,
+    comms,
+  };
 }
 
 // ── Helpers ────────────────────────────────────────────────

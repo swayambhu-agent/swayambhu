@@ -295,7 +295,7 @@ describe("handleChat", () => {
     }, adapter);
 
     const callArgs = K.callLLM.mock.calls[0][0];
-    expect(callArgs.systemPrompt).toContain("Contact:");
+    expect(callArgs.systemPrompt).toContain("You are chatting with:");
     expect(callArgs.systemPrompt).toContain("Swami");
     // Contact chat config should override model
     expect(callArgs.model).toBe("haiku");
@@ -317,6 +317,75 @@ describe("handleChat", () => {
 
     const saved = K.kvPutSafe.mock.calls[0][1];
     expect(saved.total_cost).toBeCloseTo(0.03);
+  });
+
+  describe("budget warning", () => {
+    it("injects system warning when cost crosses threshold", async () => {
+      // Cost 0.001 per call (from makeLLMResponse). maxCost = 0.50, 80% = 0.40.
+      // Pre-load conversation at 0.399 — next call pushes to 0.40, crossing threshold.
+      K.kvGet.mockImplementation(async (key) => {
+        if (key === "chat:state:slack:123") return {
+          messages: [],
+          total_cost: 0.399,
+          turn_count: 5,
+          created_at: "2026-01-01T00:00:00.000Z",
+        };
+        return null;
+      });
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "Hi", userId: "user1",
+      }, adapter);
+
+      const saved = K.kvPutSafe.mock.calls[0][1];
+      const systemMsgs = saved.messages.filter(m => m.role === "system");
+      expect(systemMsgs).toHaveLength(1);
+      expect(systemMsgs[0].content).toContain("budget is running low");
+      expect(saved._budget_warned).toBe(true);
+    });
+
+    it("does not inject warning twice", async () => {
+      // Already warned, cost still above threshold
+      K.kvGet.mockImplementation(async (key) => {
+        if (key === "chat:state:slack:123") return {
+          messages: [],
+          total_cost: 0.42,
+          turn_count: 6,
+          created_at: "2026-01-01T00:00:00.000Z",
+          _budget_warned: true,
+        };
+        return null;
+      });
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "Hi again", userId: "user1",
+      }, adapter);
+
+      const saved = K.kvPutSafe.mock.calls[0][1];
+      const systemMsgs = saved.messages.filter(m => m.role === "system");
+      expect(systemMsgs).toHaveLength(0);
+    });
+
+    it("/reset clears warning flag", async () => {
+      K.kvGet.mockImplementation(async (key) => {
+        if (key === "chat:state:slack:123") return {
+          messages: [{ role: "user", content: "Hi" }],
+          total_cost: 0.45,
+          turn_count: 5,
+          _budget_warned: true,
+          created_at: "2026-01-01T00:00:00.000Z",
+        };
+        return null;
+      });
+
+      await handleChat(K, "slack", {
+        chatId: "123", text: "/reset", userId: "user1", command: "reset",
+      }, adapter);
+
+      const saved = K.kvPutSafe.mock.calls[0][1];
+      expect(saved.total_cost).toBe(0);
+      expect(saved._budget_warned).toBeUndefined();
+    });
   });
 
   describe("unknown contact tool filtering", () => {

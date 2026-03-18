@@ -167,6 +167,13 @@ await put("prompt:subplan", read("prompts/subplan.md"), "text", "Subplan agent s
 await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
 await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1) — examines alignment, patterns, structures");
 
+// ── Documentation ─────────────────────────────────────────────
+
+console.log("--- Documentation ---");
+await put("doc:architecture", read("docs/dev/architecture.md"), "text", "System architecture reference doc");
+await put("doc:modification_guide", read("docs/dev/modification-protocol.md"), "text", "Modification Protocol reference doc");
+await put("doc:wisdom_guide", read("docs/dev/wisdom-guide.md"), "text", "Wisdom system reference — schema, naming, when to write, maintenance");
+
 // ── Dharma ───────────────────────────────────────────────────
 
 console.log("--- Identity ---");
@@ -221,12 +228,9 @@ await put("channel:slack:config", {
 
 console.log("--- Chat ---");
 await put("prompt:chat", [
-  "",
-  "",
   "You are in a live chat session. Respond conversationally and concisely.",
-  "Use tools when the user asks about balances, KV state, or anything that",
-  "requires looking up data. Keep replies short — this is real-time chat,",
-  "not a report.",
+  "Use appropriate tools whenever the chat requires looking up data.",
+  "Keep replies short — this is real-time chat, not a report.",
 ].join("\n"), "text", "Chat system prompt — shapes real-time conversation style");
 
 // ── Kernel config ─────────────────────────────────────────────

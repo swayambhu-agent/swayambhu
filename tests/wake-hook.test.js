@@ -6,6 +6,7 @@ import {
   writeSessionResults,
   getBalances,
   runSession,
+  summarizeKarma,
 } from "../hook-main.js";
 import {
   applyKVOperation,
@@ -26,6 +27,7 @@ import {
   acceptDirect,
 } from "../hook-modifications.js";
 import {
+  executeReflect,
   getMaxSteps,
   getReflectModel,
   isReflectDue,
@@ -460,15 +462,27 @@ describe("detectCrash", () => {
 // ── 11. writeSessionResults ────────────────────────────────
 
 describe("writeSessionResults", () => {
-  it("writes wake_config and increments session_counter", async () => {
-    const K = makeMockK({}, { sessionCount: 5 });
-    await writeSessionResults(K, {
-      next_wake_config: { sleep_seconds: 3600 },
-    }, {});
+  it("writes default wake_config when reflect was skipped", async () => {
+    const K = makeMockK({}, { sessionCount: 5, defaults: { wake: { sleep_seconds: 3600 } } });
+    K.getDefaults = vi.fn(async () => ({ wake: { sleep_seconds: 3600 } }));
+    await writeSessionResults(K, {}, { reflectRan: false });
 
     const wakeCall = K.kvPutSafe.mock.calls.find(([key]) => key === "wake_config");
     expect(wakeCall).toBeTruthy();
     expect(wakeCall[1]).toHaveProperty("next_wake_after");
+  });
+
+  it("does not write wake_config when reflect ran", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    await writeSessionResults(K, {});
+
+    const wakeCall = K.kvPutSafe.mock.calls.find(([key]) => key === "wake_config");
+    expect(wakeCall).toBeUndefined();
+  });
+
+  it("increments session_counter", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    await writeSessionResults(K, {});
 
     const counterCall = K.kvPutSafe.mock.calls.find(([key]) => key === "session_counter");
     expect(counterCall).toBeTruthy();
@@ -854,5 +868,497 @@ describe("Patron context in reflect", () => {
     const result = await gatherReflectContext(K, state, 1, {});
     expect(result.templateVars.patron_contact).toBe("(no patron configured)");
     expect(result.templateVars.patron_id).toBeNull();
+  });
+});
+
+// ── summarizeKarma ──────────────────────────────────────────
+
+describe("summarizeKarma", () => {
+  it("returns zeroed structure for empty karma", () => {
+    const result = summarizeKarma([]);
+    expect(result.events).toEqual({});
+    expect(result.total_cost).toBe(0);
+    expect(result.models).toEqual({});
+    expect(result.tools).toEqual({});
+    expect(result.duration_ms).toEqual({ total: 0, count: 0 });
+    expect(result.errors).toEqual([]);
+    expect(result.comms).toEqual({});
+  });
+
+  it("aggregates mixed event types correctly", () => {
+    const karma = [
+      { event: "llm_call", cost: 0.05, model: "claude-opus", duration_ms: 1200 },
+      { event: "llm_call", cost: 0.02, model: "claude-haiku", duration_ms: 300 },
+      { event: "llm_call", cost: 0.05, model: "claude-opus", duration_ms: 800 },
+      { event: "tool_complete", tool: "kv_query" },
+      { event: "tool_complete", tool: "kv_query" },
+      { event: "tool_complete", tool: "web_fetch" },
+      { event: "fatal_error", error: "timeout" },
+      { event: "comms_blocked", channel: "slack" },
+      { event: "comms_sent", channel: "email" },
+      { event: "session_start" },
+    ];
+    const result = summarizeKarma(karma);
+    expect(result.events.llm_call).toBe(3);
+    expect(result.events.tool_complete).toBe(3);
+    expect(result.events.fatal_error).toBe(1);
+    expect(result.events.session_start).toBe(1);
+    expect(result.total_cost).toBeCloseTo(0.12);
+    expect(result.models["claude-opus"]).toBe(2);
+    expect(result.models["claude-haiku"]).toBe(1);
+    expect(result.tools["kv_query"]).toBe(2);
+    expect(result.tools["web_fetch"]).toBe(1);
+    expect(result.duration_ms).toEqual({ total: 2300, count: 3 });
+    expect(result.errors).toEqual(["timeout"]);
+    expect(result.comms.comms_blocked).toBe(1);
+    expect(result.comms.comms_sent).toBe(1);
+  });
+
+  it("handles entries with missing optional fields", () => {
+    const karma = [
+      { event: "llm_call" },
+      { event: "tool_complete" },
+      { event: "fatal_error" },
+    ];
+    const result = summarizeKarma(karma);
+    expect(result.total_cost).toBe(0);
+    expect(result.models).toEqual({});
+    expect(result.tools).toEqual({});
+    expect(result.duration_ms).toEqual({ total: 0, count: 0 });
+    expect(result.errors).toEqual([]);
+  });
+});
+
+// ── writeSessionResults karma summary ──────────────────────
+
+describe("writeSessionResults karma summary", () => {
+  it("writes karma_summary when karma is non-empty", async () => {
+    const K = makeMockK({}, { sessionCount: 5, sessionId: "s_test" });
+    K.getKarma = vi.fn(async () => [
+      { event: "llm_call", cost: 0.03, model: "opus", duration_ms: 500 },
+      { event: "tool_complete", tool: "kv_query" },
+    ]);
+    await writeSessionResults(K, {});
+
+    const summaryCall = K.kvPutSafe.mock.calls.find(([key]) => key === "karma_summary:s_test");
+    expect(summaryCall).toBeTruthy();
+    const summary = summaryCall[1];
+    expect(summary.total_cost).toBeCloseTo(0.03);
+    expect(summary.models.opus).toBe(1);
+    expect(summary.tools.kv_query).toBe(1);
+  });
+
+  it("skips karma_summary when karma is empty", async () => {
+    const K = makeMockK({}, { sessionCount: 5, sessionId: "s_test" });
+    K.getKarma = vi.fn(async () => []);
+    await writeSessionResults(K, {});
+
+    const summaryCall = K.kvPutSafe.mock.calls.find(([key]) => key.startsWith("karma_summary:"));
+    expect(summaryCall).toBeUndefined();
+  });
+});
+
+// ── gatherReflectContext: priorReflections + wisdom_manifest ──
+
+describe("gatherReflectContext continuity", () => {
+  it("includes priorReflections at correct depth", async () => {
+    const K = makeMockK({
+      "reflect:1:s_001": JSON.stringify({ reflection: "prior depth-1 a" }),
+      "reflect:1:s_002": JSON.stringify({ reflection: "prior depth-1 b" }),
+      "reflect:0:s_003": JSON.stringify({ reflection: "depth-0 should not appear" }),
+      "reflect:2:s_004": JSON.stringify({ reflection: "depth-2 should not appear" }),
+    });
+    K.listBlockedComms = vi.fn(async () => []);
+    const state = makeState();
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    expect(result.templateVars.priorReflections).toHaveProperty("reflect:1:s_001");
+    expect(result.templateVars.priorReflections).toHaveProperty("reflect:1:s_002");
+    expect(result.templateVars.priorReflections).not.toHaveProperty("reflect:0:s_003");
+    expect(result.templateVars.priorReflections).not.toHaveProperty("reflect:2:s_004");
+  });
+
+  it("respects prior_reflections count config", async () => {
+    const K = makeMockK({
+      "reflect:1:s_001": JSON.stringify({ reflection: "a" }),
+      "reflect:1:s_002": JSON.stringify({ reflection: "b" }),
+      "reflect:1:s_003": JSON.stringify({ reflection: "c" }),
+    });
+    K.listBlockedComms = vi.fn(async () => []);
+    const state = makeState({ defaults: { reflect_levels: { 1: { prior_reflections: 1 } } } });
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    expect(Object.keys(result.templateVars.priorReflections)).toHaveLength(1);
+  });
+
+  it("includes wisdom_manifest with metadata summaries", async () => {
+    const K = makeMockK({
+      "prajna:reasoning:complexity": JSON.stringify({ text: "test" }),
+      "viveka:timing:urgency": JSON.stringify({ text: "test" }),
+    });
+    // Set metadata with summary on one key
+    K._kv._meta.set("prajna:reasoning:complexity", { summary: "Tends toward overcomplexity" });
+    K.listBlockedComms = vi.fn(async () => []);
+    const state = makeState();
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    const manifest = result.templateVars.wisdom_manifest;
+    expect(manifest.prajna).toHaveLength(1);
+    expect(manifest.prajna[0].key).toBe("prajna:reasoning:complexity");
+    expect(manifest.prajna[0].summary).toBe("Tends toward overcomplexity");
+    expect(manifest.viveka).toHaveLength(1);
+    expect(manifest.viveka[0].key).toBe("viveka:timing:urgency");
+    // Falls back to key name when no summary metadata
+    expect(manifest.viveka[0].summary).toBe("viveka:timing:urgency");
+  });
+});
+
+// ── Session reflect wisdom manifest in buildPrompt ──────────
+
+describe("Session reflect wisdom manifest", () => {
+  it("passes wisdom_manifest in template vars to buildPrompt", async () => {
+    const K = makeMockK({
+      "prajna:test": JSON.stringify({ text: "test prajna" }),
+    });
+    K._kv._meta.set("prajna:test", { summary: "test summary" });
+    K.runAgentLoop = vi.fn(async () => ({ session_summary: "done" }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    // buildPrompt should have been called with wisdom_manifest in template vars
+    const buildPromptCall = K.buildPrompt.mock.calls[0];
+    const templateVars = buildPromptCall[1];
+    expect(templateVars).toHaveProperty("wisdom_manifest");
+    expect(templateVars.wisdom_manifest.prajna).toHaveLength(1);
+    expect(templateVars.wisdom_manifest.prajna[0].summary).toBe("test summary");
+  });
+});
+
+// ── executeReflect modification_observations persistence ────
+
+describe("executeReflect modification_observations", () => {
+  it("stores modification_observations in reflect:0 record", async () => {
+    const K = makeMockK({}, { sessionId: "s_obs_test" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "test session",
+      note_to_future_self: "remember",
+      modification_observations: { "m_abc": "cost decreased 10%" },
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const stored = K.kvPutSafe.mock.calls.find(([key]) => key === "reflect:0:s_obs_test");
+    expect(stored).toBeTruthy();
+    const record = stored[1];
+    expect(record.modification_observations).toEqual({ "m_abc": "cost decreased 10%" });
+  });
+});
+
+// ── applyReflectOutput new fields ──────────────────────────
+
+describe("applyReflectOutput conditional fields", () => {
+  it("stores new fields when present", async () => {
+    const K = makeMockK({}, { sessionId: "s_new" });
+    const state = makeState();
+    const output = {
+      reflection: "deep thoughts",
+      note_to_future_self: "remember",
+      current_intentions: [{ intention: "test", status: "active" }],
+      modification_observations: { "m_123": "looks good" },
+      system_trajectory: "on track",
+    };
+
+    await applyReflectOutput(K, state, 1, output, {});
+
+    const stored = K.kvPutSafe.mock.calls.find(([key]) => key === "reflect:1:s_new");
+    expect(stored).toBeTruthy();
+    const record = stored[1];
+    expect(record.current_intentions).toEqual([{ intention: "test", status: "active" }]);
+    expect(record.modification_observations).toEqual({ "m_123": "looks good" });
+    expect(record.system_trajectory).toBe("on track");
+  });
+
+  it("omits new fields when absent", async () => {
+    const K = makeMockK({}, { sessionId: "s_minimal" });
+    const state = makeState();
+    const output = {
+      reflection: "minimal",
+      note_to_future_self: "nothing special",
+    };
+
+    await applyReflectOutput(K, state, 2, output, {});
+
+    const stored = K.kvPutSafe.mock.calls.find(([key]) => key === "reflect:2:s_minimal");
+    expect(stored).toBeTruthy();
+    const record = stored[1];
+    expect(record).not.toHaveProperty("current_intentions");
+    expect(record).not.toHaveProperty("modification_observations");
+    expect(record).not.toHaveProperty("system_trajectory");
+  });
+});
+
+// ── stageModification: criteria + staged_at_session ─────────
+
+describe("stageModification new fields", () => {
+  it("passes through criteria", async () => {
+    const K = makeMockK({}, { sessionCount: 10 });
+    const id = await stageModification(K, {
+      claims: ["test"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+      criteria: "Observe cost reduction over 10 sessions",
+    }, "s_test", 1);
+
+    expect(id).toBeTruthy();
+    const staged = K._kv._store.get(`modification_staged:${id}`);
+    const record = JSON.parse(staged);
+    expect(record.criteria).toBe("Observe cost reduction over 10 sessions");
+  });
+
+  it("stores staged_at_session", async () => {
+    const K = makeMockK({}, { sessionCount: 42 });
+    const id = await stageModification(K, {
+      claims: ["test"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+    }, "s_test", 1);
+
+    const staged = K._kv._store.get(`modification_staged:${id}`);
+    const record = JSON.parse(staged);
+    expect(record.staged_at_session).toBe(42);
+  });
+});
+
+// ── acceptDirect wisdom gate ──────────────────────────────
+
+describe("acceptDirect wisdom gate", () => {
+  it("allows prajna wisdom via acceptDirect", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    const id = await acceptDirect(K, {
+      type: "wisdom",
+      validation: "Tested over 20 sessions",
+      ops: [{ op: "put", key: "prajna:test:entry", value: { text: "test", type: "prajna" } }],
+    }, "s_test");
+
+    expect(id).toBeTruthy();
+    expect(id).toMatch(/^m_/);
+  });
+
+  it("blocks yama wisdom via acceptDirect", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    const id = await acceptDirect(K, {
+      type: "wisdom",
+      validation: "Should be blocked",
+      ops: [{ op: "put", key: "yama:test", value: "new value" }],
+    }, "s_test");
+
+    expect(id).toBeNull();
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "modification_invalid", reason: "yama/niyama wisdom must be staged" })
+    );
+  });
+
+  it("blocks mixed yama+prajna ops", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    const id = await acceptDirect(K, {
+      type: "wisdom",
+      validation: "Mixed ops",
+      ops: [
+        { op: "put", key: "prajna:safe", value: { text: "ok" } },
+        { op: "put", key: "yama:blocked", value: "nope" },
+      ],
+    }, "s_test");
+
+    expect(id).toBeNull();
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "modification_invalid", reason: "yama/niyama wisdom must be staged" })
+    );
+  });
+
+  it("stores type 'wisdom' in snapshot for wisdom requests", async () => {
+    const K = makeMockK({}, { sessionCount: 5, sessionId: "s_test" });
+    const id = await acceptDirect(K, {
+      type: "wisdom",
+      validation: "Test validation",
+      ops: [{ op: "put", key: "viveka:test:entry", value: { text: "test", type: "viveka" } }],
+    }, "s_test");
+
+    const snapshot = K._kv._store.get(`modification_snapshot:${id}`);
+    const record = JSON.parse(snapshot);
+    expect(record.type).toBe("wisdom");
+  });
+
+  it("injects validation into op values for wisdom", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    const id = await acceptDirect(K, {
+      type: "wisdom",
+      validation: "Observed in 5 sessions",
+      ops: [{ op: "put", key: "prajna:test:inject", value: { text: "test", type: "prajna" } }],
+    }, "s_test");
+
+    // The written value should have validation injected
+    const written = K._kv._store.get("prajna:test:inject");
+    const value = JSON.parse(written);
+    expect(value.validation).toBe("Observed in 5 sessions");
+  });
+});
+
+// ── acceptDirect additional fields ──────────────────────────
+
+describe("acceptDirect criteria + activated_at_session", () => {
+  it("stores criteria in snapshot", async () => {
+    const K = makeMockK({}, { sessionCount: 10 });
+    const id = await acceptDirect(K, {
+      claims: ["test"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+      criteria: "Watch for parse errors",
+    }, "s_test");
+
+    const snapshot = K._kv._store.get(`modification_snapshot:${id}`);
+    const record = JSON.parse(snapshot);
+    expect(record.criteria).toBe("Watch for parse errors");
+  });
+
+  it("stores activated_at_session in snapshot", async () => {
+    const K = makeMockK({}, { sessionCount: 15 });
+    const id = await acceptDirect(K, {
+      claims: ["test"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+    }, "s_test");
+
+    const snapshot = K._kv._store.get(`modification_snapshot:${id}`);
+    const record = JSON.parse(snapshot);
+    expect(record.activated_at_session).toBe(15);
+  });
+});
+
+// ── acceptStaged activated_at_session ───────────────────────
+
+describe("acceptStaged additional fields", () => {
+  it("stores activated_at_session in snapshot", async () => {
+    const K = makeMockK({}, { sessionCount: 20 });
+    const id = await stageModification(K, {
+      claims: ["test"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+    }, "s_stage", 1);
+
+    await acceptStaged(K, id);
+
+    const snapshot = K._kv._store.get(`modification_snapshot:${id}`);
+    const record = JSON.parse(snapshot);
+    expect(record.activated_at_session).toBe(20);
+  });
+
+  it("includes type in karma event", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    const id = await stageModification(K, {
+      claims: ["test"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+    }, "s_test", 1);
+
+    await acceptStaged(K, id);
+
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "modification_accepted", modification_id: id, type: "code" })
+    );
+  });
+});
+
+// ── rename op blocked in modifications ──────────────────────
+
+describe("rename op blocked in modifications", () => {
+  it("stageModification rejects rename ops", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    const id = await stageModification(K, {
+      claims: ["rename key"],
+      ops: [{ op: "rename", key: "old:key", value: "new:key" }],
+      checks: [{ type: "kv_assert", key: "new:key", predicate: "exists" }],
+    }, "s_test", 1);
+
+    expect(id).toBeNull();
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "modification_invalid", reason: "rename op not supported in modifications — use delete + put" })
+    );
+  });
+
+  it("acceptDirect rejects rename ops", async () => {
+    const K = makeMockK({}, { sessionCount: 5 });
+    const id = await acceptDirect(K, {
+      claims: ["rename key"],
+      ops: [{ op: "rename", key: "old:key", value: "new:key" }],
+      checks: [{ type: "kv_assert", key: "new:key", predicate: "exists" }],
+    }, "s_test");
+
+    expect(id).toBeNull();
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "modification_invalid", reason: "rename op not supported in modifications — use delete + put" })
+    );
+  });
+});
+
+// ── sessions_since computation ──────────────────────────────
+
+describe("sessions_since computation", () => {
+  it("loadInflightModifications computes sessions_since_activation", async () => {
+    const K = makeMockK({}, { sessionCount: 30 });
+    // Stage and accept to create an inflight modification
+    const id = await stageModification(K, {
+      claims: ["test"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+    }, "s_test", 1);
+
+    // Override session count for acceptance to 25
+    K.getSessionCount = vi.fn(async () => 25);
+    await acceptStaged(K, id);
+
+    // Now load with session count 30
+    K.getSessionCount = vi.fn(async () => 30);
+    const result = await loadInflightModifications(K);
+    const entry = Object.values(result)[0];
+    expect(entry.sessions_since_activation).toBe(5); // 30 - 25
+  });
+
+  it("loadInflightModifications returns null for missing activated_at_session", async () => {
+    const K = makeMockK({}, { sessionCount: 30 });
+    // Manually create an inflight mod without activated_at_session (backward compat)
+    const id = "m_legacy_test";
+    initTracking([], [id]);
+    K._kv._store.set(`modification_snapshot:${id}`, JSON.stringify({
+      id,
+      type: "direct",
+      claims: ["old"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+      snapshots: {},
+      activated_at: "2026-01-01T00:00:00Z",
+      // No activated_at_session field
+    }));
+
+    const result = await loadInflightModifications(K);
+    expect(result[id].sessions_since_activation).toBeNull();
+  });
+
+  it("loadStagedModifications computes sessions_since_staged", async () => {
+    const K = makeMockK({}, { sessionCount: 15 });
+    // Stage at session 10
+    K.getSessionCount = vi.fn(async () => 10);
+    const id = await stageModification(K, {
+      claims: ["test"],
+      ops: [{ op: "put", key: "config:defaults", value: {} }],
+      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
+    }, "s_test", 1);
+
+    // Load at session 15
+    K.getSessionCount = vi.fn(async () => 15);
+    const result = await loadStagedModifications(K);
+    const entry = Object.values(result)[0];
+    expect(entry.sessions_since_staged).toBe(5); // 15 - 10
   });
 });

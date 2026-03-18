@@ -122,7 +122,7 @@ All JSON. Read by kernel and hooks at session start. Writable via `kvWritePrivil
 | Key | Value | Read by | Seeded |
 |-----|-------|---------|--------|
 | `config:defaults` | Session budgets, model roles, effort levels, execution limits, chat config, wake config, memory config, deep reflect config | Kernel (`loadEagerConfig`), hooks (via `K.getDefaults()`) | Yes |
-| `config:models` | Model list with pricing, `alias_map`, `fallback_model` | Kernel (`loadEagerConfig`), hooks (via `K.getModelsConfig()`), `resolveModel()`, `estimateCost()` | Yes |
+| `config:models` | Model list with pricing, `family`, `effort_map`, `alias_map`, `fallback_model` | Kernel (`loadEagerConfig`), hooks (via `K.getModelsConfig()`), `resolveModel()`, `estimateCost()`, `callLLM()` (family/effort lookup) | Yes |
 | `config:model_capabilities` | Per-model capability flags (`yama_capable`, `niyama_capable`, `comms_gate_capable`) | Kernel (`loadEagerConfig`), `isYamaCapable()`, `isNiyamaCapable()`, `isCommsGateCapable()` | Yes |
 | `config:resources` | Platform limits (KV, worker), external endpoints (OpenRouter, wallet, Slack) | `runSession()` in hook-main.js — passed to orient prompt template | Yes |
 | `config:tool_registry` | Tool definitions (names, descriptions, input schemas) for function calling | `buildToolDefinitions()` in brainstem.js | Yes |
@@ -209,7 +209,7 @@ Text values. Loaded at boot by `loadYamasNiyamas()`, injected into every LLM pro
 | `viveka:comms:*` | JSON | Communication wisdom entries | `loadCommsViveka()` | Agent via Modification Protocol (wisdom type) | No |
 | `prajna:*` | JSON | Self-knowledge entries | Not currently read by any specific runtime code (available via `kv_query` tool) | Agent via Modification Protocol (wisdom type) | No |
 
-System-prefix keys. Writable via `kvWritePrivileged()`. The Modification Protocol treats these as "wisdom" type — must be staged by deep reflect (depth >= 1), cannot use `acceptDirect()`, no circuit breaker rollback.
+System-prefix keys. Writable via `kvWritePrivileged()`. The Modification Protocol treats these as "wisdom" type — must be staged by deep reflect (depth >= 1) or can use `acceptDirect()` for viveka/prajna (but not yama/niyama). No circuit breaker rollback, no git sync.
 
 ### Contacts (`contact:*`, `contact_index:*`)
 
@@ -253,7 +253,7 @@ System-prefix keys. Writable via `kvWritePrivileged()`. The Modification Protoco
 | Field | Value |
 |-------|-------|
 | Format | JSON |
-| Value | `{ id, type, claims[], ops[], checks[], validation?, staged_at, staged_by_session, staged_by_depth }` |
+| Value | `{ id, type, claims[], ops[], checks[], validation?, criteria?, staged_at, staged_by_session, staged_by_depth, staged_at_session }` |
 | Read by | `loadStagedModifications()` in hook-modifications.js, deep reflect context |
 | Written by | `stageModification()` via `kvWritePrivileged()` |
 | Deleted by | `acceptStaged()`, `processReflectVerdicts()` (withdraw), `processDeepReflectVerdicts()` (reject, withdraw) via `kvWritePrivileged()` |
@@ -265,7 +265,7 @@ System-prefix keys. Writable via `kvWritePrivileged()`. The Modification Protoco
 | Field | Value |
 |-------|-------|
 | Format | JSON |
-| Value | `{ ...staged_record, snapshots: { key: { value, metadata } }, activated_at }` |
+| Value | `{ ...staged_record, snapshots: { key: { value, metadata } }, activated_at, activated_at_session }` |
 | Read by | `loadInflightModifications()`, `rollbackInflight()`, `promoteInflight()`, `findInflightConflict()`, `runCircuitBreaker()` |
 | Written by | `acceptStaged()`, `acceptDirect()` via `kvWritePrivileged()` |
 | Deleted by | `promoteInflight()`, `rollbackInflight()` via `kvWritePrivileged()` |
@@ -294,6 +294,7 @@ System-prefix keys. Writable via `kvWritePrivileged()`. The Modification Protoco
 |-----|--------|-------|---------|--------|
 | `doc:modification_guide` | text | Modification Protocol reference doc | Agent via `kv_query` tool | Yes |
 | `doc:architecture` | text | System architecture reference doc | Agent via `kv_query` tool | Yes |
+| `doc:wisdom_guide` | text | Wisdom system reference — schema, naming conventions, when to write, maintenance | Agent via `kv_query` tool | Yes |
 
 System prefix. Writable via `kvWritePrivileged()` (Modification Protocol).
 
@@ -369,12 +370,20 @@ These are not system keys, not kernel-only. Writable via `kvPutSafe()`. The hook
 
 Not a system key. Not seeded. Accumulates across the session. The session's karma is also available in-memory via `this.karma` / `K.getKarma()`.
 
+### Karma summaries (`karma_summary:*`)
+
+| Key pattern | Format | Value | Read by | Written by |
+|-------------|--------|-------|---------|------------|
+| `karma_summary:{sessionId}` | JSON | `{ events, total_cost, models, tools, duration_ms: { total, count }, errors, comms }` | Deep reflect via `kv_query` tool for efficient session investigation | `writeSessionResults()` in hook-main.js via `kvPutSafe` |
+
+Not a system key. Not seeded. Deterministic summary of a session's karma — event counts, LLM costs by model, tool usage, duration stats, error messages, comms activity. Cheaper to load than full karma arrays for pattern observation across many sessions. Only written for orient sessions (not deep reflect sessions).
+
 ### Reflection outputs (`reflect:*`)
 
 | Key pattern | Format | Value | Read by | Written by |
 |-------------|--------|-------|---------|------------|
 | `reflect:0:{sessionId}` | JSON | `{ reflection, note_to_future_self, depth: 0, session_id, timestamp }` | Not directly read (depth 0 outputs feed into `last_reflect`) | `executeReflect()` via `kvPutSafe` |
-| `reflect:{depth}:{sessionId}` | JSON | `{ reflection, note_to_future_self, depth, session_id, timestamp }` | `loadReflectHistory()` for depth N-1 outputs consumed by depth N reflect; Dashboard API (`GET /reflections` reads `reflect:1:*`) | `applyReflectOutput()` via `kvPutSafe` |
+| `reflect:{depth}:{sessionId}` | JSON | `{ reflection, note_to_future_self, depth, session_id, timestamp, current_intentions?, modification_observations?, system_trajectory? }` | `loadReflectHistory()` for both depth N-1 outputs (belowOutputs) and same-depth history (priorReflections); Dashboard API (`GET /reflections` reads `reflect:1:*`) | `applyReflectOutput()` via `kvPutSafe` |
 | `reflect:schedule:{depth}` | JSON | `{ after_sessions, after_days, reason, last_reflect, last_reflect_session }` | `isReflectDue()` in hook-reflect.js | `applyReflectOutput()` via `kvPutSafe` |
 
 Not system keys (the `reflect:` prefix is not in `SYSTEM_KEY_PREFIXES`). Not seeded.
@@ -419,7 +428,9 @@ Which prefixes are listed where, by which code, and why.
 | `viveka:channel:` | `loadCommsViveka()` in brainstem.js | `this.kvListAll({ prefix })` | Load channel-specific communication wisdom for comms gate |
 | `viveka:comms:` | `loadCommsViveka()` in brainstem.js | `this.kvListAll({ prefix })` | Load general communication wisdom for comms gate |
 | `comms_blocked:` | `listBlockedComms()` in brainstem.js | `this.kvListAll({ prefix })` | List all queued blocked communications for deep reflect |
-| `reflect:{depth}:` | `loadReflectHistory()` in hook-reflect.js | `K.kvList({ prefix, limit })` | Load recent reflect outputs for higher-depth reflection context |
+| `reflect:{depth}:` | `loadReflectHistory()` in hook-reflect.js | `K.kvList({ prefix, limit })` | Load recent reflect outputs for belowOutputs and priorReflections context |
+| `prajna:` | `loadWisdomManifest()` in hook-reflect.js | `K.kvList({ prefix, limit: 100 })` | Build wisdom manifest (key names + metadata summaries) for reflect context |
+| `viveka:` | `loadWisdomManifest()` in hook-reflect.js | `K.kvList({ prefix, limit: 100 })` | Build wisdom manifest for reflect context |
 | `reflect:1:` | Dashboard API (`GET /reflections`, `GET /sessions`) | `kvListAll(env.KV, { prefix })` | List deep reflections for public display and session discovery |
 | `karma:` | Dashboard API (`GET /sessions`) | `kvListAll(env.KV, { prefix })` | Discover all sessions (ground truth) |
 | `sealed:quarantine:` | Dashboard API (`GET /quarantine`) | `kvListAll(env.KV, { prefix })` | List quarantined inbound messages for patron review |
@@ -479,27 +490,28 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **70 keys** total:
 | 40 | `kernel:tool_grants` | Kernel |
 | 41 | `doc:modification_guide` | Docs |
 | 42 | `doc:architecture` | Docs |
-| 43 | `contact:swami_kevala` | Contacts |
-| 44 | `patron:contact` | Identity |
-| 45 | `patron:public_key` | Identity |
-| 46 | `viveka:comms:defaults` | Wisdom |
+| 43 | `doc:wisdom_guide` | Docs |
+| 44 | `contact:swami_kevala` | Contacts |
+| 45 | `patron:contact` | Identity |
+| 46 | `patron:public_key` | Identity |
+| 47 | `viveka:comms:defaults` | Wisdom |
 
 ### Loop-generated keys (24)
 
 | # | Key pattern | Count | Category |
 |---|------------|-------|----------|
-| 47–54 | `provider:{name}:code` | 4 (llm, llm_balance, wallet_balance, gmail) | Providers |
-| 55–62 | `provider:{name}:meta` | 4 | Providers |
-| 63–70 | `tool:{name}:code` | 8 (send_slack, web_fetch, kv_write, kv_manifest, kv_query, akash_exec, check_email, send_email) | Tools |
+| 48–55 | `provider:{name}:code` | 4 (llm, llm_balance, wallet_balance, gmail) | Providers |
+| 56–63 | `provider:{name}:meta` | 4 | Providers |
+| 64–71 | `tool:{name}:code` | 8 (send_slack, web_fetch, kv_write, kv_manifest, kv_query, akash_exec, check_email, send_email) | Tools |
 
-**Wait — that's only 62.** The tool loop also seeds `tool:{name}:meta` for each tool:
+**Wait — that's only 63.** The tool loop also seeds `tool:{name}:meta` for each tool:
 
 | # | Key pattern | Count | Category |
 |---|------------|-------|----------|
-| 63–70 | `tool:{name}:code` | 8 | Tools |
-| 71–78 | `tool:{name}:meta` | 8 | Tools |
+| 64–71 | `tool:{name}:code` | 8 | Tools |
+| 72–79 | `tool:{name}:meta` | 8 | Tools |
 
-**Corrected total: 46 static + 8 provider pairs + 16 tool pairs = 70 keys.**
+**Corrected total: 47 static + 8 provider pairs + 16 tool pairs = 71 keys.**
 
 ### Keys NOT seeded (created at runtime)
 

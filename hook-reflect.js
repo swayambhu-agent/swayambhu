@@ -9,6 +9,17 @@ import {
   processReflectVerdicts, processDeepReflectVerdicts,
 } from './hook-modifications.js';
 
+// ── Wisdom manifest ─────────────────────────────────────────
+
+async function loadWisdomManifest(K) {
+  const prajnaList = await K.kvList({ prefix: "prajna:", limit: 100 });
+  const vivekaList = await K.kvList({ prefix: "viveka:", limit: 100 });
+  return {
+    prajna: prajnaList.keys.map(k => ({ key: k.name, summary: k.metadata?.summary || k.name })),
+    viveka: vivekaList.keys.map(k => ({ key: k.name, summary: k.metadata?.summary || k.name })),
+  };
+}
+
 // ── Session reflect ─────────────────────────────────────────
 
 export async function executeReflect(K, state, step) {
@@ -19,10 +30,11 @@ export async function executeReflect(K, state, step) {
   const stagedModifications = await loadStagedModifications(K);
 
   const systemKeyPatterns = await K.getSystemKeyPatterns();
+  const wisdom_manifest = await loadWisdomManifest(K);
 
   const systemPrompt = await K.buildPrompt(
     reflectPrompt || defaultReflectPrompt(),
-    { systemKeyPatterns }
+    { systemKeyPatterns, wisdom_manifest }
   );
 
   const rawKarma = await K.getKarma();
@@ -79,13 +91,15 @@ export async function executeReflect(K, state, step) {
     session_id: sessionId,
   });
 
-  await K.kvPutSafe(`reflect:0:${sessionId}`, {
+  const sessionReflectRecord = {
     reflection: output.session_summary || output.reflection,
     note_to_future_self: output.note_to_future_self,
     depth: 0,
     session_id: sessionId,
     timestamp: new Date().toISOString(),
-  });
+  };
+  if (output.modification_observations) sessionReflectRecord.modification_observations = output.modification_observations;
+  await K.kvPutSafe(`reflect:0:${sessionId}`, sessionReflectRecord);
 
   if (output.kv_operations) {
     for (const op of output.kv_operations) {
@@ -203,7 +217,14 @@ export async function gatherReflectContext(K, state, depth, context) {
 
   if (depth >= 1) {
     templateVars.belowOutputs = await loadReflectHistory(K, depth - 1, 10);
+
+    // Same-depth history — continuity for deep reflect
+    const historyCount = state.defaults?.reflect_levels?.[depth]?.prior_reflections ?? 3;
+    templateVars.priorReflections = await loadReflectHistory(K, depth, historyCount);
   }
+
+  // Wisdom manifest — lazy loading for all depths
+  templateVars.wisdom_manifest = await loadWisdomManifest(K);
 
   return { userMessage: "Begin.", templateVars };
 }
@@ -253,13 +274,17 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   }
 
   // 5. Store output as reflect:{depth}:{sessionId}
-  await K.kvPutSafe(`reflect:${depth}:${sessionId}`, {
+  const reflectRecord = {
     reflection: output.reflection,
     note_to_future_self: output.note_to_future_self,
     depth,
     session_id: sessionId,
     timestamp: new Date().toISOString(),
-  });
+  };
+  if (output.current_intentions) reflectRecord.current_intentions = output.current_intentions;
+  if (output.modification_observations) reflectRecord.modification_observations = output.modification_observations;
+  if (output.system_trajectory) reflectRecord.system_trajectory = output.system_trajectory;
+  await K.kvPutSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 6. Only depth 1: write last_reflect and wake_config
   if (depth === 1) {
@@ -389,10 +414,25 @@ You have tools available for investigation \u2014 use kv_query, web_fetch, etc. 
 
 Your output is stored at reflect:1:{sessionId} and read by higher-depth reflections.
 
+## Your prior reflections at this depth
+
+{{priorReflections}}
+
+Read these for continuity. If you set intentions, honor or explicitly revise them.
+
+## Available wisdom
+
+{{wisdom_manifest}}
+
+Use kv_query to load specific entries relevant to your examination.
+
 Examine your karma, your orient prompt, your patterns. Produce a JSON object:
 {
   "reflection": "What you see when you look at yourself as a system",
   "note_to_future_self": "Orientation, not action items",
+  "current_intentions": [{"intention": "...", "dharma_basis": "...", "status": "active", "observation": "..."}],
+  "modification_observations": {"m_123": "What you observe about this modification"},
+  "system_trajectory": "Brief assessment of overall direction",
   "kv_operations": [],
   "modification_requests": [],
   "modification_verdicts": [],
@@ -410,6 +450,18 @@ You have tools available for investigation \u2014 use kv_query, web_fetch, etc. 
 
 Your output is stored at reflect:${depth}:{sessionId}.
 
+## Your prior reflections at this depth
+
+{{priorReflections}}
+
+Read these for continuity. If you set intentions, honor or explicitly revise them.
+
+## Available wisdom
+
+{{wisdom_manifest}}
+
+Use kv_query to load specific entries relevant to your examination.
+
 ## One-level-below write discipline
 You can only propose modifications targeting prompt:reflect:${depth - 1} (the prompt for the level below you).
 
@@ -419,6 +471,9 @@ Examine the depth-${depth - 1} outputs for patterns, drift, and alignment. Produ
 {
   "reflection": "What you see in the level-below patterns",
   "note_to_future_self": "Orientation for next depth-${depth} reflection",
+  "current_intentions": [{"intention": "...", "dharma_basis": "...", "status": "active", "observation": "..."}],
+  "modification_observations": {"m_123": "What you observe about this modification"},
+  "system_trajectory": "Brief assessment of overall direction",
   "kv_operations": [],
   "modification_requests": [],
   "modification_verdicts": [],
