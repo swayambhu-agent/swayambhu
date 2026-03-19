@@ -205,7 +205,7 @@ If no manifest and no `hook:wake:code` exist, the kernel falls through to `this.
 5. **Retry pending git syncs** — retries any `git_pending:*` records from previous sessions.
 6. **Load ground truth** — fetches balances via `checkBalance()`.
 7. **Reflection check** — `highestReflectDepthDue(K, state)` scans from `max_reflect_depth` down to 1, checking if any depth is due based on session count or elapsed days.
-8. **Tripwire evaluation** — `evaluateTripwires(config, liveData)` evaluates alert conditions against live data (currently just balances). Can override the effort level upward (low → medium → high → max).
+8. **Tripwire evaluation** — `evaluateTripwires(config, liveData)` evaluates alert conditions against live data (currently just balances). Can override the effort level upward (low → medium → high → xhigh).
 9. **Branch: reflect or orient**
    - If `reflectDepth > 0`: runs `runReflect(K, state, depth, context)` — deep reflection that cascades downward.
    - Otherwise: runs `runSession(K, state, context, config)` — normal orient session followed by session-level reflect.
@@ -332,21 +332,21 @@ If the input isn't in the alias map, it's returned unchanged (assumed to be a fu
 
 ### Model families and effort mapping
 
-Each model entry in `config:models.models` has a `family` field and an optional `effort_map`. `callLLM()` looks up the model to resolve these before building the standardized request:
+Each model entry in `config:models.models` has an optional `family` field and an optional `supports_reasoning` flag. `callLLM()` looks up the model to resolve these before building the standardized request:
 
-- **`family`** — identifies which API-specific adapter to use in the provider (e.g., `"anthropic"` → `thinking` + `cache_control`, `"deepseek"` → `reasoning_effort`). Passed through to the provider as `request.family`.
-- **`effort_map`** — translates internal effort levels to model-specific values. If absent (e.g., DeepSeek v3.2 doesn't support thinking), `request.effort` is `null`.
+- **`family`** — optional. Identifies which provider-specific adapter to apply (e.g., `"anthropic"` → `cache_control`). Only needed for models with provider-specific quirks. Passed through to the provider as `request.family`.
+- **`supports_reasoning`** — if `true`, the effort level passes through to OpenRouter's unified `reasoning` parameter. If absent/false, `request.effort` is `null`.
 
 As seeded:
 
-| Model | Family | Effort map |
-|-------|--------|-----------|
-| `anthropic/claude-opus-4.6` | `anthropic` | `{ low, medium, high, max }` (identity) |
-| `anthropic/claude-sonnet-4.6` | `anthropic` | `{ low, medium, high, max }` (identity) |
-| `anthropic/claude-haiku-4.5` | `anthropic` | `{ low, medium, high, max }` (identity) |
-| `deepseek/deepseek-v3.2` | `deepseek` | (none — no thinking support) |
+| Model | Family | Supports reasoning |
+|-------|--------|--------------------|
+| `anthropic/claude-opus-4.6` | `anthropic` | Yes |
+| `anthropic/claude-sonnet-4.6` | `anthropic` | Yes |
+| `anthropic/claude-haiku-4.5` | `anthropic` | Yes |
+| `deepseek/deepseek-v3.2` | (none) | No |
 
-To add a new model family: add a `family` adapter in `providers/llm.js` (and inline in `brainstem-dev.js`), add the model entry in `config:models` with `family` and optional `effort_map`. No kernel changes needed.
+To add a new model with reasoning: add the model entry in `config:models` with `supports_reasoning: true` and optionally `family` if it needs provider-specific adaptation. No provider code changes needed.
 
 ### Model capability flags
 

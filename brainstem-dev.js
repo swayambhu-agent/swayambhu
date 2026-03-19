@@ -23,20 +23,23 @@ import * as kv_query from './tools/kv_query.js';
 import * as akash_exec from './tools/akash_exec.js';
 import * as check_email from './tools/check_email.js';
 import * as send_email from './tools/send_email.js';
+import * as test_model from './tools/test_model.js';
 
 const TOOL_MODULES = {
   send_slack, web_fetch, kv_write,
   kv_manifest, kv_query, akash_exec,
-  check_email, send_email,
+  check_email, send_email, test_model,
 };
 
 // ── Provider adapter modules (single source of truth: providers/*.js) ──
 
+import * as llm from './providers/llm.js';
 import * as llm_balance from './providers/llm_balance.js';
 import * as wallet_balance from './providers/wallet_balance.js';
 import * as gmail from './providers/gmail.js';
 
 const PROVIDER_MODULES = {
+  'provider:llm': llm,
   'provider:llm_balance': llm_balance,
   'provider:wallet_balance': wallet_balance,
   'provider:gmail': gmail,
@@ -253,19 +256,13 @@ class DevBrainstem extends Brainstem {
       messages: request.messages,
     };
     const families = {
-      anthropic: (b, { effort }) => {
+      anthropic: (b) => {
         b.cache_control = { type: 'ephemeral' };
-        if (effort) {
-          b.thinking = { type: 'adaptive', effort };
-          b.provider = { require_parameters: true };
-        }
-      },
-      deepseek: (b, { effort }) => {
-        if (effort) b.reasoning_effort = effort;
       },
     };
     const adapt = request.family ? families[request.family] : null;
-    if (adapt) adapt(body, { effort: request.effort });
+    if (adapt) adapt(body);
+    if (request.effort) body.reasoning = { effort: request.effort };
     if (request.tools?.length) body.tools = request.tools;
 
     console.log(`[LLM] >>> ${step} | model=${request.model} | msgs=${request.messages.length}`);

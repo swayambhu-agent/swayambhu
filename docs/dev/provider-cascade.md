@@ -23,7 +23,7 @@ Both paths share the same execution primitive: load code + meta from KV, build a
 callLLM()
 │ Budget check (cost + duration)
 │ Prepend dharma + principles to system prompt
-│ Resolve model family + map effort via config:models effort_map
+│ Resolve model family + check supports_reasoning via config:models
 │ Build standardized request { model, max_tokens, messages, family, effort, tools? }
 │
 ▼
@@ -184,16 +184,15 @@ Looks up model in `config:models.models` by ID or alias. Uses `input_cost_per_mt
 
 ## The standardized request
 
-`callLLM()` builds a standardized request object before passing it to `callWithCascade()`. It looks up the model in `config:models.models` to resolve the `family` and map the internal `effort` value through the model's `effort_map`:
+`callLLM()` builds a standardized request object before passing it to `callWithCascade()`. It looks up the model in `config:models.models` to resolve the `family` and check `supports_reasoning`:
 
 ```js
 const modelInfo = this.modelsConfig?.models?.find(
   m => m.id === model || m.alias === model
 );
 const family = modelInfo?.family || null;
-const mappedEffort = (effort && effort !== "none" && modelInfo?.effort_map)
-  ? (modelInfo.effort_map[effort] || null)
-  : null;
+const resolvedEffort = (effort && effort !== "none" && modelInfo?.supports_reasoning)
+  ? effort : null;
 ```
 
 Resulting request shape:
@@ -208,12 +207,12 @@ Resulting request shape:
     ...
   ],
   family: "anthropic",                       // from config:models, null if unknown model
-  effort: "low",                             // mapped through effort_map, null if no map or effort "none"
+  effort: "high",                            // pass-through if supports_reasoning, null otherwise
   tools: [...]                               // omitted if empty
 }
 ```
 
-The provider adapter receives this plus `{ secrets }` and uses `family` to select the appropriate wire format (e.g., Anthropic's `thinking` parameter vs DeepSeek's `reasoning_effort`). The adapter must return:
+The provider adapter receives this plus `{ secrets }`. It applies `family`-specific quirks (e.g., anthropic `cache_control`) and sets `body.reasoning = { effort }` for the unified OpenRouter reasoning parameter. The adapter must return:
 
 ```js
 {
@@ -340,19 +339,13 @@ async callWithCascade(request, step) {
   };
   // Family adapter map — same as providers/llm.js
   const families = {
-    anthropic: (b, { effort }) => {
+    anthropic: (b) => {
       b.cache_control = { type: 'ephemeral' };
-      if (effort) {
-        b.thinking = { type: 'adaptive', effort };
-        b.provider = { require_parameters: true };
-      }
-    },
-    deepseek: (b, { effort }) => {
-      if (effort) b.reasoning_effort = effort;
     },
   };
   const adapt = request.family ? families[request.family] : null;
-  if (adapt) adapt(body, { effort: request.effort });
+  if (adapt) adapt(body);
+  if (request.effort) body.reasoning = { effort: request.effort };
   if (request.tools?.length) body.tools = request.tools;
 
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -398,22 +391,16 @@ All provider adapters follow the same pattern. No `export default` (required for
 export const meta = { secrets: ["OPENROUTER_API_KEY"], timeout_ms: 60000 };
 
 const families = {
-  anthropic: (body, { effort }) => {
+  anthropic: (body) => {
     body.cache_control = { type: 'ephemeral' };
-    if (effort) {
-      body.thinking = { type: 'adaptive', effort };
-      body.provider = { require_parameters: true };
-    }
-  },
-  deepseek: (body, { effort }) => {
-    if (effort) body.reasoning_effort = effort;
   },
 };
 
 export async function call({ model, messages, max_tokens, effort, family, tools, secrets, fetch }) {
   const body = { model, max_tokens, messages };
   const adapt = family ? families[family] : null;
-  if (adapt) adapt(body, { effort });
+  if (adapt) adapt(body);
+  if (effort) body.reasoning = { effort };
   if (tools) body.tools = tools;
   // ... call external API ...
   return { content, usage, toolCalls };
@@ -422,7 +409,7 @@ export async function call({ model, messages, max_tokens, effort, family, tools,
 
 Must export `call`. Receives the standardized request plus `secrets` and `fetch`. Must return `{ content, usage, toolCalls }`.
 
-The `families` map translates the generic `family` + `effort` into model-specific API parameters. To add a new model family, add an entry to this map and to the `config:models` seed (with `family` and optional `effort_map`). No kernel changes needed.
+Reasoning uses OpenRouter's unified `reasoning` parameter — works across all providers. The `families` map handles provider-specific quirks only (currently just anthropic `cache_control`). `family` is optional on model entries — only set it when provider-specific adaptation is needed.
 
 ### Balance adapter
 

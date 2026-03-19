@@ -158,10 +158,31 @@ export async function runSession(K, state, context, config) {
   const orientPrompt = await K.kvGet("prompt:orient");
   const resources = await K.kvGet("config:resources");
 
+  // Build skill manifest for orient prompt injection
+  const skillList = await K.kvList({ prefix: "skill:", limit: 100 });
+  const skill_manifest = [];
+  for (const k of skillList.keys) {
+    // Skip :ref companion keys
+    if (k.name.includes(":ref")) continue;
+    const v = await K.kvGet(k.name);
+    if (v) {
+      try {
+        const parsed = typeof v === "string" ? JSON.parse(v) : v;
+        skill_manifest.push({
+          key: k.name,
+          name: parsed.name,
+          description: parsed.description,
+          trigger_patterns: parsed.trigger_patterns,
+        });
+      } catch {}
+    }
+  }
+
   const systemPrompt = await K.buildPrompt(orientPrompt, {
     models: modelsConfig,
     resources,
     config,
+    skill_manifest: skill_manifest.length ? skill_manifest : null,
   });
 
   const initialContext = buildOrientContext(context);
@@ -319,7 +340,7 @@ export function evaluateTripwires(config, liveData) {
       case "changed": fired = true; break;
     }
     if (fired && alert.override_effort) {
-      const levels = ["low", "medium", "high", "max"];
+      const levels = ["low", "medium", "high", "xhigh"];
       if (levels.indexOf(alert.override_effort) > levels.indexOf(effort)) {
         effort = alert.override_effort;
       }

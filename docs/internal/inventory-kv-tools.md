@@ -29,10 +29,10 @@ Generated 2026-03-17. Covers every KV key, tool, and provider in the codebase.
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `tool:{name}:code` | Text (JS source) | `seed-local-kv.mjs` | `brainstem.js:_loadTool()`, `callHook()` | Yes (8 tools) | System (prefix `tool:`) |
-| `tool:{name}:meta` | JSON (kv_access, timeout_ms — security fields stripped) | `seed-local-kv.mjs` | `brainstem.js:_loadTool()`, `callHook()` | Yes (8 tools) | System |
+| `tool:{name}:code` | Text (JS source) | `seed-local-kv.mjs` | `brainstem.js:_loadTool()`, `callHook()` | Yes (9 tools) | System (prefix `tool:`) |
+| `tool:{name}:meta` | JSON (kv_access, timeout_ms — security fields stripped) | `seed-local-kv.mjs` | `brainstem.js:_loadTool()`, `callHook()` | Yes (9 tools) | System |
 
-Seeded tool names: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `akash_exec`, `check_email`, `send_email`.
+Seeded tool names: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `akash_exec`, `check_email`, `send_email`, `test_model`.
 
 ### 1.4 Providers
 

@@ -1,0 +1,12 @@
+{
+  "name": "model-config",
+  "description": "Research, evaluate, add, update, or remove LLM models in config:models and config:defaults. Use when new models are released, pricing changes, a model underperforms, or cost optimization is needed.",
+  "tools_used": ["web_fetch", "kv_query", "kv_manifest", "test_model"],
+  "trigger_patterns": [
+    "new model released", "model performing poorly", "cost optimization",
+    "model selection", "update config:models", "cheaper model", "better model"
+  ],
+  "created_by_depth": null,
+  "created_at": "2026-03-19T00:00:00.000Z",
+  "revision": 1
+}

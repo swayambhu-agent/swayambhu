@@ -45,7 +45,7 @@ Seeds 70 keys into local KV. Runs in ~2s via Miniflare API (replacing
 | Identity | 1 | `identity:did` — hardcoded DID document |
 | Config | 7 | `config:defaults`, `config:models`, `config:model_capabilities`, `config:resources`, `config:tool_registry`, `providers`, `wallets` — inline JSON |
 | Providers | 8 | 4 providers × (`provider:{name}:code` from file + `provider:{name}:meta` from import) |
-| Tools | 17 | 8 tools × (`tool:{name}:code` from file + `tool:{name}:meta` from import) + 1 `kernel:tool_grants` |
+| Tools | 19 | 9 tools × (`tool:{name}:code` from file + `tool:{name}:meta` from import) + 1 `kernel:tool_grants` |
 | Prompts | 5 | `prompt:orient`, `prompt:subplan`, `prompt:reflect`, `prompt:reflect:1`, `prompt:chat` — from `prompts/*.md` or inline |
 | Dharma | 1 | `dharma` — from `DHARMA.md` |
 | Yamas | 7 | `yama:care`, `yama:truth`, `yama:responsibility`, `yama:discipline`, `yama:rules`, `yama:security`, `yama:humility` — inline text |
@@ -56,7 +56,8 @@ Seeds 70 keys into local KV. Runs in ~2s via Miniflare API (replacing
 | Docs | 2 | `doc:modification_guide`, `doc:architecture` — from `docs/doc-*.md` |
 | Contacts | 3 | `contact:swami_kevala`, `patron:contact`, `patron:public_key` |
 | Viveka | 1 | `viveka:comms:defaults` — seed communication wisdom |
-| **Total** | **70** | |
+| Skills | 3 | `skill:model-config`, `skill:model-config:ref`, `skill:skill-authoring` — from `skills/*.json` + `skills/*.md` |
+| **Total** | **73** | |
 
 ### Source file reading
 

@@ -1,0 +1,13 @@
+{
+  "name": "skill-authoring",
+  "description": "Create, update, or revise skills (reusable procedural knowledge). Use when a repeated multi-step workflow should be crystallized into a teachable procedure.",
+  "tools_used": ["kv_query", "kv_manifest"],
+  "trigger_patterns": [
+    "create a skill", "repeated procedure",
+    "crystallize workflow", "I keep doing this", "reusable instructions",
+    "update skill", "revise skill"
+  ],
+  "created_by_depth": null,
+  "created_at": "2026-03-19T00:00:00.000Z",
+  "revision": 1
+}

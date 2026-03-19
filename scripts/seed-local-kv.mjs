@@ -76,10 +76,10 @@ await put("config:defaults", {
 
 await put("config:models", {
   models: [
-    { id: "anthropic/claude-opus-4.6", alias: "opus", family: "anthropic", effort_map: { low: "low", medium: "medium", high: "high", max: "max" }, input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection" },
-    { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", effort_map: { low: "low", medium: "medium", high: "high", max: "max" }, input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning" },
-    { id: "anthropic/claude-haiku-4.5", alias: "haiku", family: "anthropic", effort_map: { low: "low", medium: "medium", high: "high", max: "max" }, input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
-    { id: "deepseek/deepseek-v3.2", alias: "deepseek", family: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, orient flow, KV ops, prompt rendering" },
+    { id: "anthropic/claude-opus-4.6", alias: "opus", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection" },
+    { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning" },
+    { id: "anthropic/claude-haiku-4.5", alias: "haiku", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
+    { id: "deepseek/deepseek-v3.2", alias: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, orient flow, KV ops, prompt rendering" },
   ],
   fallback_model: "anthropic/claude-haiku-4.5",
   alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5", deepseek: "deepseek/deepseek-v3.2" },
@@ -119,6 +119,7 @@ await put("config:tool_registry", {
     { name: "akash_exec", description: "Run a shell command on the akash Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
     { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each. Emails from unknown senders (no contact record) have content replaced with [content redacted — unknown sender] and the original quarantined under sealed:* keys until approved by patron", input: { mark_read: "optional boolean — mark fetched emails as read (default true)", max_results: "optional — max emails to return (default 10, max 20)" } },
     { name: "send_email", description: "Send an email or reply to an existing thread via Gmail. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
+    { name: "test_model", description: "Make a test completion against a model to verify it works. Returns success, response text, usage stats, and latency. Capped at 500 output tokens.", input: { model_id: "required — full OpenRouter model ID", prompt: "required — test prompt (max 1000 chars)", max_tokens: "optional — max output tokens (default 100, max 500)" } },
   ],
 }, "json", "Tool definitions — names, descriptions, and input schemas for function calling");
 
@@ -138,7 +139,7 @@ console.log("--- Tools ---");
 const toolNames = [
   "send_slack", "web_fetch", "kv_write",
   "kv_manifest", "kv_query", "akash_exec",
-  "check_email", "send_email",
+  "check_email", "send_email", "test_model",
 ];
 const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];
 const toolGrants = {};
@@ -283,6 +284,21 @@ await put("viveka:comms:defaults", {
   created: new Date().toISOString(),
   sources: [{ session: "seed", depth: 0, turn: 0, topic: "Initial seed — conservative communication baseline" }],
 }, "json", "Viveka: default communication stance");
+
+// ── Skills (from skills/*.json + skills/*.md) ─────────────────
+
+console.log("--- Skills ---");
+const skillNames = ["model-config", "skill-authoring"];
+for (const name of skillNames) {
+  const meta = JSON.parse(read(`skills/${name}.json`));
+  await put(`skill:${name}`, {
+    ...meta,
+    instructions: read(`skills/${name}.md`),
+  }, "json", `Skill: ${name}`);
+  // Seed :ref companion if it exists
+  try { await put(`skill:${name}:ref`, read(`skills/${name}-ref.md`), "text", `Skill reference: ${name}`); }
+  catch {}
+}
 
 // ── Done ──────────────────────────────────────────────────────
 

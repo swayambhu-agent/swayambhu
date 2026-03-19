@@ -12,6 +12,7 @@ import * as kv_query from "../tools/kv_query.js";
 import * as check_email from "../tools/check_email.js";
 import * as send_email from "../tools/send_email.js";
 import * as akash_exec from "../tools/akash_exec.js";
+import * as test_model from "../tools/test_model.js";
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
@@ -99,7 +100,7 @@ function mockKV(initial = {}) {
 
 const allTools = {
   send_slack, web_fetch, kv_write,
-  kv_manifest, kv_query, check_email, send_email, akash_exec,
+  kv_manifest, kv_query, check_email, send_email, akash_exec, test_model,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail };
@@ -954,7 +955,132 @@ describe("provider:gmail", () => {
   });
 });
 
-// ── 9. channel:slack tests ─────────────────────────────────
+// ── 9. test_model tests ────────────────────────────────────
+
+describe("test_model", () => {
+  it("has expected meta fields", () => {
+    expect(test_model.meta.secrets).toEqual(["OPENROUTER_API_KEY"]);
+    expect(test_model.meta.kv_access).toBe("none");
+    expect(test_model.meta.timeout_ms).toBe(30000);
+    expect(test_model.meta.provider).toBe("llm");
+  });
+
+  it("returns success with response text, usage, and latency", async () => {
+    const provider = {
+      call: vi.fn(async () => ({
+        content: "Hello from the model",
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      })),
+    };
+    const result = await test_model.execute({
+      model_id: "anthropic/claude-haiku-4.5",
+      prompt: "Say hello",
+      secrets: { OPENROUTER_API_KEY: "k" },
+      fetch: vi.fn(),
+      provider,
+    });
+    expect(result.success).toBe(true);
+    expect(result.response_text).toBe("Hello from the model");
+    expect(result.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5 });
+    expect(typeof result.latency_ms).toBe("number");
+    expect(result.error).toBeNull();
+    expect(provider.call).toHaveBeenCalledOnce();
+    const callArgs = provider.call.mock.calls[0][0];
+    expect(callArgs.model).toBe("anthropic/claude-haiku-4.5");
+    expect(callArgs.max_tokens).toBe(100);
+  });
+
+  it("returns error when provider throws", async () => {
+    const provider = {
+      call: vi.fn(async () => { throw new Error("model not found"); }),
+    };
+    const result = await test_model.execute({
+      model_id: "nonexistent/model",
+      prompt: "test",
+      secrets: { OPENROUTER_API_KEY: "k" },
+      fetch: vi.fn(),
+      provider,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("model not found");
+    expect(result.response_text).toBeNull();
+    expect(result.usage).toBeNull();
+    expect(typeof result.latency_ms).toBe("number");
+  });
+
+  it("returns error when model_id is missing", async () => {
+    const provider = { call: vi.fn() };
+    const result = await test_model.execute({
+      prompt: "test",
+      secrets: {},
+      fetch: vi.fn(),
+      provider,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("model_id");
+    expect(provider.call).not.toHaveBeenCalled();
+  });
+
+  it("returns error when prompt is missing", async () => {
+    const provider = { call: vi.fn() };
+    const result = await test_model.execute({
+      model_id: "some/model",
+      secrets: {},
+      fetch: vi.fn(),
+      provider,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("prompt");
+    expect(provider.call).not.toHaveBeenCalled();
+  });
+
+  it("returns error when prompt exceeds 1000 chars", async () => {
+    const provider = { call: vi.fn() };
+    const result = await test_model.execute({
+      model_id: "some/model",
+      prompt: "x".repeat(1001),
+      secrets: {},
+      fetch: vi.fn(),
+      provider,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("1000");
+    expect(provider.call).not.toHaveBeenCalled();
+  });
+
+  it("caps max_tokens at 500", async () => {
+    const provider = {
+      call: vi.fn(async () => ({ content: "ok", usage: {} })),
+    };
+    await test_model.execute({
+      model_id: "some/model",
+      prompt: "test",
+      max_tokens: 9999,
+      secrets: { OPENROUTER_API_KEY: "k" },
+      fetch: vi.fn(),
+      provider,
+    });
+    const callArgs = provider.call.mock.calls[0][0];
+    expect(callArgs.max_tokens).toBe(500);
+  });
+
+  it("defaults max_tokens to 100 when not provided", async () => {
+    const provider = {
+      call: vi.fn(async () => ({ content: "ok", usage: {} })),
+    };
+    await test_model.execute({
+      model_id: "some/model",
+      prompt: "test",
+      secrets: { OPENROUTER_API_KEY: "k" },
+      fetch: vi.fn(),
+      provider,
+    });
+    const callArgs = provider.call.mock.calls[0][0];
+    expect(callArgs.max_tokens).toBe(100);
+  });
+});
+
+// ── 10. channel:slack tests ────────────────────────────────
 
 describe("channel:slack", () => {
   describe("config", () => {

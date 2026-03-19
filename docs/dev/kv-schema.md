@@ -122,7 +122,7 @@ All JSON. Read by kernel and hooks at session start. Writable via `kvWritePrivil
 | Key | Value | Read by | Seeded |
 |-----|-------|---------|--------|
 | `config:defaults` | Session budgets, model roles, effort levels, execution limits, chat config, wake config, memory config, deep reflect config | Kernel (`loadEagerConfig`), hooks (via `K.getDefaults()`) | Yes |
-| `config:models` | Model list with pricing, `family`, `effort_map`, `alias_map`, `fallback_model` | Kernel (`loadEagerConfig`), hooks (via `K.getModelsConfig()`), `resolveModel()`, `estimateCost()`, `callLLM()` (family/effort lookup) | Yes |
+| `config:models` | Model list with pricing, `family`, `supports_reasoning`, `alias_map`, `fallback_model` | Kernel (`loadEagerConfig`), hooks (via `K.getModelsConfig()`), `resolveModel()`, `estimateCost()`, `callLLM()` (family/effort lookup) | Yes |
 | `config:model_capabilities` | Per-model capability flags (`yama_capable`, `niyama_capable`, `comms_gate_capable`) | Kernel (`loadEagerConfig`), `isYamaCapable()`, `isNiyamaCapable()`, `isCommsGateCapable()` | Yes |
 | `config:resources` | Platform limits (KV, worker), external endpoints (OpenRouter, wallet, Slack) | `runSession()` in hook-main.js — passed to orient prompt template | Yes |
 | `config:tool_registry` | Tool definitions (names, descriptions, input schemas) for function calling | `buildToolDefinitions()` in brainstem.js | Yes |
@@ -133,10 +133,10 @@ All JSON. Read by kernel and hooks at session start. Writable via `kvWritePrivil
 
 | Key pattern | Format | Value | Read by | Seeded |
 |-------------|--------|-------|---------|--------|
-| `tool:{name}:code` | text | Tool source code (JS) | `_loadTool()` in brainstem.js (cached per session) | Yes (8 tools) |
-| `tool:{name}:meta` | JSON | Operational tool metadata: `kv_access`, `timeout_ms`, `kv_secrets`. Security grant fields (`secrets`, `communication`, `inbound`, `provider`) are stripped at seed time and stored in `kernel:tool_grants` instead. | `_loadTool()`, `buildToolContext()` (for `kv_secrets`, `kv_access`) | Yes (8 tools) |
+| `tool:{name}:code` | text | Tool source code (JS) | `_loadTool()` in brainstem.js (cached per session) | Yes (9 tools) |
+| `tool:{name}:meta` | JSON | Operational tool metadata: `kv_access`, `timeout_ms`, `kv_secrets`. Security grant fields (`secrets`, `communication`, `inbound`, `provider`) are stripped at seed time and stored in `kernel:tool_grants` instead. | `_loadTool()`, `buildToolContext()` (for `kv_secrets`, `kv_access`) | Yes (9 tools) |
 
-Seeded tools: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `akash_exec`, `check_email`, `send_email`.
+Seeded tools: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `akash_exec`, `check_email`, `send_email`, `test_model`.
 
 **NOTE:** `callHook()` in brainstem.js also reads `tool:{hookName}:code` and `tool:{hookName}:meta` for pre/post-validation hooks (`validate`, `validate_result`, `parse_repair`). These are not seeded — they return null unless the agent creates them via Modification Protocol.
 
@@ -199,6 +199,15 @@ Text values. Loaded at boot by `loadYamasNiyamas()`, injected into every LLM pro
 | Seeded | No — created on first principle modification |
 
 **NOTE:** Audit keys match `isPrincipleAuditKey()` and are exempted from the deliberation/capability gates. But they are still system keys (prefix `yama:` / `niyama:`), so writing them still requires `kvWritePrivileged()`. The kernel writes them directly via `this.kvPut()` inside `kvWritePrivileged()`.
+
+### Skills (`skill:*`)
+
+| Key pattern | Format | Value | Read by | Written by | Seeded |
+|-------------|--------|-------|---------|------------|--------|
+| `skill:{name}` | JSON | `{ name, description, instructions, tools_used, trigger_patterns, created_by_depth, created_at, revision }` | Agent via `kv_query` tool, orient manifest injection | Seed, agent via Modification Protocol | Yes (`skill:model-config`, `skill:skill-authoring`) |
+| `skill:{name}:ref` | text | Extended reference material for the skill | Agent via `kv_query` tool | Seed, agent via Modification Protocol | Yes (`skill:model-config:ref`) |
+
+System prefix. Writable via `kvWritePrivileged()` (Modification Protocol). Skills are procedural knowledge — reusable instructions for how to approach a class of problem using existing tools.
 
 ### Wisdom (`viveka:*`, `prajna:*`)
 
@@ -444,9 +453,9 @@ Which prefixes are listed where, by which code, and why.
 
 ## Seed audit
 
-The seed script (`scripts/seed-local-kv.mjs`) produces **70 keys** total:
+The seed script (`scripts/seed-local-kv.mjs`) produces **73 keys** total:
 
-### Static keys (46)
+### Static keys (50)
 
 | # | Key | Category |
 |---|-----|----------|
@@ -497,6 +506,9 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **70 keys** total:
 | 45 | `patron:contact` | Identity |
 | 46 | `patron:public_key` | Identity |
 | 47 | `viveka:comms:defaults` | Wisdom |
+| 48 | `skill:model-config` | Skills |
+| 49 | `skill:model-config:ref` | Skills |
+| 50 | `skill:skill-authoring` | Skills |
 
 ### Loop-generated keys (24)
 
@@ -504,16 +516,16 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **70 keys** total:
 |---|------------|-------|----------|
 | 48–55 | `provider:{name}:code` | 4 (llm, llm_balance, wallet_balance, gmail) | Providers |
 | 56–63 | `provider:{name}:meta` | 4 | Providers |
-| 64–71 | `tool:{name}:code` | 8 (send_slack, web_fetch, kv_write, kv_manifest, kv_query, akash_exec, check_email, send_email) | Tools |
+| 64–72 | `tool:{name}:code` | 9 (send_slack, web_fetch, kv_write, kv_manifest, kv_query, akash_exec, check_email, send_email, test_model) | Tools |
 
-**Wait — that's only 63.** The tool loop also seeds `tool:{name}:meta` for each tool:
+**Wait — that's only 67.** The tool loop also seeds `tool:{name}:meta` for each tool:
 
 | # | Key pattern | Count | Category |
 |---|------------|-------|----------|
-| 64–71 | `tool:{name}:code` | 8 | Tools |
-| 72–79 | `tool:{name}:meta` | 8 | Tools |
+| 67–75 | `tool:{name}:code` | 9 | Tools |
+| 76–84 | `tool:{name}:meta` | 9 | Tools |
 
-**Corrected total: 47 static + 8 provider pairs + 16 tool pairs = 71 keys.**
+**Corrected total: 50 static + 8 provider pairs + 18 tool pairs = 76 keys.**
 
 ### Keys NOT seeded (created at runtime)
 

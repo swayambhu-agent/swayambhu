@@ -8,7 +8,7 @@ Complete reference for all tools and provider adapters. Tools live in
 
 ## Registry Tools
 
-Eight tools registered in `config:tool_registry`. Each has a `meta` export
+Nine tools registered in `config:tool_registry`. Each has a `meta` export
 (consumed by the kernel for sandboxing and gate decisions) and an `execute`
 function.
 
@@ -182,6 +182,31 @@ Used by git sync to push modifications to the self-repository.
 
 ---
 
+### test_model
+
+**File:** `tools/test_model.js`
+**Purpose:** Make a test completion against a model to verify it works before
+assigning it to a role.
+
+| Meta field | Value |
+|-----------|-------|
+| `secrets` | `OPENROUTER_API_KEY` |
+| `kv_access` | `none` |
+| `timeout_ms` | 30000 |
+| `provider` | `llm` |
+
+Input: `{ model_id, prompt, max_tokens }`. `model_id` and `prompt` required.
+`prompt` capped at 1000 chars. `max_tokens` default 100, capped at 500.
+
+Returns: `{ success, response_text, usage, latency_ms, error }`.
+
+**Cost tracking:** Calls `provider.call()` directly, bypassing `callLLM()` —
+cost is NOT tracked in `sessionCost` and no LLM karma is recorded. The hard
+caps (500 max_tokens, 1000 char prompt) keep worst-case cost small (~$0.01).
+Usage stats are returned in the tool result and visible via karma.
+
+---
+
 ## Built-in Tools
 
 Three tools are hardcoded in the kernel — not loaded from KV, not
@@ -276,6 +301,7 @@ directly to KV, bypassing the immutability guard.
 | kv_write | yes | no | yes | yes | allowlist | yes |
 | kv_manifest | yes | no | yes | yes | allowlist | yes |
 | akash_exec | yes | no | yes | yes | allowlist | yes |
+| test_model | yes | no | yes | yes | allowlist | yes |
 | spawn_subplan | yes | no | **no** | yes | allowlist | yes |
 | check_balance | yes | no | yes | yes | allowlist | yes |
 | verify_patron | yes | no | yes | yes | allowlist | yes |
@@ -437,6 +463,7 @@ provider binding is controlled by the kernel — the agent cannot modify it.
 |------|-----------------|---------------|
 | `check_email` | `gmail` | `getAccessToken`, `listUnread`, `getMessage`, `markAsRead` |
 | `send_email` | `gmail` | `getAccessToken`, `getMessage` (for replies), `sendMessage` |
+| `test_model` | `llm` | `call` |
 
 In prod, the provider code is loaded from `provider:{name}:code` KV and
 injected into the isolate. In dev, `PROVIDER_MODULES` maps

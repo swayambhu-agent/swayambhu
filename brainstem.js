@@ -279,6 +279,7 @@ class Brainstem {
     'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
     'yama:', 'niyama:',
     'viveka:', 'prajna:',
+    'skill:',
     'comms_blocked:',
     'contact:',
     'contact_index:',
@@ -1575,14 +1576,13 @@ export default {
       ? [{ role: "system", content: fullSystemPrompt }, ...messages]
       : [...messages];
 
-    // Resolve model family + map effort through config
+    // Resolve model family + check reasoning support
     const modelInfo = this.modelsConfig?.models?.find(
       m => m.id === model || m.alias === model
     );
     const family = modelInfo?.family || null;
-    const mappedEffort = (effort && effort !== "none" && modelInfo?.effort_map)
-      ? (modelInfo.effort_map[effort] || null)
-      : null;
+    const resolvedEffort = (effort && effort !== "none" && modelInfo?.supports_reasoning)
+      ? effort : null;
 
     // Standardized request — provider adapter translates this
     const request = {
@@ -1590,7 +1590,7 @@ export default {
       max_tokens: maxTokens || 1000,
       messages: msgs,
       family,
-      effort: mappedEffort,
+      effort: resolvedEffort,
       ...(tools?.length ? { tools } : {}),
     };
 
@@ -1617,7 +1617,19 @@ export default {
       throw new Error(`LLM call failed on all providers: ${result.error}`);
     }
 
-    const cost = this.estimateCost(model, result.usage) || 0;
+    let cost = this.estimateCost(model, result.usage);
+    if (cost === null) {
+      const models = this.modelsConfig?.models || [];
+      const maxInput = models.length ? Math.max(...models.map(m => m.input_cost_per_mtok)) : 10;
+      const maxOutput = models.length ? Math.max(...models.map(m => m.output_cost_per_mtok)) : 30;
+      cost = ((result.usage.prompt_tokens || 0) * maxInput
+        + (result.usage.completion_tokens || 0) * maxOutput) / 1_000_000;
+      await this.karmaRecord({
+        event: "warning",
+        message: `Model "${model}" not in config:models — using pessimistic cost estimate ($${cost.toFixed(6)})`,
+        step,
+      });
+    }
 
     await this.karmaRecord({
       event: "llm_call",

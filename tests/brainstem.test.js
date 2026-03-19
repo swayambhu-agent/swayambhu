@@ -276,30 +276,29 @@ describe("callLLM", () => {
     expect(result.toolCalls).toEqual(toolCalls);
   });
 
-  it("maps effort through model effort_map and passes family", async () => {
+  it("passes effort through for model with supports_reasoning", async () => {
     const { brain } = makeLLMBrain();
     brain.modelsConfig = {
       models: [
-        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", effort_map: { low: "low", medium: "medium", high: "high", max: "max" } },
+        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", supports_reasoning: true },
       ],
     };
     await brain.callLLM({
       model: "anthropic/claude-sonnet-4.6",
-      effort: "max",
+      effort: "high",
       messages: [{ role: "user", content: "hi" }],
       step: "test",
     });
     const call = brain.callWithCascade.mock.calls[0][0];
     expect(call.family).toBe("anthropic");
-    expect(call.effort).toBe("max");
-    expect(call).not.toHaveProperty("thinking");
+    expect(call.effort).toBe("high");
   });
 
-  it("sets effort null for model without effort_map (deepseek)", async () => {
+  it("sets effort null for model without supports_reasoning", async () => {
     const { brain } = makeLLMBrain();
     brain.modelsConfig = {
       models: [
-        { id: "deepseek/deepseek-v3.2", alias: "deepseek", family: "deepseek" },
+        { id: "deepseek/deepseek-v3.2", alias: "deepseek" },
       ],
     };
     await brain.callLLM({
@@ -309,7 +308,7 @@ describe("callLLM", () => {
       step: "test",
     });
     const call = brain.callWithCascade.mock.calls[0][0];
-    expect(call.family).toBe("deepseek");
+    expect(call.family).toBeNull();
     expect(call.effort).toBeNull();
   });
 
@@ -317,7 +316,7 @@ describe("callLLM", () => {
     const { brain } = makeLLMBrain();
     brain.modelsConfig = {
       models: [
-        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", effort_map: { low: "low", high: "high" } },
+        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", supports_reasoning: true },
       ],
     };
     await brain.callLLM({
@@ -334,7 +333,7 @@ describe("callLLM", () => {
     const { brain } = makeLLMBrain();
     brain.modelsConfig = {
       models: [
-        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic" },
+        { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", supports_reasoning: true },
       ],
     };
     await brain.callLLM({
@@ -982,6 +981,7 @@ describe("isSystemKey / isKernelOnly", () => {
     expect(Brainstem.isSystemKey("hook:wake:code")).toBe(true);
     expect(Brainstem.isSystemKey("modification_staged:m_1")).toBe(true);
     expect(Brainstem.isSystemKey("doc:modification_guide")).toBe(true);
+    expect(Brainstem.isSystemKey("skill:model-config")).toBe(true);
   });
 
   it("recognizes exact system keys", () => {
