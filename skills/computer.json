@@ -1,0 +1,14 @@
+{
+  "name": "computer",
+  "description": "Run shell commands, read/write files, and do work on your dedicated Linux server. Use this skill for: file operations, code execution, git, package installation, process management, builds, or anything requiring a real Linux environment.",
+  "tools_used": ["computer"],
+  "trigger_patterns": [
+    "run .* on the server",
+    "execute .* command",
+    "shell command",
+    "linux server",
+    "check the server",
+    "server terminal",
+    "remote execution"
+  ]
+}

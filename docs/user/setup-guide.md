@@ -16,7 +16,7 @@ You'll need accounts and access to the following services:
 | **OpenRouter** | Routes LLM calls to Claude, DeepSeek, etc. | Pay-as-you-go (see [Model Costs](#model-costs)) |
 | **Slack workspace** | Real-time messaging channel | Free tier works |
 | **Gmail account** | Email send/receive | Free |
-| **Linux server** (Hetzner, etc.) | Remote command execution via the `akash_exec` tool | Optional — only if you need remote execution |
+| **Linux server** (Hetzner, etc.) | Remote command execution via the `computer` tool | Optional — only if you need remote execution |
 
 On your local machine:
 
@@ -117,8 +117,8 @@ need:
 | `GMAIL_CLIENT_ID` | Gmail | Yes, if using email |
 | `GMAIL_CLIENT_SECRET` | Gmail | Yes, if using email |
 | `GMAIL_REFRESH_TOKEN` | Gmail | Yes, if using email |
-| `AKASH_CF_CLIENT_ID` | Remote server | Only if using remote execution |
-| `AKASH_API_KEY` | Remote server | Only if using remote execution |
+| `COMPUTER_CF_CLIENT_ID` | Remote server | Only if using remote execution |
+| `COMPUTER_API_KEY` | Remote server | Only if using remote execution |
 | `WALLET_ADDRESS` | Crypto wallet | Only if using wallet monitoring |
 | `WALLET_PRIVATE_KEY` | Crypto wallet | Only if using wallet monitoring |
 
@@ -312,7 +312,7 @@ GMAIL_REFRESH_TOKEN=...
 
 ## 6. Remote Server Setup (Optional)
 
-The `akash_exec` tool lets Swayambhu run shell commands on a remote Linux
+The `computer` tool lets Swayambhu run shell commands on a remote Linux
 server. This is optional — skip this section if you don't need remote
 execution.
 
@@ -335,29 +335,29 @@ The reference deployment uses Cloudflare Tunnel to expose the execution
 endpoint securely (no open ports, no public SSH):
 
 1. Install `cloudflared` on your server.
-2. Create a tunnel: `cloudflared tunnel create swayambhu-akash`
+2. Create a tunnel: `cloudflared tunnel create swayambhu-computer`
 3. Configure it to route traffic from a hostname (e.g.
    `akash.swayambhu.dev`) to your local execution service.
 4. Set up Cloudflare Access to require a service token for authentication.
 5. Create a service token in Cloudflare Access — the Client ID is your
-   `AKASH_CF_CLIENT_ID`.
+   `COMPUTER_CF_CLIENT_ID`.
 
 ### Set the Secrets
 
 ```bash
 # Production
-echo -n "..." | npx wrangler secret put AKASH_CF_CLIENT_ID
-echo -n "..." | npx wrangler secret put AKASH_API_KEY
+echo -n "..." | npx wrangler secret put COMPUTER_CF_CLIENT_ID
+echo -n "..." | npx wrangler secret put COMPUTER_API_KEY
 
 # Local (.env)
-AKASH_CF_CLIENT_ID=...
-AKASH_API_KEY=...
+COMPUTER_CF_CLIENT_ID=...
+COMPUTER_API_KEY=...
 ```
 
 ### Customize the Endpoint
 
 The default endpoint is `https://akash.swayambhu.dev`. To use your own
-domain, edit `tools/akash_exec.js` and change the `BASE` constant, then
+domain, edit `tools/computer.js` and change the `BASE` constant, then
 re-seed.
 
 ---

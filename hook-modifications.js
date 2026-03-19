@@ -658,7 +658,7 @@ export async function attemptGitSync(K, modificationId, pending) {
     const script = lines.join('\n');
 
     const result = await K.executeAction({
-      tool: 'akash_exec',
+      tool: 'computer',
       input: { command: script, timeout: 30 },
       id: `git_sync_${modificationId}`,
     });

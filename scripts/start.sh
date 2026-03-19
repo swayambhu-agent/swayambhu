@@ -229,6 +229,10 @@ wait_service "dashboard API" "http://localhost:$DASHBOARD_PORT" 30
 
 # ── 6. Trigger wake cycle (if requested) ──────────────────────
 if $WAKE; then
+  echo "=== Snapshotting state (pre-wake) ==="
+  rm -rf .wrangler/pre-wake-snapshot
+  cp -r .wrangler/shared-state .wrangler/pre-wake-snapshot
+
   echo "=== Triggering wake cycle ==="
   if ! curl -sf http://localhost:$BRAINSTEM_PORT/__scheduled; then
     echo "WARNING: wake trigger failed"
@@ -243,6 +247,7 @@ echo "  Dashboard API:  http://localhost:$DASHBOARD_PORT"
 echo "  Dashboard SPA:  http://localhost:$SPA_PORT/operator/"
 echo ""
 echo "  Wake:  curl http://localhost:$BRAINSTEM_PORT/__scheduled"
+echo "  Restore: bash scripts/restore-snapshot.sh"
 echo "  Stop:  Ctrl+C"
 echo ""
 

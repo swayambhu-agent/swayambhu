@@ -1,0 +1,13 @@
+{
+  "name": "codex",
+  "description": "Use OpenAI Codex CLI on the server to do research, write code, explore codebases, or perform multi-step tasks autonomously.",
+  "tools_used": ["computer"],
+  "trigger_patterns": [
+    "use codex",
+    "codex to",
+    "have codex",
+    "ask codex to",
+    "delegate to codex",
+    "use openai"
+  ]
+}

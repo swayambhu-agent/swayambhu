@@ -32,7 +32,7 @@ Generated 2026-03-17. Covers every KV key, tool, and provider in the codebase.
 | `tool:{name}:code` | Text (JS source) | `seed-local-kv.mjs` | `brainstem.js:_loadTool()`, `callHook()` | Yes (9 tools) | System (prefix `tool:`) |
 | `tool:{name}:meta` | JSON (kv_access, timeout_ms — security fields stripped) | `seed-local-kv.mjs` | `brainstem.js:_loadTool()`, `callHook()` | Yes (9 tools) | System |
 
-Seeded tool names: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `akash_exec`, `check_email`, `send_email`, `test_model`.
+Seeded tool names: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `computer`, `check_email`, `send_email`, `test_model`.
 
 ### 1.4 Providers
 
@@ -271,7 +271,7 @@ These are intentionally available for the agent to read via tools — they are n
 | `kv_manifest` | `tools/kv_manifest.js` | List KV keys with optional prefix filter (max 500). | `read_all` | None | None | None | Wake, reflect, chat |
 | `send_slack` | `tools/send_slack.js` | Post a message to Slack via API. | `none` | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | **Communication gate** (`channel: "slack"`, `recipient_type: "destination"`) | None | Wake, chat |
 | `web_fetch` | `tools/web_fetch.js` | Fetch URL contents (GET or POST). Returns status + body (truncated to `max_length`). | `none` | None | None | None | Wake, reflect, chat |
-| `akash_exec` | `tools/akash_exec.js` | Run a shell command on the Akash Linux server. | `none` | `AKASH_CF_CLIENT_ID`, `AKASH_API_KEY` | None | None | Wake, reflect, chat |
+| `computer` | `tools/computer.js` | Run a shell command on your Linux server. | `none` | `COMPUTER_CF_CLIENT_ID`, `COMPUTER_API_KEY` | None | None | Wake, reflect, chat |
 | `check_email` | `tools/check_email.js` | Fetch unread emails from Gmail inbox. | `none` | `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` | **Inbound gate** (`channel: "email"`, redacts unknown senders, quarantines under `sealed:`) | `gmail` | Wake, chat |
 | `send_email` | `tools/send_email.js` | Send email or reply via Gmail. | `none` | `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` | **Communication gate** (`channel: "email"`, `recipient_type: "person"`) | `gmail` | Wake, chat |
 

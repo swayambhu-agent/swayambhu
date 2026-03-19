@@ -86,7 +86,7 @@ brain.runScheduled()                                brainstem.js:881
 │         │   │   Delete last_danger via kvDeleteSafe
 │         │   │
 │         │   ├─► retryPendingGitSyncs(K)           hook-modifications.js:645
-│         │   │   Scan git_pending:* → retry each via akash_exec
+│         │   │   Scan git_pending:* → retry each via computer
 │         │   │
 │         │   ├─► getBalances(K, state)              hook-main.js:249
 │         │   │   K.checkBalance({}) → iterate providers + wallets → executeAdapter for each

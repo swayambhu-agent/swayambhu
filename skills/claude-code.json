@@ -1,0 +1,12 @@
+{
+  "name": "claude-code",
+  "description": "Use Claude Code (Anthropic's CLI agent) on the server to do research, write code, explore codebases, or perform multi-step tasks autonomously.",
+  "tools_used": ["computer"],
+  "trigger_patterns": [
+    "use claude code",
+    "claude code to",
+    "have claude",
+    "ask claude to",
+    "delegate to claude"
+  ]
+}

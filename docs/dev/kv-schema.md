@@ -136,7 +136,7 @@ All JSON. Read by kernel and hooks at session start. Writable via `kvWritePrivil
 | `tool:{name}:code` | text | Tool source code (JS) | `_loadTool()` in brainstem.js (cached per session) | Yes (9 tools) |
 | `tool:{name}:meta` | JSON | Operational tool metadata: `kv_access`, `timeout_ms`, `kv_secrets`. Security grant fields (`secrets`, `communication`, `inbound`, `provider`) are stripped at seed time and stored in `kernel:tool_grants` instead. | `_loadTool()`, `buildToolContext()` (for `kv_secrets`, `kv_access`) | Yes (9 tools) |
 
-Seeded tools: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `akash_exec`, `check_email`, `send_email`, `test_model`.
+Seeded tools: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, `computer`, `check_email`, `send_email`, `test_model`.
 
 **NOTE:** `callHook()` in brainstem.js also reads `tool:{hookName}:code` and `tool:{hookName}:meta` for pre/post-validation hooks (`validate`, `validate_result`, `parse_repair`). These are not seeded — they return null unless the agent creates them via Modification Protocol.
 
@@ -516,7 +516,7 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **73 keys** total:
 |---|------------|-------|----------|
 | 48–55 | `provider:{name}:code` | 4 (llm, llm_balance, wallet_balance, gmail) | Providers |
 | 56–63 | `provider:{name}:meta` | 4 | Providers |
-| 64–72 | `tool:{name}:code` | 9 (send_slack, web_fetch, kv_write, kv_manifest, kv_query, akash_exec, check_email, send_email, test_model) | Tools |
+| 64–72 | `tool:{name}:code` | 9 (send_slack, web_fetch, kv_write, kv_manifest, kv_query, computer, check_email, send_email, test_model) | Tools |
 
 **Wait — that's only 67.** The tool loop also seeds `tool:{name}:meta` for each tool:
 

@@ -249,7 +249,7 @@ directly with mock dependencies.
 **Tool tests:**
 - `send_slack` (1 test) — API call with token + channel
 - `web_fetch` (2 tests) — fetch + truncation
-- `akash_exec` (5 tests) — command execution, custom timeout, missing
+- `computer` (5 tests) — command execution, custom timeout, missing
   command, fetch failure, non-ok response
 - `kv_write` (2 tests) — string write, object stringify
 - `kv_manifest` (4 tests) — default limit, prefix, custom limit, 500 cap

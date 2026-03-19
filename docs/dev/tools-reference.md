@@ -160,14 +160,14 @@ With `kv_access: "read_all"`, can list all keys except those under
 
 ---
 
-### akash_exec
+### computer
 
-**File:** `tools/akash_exec.js`
-**Purpose:** Execute shell commands on the Akash compute node.
+**File:** `tools/computer.js`
+**Purpose:** Execute shell commands on your Linux server.
 
 | Meta field | Value |
 |-----------|-------|
-| `secrets` | `AKASH_CF_CLIENT_ID`, `AKASH_API_KEY` |
+| `secrets` | `COMPUTER_CF_CLIENT_ID`, `COMPUTER_API_KEY` |
 | `kv_access` | `none` |
 | `timeout_ms` | 300000 (5 minutes) |
 
@@ -300,7 +300,7 @@ directly to KV, bypassing the immutability guard.
 | kv_query | yes | no | yes | yes | allowlist | yes |
 | kv_write | yes | no | yes | yes | allowlist | yes |
 | kv_manifest | yes | no | yes | yes | allowlist | yes |
-| akash_exec | yes | no | yes | yes | allowlist | yes |
+| computer | yes | no | yes | yes | allowlist | yes |
 | test_model | yes | no | yes | yes | allowlist | yes |
 | spawn_subplan | yes | no | **no** | yes | allowlist | yes |
 | check_balance | yes | no | yes | yes | allowlist | yes |

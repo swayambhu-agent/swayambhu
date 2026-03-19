@@ -20,14 +20,14 @@ import * as web_fetch from './tools/web_fetch.js';
 import * as kv_write from './tools/kv_write.js';
 import * as kv_manifest from './tools/kv_manifest.js';
 import * as kv_query from './tools/kv_query.js';
-import * as akash_exec from './tools/akash_exec.js';
+import * as computer from './tools/computer.js';
 import * as check_email from './tools/check_email.js';
 import * as send_email from './tools/send_email.js';
 import * as test_model from './tools/test_model.js';
 
 const TOOL_MODULES = {
   send_slack, web_fetch, kv_write,
-  kv_manifest, kv_query, akash_exec,
+  kv_manifest, kv_query, computer,
   check_email, send_email, test_model,
 };
 

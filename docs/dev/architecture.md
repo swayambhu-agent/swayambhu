@@ -26,7 +26,7 @@ Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a
                     │                │                │
               ┌─────▼──────┐  ┌──────▼──────┐  ┌──────▼────┐
               │ OpenRouter │  │   Hetzner   │  │   Slack   │
-              │  LLM APIs  │  │   (akash)   │  │   Gmail   │
+              │  LLM APIs  │  │  (computer) │  │   Gmail   │
               └────────────┘  └─────────────┘  └───────────┘
 ```
 
@@ -243,7 +243,7 @@ Lifecycle:
 
 **Conflict detection**: `findInflightConflict()` iterates `activeInflight` IDs and checks for overlapping target keys.
 
-**Git sync**: on promotion, `syncToGit()` maps KV keys to file paths via `kvToPath()`, builds a shell script that base64-decodes files, runs a secret scan (rejects known patterns like `sk-*`, `AKIA*`, PEM keys, `ghp_*`, `xoxb-*`), then commits and pushes. Executed via `akash_exec` tool on the Hetzner server. Failed syncs are stored as `git_pending:*` and retried on subsequent wakes.
+**Git sync**: on promotion, `syncToGit()` maps KV keys to file paths via `kvToPath()`, builds a shell script that base64-decodes files, runs a secret scan (rejects known patterns like `sk-*`, `AKIA*`, PEM keys, `ghp_*`, `xoxb-*`), then commits and pushes. Executed via `computer` tool on the Hetzner server. Failed syncs are stored as `git_pending:*` and retried on subsequent wakes.
 
 ### `hook-protect.js` — KV operation gate
 

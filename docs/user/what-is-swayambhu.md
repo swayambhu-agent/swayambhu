@@ -20,7 +20,7 @@ initiates outreach when appropriate — all subject to a communication gate
 that evaluates every outbound message before it's sent.
 
 **Execute tasks on a remote server.** It has SSH-style access to a Linux
-server (called "akash") where it can run shell commands — git operations,
+server where it can run shell commands — git operations,
 file management, scripts, whatever the task requires.
 
 **Manage its own knowledge.** Everything Swayambhu knows lives in a

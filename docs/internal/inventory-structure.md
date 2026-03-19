@@ -43,7 +43,7 @@ Generated 2026-03-17. Covers every file in the project.
 | `tools/kv_manifest.js` | List KV keys with optional prefix filter | `meta` (kv_access: "read_all"), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
 | `tools/send_slack.js` | Post a message to Slack via API | `meta` (secrets: SLACK_BOT_TOKEN/CHANNEL_ID, communication gate), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
 | `tools/web_fetch.js` | Fetch URL contents | `meta`, `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `tools/akash_exec.js` | Run shell command on Akash Linux server | `meta` (secrets: AKASH_CF_CLIENT_ID/API_KEY), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
+| `tools/computer.js` | Run shell command on your Linux server | `meta` (secrets: COMPUTER_CF_CLIENT_ID/API_KEY), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
 | `tools/check_email.js` | Fetch unread emails from Gmail | `meta` (secrets: GMAIL_*, provider: "gmail", inbound gate), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
 | `tools/send_email.js` | Send email or reply via Gmail | `meta` (secrets: GMAIL_*, provider: "gmail", communication gate), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
 
@@ -135,7 +135,7 @@ Generated 2026-03-17. Covers every file in the project.
 | `docs/doc-modification-guide.md` | Modification Protocol guide (seeded into KV as `doc:modification_guide`) |
 | `docs/user/*.md` | End-user documentation (setup, config, security, operations, what-is) |
 | `specs/*.md` | Design specs (chunked-content-reader, communication-gating, patron-awareness, wisdom-management) |
-| `skills/akash-terminal.md` | Akash terminal skill spec |
+| `skills/computer.json` + `skills/computer.md` | Computer (Linux server) skill spec |
 
 ---
 
@@ -166,7 +166,7 @@ graph TD
         T_KM[tools/kv_manifest.js]
         T_SS[tools/send_slack.js]
         T_WF[tools/web_fetch.js]
-        T_AE[tools/akash_exec.js]
+        T_AE[tools/computer.js]
         T_CE[tools/check_email.js]
         T_SE[tools/send_email.js]
     end

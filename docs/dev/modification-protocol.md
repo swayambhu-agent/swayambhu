@@ -271,7 +271,7 @@ The value contains `{ t: <timestamp> }`.
 ## Git Sync
 
 Code modifications are synced to a git repository at `/home/swayambhu/self`
-on promotion. This runs on the Akash compute node via the `akash_exec` tool.
+on promotion. This runs on the remote Linux server via the `computer` tool.
 
 ### kvToPath mapping
 
@@ -315,7 +315,7 @@ Keys that don't match any pattern return `null` and are skipped.
 
 `hook-modifications.js:579`
 
-Builds a shell script and executes it via `akash_exec`:
+Builds a shell script and executes it via `computer`:
 
 1. `mkdir -p` for all required directories
 2. Writes files via base64 encoding to avoid shell escaping issues
