@@ -11,8 +11,9 @@ import * as kv_manifest from "../tools/kv_manifest.js";
 import * as kv_query from "../tools/kv_query.js";
 import * as check_email from "../tools/check_email.js";
 import * as send_email from "../tools/send_email.js";
-import * as akash_exec from "../tools/akash_exec.js";
+import * as computer from "../tools/computer.js";
 import * as test_model from "../tools/test_model.js";
+import * as web_search from "../tools/web_search.js";
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
@@ -100,7 +101,7 @@ function mockKV(initial = {}) {
 
 const allTools = {
   send_slack, web_fetch, kv_write,
-  kv_manifest, kv_query, check_email, send_email, akash_exec, test_model,
+  kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail };
@@ -186,12 +187,12 @@ describe("web_fetch", () => {
   });
 });
 
-describe("akash_exec", () => {
+describe("computer", () => {
   it("sends command and returns result", async () => {
     const f = mockFetch({ status: "completed", exit_code: 0, output: "hello world", id: "p123" });
-    const result = await akash_exec.execute({
+    const result = await computer.execute({
       command: "echo hello",
-      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
       fetch: f,
     });
     expect(f).toHaveBeenCalledOnce();
@@ -206,18 +207,18 @@ describe("akash_exec", () => {
 
   it("uses custom timeout", async () => {
     const f = mockFetch({ status: "completed", exit_code: 0, output: "", id: "p1" });
-    await akash_exec.execute({
+    await computer.execute({
       command: "ls",
       timeout: 120,
-      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
       fetch: f,
     });
     expect(f.mock.calls[0][0]).toContain("wait=120");
   });
 
   it("returns error when command is missing", async () => {
-    const result = await akash_exec.execute({
-      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+    const result = await computer.execute({
+      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
       fetch: vi.fn(),
     });
     expect(result).toEqual({ ok: false, error: "command is required" });
@@ -225,9 +226,9 @@ describe("akash_exec", () => {
 
   it("handles fetch failure", async () => {
     const f = vi.fn(async () => { throw new Error("network down"); });
-    const result = await akash_exec.execute({
+    const result = await computer.execute({
       command: "ls",
-      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
       fetch: f,
     });
     expect(result.ok).toBe(false);
@@ -241,9 +242,9 @@ describe("akash_exec", () => {
       statusText: "Internal Server Error",
       text: async () => "server error detail",
     }));
-    const result = await akash_exec.execute({
+    const result = await computer.execute({
       command: "ls",
-      secrets: { AKASH_CF_CLIENT_ID: "cid", AKASH_API_KEY: "key" },
+      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
       fetch: f,
     });
     expect(result.ok).toBe(false);
@@ -1080,7 +1081,277 @@ describe("test_model", () => {
   });
 });
 
-// ── 10. channel:slack tests ────────────────────────────────
+// ── 10. web_search tests ─────────────────────────────────
+
+function braveWebResponse(results = [], infobox = null) {
+  return {
+    query: { original: "test query" },
+    web: {
+      results: results.map((r, i) => ({
+        title: r.title || `Result ${i}`,
+        url: r.url || `https://example${i}.com`,
+        description: r.description || `Snippet ${i}`,
+        age: r.age || null,
+        meta_url: { hostname: r.hostname || `example${i}.com` },
+      })),
+    },
+    ...(infobox ? {
+      infobox: {
+        results: [{
+          title: infobox.title,
+          description: infobox.description,
+          url: infobox.url || null,
+          attributes: infobox.attributes || [],
+        }],
+      },
+    } : {}),
+  };
+}
+
+function braveLLMContextResponse(results = [], summarizerText = "") {
+  return {
+    ...braveWebResponse(results),
+    summarizer: {
+      results: summarizerText ? [{ text: summarizerText, references: [] }] : [],
+    },
+  };
+}
+
+describe("web_search", () => {
+  it("has expected meta fields", () => {
+    expect(web_search.meta.secrets).toEqual(["BRAVE_SEARCH_API_KEY"]);
+    expect(web_search.meta.kv_access).toBe("none");
+    expect(web_search.meta.timeout_ms).toBe(15000);
+    expect(web_search.meta.provider).toBeUndefined();
+  });
+
+  it("returns error when query is missing", async () => {
+    const result = await web_search.execute({
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: vi.fn(),
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("query");
+  });
+
+  it("returns error when API key is missing", async () => {
+    const result = await web_search.execute({
+      query: "test",
+      secrets: {},
+      fetch: vi.fn(),
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("BRAVE_SEARCH_API_KEY");
+  });
+
+  it("returns error for invalid freshness value", async () => {
+    const result = await web_search.execute({
+      query: "test",
+      freshness: "hour",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: vi.fn(),
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("invalid freshness");
+  });
+
+  it("returns structured results on success", async () => {
+    const f = mockFetch(braveWebResponse([
+      { title: "Page One", url: "https://one.com", description: "First result", age: "2h ago" },
+      { title: "Page Two", url: "https://two.com", description: "Second result" },
+    ]));
+    const result = await web_search.execute({
+      query: "test search",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(result.success).toBe(true);
+    expect(result.results).toHaveLength(2);
+    expect(result.results[0].title).toBe("Page One");
+    expect(result.results[0].url).toBe("https://one.com");
+    expect(result.results[0].snippet).toBe("First result");
+    expect(result.results[0].age).toBe("2h ago");
+    expect(result.results[1].age).toBeNull();
+    expect(result.query).toBe("test search");
+    expect(result.result_count).toBe(2);
+    expect(result.context).toBeNull();
+  });
+
+  it("includes infobox when present", async () => {
+    const f = mockFetch(braveWebResponse(
+      [{ title: "R1" }],
+      { title: "Node.js", description: "A JavaScript runtime", attributes: [["License", "MIT"]] },
+    ));
+    const result = await web_search.execute({
+      query: "node.js",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(result.infobox).not.toBeNull();
+    expect(result.infobox.title).toBe("Node.js");
+    expect(result.infobox.description).toBe("A JavaScript runtime");
+    expect(result.infobox.attributes).toEqual([["License", "MIT"]]);
+  });
+
+  it("sets infobox to null when absent", async () => {
+    const f = mockFetch(braveWebResponse([{ title: "R1" }]));
+    const result = await web_search.execute({
+      query: "test",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(result.infobox).toBeNull();
+  });
+
+  it("sends correct URL and headers for web search", async () => {
+    const f = mockFetch(braveWebResponse([]));
+    await web_search.execute({
+      query: "cloudflare workers",
+      count: 3,
+      freshness: "week",
+      secrets: { BRAVE_SEARCH_API_KEY: "test-key" },
+      fetch: f,
+    });
+    expect(f).toHaveBeenCalledOnce();
+    const [url, opts] = f.mock.calls[0];
+    expect(url).toContain("api.search.brave.com/res/v1/web/search");
+    expect(url).toContain("q=cloudflare+workers");
+    expect(url).toContain("count=3");
+    expect(url).toContain("freshness=pw");
+    expect(url).toContain("text_decorations=false");
+    expect(url).not.toContain("maximum_number_of_tokens");
+    expect(opts.headers["X-Subscription-Token"]).toBe("test-key");
+  });
+
+  it("uses LLM Context endpoint when deep=true", async () => {
+    const f = mockFetch(braveLLMContextResponse(
+      [{ title: "R1" }],
+      "Pre-extracted content from pages",
+    ));
+    const result = await web_search.execute({
+      query: "deep search",
+      deep: true,
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    const [url] = f.mock.calls[0];
+    expect(url).toContain("api.search.brave.com/res/v1/llm/context");
+    expect(url).toContain("maximum_number_of_tokens=4096");
+    expect(result.context).toBe("Pre-extracted content from pages");
+  });
+
+  it("maps freshness values correctly", async () => {
+    for (const [input, expected] of [["day", "pd"], ["week", "pw"], ["month", "pm"], ["year", "py"]]) {
+      const f = mockFetch(braveWebResponse([]));
+      await web_search.execute({
+        query: "test",
+        freshness: input,
+        secrets: { BRAVE_SEARCH_API_KEY: "k" },
+        fetch: f,
+      });
+      expect(f.mock.calls[0][0]).toContain(`freshness=${expected}`);
+    }
+  });
+
+  it("omits freshness param when not provided", async () => {
+    const f = mockFetch(braveWebResponse([]));
+    await web_search.execute({
+      query: "test",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(f.mock.calls[0][0]).not.toContain("freshness");
+  });
+
+  it("returns structured error for 401", async () => {
+    const f = vi.fn(async () => ({ ok: false, status: 401 }));
+    const result = await web_search.execute({
+      query: "test",
+      secrets: { BRAVE_SEARCH_API_KEY: "bad-key" },
+      fetch: f,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("401");
+  });
+
+  it("returns structured error for 429 with retry_after", async () => {
+    const f = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      headers: { get: (h) => h === "retry-after" ? "30" : null },
+    }));
+    const result = await web_search.execute({
+      query: "test",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("429");
+    expect(result.retry_after).toBe("30");
+  });
+
+  it("returns structured error for 5xx", async () => {
+    const f = vi.fn(async () => ({ ok: false, status: 503 }));
+    const result = await web_search.execute({
+      query: "test",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("503");
+  });
+
+  it("returns error when fetch throws", async () => {
+    const f = vi.fn(async () => { throw new Error("network timeout"); });
+    const result = await web_search.execute({
+      query: "test",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("network timeout");
+  });
+
+  it("clamps count to range 1-20", async () => {
+    const f = mockFetch(braveWebResponse([]));
+    await web_search.execute({
+      query: "test",
+      count: 50,
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(f.mock.calls[0][0]).toContain("count=20");
+  });
+
+  it("defaults count to 5", async () => {
+    const f = mockFetch(braveWebResponse([]));
+    await web_search.execute({
+      query: "test",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(f.mock.calls[0][0]).toContain("count=5");
+  });
+
+  it("truncates large responses", async () => {
+    const longSnippet = "x".repeat(2000);
+    const results = Array.from({ length: 20 }, (_, i) => ({
+      title: `Result ${i}`,
+      description: longSnippet,
+    }));
+    const f = mockFetch(braveWebResponse(results));
+    const result = await web_search.execute({
+      query: "test",
+      secrets: { BRAVE_SEARCH_API_KEY: "k" },
+      fetch: f,
+    });
+    expect(result.success).toBe(true);
+    const serialized = JSON.stringify(result);
+    expect(serialized.length).toBeLessThanOrEqual(8000);
+  });
+});
+
+// ── 11. channel:slack tests ────────────────────────────────
 
 describe("channel:slack", () => {
   describe("config", () => {

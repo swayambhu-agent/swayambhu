@@ -116,10 +116,11 @@ await put("config:tool_registry", {
     { name: "check_balance", description: "Check balances across all configured providers and wallets. Returns balances grouped by scope (general vs project-specific). Only 'general' scope counts toward your operating budget.", input: { scope: "optional — filter by scope (e.g. 'general', 'project_x'). Omit to see all." } },
     { name: "kv_manifest", description: "List KV keys, optionally filtered by prefix. Use to explore what is stored in memory.", input: { prefix: "optional key prefix filter", limit: "max keys to return (default 100, max 500)" } },
     { name: "kv_query", description: "Read a KV value. Returns small values directly. For large arrays/objects, returns a summary — use path to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, viveka:timing:urgency, config:defaults)", path: "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)" } },
-    { name: "akash_exec", description: "Run a shell command on the akash Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
+    { name: "computer", description: "Run a shell command on your Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
     { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each. Emails from unknown senders (no contact record) have content replaced with [content redacted — unknown sender] and the original quarantined under sealed:* keys until approved by patron", input: { mark_read: "optional boolean — mark fetched emails as read (default true)", max_results: "optional — max emails to return (default 10, max 20)" } },
     { name: "send_email", description: "Send an email or reply to an existing thread via Gmail. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
     { name: "test_model", description: "Make a test completion against a model to verify it works. Returns success, response text, usage stats, and latency. Capped at 500 output tokens.", input: { model_id: "required — full OpenRouter model ID", prompt: "required — test prompt (max 1000 chars)", max_tokens: "optional — max output tokens (default 100, max 500)" } },
+    { name: "web_search", description: "Search the web using Brave Search. Returns titles, URLs, snippets, and ages. Use deep=true for rich pre-extracted content (costs more). Pair with web_fetch to read full pages.", input: { query: "required — search query", count: "optional — number of results (default 5, max 20)", freshness: "optional — recency filter: day, week, month, year", deep: "optional boolean — use LLM Context endpoint for rich content (default false)" } },
   ],
 }, "json", "Tool definitions — names, descriptions, and input schemas for function calling");
 
@@ -138,8 +139,9 @@ for (const name of providerFiles) {
 console.log("--- Tools ---");
 const toolNames = [
   "send_slack", "web_fetch", "kv_write",
-  "kv_manifest", "kv_query", "akash_exec",
+  "kv_manifest", "kv_query", "computer",
   "check_email", "send_email", "test_model",
+  "web_search",
 ];
 const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];
 const toolGrants = {};
@@ -171,10 +173,12 @@ await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep ref
 // ── Documentation ─────────────────────────────────────────────
 
 console.log("--- Documentation ---");
-await put("doc:architecture", read("docs/dev/architecture.md"), "text", "System architecture reference doc");
-await put("doc:modification_guide", read("docs/dev/modification-protocol.md"), "text", "Modification Protocol reference doc");
-await put("doc:wisdom_guide", read("docs/dev/wisdom-guide.md"), "text", "Wisdom system reference — schema, naming, when to write, maintenance");
-await put("doc:patron", read("docs/dev/patron-relationship.md"), "text", "Patron relationship — what patron controls, what agent controls, asking for things, brainstem suggestions");
+await put("doc:design_rationale", read("docs/agent/design-rationale.md"), "text", "Design rationale — why each subsystem exists, threat models, what would break if changed");
+await put("doc:modification_guide", read("docs/agent/modification-guide.md"), "text", "Modification guide — lifecycle, verdicts, checks, conflict detection, common mistakes");
+await put("doc:threat_model", read("docs/agent/threat-model.md"), "text", "Threat model — attacks, defenses, what to watch for, what happens if defenses are removed");
+await put("doc:wisdom_guide", read("docs/agent/wisdom-guide.md"), "text", "Wisdom guide — schema, naming, when to write, maintenance, why wisdom has higher friction");
+await put("doc:patron", read("docs/agent/patron-relationship.md"), "text", "Patron relationship — what patron controls, what agent controls, identity verification");
+await put("doc:setup_guide", read("docs/agent/setup-guide.md"), "text", "Setup guide — walk someone through deploying their own Swayambhu instance");
 
 // ── Dharma ───────────────────────────────────────────────────
 
@@ -288,7 +292,7 @@ await put("viveka:comms:defaults", {
 // ── Skills (from skills/*.json + skills/*.md) ─────────────────
 
 console.log("--- Skills ---");
-const skillNames = ["model-config", "skill-authoring"];
+const skillNames = ["model-config", "skill-authoring", "computer", "claude-code", "codex"];
 for (const name of skillNames) {
   const meta = JSON.parse(read(`skills/${name}.json`));
   await put(`skill:${name}`, {
