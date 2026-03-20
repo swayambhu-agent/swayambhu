@@ -1,13 +1,12 @@
-// Swayambhu Wake Hook — Reflection
+// Swayambhu — Reflection Policy
 // Session reflect, deep reflect (recursive, depth-aware), scheduling, default prompts.
-// KV key: hook:wake:reflect
+// Mutable — the agent can propose changes to this file via the proposal system.
+//
+// Receives K (kernel interface) for all kernel interactions.
+// getMaxSteps and getReflectModel live on K (kernel utility methods).
 
-import { applyKVOperation } from './hook-protect.js';
-import {
-  loadStagedModifications, loadInflightModifications,
-  stageModification, acceptDirect,
-  processReflectVerdicts, processDeepReflectVerdicts,
-} from './hook-modifications.js';
+// Proposal system methods are on K (kernel interface):
+// K.createProposal, K.loadProposals, K.processProposalVerdicts
 
 // ── Wisdom manifest ─────────────────────────────────────────
 
@@ -27,7 +26,7 @@ export async function executeReflect(K, state, step) {
   const sessionId = await K.getSessionId();
 
   const reflectPrompt = await K.kvGet("prompt:reflect");
-  const stagedModifications = await loadStagedModifications(K);
+  const proposals = await K.loadProposals('proposed');
 
   const systemKeyPatterns = await K.getSystemKeyPatterns();
   const wisdom_manifest = await loadWisdomManifest(K);
@@ -51,7 +50,7 @@ export async function executeReflect(K, state, step) {
   const initialContext = JSON.stringify({
     karma,
     sessionCost,
-    stagedModifications,
+    proposals,
   });
 
   const model = await K.resolveModel(
@@ -103,17 +102,17 @@ export async function executeReflect(K, state, step) {
 
   if (output.kv_operations) {
     for (const op of output.kv_operations) {
-      await applyKVOperation(K, op);
+      await K.applyKVOperation(op);
     }
   }
 
   if (output.modification_verdicts) {
-    await processReflectVerdicts(K, output.modification_verdicts);
+    await K.processProposalVerdicts(output.modification_verdicts, 0);
   }
 
   if (output.modification_requests) {
     for (const req of output.modification_requests) {
-      await stageModification(K, req, sessionId, 0);
+      await K.createProposal(req, sessionId, 0);
     }
   }
 
@@ -148,8 +147,8 @@ export async function runReflect(K, state, depth, context) {
   const allTools = await K.buildToolDefinitions();
   const tools = allTools.filter(t => t.function.name !== 'spawn_subplan');
 
-  const model = await K.resolveModel(getReflectModel(state, depth));
-  const maxSteps = getMaxSteps(state, 'reflect', depth);
+  const model = await K.resolveModel(await K.getReflectModel(state, depth));
+  const maxSteps = await K.getMaxSteps(state, 'reflect', depth);
 
   // Deep reflect gets its own budget: max_cost * budget_multiplier
   const budget = defaults?.session_budget;
@@ -182,8 +181,7 @@ export async function gatherReflectContext(K, state, depth, context) {
   const { defaults, modelsConfig } = state;
 
   const orientPrompt = await K.kvGet("prompt:orient");
-  const stagedModifications = await loadStagedModifications(K);
-  const inflightModifications = await loadInflightModifications(K);
+  const proposals = await K.loadProposals();
   const blockedComms = await K.listBlockedComms();
   const systemKeyPatterns = await K.getSystemKeyPatterns();
 
@@ -197,8 +195,7 @@ export async function gatherReflectContext(K, state, depth, context) {
     orientPrompt,
     currentDefaults: defaults,
     models: modelsConfig,
-    stagedModifications,
-    inflightModifications,
+    proposals,
     blockedComms: blockedComms.length > 0
       ? JSON.stringify(blockedComms, null, 2)
       : '(none)',
@@ -232,16 +229,16 @@ export async function gatherReflectContext(K, state, depth, context) {
 export async function applyReflectOutput(K, state, depth, output, context) {
   const sessionId = await K.getSessionId();
 
-  // 1. KV operations (gated by protection)
+  // 1. KV operations (gated by kernel protection)
   if (output.kv_operations?.length) {
     for (const op of output.kv_operations) {
-      await applyKVOperation(K, op);
+      await K.applyKVOperation(op);
     }
   }
 
   // 2. Verdicts BEFORE new requests — clears conflicts first
   if (output.modification_verdicts) {
-    await processDeepReflectVerdicts(K, output.modification_verdicts, depth);
+    await K.processProposalVerdicts(output.modification_verdicts, depth);
   }
 
   // 2b. Communication verdicts
@@ -255,10 +252,29 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     }
   }
 
-  // 3. New modification requests — applied directly as inflight
+  // 3. New requests — route by target type
   if (output.modification_requests) {
     for (const req of output.modification_requests) {
-      await acceptDirect(K, req, sessionId);
+      const hasCodeOps = req.ops?.some(op => {
+        const key = op.key;
+        return ['tool:', 'hook:', 'provider:', 'channel:'].some(p => key.startsWith(p)) && key.endsWith(':code');
+      });
+      if (hasCodeOps) {
+        // Code changes → proposal (governor deploys)
+        // Deep reflect creates at "accepted" status (it IS the reviewer)
+        const id = await K.createProposal(req, sessionId, depth);
+        if (id && depth >= 1) {
+          await K.updateProposalStatus(id, "accepted", { accepted_by_depth: depth });
+        }
+      } else {
+        // Non-code changes → direct KV write
+        for (const op of (req.ops || [])) {
+          try { await K.kvWritePrivileged([op]); }
+          catch (err) {
+            await K.karmaRecord({ event: "direct_write_failed", key: op.key, error: err.message });
+          }
+        }
+      }
     }
   }
 
@@ -339,23 +355,6 @@ export async function loadReflectHistory(K, depth, count = 10) {
     .sort((a, b) => b.localeCompare(a))
     .slice(0, count);
   return K.loadKeys(keys);
-}
-
-export function getReflectModel(state, depth) {
-  const { defaults } = state;
-  const perLevel = defaults?.reflect_levels?.[depth];
-  if (perLevel?.model) return perLevel.model;
-  return defaults?.deep_reflect?.model || defaults?.orient?.model;
-}
-
-export function getMaxSteps(state, role, depth) {
-  const { defaults } = state;
-  if (role === 'orient') return defaults?.execution?.max_steps?.orient || 12;
-  const perLevel = defaults?.reflect_levels?.[depth];
-  if (perLevel?.max_steps) return perLevel.max_steps;
-  return depth === 1
-    ? (defaults?.execution?.max_steps?.reflect || 5)
-    : (defaults?.execution?.max_steps?.deep_reflect || 10);
 }
 
 // ── Reflect scheduling ───────────────────────────────────
@@ -440,7 +439,8 @@ Examine your karma, your orient prompt, your patterns. Produce a JSON object:
   "next_wake_config": { "sleep_seconds": 21600, "effort": "low" }
 }
 
-modification_requests go through acceptDirect. modification_verdicts for staged/inflight modifications.
+modification_requests: code changes become proposals (governor deploys); non-code changes apply directly.
+modification_verdicts: accept/reject/modify/withdraw proposals.
 Required: reflection, note_to_future_self. Everything else optional.`;
   }
 

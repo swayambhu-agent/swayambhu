@@ -43,13 +43,9 @@ continuity. If you set intentions, honor or explicitly revise them. If you
 wrote modification observations, follow up with updated observations.
 You are not starting fresh — you are continuing.
 
-## Staged modifications
+## Proposals
 
-{{stagedModifications}}
-
-## Inflight modifications
-
-{{inflightModifications}}
+{{proposals}}
 
 ## Blocked communications
 
@@ -123,9 +119,9 @@ The test: would a wise person carry this understanding regardless of domain? If 
 Your skills (`skill:*`) are reusable procedures for recurring tasks. Use
 `kv_manifest("skill:")` to see what exists. Review whether:
 
-- **Staged skill proposals from reflect** need your verdict (accept/reject/modify)
+- **Skill proposals from reflect** need your verdict (accept/reject/modify)
 - **Existing skills need revision** — has a procedure changed, an API shifted, or a better approach emerged?
-- **Cross-session patterns suggest a new skill** — are you seeing the same multi-step workflow repeated across sessions? Crystallize it. You can create skills directly via inflight modification with `type: "skill"`.
+- **Cross-session patterns suggest a new skill** — are you seeing the same multi-step workflow repeated across sessions? Crystallize it via a modification_request.
 - **A complex unfamiliar domain is approaching** — if upcoming work involves new APIs or infrastructure where you anticipate repeated procedures, a preparatory skill is worth creating now.
 
 Load `skill:skill-authoring` for the full schema and authoring guidance.
@@ -201,33 +197,18 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "modification_requests": [
     {
-      "type": "code",
-      "claims": ["Update orient effort to medium"],
-      "ops": [{"op": "put", "key": "config:defaults", "value": {"orient": {"effort": "medium"}}}],
-      "checks": [{"type": "kv_assert", "key": "config:defaults", "path": "orient.effort", "predicate": "equals", "expected": "medium"}],
-      "criteria": "Compare session cost and parse error rate over 10 sessions post-activation"
-    },
-    {
-      "type": "wisdom",
-      "validation": "Observed in 4 sessions where...",
-      "ops": [{"op": "put", "key": "viveka:timing:urgency", "value": {"text": "...", "type": "viveka", "created": "...", "sources": [{"session": "...", "depth": 1, "turn": 3, "topic": "..."}]}}]
-    },
-    {
-      "type": "skill",
-      "claims": ["Crystallize the X workflow into a reusable skill", "Based on repeated pattern across sessions s_123 and s_456"],
-      "ops": [{"op": "put", "key": "skill:my-skill", "value": {"name": "my-skill", "description": "...", "instructions": "...", "tools_used": ["..."], "trigger_patterns": ["..."], "created_by_depth": 1, "created_at": "...", "revision": 1}}],
-      "checks": [{"type": "kv_assert", "key": "skill:my-skill", "path": "name", "predicate": "equals", "expected": "my-skill"}]
+      "claims": ["Improve kv_query error handling"],
+      "ops": [{"op": "patch", "key": "tool:kv_query:code", "old_string": "...", "new_string": "..."}],
+      "checks": [{"type": "kv_assert", "key": "tool:kv_query:code", "predicate": "exists"}]
     }
   ],
 
   "modification_verdicts": [
-    {"modification_id": "m_...", "verdict": "accept"},
-    {"modification_id": "m_...", "verdict": "reject", "reason": "..."},
-    {"modification_id": "m_...", "verdict": "modify", "updated_ops": [], "updated_checks": []},
-    {"modification_id": "m_...", "verdict": "promote"},
-    {"modification_id": "m_...", "verdict": "rollback", "reason": "..."},
-    {"modification_id": "m_...", "verdict": "defer", "reason": "..."},
-    {"modification_id": "m_...", "verdict": "withdraw"}
+    {"proposal_id": "p_...", "verdict": "accept"},
+    {"proposal_id": "p_...", "verdict": "reject", "reason": "..."},
+    {"proposal_id": "p_...", "verdict": "modify", "updated_ops": [], "updated_checks": []},
+    {"proposal_id": "p_...", "verdict": "defer", "reason": "..."},
+    {"proposal_id": "p_...", "verdict": "withdraw"}
   ],
 
   "comms_verdicts": [
@@ -253,54 +234,31 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Everything else is optional.** Only include what you're actually changing. Omitting a field means "no change." Include `comms_verdicts` only if there are blocked communications to process.
 
-### On the Modification Protocol
+### On the Proposal System
 
-All changes to protected keys — config:defaults, prompt:orient, config:models, etc. — go through `modification_requests`. Each request bundles claims (why), ops (what to change), and checks (how to verify) for code modifications. For wisdom modifications, use `type: "wisdom"` with a `validation` field instead. For skill modifications, use `type: "skill"` with `claims` + `checks` (same structure as code modifications).
+There are two types of changes you can make:
 
-Your code modification requests are applied **immediately as inflight** — they skip the staging step and become active. The changes are live but carry a snapshot of the old values. If they cause problems, the circuit breaker auto-rolls them back on fatal errors, or you can roll them back yourself in the next deep reflection.
+**Code changes** (tools, hooks, providers, channels — keys ending in `:code`) become **proposals**. You create them via `modification_requests`. They are not applied immediately — they become proposals that the governor deploys once accepted. Session reflect proposes, you decide (accept/reject/modify), the governor deploys accepted proposals.
 
-Your wisdom modification requests are also applied **immediately as inflight** — but without circuit breaker protection (bad wisdom can't crash the system) and without git sync (wisdom is runtime-only).
+**Non-code changes** (config, prompts, wisdom, skills) are applied directly via KV write tiers. No proposal needed — these take effect on the next session.
 
-Your skill modification requests are also applied **immediately as inflight** — same treatment as wisdom (no circuit breaker, no git sync). A bad skill can't crash the system — it just gives poor instructions that you can revise later.
+**Verdicts on pending proposals:** You must issue verdicts for ALL proposals shown in context. This is your judicial responsibility. Verdict types:
 
-**Verdicts on pending modifications:** You must issue verdicts for ALL staged and inflight modifications shown in context. This is your judicial responsibility. Verdict types:
-
-For staged modifications (proposed by reflect):
-- `accept` — activate it (becomes inflight)
+- `accept` — approve the proposal (governor will deploy it)
 - `reject` — discard it (with reason)
-- `modify` — change its ops/checks/claims before it's accepted
-- `defer` — leave it staged for next deep reflection
-- `withdraw` — you originally proposed it, you're taking it back
+- `modify` — change its ops/checks/claims
+- `defer` — leave it for next deep reflection
+- `withdraw` — take it back
 
-For inflight modifications (already active):
-- `promote` — the change is working well, delete the snapshot (no more rollback)
-- `rollback` — revert to the snapshotted values
-- `defer` — leave it as inflight for further observation
-
-Every code modification request needs `checks` — verifiable conditions that tell your future self whether the modification worked. Aim for at least one check per claim so nothing slips through unverified. Design checks that surface failures clearly: kv_assert for state checks, tool_call for behavioral checks.
-
-### On observation and evidence
-
-When proposing a modification, include a `criteria` field with natural-language observation instructions for what your future self should look for:
-
-```
-Example: "Compare average tool_complete count and total_cost in
-karma_summary data between the 5 sessions before activation and
-10 sessions after. Parse error rate should not increase."
-```
-
-When reviewing inflight modifications, check their `criteria` field for what the author intended you to observe. If no criteria exist, observe what you can from karma summaries (available at `karma_summary:{sessionId}`).
-
-Track `sessions_since_activation` — modifications exceeding 30 sessions without a verdict need explicit justification for continued deferral.
+Every code proposal needs `checks` — verifiable conditions that tell your future self whether the change worked. Aim for at least one check per claim. Design checks that surface failures clearly: kv_assert for state checks, tool_call for behavioral checks.
 
 ### On prajna crystallization
 
-When an intention reaches completion or abandonment, crystallize the lesson as a `prajna:*` entry via `modification_requests`:
+When an intention reaches completion or abandonment, crystallize the lesson as a `prajna:*` entry. Since wisdom is non-code, write it directly:
 
 ```json
 {
-  "type": "wisdom",
-  "validation": "Tested over 25 sessions. Concise orient prompts reduced cost 15% but increased parse errors in complex tasks. Source intention: reduce orient cost while maintaining quality.",
+  "claims": ["Crystallize orient cost-quality tradeoff learning"],
   "ops": [{
     "op": "put",
     "key": "prajna:orient:cost-quality-tradeoff",

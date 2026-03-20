@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Brainstem } from "../brainstem.js";
+import { Brainstem } from "../kernel.js";
 import { makeKVStore } from "./helpers/mock-kv.js";
 
 // ── Test helpers ──────────────────────────────────────────────
@@ -10,7 +10,12 @@ function makeEnv(kvInit = {}) {
 
 function makeBrain(kvInit = {}, opts = {}) {
   const env = makeEnv(kvInit);
-  const brain = new Brainstem(env);
+  const brain = new Brainstem(env, {
+    TOOLS: opts.TOOLS || {},
+    HOOKS: opts.HOOKS || {},
+    PROVIDERS: opts.PROVIDERS || {},
+    CHANNELS: opts.CHANNELS || {},
+  });
   brain.defaults = opts.defaults || {};
   brain.toolRegistry = opts.toolRegistry || null;
   brain.modelsConfig = opts.modelsConfig || null;
@@ -378,59 +383,89 @@ describe("callLLM", () => {
 
 // ── 3b. callViaKernelFallback ────────────────────────────────
 
-describe("callViaKernelFallback", () => {
-  it("throws when no kernel:llm_fallback configured", async () => {
-    const { brain } = makeBrain();
-    await expect(brain.callViaKernelFallback({
-      model: "test", messages: [{ role: "user", content: "hi" }],
-      max_tokens: 100,
-    })).rejects.toThrow("No LLM fallback configured at kernel:llm_fallback");
-  });
-
-  it("executes adapter via runInIsolate with scoped secrets", async () => {
-    const adapterCode = 'async function call(ctx) { return { content: "ok", usage: {} }; }';
-    const { brain } = makeBrain({
-      "kernel:llm_fallback": JSON.stringify(adapterCode),
-      "kernel:llm_fallback:meta": JSON.stringify({
-        secrets: ["OPENROUTER_API_KEY"],
-        timeout_ms: 30000,
-      }),
-    });
-    brain.env.OPENROUTER_API_KEY = "test-key";
-    brain.runInIsolate = vi.fn(async () => ({
-      content: "fallback response",
+describe("callWithCascade", () => {
+  it("uses compiled provider when available", async () => {
+    const mockCall = vi.fn(async () => ({
+      content: "provider response",
       usage: { prompt_tokens: 10, completion_tokens: 5 },
     }));
+    const { brain } = makeBrain({}, {
+      PROVIDERS: {
+        'provider:llm': { call: mockCall, meta: { secrets: ["OPENROUTER_API_KEY"] } },
+      },
+    });
+    brain.env.OPENROUTER_API_KEY = "test-key";
+    brain.karmaRecord = vi.fn(async () => {});
 
-    const result = await brain.callViaKernelFallback({
+    const result = await brain.callWithCascade({
       model: "test-model",
       messages: [{ role: "user", content: "hi" }],
       max_tokens: 100,
-    });
+    }, "test_step");
 
-    expect(result.content).toBe("fallback response");
-    expect(brain.runInIsolate).toHaveBeenCalledWith(
+    expect(result.ok).toBe(true);
+    expect(result.content).toBe("provider response");
+    expect(result.tier).toBe("compiled");
+    expect(mockCall).toHaveBeenCalledWith(
       expect.objectContaining({
-        moduleCode: adapterCode,
-        ctx: expect.objectContaining({
-          model: "test-model",
-          secrets: { OPENROUTER_API_KEY: "test-key" },
-        }),
-        timeoutMs: 30000,
+        model: "test-model",
+        secrets: { OPENROUTER_API_KEY: "test-key" },
       })
     );
   });
 
-  it("rejects invalid adapter response", async () => {
-    const adapterCode = 'async function call() { return { bad: true }; }';
-    const { brain } = makeBrain({
-      "kernel:llm_fallback": JSON.stringify(adapterCode),
+  it("falls through to hardcoded fallback when provider fails", async () => {
+    const { brain } = makeBrain({}, {
+      PROVIDERS: {
+        'provider:llm': { call: vi.fn(async () => { throw new Error("broken"); }), meta: {} },
+      },
     });
-    brain.runInIsolate = vi.fn(async () => ({ bad: true }));
+    brain.env.OPENROUTER_API_KEY = "test-key";
+    brain.karmaRecord = vi.fn(async () => {});
 
-    await expect(brain.callViaKernelFallback({
-      model: "test", messages: [], max_tokens: 100,
-    })).rejects.toThrow("Adapter returned invalid response");
+    // Mock global fetch for the hardcoded fallback
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "fallback ok", tool_calls: null } }],
+        usage: { prompt_tokens: 5, completion_tokens: 3 },
+      }),
+    }));
+    try {
+      const result = await brain.callWithCascade({
+        model: "test-model",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+      }, "test_step");
+
+      expect(result.ok).toBe(true);
+      expect(result.tier).toBe("hardcoded");
+      expect(result.content).toBe("fallback ok");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("returns error when all tiers fail", async () => {
+    const { brain } = makeBrain();
+    brain.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      json: async () => ({ error: "service down" }),
+    }));
+    try {
+      const result = await brain.callWithCascade({
+        model: "test", messages: [], max_tokens: 100,
+      }, "test_step");
+
+      expect(result.ok).toBe(false);
+      expect(result.tier).toBe("all_failed");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
@@ -639,25 +674,21 @@ describe("executeToolCall", () => {
 // ── 6. executeAction ────────────────────────────────────────
 
 describe("executeAction", () => {
-  it("reads from tool:name:code + tool:name:meta", async () => {
-    const toolCode = 'async function execute({ x }) { return { doubled: x * 2 }; }';
-    const toolMeta = { secrets: [], kv_access: "none", timeout_ms: 5000 };
-    const { brain } = makeBrain({
-      "tool:doubler:code": JSON.stringify(toolCode),
-      "tool:doubler:meta": JSON.stringify(toolMeta),
+  it("calls tool function directly from TOOLS injection", async () => {
+    const executeFn = vi.fn(async ({ x }) => ({ doubled: x * 2 }));
+    const { brain } = makeBrain({}, {
+      TOOLS: {
+        doubler: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
     });
     brain.karmaRecord = vi.fn(async () => {});
-    brain.buildToolContext = vi.fn(async () => ({ x: 5 }));
-    brain.runInIsolate = vi.fn(async () => ({ doubled: 10 }));
 
     const result = await brain.executeAction({ tool: "doubler", input: { x: 5 }, id: "tc1" });
     expect(result).toEqual({ doubled: 10 });
-    expect(brain.runInIsolate).toHaveBeenCalledWith(
-      expect.objectContaining({ moduleCode: toolCode })
-    );
+    expect(executeFn).toHaveBeenCalled();
   });
 
-  it("throws for missing tool code", async () => {
+  it("throws for missing tool", async () => {
     const { brain } = makeBrain();
     brain.karmaRecord = vi.fn(async () => {});
     await expect(brain.executeAction({ tool: "nonexistent", input: {}, id: "tc1" }))
@@ -778,57 +809,36 @@ describe("runAgentLoop budget handling", () => {
 // ── 9. callHook ────────────────────────────────────────────
 
 describe("callHook", () => {
-  it("returns null when hook doesn't exist", async () => {
+  it("returns null when hook tool not in TOOLS", async () => {
     const { brain } = makeBrain();
     brain.karmaRecord = vi.fn(async () => {});
-    brain.buildToolContext = vi.fn(async () => ({}));
-    brain.runInIsolate = vi.fn(async () => ({}));
     const result = await brain.callHook("validate", { tool: "test" });
     expect(result).toBeNull();
-    expect(brain.toolsCache["validate"]).toBe(false);
   });
 
-  it("calls hook and returns result", async () => {
-    const hookCode = 'async function execute(ctx) { return { ok: true }; }';
-    const { brain } = makeBrain({
-      "tool:validate:code": JSON.stringify(hookCode),
-      "tool:validate:meta": JSON.stringify({ timeout_ms: 3000 }),
+  it("calls hook tool and returns result", async () => {
+    const executeFn = vi.fn(async () => ({ ok: true }));
+    const { brain } = makeBrain({}, {
+      TOOLS: {
+        validate: { execute: executeFn, meta: { timeout_ms: 3000 } },
+      },
     });
     brain.karmaRecord = vi.fn(async () => {});
     brain.buildToolContext = vi.fn(async (name, meta, input) => input);
-    brain.runInIsolate = vi.fn(async () => ({ ok: true }));
-    brain.sessionId = "test_session";
     const result = await brain.callHook("validate", { tool: "test" });
     expect(result).toEqual({ ok: true });
-    expect(brain.runInIsolate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        moduleCode: hookCode,
-        toolName: "validate",
-        timeoutMs: 3000,
-      })
-    );
-  });
-
-  it("caches miss — doesn't re-check KV", async () => {
-    const { brain, env } = makeBrain();
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.buildToolContext = vi.fn(async () => ({}));
-    brain.runInIsolate = vi.fn(async () => ({}));
-    await brain.callHook("validate", {});
-    await brain.callHook("validate", {});
-    const kvCalls = env.KV.get.mock.calls.filter(([key]) => key === "tool:validate:code");
-    expect(kvCalls).toHaveLength(1);
+    expect(executeFn).toHaveBeenCalled();
   });
 
   it("swallows hook errors", async () => {
-    const hookCode = 'async function execute() { throw new Error("boom"); }';
-    const { brain } = makeBrain({
-      "tool:validate:code": JSON.stringify(hookCode),
+    const executeFn = vi.fn(async () => { throw new Error("boom"); });
+    const { brain } = makeBrain({}, {
+      TOOLS: {
+        validate: { execute: executeFn, meta: {} },
+      },
     });
     brain.karmaRecord = vi.fn(async () => {});
     brain.buildToolContext = vi.fn(async () => ({}));
-    brain.runInIsolate = vi.fn(async () => { throw new Error("boom"); });
-    brain.sessionId = "test_session";
     const result = await brain.callHook("validate", {});
     expect(result).toBeNull();
     expect(brain.karmaRecord).toHaveBeenCalledWith(
@@ -1291,104 +1301,42 @@ describe("checkHookSafety", () => {
     expect(safe).toBe(true);
   });
 
-  it("fires tripwire on 3 consecutive crashes (no snapshot → fallback)", async () => {
+  it("fires tripwire on 3 consecutive crashes — writes deploy:rollback_requested", async () => {
     const { brain, env } = makeBrain({
       "kernel:last_sessions": JSON.stringify([
         { id: "s_1", outcome: "crash" },
         { id: "s_2", outcome: "killed" },
         { id: "s_3", outcome: "crash" },
       ]),
-      "hook:wake:code": "some code",
     });
     brain.karmaRecord = vi.fn(async () => {});
     brain.sendKernelAlert = vi.fn(async () => {});
 
     const safe = await brain.checkHookSafety();
     expect(safe).toBe(false);
-    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:code");
-    expect(brain.sendKernelAlert).toHaveBeenCalledWith("hook_reset",
-      expect.stringContaining("No good version to restore"));
-  });
 
-  it("auto-restores from last_good_hook on tripwire", async () => {
-    const { brain, env } = makeBrain({
-      "kernel:last_sessions": JSON.stringify([
-        { id: "s_1", outcome: "crash" },
-        { id: "s_2", outcome: "killed" },
-        { id: "s_3", outcome: "crash" },
-      ]),
-      "hook:wake:code": "bad code",
-      "kernel:last_good_hook": JSON.stringify({ code: "good code" }),
-    });
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.sendKernelAlert = vi.fn(async () => {});
-
-    const safe = await brain.checkHookSafety();
-    expect(safe).toBe(true);
-    // Old bad code deleted
-    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:code");
-    // Good code restored
+    // Should write deploy:rollback_requested to KV
     const putCalls = env.KV.put.mock.calls;
-    const hookPut = putCalls.find(([key]) => key === "hook:wake:code");
-    expect(hookPut).toBeTruthy();
-    // Snapshot deleted (anti-loop)
-    expect(env.KV.delete).toHaveBeenCalledWith("kernel:last_good_hook");
+    const rollbackPut = putCalls.find(([key]) => key === "deploy:rollback_requested");
+    expect(rollbackPut).toBeTruthy();
+    const rollback = JSON.parse(rollbackPut[1]);
+    expect(rollback.reason).toBe("3_consecutive_crashes");
+
     expect(brain.sendKernelAlert).toHaveBeenCalledWith("hook_reset",
-      expect.stringContaining("Restored last good version"));
+      expect.stringContaining("3 consecutive crashes"));
   });
 
-  it("auto-restores manifest-based hook on tripwire", async () => {
-    const manifest = {
-      "main": "hook:wake:modules:main",
-      "utils.js": "hook:wake:modules:utils",
-    };
-    const { brain, env } = makeBrain({
-      "kernel:last_sessions": JSON.stringify([
-        { id: "s_1", outcome: "crash" },
-        { id: "s_2", outcome: "crash" },
-        { id: "s_3", outcome: "crash" },
-      ]),
-      "hook:wake:manifest": JSON.stringify(manifest),
-      "hook:wake:modules:main": JSON.stringify("bad main"),
-      "hook:wake:modules:utils": JSON.stringify("bad utils"),
-      "kernel:last_good_hook": JSON.stringify({
-        manifest,
-        modules: {
-          "hook:wake:modules:main": "good main",
-          "hook:wake:modules:utils": "good utils",
-        },
-      }),
-    });
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.sendKernelAlert = vi.fn(async () => {});
-
-    const safe = await brain.checkHookSafety();
-    expect(safe).toBe(true);
-    // Bad modules deleted
-    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:modules:main");
-    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:modules:utils");
-    expect(env.KV.delete).toHaveBeenCalledWith("hook:wake:manifest");
-    // Snapshot deleted (anti-loop)
-    expect(env.KV.delete).toHaveBeenCalledWith("kernel:last_good_hook");
-  });
-
-  it("anti-loop: second tripwire with no snapshot falls to fallback", async () => {
+  it("returns true when fewer than 3 sessions in history", async () => {
     const { brain } = makeBrain({
       "kernel:last_sessions": JSON.stringify([
         { id: "s_1", outcome: "crash" },
         { id: "s_2", outcome: "crash" },
-        { id: "s_3", outcome: "crash" },
       ]),
-      "hook:wake:code": "restored-but-still-bad code",
-      // No kernel:last_good_hook — was deleted by first tripwire
     });
-    brain.karmaRecord = vi.fn(async () => {});
     brain.sendKernelAlert = vi.fn(async () => {});
 
     const safe = await brain.checkHookSafety();
-    expect(safe).toBe(false);
-    expect(brain.sendKernelAlert).toHaveBeenCalledWith("hook_reset",
-      expect.stringContaining("No good version to restore"));
+    expect(safe).toBe(true);
   });
 });
 
@@ -1421,195 +1369,90 @@ describe("detectPlatformKill", () => {
   });
 });
 
-// ── 18. updateSessionOutcome snapshot ──────────────────────
+// ── 18. updateSessionOutcome ────────────────────────────────
 
-describe("updateSessionOutcome snapshot", () => {
-  it("snapshots hook on first clean (no existing snapshot)", async () => {
-    const { brain, env } = makeBrain({
-      "hook:wake:code": JSON.stringify("seed hook code"),
-    });
+describe("updateSessionOutcome", () => {
+  it("adds clean outcome to kernel:last_sessions", async () => {
+    const { brain, env } = makeBrain();
     await brain.updateSessionOutcome("clean");
 
     const putCalls = env.KV.put.mock.calls;
-    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
-    expect(snapshotPut).toBeTruthy();
-    const snapshot = JSON.parse(snapshotPut[1]);
-    expect(snapshot.code).toBe("seed hook code");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    expect(sessionsPut).toBeTruthy();
+    const sessions = JSON.parse(sessionsPut[1]);
+    expect(sessions[0].outcome).toBe("clean");
   });
 
-  it("snapshots when hook_dirty is set", async () => {
-    const { brain, env } = makeBrain({
-      "hook:wake:code": JSON.stringify("modified hook"),
-      "kernel:hook_dirty": JSON.stringify(true),
-      "kernel:last_good_hook": JSON.stringify({ code: "old version" }),
-    });
-    await brain.updateSessionOutcome("clean");
+  it("adds crash outcome to kernel:last_sessions", async () => {
+    const { brain, env } = makeBrain();
+    await brain.updateSessionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
-    expect(snapshotPut).toBeTruthy();
-    const snapshot = JSON.parse(snapshotPut[1]);
-    expect(snapshot.code).toBe("modified hook");
-    // hook_dirty should be cleared
-    expect(env.KV.delete).toHaveBeenCalledWith("kernel:hook_dirty");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    expect(sessionsPut).toBeTruthy();
+    const sessions = JSON.parse(sessionsPut[1]);
+    expect(sessions[0].outcome).toBe("crash");
   });
 
-  it("skips snapshot when not dirty and snapshot exists", async () => {
+  it("prepends to existing history", async () => {
     const { brain, env } = makeBrain({
-      "hook:wake:code": JSON.stringify("unchanged hook"),
-      "kernel:last_good_hook": JSON.stringify({ code: "unchanged hook" }),
-      // No kernel:hook_dirty
-    });
-    await brain.updateSessionOutcome("clean");
-
-    const putCalls = env.KV.put.mock.calls;
-    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
-    expect(snapshotPut).toBeFalsy();
-  });
-
-  it("does not snapshot on crash outcome", async () => {
-    const { brain, env } = makeBrain({
-      "hook:wake:code": JSON.stringify("some hook"),
+      "kernel:last_sessions": JSON.stringify([
+        { id: "s_old", outcome: "clean", ts: "2026-01-01T00:00:00Z" },
+      ]),
     });
     await brain.updateSessionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
-    expect(snapshotPut).toBeFalsy();
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessions = JSON.parse(sessionsPut[1]);
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].outcome).toBe("crash");
+    expect(sessions[1].id).toBe("s_old");
   });
 
-  it("snapshots manifest-based hook", async () => {
-    const manifest = {
-      "main": "hook:wake:modules:main",
-      "utils.js": "hook:wake:modules:utils",
-    };
+  it("caps history at 5 entries", async () => {
     const { brain, env } = makeBrain({
-      "hook:wake:manifest": JSON.stringify(manifest),
-      "hook:wake:modules:main": JSON.stringify("main code"),
-      "hook:wake:modules:utils": JSON.stringify("utils code"),
-      "kernel:hook_dirty": JSON.stringify(true),
-      "kernel:last_good_hook": JSON.stringify({ code: "old" }),
+      "kernel:last_sessions": JSON.stringify([
+        { id: "s_1", outcome: "clean", ts: "t1" },
+        { id: "s_2", outcome: "clean", ts: "t2" },
+        { id: "s_3", outcome: "clean", ts: "t3" },
+        { id: "s_4", outcome: "clean", ts: "t4" },
+        { id: "s_5", outcome: "clean", ts: "t5" },
+      ]),
     });
-    await brain.updateSessionOutcome("clean");
+    await brain.updateSessionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
-    expect(snapshotPut).toBeTruthy();
-    const snapshot = JSON.parse(snapshotPut[1]);
-    expect(snapshot.manifest).toEqual(manifest);
-    expect(snapshot.modules["hook:wake:modules:main"]).toBe("main code");
-    expect(snapshot.modules["hook:wake:modules:utils"]).toBe("utils code");
-  });
-
-  it("skips snapshot when no hook is loaded", async () => {
-    const { brain, env } = makeBrain({
-      // No hook:wake:code and no hook:wake:manifest
-    });
-    await brain.updateSessionOutcome("clean");
-
-    const putCalls = env.KV.put.mock.calls;
-    const snapshotPut = putCalls.find(([key]) => key === "kernel:last_good_hook");
-    expect(snapshotPut).toBeFalsy();
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessions = JSON.parse(sessionsPut[1]);
+    expect(sessions).toHaveLength(5);
+    expect(sessions[0].outcome).toBe("crash");
+    // Oldest entry (s_5) should have been dropped
+    expect(sessions.map(s => s.id)).not.toContain("s_5");
   });
 });
 
-// ── 19. kvWritePrivileged hook_dirty flag ──────────────────
+// ── 19. (hook_dirty tests removed — flag no longer exists) ──
 
-describe("kvWritePrivileged hook_dirty flag", () => {
-  it("sets kernel:hook_dirty when writing hook:wake:* key", async () => {
-    const { brain, env } = makeBrain();
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.sendKernelAlert = vi.fn(async () => {});
+// ── 20. runScheduled hook execution flow ──────────────────
 
-    await brain.kvWritePrivileged([
-      { op: "put", key: "hook:wake:code", value: "new hook" },
-    ]);
-
-    const putCalls = env.KV.put.mock.calls;
-    const dirtyPut = putCalls.find(([key]) => key === "kernel:hook_dirty");
-    expect(dirtyPut).toBeTruthy();
-  });
-
-  it("does not set hook_dirty for non-wake hook keys", async () => {
-    const { brain, env } = makeBrain();
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.sendKernelAlert = vi.fn(async () => {});
-
-    await brain.kvWritePrivileged([
-      { op: "put", key: "hook:other:code", value: "something" },
-    ]);
-
-    const putCalls = env.KV.put.mock.calls;
-    const dirtyPut = putCalls.find(([key]) => key === "kernel:hook_dirty");
-    expect(dirtyPut).toBeFalsy();
-  });
-
-  it("sets hook_dirty for hook:wake:manifest writes", async () => {
-    const { brain, env } = makeBrain();
-    brain.karmaRecord = vi.fn(async () => {});
-    brain.sendKernelAlert = vi.fn(async () => {});
-
-    await brain.kvWritePrivileged([
-      { op: "put", key: "hook:wake:manifest", value: { "main": "hook:wake:modules:main" } },
-    ]);
-
-    const putCalls = env.KV.put.mock.calls;
-    const dirtyPut = putCalls.find(([key]) => key === "kernel:hook_dirty");
-    expect(dirtyPut).toBeTruthy();
-  });
-});
-
-// ── 20. runScheduled manifest loading ─────────────────────
-
-describe("runScheduled manifest loading", () => {
-  it("loads single hook:wake:code when no manifest", async () => {
-    const { brain } = makeBrain({
-      "hook:wake:code": JSON.stringify("single hook code"),
-    });
-    brain.detectPlatformKill = vi.fn(async () => {});
-    brain.checkHookSafety = vi.fn(async () => true);
-    brain.executeHook = vi.fn(async () => {});
-    brain.wake = vi.fn(async () => {});
+describe("runScheduled hook execution flow", () => {
+  it("calls detectPlatformKill → checkHookSafety → executeHook when safe", async () => {
+    const { brain } = makeBrain();
+    const callOrder = [];
+    brain.detectPlatformKill = vi.fn(async () => callOrder.push("detectPlatformKill"));
+    brain.checkHookSafety = vi.fn(async () => { callOrder.push("checkHookSafety"); return true; });
+    brain.executeHook = vi.fn(async () => callOrder.push("executeHook"));
+    brain.wake = vi.fn(async () => callOrder.push("wake"));
 
     await brain.runScheduled();
 
-    expect(brain.executeHook).toHaveBeenCalledWith(
-      { "hook.js": "single hook code" },
-      "hook.js"
-    );
+    expect(callOrder).toEqual(["detectPlatformKill", "checkHookSafety", "executeHook"]);
     expect(brain.wake).not.toHaveBeenCalled();
   });
 
-  it("loads manifest-based modules", async () => {
-    const manifest = {
-      "main": "hook:wake:modules:main",
-      "utils.js": "hook:wake:modules:utils",
-    };
-    const { brain } = makeBrain({
-      "hook:wake:manifest": JSON.stringify(manifest),
-      "hook:wake:modules:main": JSON.stringify("main module code"),
-      "hook:wake:modules:utils": JSON.stringify("utils module code"),
-    });
-    brain.detectPlatformKill = vi.fn(async () => {});
-    brain.checkHookSafety = vi.fn(async () => true);
-    brain.executeHook = vi.fn(async () => {});
-    brain.wake = vi.fn(async () => {});
-
-    await brain.runScheduled();
-
-    expect(brain.executeHook).toHaveBeenCalledWith(
-      {
-        "main": "main module code",
-        "utils.js": "utils module code",
-      },
-      "main"
-    );
-  });
-
-  it("falls back to wake() when hook unsafe", async () => {
-    const { brain } = makeBrain({
-      "hook:wake:code": JSON.stringify("some code"),
-    });
+  it("falls back to wake() when checkHookSafety returns false", async () => {
+    const { brain } = makeBrain();
     brain.detectPlatformKill = vi.fn(async () => {});
     brain.checkHookSafety = vi.fn(async () => false);
     brain.executeHook = vi.fn(async () => {});
@@ -1621,19 +1464,18 @@ describe("runScheduled manifest loading", () => {
     expect(brain.wake).toHaveBeenCalled();
   });
 
-  it("falls back to wake() when no hook code exists", async () => {
-    const { brain } = makeBrain({
-      // No hook:wake:code or manifest
-    });
-    brain.detectPlatformKill = vi.fn(async () => {});
-    brain.checkHookSafety = vi.fn(async () => true);
+  it("always calls detectPlatformKill before checkHookSafety", async () => {
+    const { brain } = makeBrain();
+    const callOrder = [];
+    brain.detectPlatformKill = vi.fn(async () => callOrder.push("detect"));
+    brain.checkHookSafety = vi.fn(async () => { callOrder.push("safety"); return false; });
     brain.executeHook = vi.fn(async () => {});
     brain.wake = vi.fn(async () => {});
 
     await brain.runScheduled();
 
-    expect(brain.executeHook).not.toHaveBeenCalled();
-    expect(brain.wake).toHaveBeenCalled();
+    expect(callOrder[0]).toBe("detect");
+    expect(callOrder[1]).toBe("safety");
   });
 });
 

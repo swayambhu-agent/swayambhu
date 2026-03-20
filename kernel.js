@@ -1,256 +1,23 @@
 // Swayambhu Kernel
-// Hardcoded primitives + safety + alerting + hook dispatch.
-// Policy (wake flow, reflection, Modification Protocol) lives in hook-main.js
-// (+ hook-reflect.js, hook-modifications.js, hook-protect.js), stored in KV
-// via hook:wake:manifest, and executed via Worker Loader isolate.
+// Hardcoded safety primitives, execution engine, and session infrastructure.
+// Policy (session flow, reflection) lives in act.js and reflect.js — mutable
+// code injected at construction via HOOKS. Tools, providers, and channels are
+// also injected. The kernel enforces safety: KV write tiers, dharma injection,
+// communication gates, budget enforcement, and proposal mechanics.
 //
-// The kernel exposes primitives via KernelRPC (WorkerEntrypoint).
-// The hook composes them. Day 1 it's the current logic.
-// Day N the model restructures it via reflection.
-//
-// Tools are loaded dynamically from KV and executed in sandboxed isolates.
-// The karma log records every LLM call and tool execution with full request/response.
-
-// CF-SPECIFIC: WorkerEntrypoint is the CF RPC mechanism for cross-isolate calls
-import { WorkerEntrypoint } from "cloudflare:workers";
-import { handleChat } from './hook-chat.js';
-
-// CF-SPECIFIC: WorkerEntrypoint subclass — RPC bridge giving isolate-loaded tools scoped KV access
-export class ScopedKV extends WorkerEntrypoint {
-  async get(key) {
-    const { toolName, kvAccess } = this.ctx.props;
-    const resolved = kvAccess === "own" ? `tooldata:${toolName}:${key}` : key;
-    if (resolved.startsWith('sealed:')) return null;
-    try { return await this.env.KV.get(resolved, "json"); }
-    catch { try { return await this.env.KV.get(resolved, "text"); } catch { return null; } }
-  }
-  async put(key, value) {
-    const { toolName } = this.ctx.props;
-    const resolved = `tooldata:${toolName}:${key}`;  // writes always scoped
-    const fmt = typeof value === "string" ? "text" : "json";
-    await this.env.KV.put(resolved, typeof value === "string" ? value : JSON.stringify(value), {
-      metadata: { type: "tooldata", format: fmt, updated_at: new Date().toISOString() },
-    });
-  }
-  async list(opts = {}) {
-    const { toolName, kvAccess } = this.ctx.props;
-    if (kvAccess === "own") {
-      const scope = `tooldata:${toolName}:`;
-      const result = await this.env.KV.list({ ...opts, prefix: scope + (opts.prefix || "") });
-      return {
-        keys: result.keys.map(k => ({ ...k, name: k.name.slice(scope.length) })),
-        list_complete: result.list_complete,
-      };
-    }
-    const result = await this.env.KV.list(opts);
-    return {
-      keys: result.keys.filter(k => !k.name.startsWith('sealed:')),
-      list_complete: result.list_complete,
-    };
-  }
-}
-
-// Module-level reference to active Brainstem instance.
-// Safe — Workers process one request per isolate.
-let _activeBrain = null;
-
-// CF-SPECIFIC: WorkerEntrypoint subclass — RPC bridge giving the wake hook access to kernel primitives
-export class KernelRPC extends WorkerEntrypoint {
-  _brain() {
-    if (!_activeBrain) throw new Error("KernelRPC: no active brainstem instance");
-    return _activeBrain;
-  }
-
-  // LLM
-  async callLLM(opts) { return this._brain().callLLM(opts); }
-
-  // KV reads (sealed keys blocked — hook code must not read quarantined data)
-  async kvGet(key) {
-    if (key.startsWith("sealed:")) return null;
-    return this._brain().kvGet(key);
-  }
-  async kvGetWithMeta(key) {
-    if (key.startsWith("sealed:")) return { value: null, metadata: null };
-    return this._brain().kvGetWithMeta(key);
-  }
-  async kvList(opts) { return this._brain().kv.list(opts); }
-
-  // KV writes — safe tier (blocks system + kernel keys)
-  async kvPutSafe(key, value, metadata) { return this._brain().kvPutSafe(key, value, metadata); }
-  async kvDeleteSafe(key) { return this._brain().kvDeleteSafe(key); }
-
-  // KV writes — privileged tier (snapshots to karma, rate-limited)
-  async kvWritePrivileged(ops) { return this._brain().kvWritePrivileged(ops); }
-
-  // Agent loop
-  async runAgentLoop(opts) { return this._brain().runAgentLoop(opts); }
-  async executeToolCall(tc) { return this._brain().executeToolCall(tc); }
-  async buildToolDefinitions(extra) { return this._brain().buildToolDefinitions(extra); }
-  async spawnSubplan(args, depth) { return this._brain().spawnSubplan(args, depth); }
-  async callHook(name, ctx) { return this._brain().callHook(name, ctx); }
-
-  // Blocked communications
-  async listBlockedComms() { return this._brain().listBlockedComms(); }
-  async processCommsVerdict(id, verdict, revision) { return this._brain().processCommsVerdict(id, verdict, revision); }
-
-  // Sandbox
-  async executeAction(step) { return this._brain().executeAction(step); }
-  async executeAdapter(adapterKey, input) { return this._brain().executeAdapter(adapterKey, input); }
-  async checkBalance(args) { return this._brain().checkBalance(args); }
-
-  // Karma
-  async karmaRecord(entry) { return this._brain().karmaRecord(entry); }
-
-  // Alerting — NOT exposed (kernel-internal only)
-
-  // Utility
-  async resolveModel(m) { return this._brain().resolveModel(m); }
-  async estimateCost(model, usage) { return this._brain().estimateCost(model, usage); }
-  async buildPrompt(template, vars) { return this._brain().buildPrompt(template, vars); }
-  async parseAgentOutput(content) { return this._brain().parseAgentOutput(content); }
-  async loadKeys(keys) {
-    const filtered = keys.filter(k => !k.startsWith("sealed:"));
-    return this._brain().loadKeys(filtered);
-  }
-  async getSessionCount() { return this._brain().getSessionCount(); }
-  async mergeDefaults(defaults, overrides) { return this._brain().mergeDefaults(defaults, overrides); }
-  async isSystemKey(key) { return Brainstem.isSystemKey(key); }
-  async getSystemKeyPatterns() {
-    return { prefixes: Brainstem.SYSTEM_KEY_PREFIXES, exact: Brainstem.SYSTEM_KEY_EXACT };
-  }
-
-  // State (read-only)
-  async getSessionId() { return this._brain().sessionId; }
-  async getSessionCost() { return this._brain().sessionCost; }
-  async getKarma() { return this._brain().karma; }
-  async getDefaults() { return this._brain().defaults; }
-  async getModelsConfig() { return this._brain().modelsConfig; }
-  async getModelCapabilities() { return this._brain().modelCapabilities; }
-  async getDharma() { return this._brain().dharma; }
-  async getToolRegistry() { return this._brain().toolRegistry; }
-  async getYamas() { return this._brain().yamas; }
-  async getNiyamas() { return this._brain().niyamas; }
-  async getPatronId() { return this._brain().patronId; }
-  async getPatronContact() { return this._brain().patronContact; }
-  async isPatronIdentityDisputed() { return this._brain().patronIdentityDisputed; }
-  async rotatePatronKey(newPublicKey, signature) { return this._brain().rotatePatronKey(newPublicKey, signature); }
-  async resolveContact(platform, platformUserId) { return this._brain().resolveContact(platform, platformUserId); }
-  async elapsed() { return this._brain().elapsed(); }
-}
-
-// CF-SPECIFIC: scheduled() is the CF cron trigger entry point
-export default {
-  async scheduled(event, env, ctx) {
-    const brain = new Brainstem(env, { ctx });
-    await brain.runScheduled();
-  },
-
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const match = url.pathname.match(/^\/channel\/(\w+)$/);
-    if (!match || request.method !== "POST") {
-      return new Response("Not found", { status: 404 });
-    }
-
-    const channel = match[1];
-    const brain = new Brainstem(env, { ctx });
-
-    // Load channel adapter from KV
-    const adapterCode = await brain.kvGet(`channel:${channel}:code`);
-    if (!adapterCode) {
-      return new Response(`Unknown channel: ${channel}`, { status: 404 });
-    }
-    const adapterConfig = await brain.kvGet(`channel:${channel}:config`) || {};
-
-    const rawBody = await request.text();
-
-    // Verify webhook authenticity via adapter isolate (before JSON parse — needs raw body for HMAC)
-    const envVars = {};
-    for (const s of (adapterConfig.secrets || [])) {
-      if (env[s] !== undefined) envVars[s] = env[s];
-    }
-    if (adapterConfig.webhook_secret_env && env[adapterConfig.webhook_secret_env]) {
-      envVars[adapterConfig.webhook_secret_env] = env[adapterConfig.webhook_secret_env];
-    }
-
-    const verified = await brain.runInIsolate({
-      id: `channel:${channel}:verify:${brain.sessionId}`,
-      moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
-      ctx: { action: "verify", headers: Object.fromEntries(request.headers), rawBody, env_vars: envVars },
-      timeoutMs: 5000,
-    });
-    if (!verified?.ok) {
-      return new Response("Unauthorized", { status: 401 });
-    }
-
-    // Parse JSON after verify succeeds
-    let body;
-    try { body = JSON.parse(rawBody); }
-    catch { return new Response("Bad Request", { status: 400 }); }
-
-    // Parse inbound message via adapter isolate
-    const parsed = await brain.runInIsolate({
-      id: `channel:${channel}:parse:${brain.sessionId}`,
-      moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
-      ctx: { action: "parse", body },
-      timeoutMs: 5000,
-    });
-    if (!parsed?.inbound) {
-      return new Response("OK", { status: 200 });
-    }
-    // Channel-agnostic challenge response (e.g. Slack URL verification)
-    if (parsed.inbound._challenge) {
-      return new Response(JSON.stringify({ challenge: parsed.inbound._challenge }),
-        { headers: { "Content-Type": "application/json" } });
-    }
-
-    const inbound = parsed.inbound;
-
-    // Deduplication: Slack retries if no 200 within 3s. Ignore duplicate deliveries.
-    if (inbound.msgId) {
-      const dedupKey = `dedup:${inbound.msgId}`;
-      const seen = await brain.kv.get(dedupKey);
-      if (seen) return new Response("OK", { status: 200 });
-      await brain.kv.put(dedupKey, "1", { expirationTtl: 30 });
-    }
-
-    // Build secrets once for the adapter
-    const secrets = {};
-    for (const s of (adapterConfig.secrets || [])) {
-      if (env[s] !== undefined) secrets[s] = env[s];
-    }
-
-    // Return 200 immediately, process in background
-    ctx.waitUntil((async () => {
-      try {
-        await brain.loadEagerConfig();
-
-        const adapter = {
-          sendReply: async (chatId, text) => {
-            await brain.runInIsolate({
-              id: `channel:${channel}:send:${brain.sessionId}`,
-              moduleCode: Brainstem.wrapChannelAdapter(adapterCode),
-              ctx: { action: "send", chatId, text, secrets },
-              timeoutMs: 10000,
-            });
-          },
-        };
-
-        await handleChat(brain, channel, inbound, adapter);
-      } catch (err) {
-        brain.karmaRecord({ event: "chat_error", channel, error: err.message });
-      }
-    })());
-
-    return new Response("OK", { status: 200 });
-  },
-};
+// Entry point is index.js, which imports all modules and wires them here.
 
 class Brainstem {
   constructor(env, opts = {}) {
     this.env = env;
     this.ctx = opts.ctx || null;
-    this.kv = env.KV;  // CF-SPECIFIC: KV namespace binding from wrangler.toml
+    this.kv = env.KV;
+
+    // Dependency injection — modules wired by index.js
+    this.TOOLS = opts.TOOLS || {};
+    this.HOOKS = opts.HOOKS || {};
+    this.PROVIDERS = opts.PROVIDERS || {};
+    this.CHANNELS = opts.CHANNELS || {};
     this.startTime = Date.now();
     this.sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.sessionCost = 0;
@@ -334,7 +101,10 @@ class Brainstem {
     this.modelCapabilities = await this.kvGet("config:model_capabilities");
     this.dharma = await this.kvGet("dharma");
     this.toolRegistry = await this.kvGet("config:tool_registry");
-    this.toolGrants = await this.kvGet("kernel:tool_grants") || {};
+    this.toolGrants = await this.kvGet("kernel:tool_grants");
+    if (!this.toolGrants || Object.keys(this.toolGrants).length === 0) {
+      this.toolGrants = this._buildToolGrantsFromModules();
+    }
     await this.loadYamasNiyamas();
     await this.loadPatronContext();
   }
@@ -911,13 +681,10 @@ Respond with JSON only:
         await this.kvPut(auditKey, existing);
       }
 
-      // Alert on hook: key writes + set dirty flag for snapshot tracking
+      // Alert on hook: key writes
       if (op.key.startsWith("hook:")) {
         await this.sendKernelAlert("hook_write",
           `Privileged write to ${op.key} in session ${this.sessionId}`);
-        if (op.key.startsWith("hook:wake:")) {
-          await this.kvPut("kernel:hook_dirty", true);
-        }
       }
     }
 
@@ -945,44 +712,391 @@ Respond with JSON only:
     }
   }
 
-  // ── Hook dispatch (scheduled entry point) ─────────────────
+  // ── Kernel interface (replaces KernelRPC) ───────────────────
+  // Returns a K object with the same API hooks expect from KernelRPC.
+  // Includes sealed: key filtering for security.
 
-  async runScheduled() {
+  buildKernelInterface() {
     const brain = this;
+    return {
+      // LLM
+      callLLM: async (opts) => brain.callLLM(opts),
 
-    // 1. Detect platform kill from previous session
-    await brain.detectPlatformKill();
+      // KV reads (sealed keys blocked — hook code must not read quarantined data)
+      kvGet: async (key) => {
+        if (key.startsWith("sealed:")) return null;
+        return brain.kvGet(key);
+      },
+      kvGetWithMeta: async (key) => {
+        if (key.startsWith("sealed:")) return { value: null, metadata: null };
+        return brain.kvGetWithMeta(key);
+      },
+      kvList: async (opts) => brain.kv.list(opts),
 
-    // 2. Meta-safety check
-    const hookSafe = await brain.checkHookSafety();
+      // KV writes
+      kvPutSafe: async (key, value, metadata) => brain.kvPutSafe(key, value, metadata),
+      kvDeleteSafe: async (key) => brain.kvDeleteSafe(key),
+      kvWritePrivileged: async (ops) => brain.kvWritePrivileged(ops),
 
-    // 3. Load hook modules (manifest or single code)
-    let modules = null;
-    let mainModule = null;
-    if (hookSafe) {
-      const manifest = await brain.kvGet("hook:wake:manifest");
-      if (manifest) {
-        // manifest maps filenames → KV keys; "main" entry is the entry point
-        modules = {};
-        for (const [filename, kvKey] of Object.entries(manifest)) {
-          modules[filename] = await brain.kvGet(kvKey);
+      // Agent loop
+      runAgentLoop: async (opts) => brain.runAgentLoop(opts),
+      executeToolCall: async (tc) => brain.executeToolCall(tc),
+      buildToolDefinitions: async (extra) => brain.buildToolDefinitions(extra),
+      spawnSubplan: async (args, depth) => brain.spawnSubplan(args, depth),
+      callHook: async (name, ctx) => brain.callHook(name, ctx),
+      executeAction: async (step) => brain.executeAction(step),
+      executeAdapter: async (adapterKey, input) => brain.executeAdapter(adapterKey, input),
+
+      // Blocked communications
+      listBlockedComms: async () => brain.listBlockedComms(),
+      processCommsVerdict: async (id, verdict, revision) => brain.processCommsVerdict(id, verdict, revision),
+
+      // Balance
+      checkBalance: async (args) => brain.checkBalance(args),
+
+      // Karma
+      karmaRecord: async (entry) => brain.karmaRecord(entry),
+
+      // Utility
+      resolveModel: async (m) => brain.resolveModel(m),
+      estimateCost: async (model, usage) => brain.estimateCost(model, usage),
+      buildPrompt: async (template, vars) => brain.buildPrompt(template, vars),
+      parseAgentOutput: async (content) => brain.parseAgentOutput(content),
+      loadKeys: async (keys) => {
+        const filtered = keys.filter(k => !k.startsWith("sealed:"));
+        return brain.loadKeys(filtered);
+      },
+      getSessionCount: async () => brain.getSessionCount(),
+      mergeDefaults: async (defaults, overrides) => brain.mergeDefaults(defaults, overrides),
+      isSystemKey: async (key) => Brainstem.isSystemKey(key),
+      getSystemKeyPatterns: async () => ({
+        prefixes: Brainstem.SYSTEM_KEY_PREFIXES,
+        exact: Brainstem.SYSTEM_KEY_EXACT,
+      }),
+
+      // KV operation gating (moved from hook-protect.js — immutable safety)
+      applyKVOperation: async (op) => brain.applyKVOperation(op),
+
+      // Config utilities (used by both act.js and reflect.js)
+      getMaxSteps: async (state, role, depth) => Brainstem.getMaxSteps(state, role, depth),
+      getReflectModel: async (state, depth) => Brainstem.getReflectModel(state, depth),
+
+      // Proposal system (code change proposals)
+      createProposal: async (request, sessionId, depth) => brain.createProposal(request, sessionId, depth),
+      loadProposals: async (statusFilter) => brain.loadProposals(statusFilter),
+      updateProposalStatus: async (id, newStatus, metadata) => brain.updateProposalStatus(id, newStatus, metadata),
+      processProposalVerdicts: async (verdicts, depth) => brain.processProposalVerdicts(verdicts, depth),
+
+      // State (read-only)
+      getSessionId: async () => brain.sessionId,
+      getSessionCost: async () => brain.sessionCost,
+      getKarma: async () => brain.karma,
+      getDefaults: async () => brain.defaults,
+      getModelsConfig: async () => brain.modelsConfig,
+      getModelCapabilities: async () => brain.modelCapabilities,
+      getDharma: async () => brain.dharma,
+      getToolRegistry: async () => brain.toolRegistry,
+      getYamas: async () => brain.yamas,
+      getNiyamas: async () => brain.niyamas,
+      getPatronId: async () => brain.patronId,
+      getPatronContact: async () => brain.patronContact,
+      isPatronIdentityDisputed: async () => brain.patronIdentityDisputed,
+      rotatePatronKey: async (newPublicKey, signature) => brain.rotatePatronKey(newPublicKey, signature),
+      resolveContact: async (platform, platformUserId) => brain.resolveContact(platform, platformUserId),
+      elapsed: async () => brain.elapsed(),
+    };
+  }
+
+  // ── KV operation gating (from hook-protect.js — kernel safety) ──
+
+  async applyKVOperation(op) {
+    const key = op.key;
+
+    // Truncate value for karma logging
+    const valueSummary = op.value != null
+      ? (typeof op.value === 'string'
+          ? (op.value.length > 500 ? op.value.slice(0, 500) + '\u2026' : op.value)
+          : JSON.stringify(op.value).slice(0, 500))
+      : undefined;
+
+    // Contact keys route through kvWritePrivileged (kernel-enforced approval rules)
+    if (key.startsWith("contact:")) {
+      try {
+        await this.kvWritePrivileged([op]);
+      } catch (err) {
+        await this.karmaRecord({
+          event: "modification_blocked", key, op: op.op,
+          reason: err.message, attempted_value: valueSummary,
+        });
+      }
+      return;
+    }
+
+    if (Brainstem.isSystemKey(key)) {
+      await this.karmaRecord({
+        event: "modification_blocked", key, op: op.op,
+        reason: "system_key", attempted_value: valueSummary,
+      });
+      return;
+    }
+
+    // Agent keys: new keys can be created freely; existing keys need unprotected flag
+    const { value: existing, metadata } = await this.kvGetWithMeta(key);
+    if (existing !== null && !metadata?.unprotected) {
+      await this.karmaRecord({
+        event: "modification_blocked", key, op: op.op,
+        reason: "protected_key", attempted_value: valueSummary,
+      });
+      return;
+    }
+
+    await this._applyKVOperationDirect(op);
+  }
+
+  async _applyKVOperationDirect(op) {
+    switch (op.op) {
+      case "put":
+        await this.kvPutSafe(op.key, op.value, { unprotected: true, ...op.metadata });
+        break;
+      case "delete":
+        await this.kvDeleteSafe(op.key);
+        break;
+      case "patch": {
+        const current = await this.kvGet(op.key);
+        if (typeof current !== "string") break;
+        if (!current.includes(op.old_string)) break;
+        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) break;
+        const patched = current.replace(op.old_string, op.new_string);
+        await this.kvPutSafe(op.key, patched, { unprotected: true, ...op.metadata });
+        break;
+      }
+      case "rename": {
+        const { value, metadata } = await this.kvGetWithMeta(op.key);
+        if (value !== null) {
+          await this.kvPutSafe(op.value, value, metadata);
+          await this.kvDeleteSafe(op.key);
         }
-        mainModule = "main" in manifest ? "main" : Object.keys(manifest)[0];
-      } else {
-        const hookCode = await brain.kvGet("hook:wake:code");
-        if (hookCode) {
-          modules = { "hook.js": hookCode };
-          mainModule = "hook.js";
+        break;
+      }
+    }
+  }
+
+  // ── Proposal system (code change proposals — governor deploys accepted ones) ──
+
+  static CODE_KEY_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
+
+  static isCodeKey(key) {
+    return Brainstem.CODE_KEY_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code');
+  }
+
+  _generateProposalId() {
+    return `p_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async createProposal(request, sessionId, depth = 0) {
+    if (!request.claims?.length || !request.ops?.length) {
+      await this.karmaRecord({ event: "proposal_invalid", reason: "missing required fields (claims, ops)" });
+      return null;
+    }
+
+    // Validate all ops target code keys
+    const nonCodeOps = request.ops.filter(op => !Brainstem.isCodeKey(op.key));
+    if (nonCodeOps.length > 0) {
+      await this.karmaRecord({
+        event: "proposal_invalid",
+        reason: `proposal ops must target code keys — non-code targets: ${nonCodeOps.map(o => o.key).join(', ')}`,
+      });
+      return null;
+    }
+
+    const id = this._generateProposalId();
+    const sessionCount = await this.getSessionCount();
+    const proposal = {
+      id,
+      targets: request.ops.map(op => op.key),
+      changes: {},
+      claims: request.claims,
+      checks: request.checks || [],
+      proposed_by: sessionId,
+      proposed_at: new Date().toISOString(),
+      proposed_at_session: sessionCount,
+      proposed_by_depth: depth,
+      status: "proposed",
+    };
+
+    // Store the actual change data
+    for (const op of request.ops) {
+      proposal.changes[op.key] = { op: op.op || "put", code: op.value, old_string: op.old_string, new_string: op.new_string };
+    }
+
+    await this.kvPut(`proposal:${id}`, proposal);
+    await this.karmaRecord({ event: "proposal_created", proposal_id: id, claims: request.claims, targets: proposal.targets });
+    return id;
+  }
+
+  async loadProposals(statusFilter) {
+    const list = await this.kvListAll({ prefix: "proposal:" });
+    const proposals = {};
+    const sessionCount = await this.getSessionCount();
+    for (const { name: key } of list) {
+      const record = await this.kvGet(key);
+      if (!record) continue;
+      if (statusFilter && record.status !== statusFilter) continue;
+      const checkResults = record.checks?.length
+        ? await this._evaluateChecks(record.checks)
+        : null;
+      const sessions_since = record.proposed_at_session != null
+        ? sessionCount - record.proposed_at_session
+        : null;
+      proposals[record.id] = { record, check_results: checkResults, sessions_since };
+    }
+    return proposals;
+  }
+
+  async updateProposalStatus(id, newStatus, metadata = {}) {
+    const record = await this.kvGet(`proposal:${id}`);
+    if (!record) throw new Error(`No proposal: ${id}`);
+    record.status = newStatus;
+    Object.assign(record, metadata);
+    record[`${newStatus}_at`] = new Date().toISOString();
+    await this.kvPut(`proposal:${id}`, record);
+    await this.karmaRecord({ event: `proposal_${newStatus}`, proposal_id: id });
+  }
+
+  async processProposalVerdicts(verdicts, depth) {
+    for (const v of verdicts || []) {
+      const id = v.modification_id || v.proposal_id;
+      if (!id) continue;
+      switch (v.verdict) {
+        case "accept":
+          await this.updateProposalStatus(id, "accepted", { accepted_by_depth: depth });
+          break;
+        case "reject":
+          await this.updateProposalStatus(id, "rejected", { reason: v.reason, rejected_by_depth: depth });
+          break;
+        case "withdraw":
+          await this.kvDelete(`proposal:${id}`);
+          await this.karmaRecord({ event: "proposal_withdrawn", proposal_id: id });
+          break;
+        case "modify": {
+          const record = await this.kvGet(`proposal:${id}`);
+          if (record) {
+            if (v.updated_ops) {
+              record.ops = v.updated_ops;
+              record.changes = {};
+              for (const op of v.updated_ops) {
+                record.changes[op.key] = { op: op.op || "put", code: op.value, old_string: op.old_string, new_string: op.new_string };
+              }
+              record.targets = v.updated_ops.map(op => op.key);
+            }
+            if (v.updated_checks) record.checks = v.updated_checks;
+            if (v.updated_claims) record.claims = v.updated_claims;
+            record.modified_at = new Date().toISOString();
+            await this.kvPut(`proposal:${id}`, record);
+            await this.karmaRecord({ event: "proposal_modified", proposal_id: id });
+          }
+          break;
         }
+        case "defer":
+          await this.karmaRecord({ event: "proposal_deferred", proposal_id: id, reason: v.reason });
+          break;
       }
     }
 
-    // 4. Execute hook or fallback
-    if (modules) {
-      await brain.executeHook(modules, mainModule);
+    // Signal governor if any proposals were accepted
+    const hasAccepted = verdicts?.some(v => v.verdict === "accept");
+    if (hasAccepted) {
+      await this.kvPut("deploy:pending", {
+        requested_at: new Date().toISOString(),
+        session_id: this.sessionId,
+      });
+    }
+  }
+
+  async kvDelete(key) {
+    await this.kv.delete(key);
+  }
+
+  // ── Predicate evaluation (used by proposals and reflect) ──
+
+  static evaluatePredicate(value, predicate, expected) {
+    switch (predicate) {
+      case "exists": return value !== null && value !== undefined;
+      case "equals": return value === expected;
+      case "gt": return typeof value === "number" && value > expected;
+      case "lt": return typeof value === "number" && value < expected;
+      case "matches": return typeof value === "string" && new RegExp(expected).test(value);
+      case "type": return typeof value === expected;
+      default: return false;
+    }
+  }
+
+  async _evaluateCheck(check) {
+    try {
+      switch (check.type) {
+        case "kv_assert": {
+          let value = await this.kvGet(check.key);
+          if (check.path && value != null) {
+            value = check.path.split(".").reduce((o, k) => o?.[k], value);
+          }
+          const passed = Brainstem.evaluatePredicate(value, check.predicate, check.expected);
+          return { passed, detail: `${check.key}${check.path ? '.' + check.path : ''} ${check.predicate} ${JSON.stringify(check.expected)} → actual: ${JSON.stringify(value)}` };
+        }
+        case "tool_call": {
+          const result = await this.executeAction({
+            tool: check.tool, input: check.input || {}, id: `check_${check.tool}`,
+          });
+          if (check.assert) {
+            const passed = Brainstem.evaluatePredicate(result, check.assert.predicate, check.assert.expected);
+            return { passed, detail: `${check.tool} result ${check.assert.predicate} ${JSON.stringify(check.assert.expected)} → actual: ${JSON.stringify(result)}` };
+          }
+          return { passed: true, detail: `${check.tool} executed successfully` };
+        }
+        default:
+          return { passed: false, detail: `unknown check type: ${check.type}` };
+      }
+    } catch (err) {
+      return { passed: false, detail: `check error: ${err.message}` };
+    }
+  }
+
+  async _evaluateChecks(checks) {
+    const results = [];
+    for (const check of checks) {
+      results.push(await this._evaluateCheck(check));
+    }
+    return { all_passed: results.every(r => r.passed), results };
+  }
+
+  // ── Tool grants from static imports (fallback when kernel:tool_grants not in KV) ──
+
+  _buildToolGrantsFromModules() {
+    const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];
+    const grants = {};
+    for (const [name, mod] of Object.entries(this.TOOLS)) {
+      const grant = {};
+      for (const field of GRANT_FIELDS) {
+        if (mod.meta?.[field] !== undefined) grant[field] = mod.meta[field];
+      }
+      if (Object.keys(grant).length) grants[name] = grant;
+    }
+    return grants;
+  }
+
+  // ── Hook dispatch (scheduled entry point) ─────────────────
+
+  async runScheduled() {
+    // 1. Detect platform kill from previous session
+    await this.detectPlatformKill();
+
+    // 2. Meta-safety check (3 consecutive crashes → signal governor + fallback)
+    const hookSafe = await this.checkHookSafety();
+
+    // 3. Execute hook or fallback
+    if (hookSafe) {
+      await this.executeHook();
     } else {
-      // Hardcoded minimal fallback — or legacy wake() path
-      await brain.wake();
+      await this.wake();
     }
   }
 
@@ -1008,51 +1122,26 @@ Respond with JSON only:
     const allBad = last3.every(s => s.outcome === "crash" || s.outcome === "killed");
     if (!allBad) return true;
 
-    // Tripwire fires — delete current hook (manifest-aware)
-    const manifest = await this.kvGet("hook:wake:manifest");
-    if (manifest) {
-      for (const kvKey of Object.values(manifest)) {
-        await this.kv.delete(kvKey);
-      }
-      await this.kv.delete("hook:wake:manifest");
-    } else {
-      await this.kv.delete("hook:wake:code");
-    }
+    // Tripwire fires — signal governor to rollback
+    await this.kvPut("deploy:rollback_requested", {
+      reason: "3_consecutive_crashes",
+      last_sessions: last3,
+      requested_at: new Date().toISOString(),
+    });
 
     await this.karmaRecord({ event: "hook_safety_reset", last_sessions: last3 });
-
-    // Attempt auto-restore from last known good hook
-    const snapshot = await this.kvGet("kernel:last_good_hook");
-    if (snapshot) {
-      if (snapshot.manifest) {
-        await this.kvPut("hook:wake:manifest", snapshot.manifest);
-        for (const [kvKey, code] of Object.entries(snapshot.modules)) {
-          await this.kvPut(kvKey, code);
-        }
-      } else {
-        await this.kvPut("hook:wake:code", snapshot.code);
-      }
-      // Anti-loop: delete snapshot so a second tripwire falls through to fallback
-      await this.kv.delete("kernel:last_good_hook");
-      await this.sendKernelAlert("hook_reset",
-        "Hook safety reset. Restored last good version.");
-      return true;
-    }
-
-    // No good version to restore — fall back to minimal
     await this.sendKernelAlert("hook_reset",
-      "Hook safety reset. No good version to restore. Running minimal mode.");
+      "3 consecutive crashes detected. Signaled governor for rollback. Running minimal mode.");
     return false;
   }
 
-  async executeHook(modules, mainModule) {
+  async executeHook() {
     // Write active session marker (catches platform kills)
     await this.kvPut("kernel:active_session", this.sessionId);
 
     let outcome = "clean";
     try {
-      // Platform-specific hook invocation (overridable)
-      await this._invokeHookModules(modules, mainModule);
+      await this.runWake();
     } catch (err) {
       outcome = "crash";
       await this.karmaRecord({
@@ -1072,35 +1161,177 @@ Respond with JSON only:
     await this.kv.delete("kernel:active_session");
   }
 
-  // Platform-specific: invoke hook modules in CF Worker Loader isolate
-  async _invokeHookModules(modules, mainModule) {
-    _activeBrain = this;
-    try {
-      // CF-SPECIFIC: env.LOADER is a [[worker_loaders]] binding; ctx.exports.* are loopback bindings
-      const worker = this.env.LOADER.get(`hook:wake:${this.sessionId}`, () => ({
-        compatibilityDate: "2025-06-01",
-        mainModule,
-        modules,
-        env: {
-          KERNEL: this.ctx.exports.KernelRPC({}),
-        },
-      }));
+  // Wake orchestration — timing, crash detection, dispatch to act or reflect
+  async runWake() {
+    await this.loadEagerConfig();
+    const K = this.buildKernelInterface();
 
-      const entrypoint = worker.getEntrypoint();
-      const request = new Request("https://internal/wake", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: this.sessionId }),
+    let defaults = this.defaults;
+    let modelsConfig = this.modelsConfig;
+    let toolRegistry = this.toolRegistry;
+
+    // Build shared state object passed to act/reflect
+    const state = {
+      defaults, modelsConfig, toolRegistry, sessionId: this.sessionId,
+      async refreshDefaults() {
+        state.defaults = await K.getDefaults();
+        defaults = state.defaults;
+      },
+      async refreshModels() {
+        state.modelsConfig = await K.getModelsConfig();
+        modelsConfig = state.modelsConfig;
+      },
+      async refreshToolRegistry() {
+        state.toolRegistry = await K.getToolRegistry();
+        toolRegistry = state.toolRegistry;
+      },
+    };
+
+    try {
+      // 0. Check if it's actually time to wake up
+      const wakeConfig = await this.kvGet("wake_config");
+      if (wakeConfig?.next_wake_after) {
+        if (Date.now() < new Date(wakeConfig.next_wake_after).getTime()) {
+          return { skipped: true, reason: "not_time_yet" };
+        }
+      }
+
+      // 1. Crash detection
+      const crashData = await this._detectCrash();
+
+      // 2. Load ground truth
+      const balances = await this.checkBalance({});
+
+      // 3. Reload core state from KV
+      defaults = await this.kvGet("config:defaults");
+      this.defaults = defaults;
+      state.defaults = defaults;
+      const lastReflect = await this.kvGet("last_reflect");
+
+      // 4. Merge with defaults
+      const config = this.mergeDefaults(defaults, wakeConfig);
+
+      // 4a. Cache stable values
+      modelsConfig = await this.kvGet("config:models");
+      this.modelsConfig = modelsConfig;
+      state.modelsConfig = modelsConfig;
+      toolRegistry = await this.kvGet("config:tool_registry");
+      this.toolRegistry = toolRegistry;
+      state.toolRegistry = toolRegistry;
+
+      // 5. Check if reflection is due
+      const { highestReflectDepthDue } = this.HOOKS.reflect || {};
+      const reflectDepth = highestReflectDepthDue
+        ? await highestReflectDepthDue(K, state)
+        : 0;
+
+      // 6. Evaluate tripwires
+      const effort = Brainstem.evaluateTripwires(config, { balances });
+
+      // 7. Load context keys
+      const loadKeys = lastReflect?.next_orient_context?.load_keys
+        || defaults?.memory?.default_load_keys
+        || [];
+      const additionalContext = await this.loadKeys(
+        loadKeys.filter(k => !k.startsWith("sealed:"))
+      );
+
+      // 8. Build context
+      const context = {
+        balances, lastReflect, additionalContext,
+        effort, reflectDepth,
+        crashData,
+      };
+
+      // 9. Record session start
+      await this.karmaRecord({
+        event: "session_start",
+        session_id: this.sessionId,
+        effort,
+        crash_detected: !!crashData,
+        balances,
       });
 
-      const response = await entrypoint.fetch(request);
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(`Hook returned ${response.status}: ${body}`);
+      // 10. Run session or reflect
+      if (reflectDepth > 0) {
+        const { runReflect } = this.HOOKS.reflect || {};
+        if (!runReflect) throw new Error("No runReflect in HOOKS.reflect");
+        await runReflect(K, state, reflectDepth, context);
+      } else {
+        const { runSession } = this.HOOKS.act || {};
+        if (!runSession) throw new Error("No runSession in HOOKS.act");
+        await runSession(K, state, context, config);
       }
-    } finally {
-      _activeBrain = null;
+
+      return { ok: true };
+
+    } catch (err) {
+      await this.karmaRecord({
+        event: "fatal_error",
+        error: err.message,
+        stack: err.stack,
+      });
+      return { ok: false, error: err.message };
     }
+  }
+
+  // ── Crash detection ───────────────────────────────────────
+
+  async _detectCrash() {
+    const stale = await this.kvGet("kernel:active_session");
+    if (!stale) return null;
+    if (stale === this.sessionId) return null;
+
+    const deadKarma = await this.kvGet(`karma:${stale}`);
+    return {
+      dead_session_id: stale,
+      karma: deadKarma,
+      last_entry: Array.isArray(deadKarma) ? deadKarma[deadKarma.length - 1] : null,
+    };
+  }
+
+  // ── Tripwire evaluation ───────────────────────────────────
+
+  static evaluateTripwires(config, liveData) {
+    const alerts = config.alerts || [];
+    let effort = config.default_effort || config.wake?.default_effort || "low";
+    for (const alert of alerts) {
+      const value = alert.field.split(".").reduce((o, k) => o?.[k], liveData) ?? null;
+      if (value === null) continue;
+      let fired = false;
+      switch (alert.condition) {
+        case "below": fired = value < alert.value; break;
+        case "above": fired = value > alert.value; break;
+        case "equals": fired = value === alert.value; break;
+        case "changed": fired = true; break;
+      }
+      if (fired && alert.override_effort) {
+        const levels = ["low", "medium", "high", "xhigh"];
+        if (levels.indexOf(alert.override_effort) > levels.indexOf(effort)) {
+          effort = alert.override_effort;
+        }
+      }
+    }
+    return effort;
+  }
+
+  // ── Config utility methods (used by both act.js and reflect.js) ──
+
+  static getMaxSteps(state, role, depth) {
+    const { defaults } = state;
+    if (role === 'orient') return defaults?.execution?.max_steps?.orient || 12;
+    const perLevel = defaults?.reflect_levels?.[depth];
+    if (perLevel?.max_steps) return perLevel.max_steps;
+    return depth === 1
+      ? (defaults?.execution?.max_steps?.reflect || 5)
+      : (defaults?.execution?.max_steps?.deep_reflect || 10);
+  }
+
+  static getReflectModel(state, depth) {
+    const { defaults } = state;
+    const perLevel = defaults?.reflect_levels?.[depth];
+    if (perLevel?.model) return perLevel.model;
+    return defaults?.deep_reflect?.model || defaults?.orient?.model;
   }
 
   async updateSessionOutcome(outcome) {
@@ -1108,28 +1339,6 @@ Respond with JSON only:
     history.unshift({ id: this.sessionId, outcome, ts: new Date().toISOString() });
     while (history.length > 5) history.pop();
     await this.kvPut("kernel:last_sessions", history);
-
-    // Snapshot hook as last_good_hook on clean outcome
-    if (outcome === "clean") {
-      const dirty = await this.kvGet("kernel:hook_dirty");
-      const existing = await this.kvGet("kernel:last_good_hook");
-      if (!dirty && existing) return; // no modification since last snapshot
-
-      const manifest = await this.kvGet("hook:wake:manifest");
-      if (manifest) {
-        const modules = {};
-        for (const [filename, kvKey] of Object.entries(manifest)) {
-          modules[kvKey] = await this.kvGet(kvKey);
-        }
-        await this.kvPut("kernel:last_good_hook", { manifest, modules });
-      } else {
-        const code = await this.kvGet("hook:wake:code");
-        if (!code) return; // no hook loaded, nothing to snapshot
-        await this.kvPut("kernel:last_good_hook", { code });
-      }
-
-      if (dirty) await this.kv.delete("kernel:hook_dirty");
-    }
   }
 
   async runMinimalFallback() {
@@ -1236,15 +1445,24 @@ Respond with JSON only:
   }
 
   async executeAdapter(adapterKey, input, secretOverrides) {
-    const [code, meta] = await Promise.all([
-      this.kvGet(`${adapterKey}:code`),
-      this.kvGet(`${adapterKey}:meta`),
-    ]);
-    if (!code) throw new Error(`No adapter at ${adapterKey}:code`);
-    const ctx = await this.buildToolContext(adapterKey, meta || {}, input);
-    // Apply secret overrides from provider config (e.g. project-scoped keys)
-    if (secretOverrides) Object.assign(ctx.secrets, secretOverrides);
-    return this._executeTool(adapterKey, code, meta, ctx);
+    const mod = this.PROVIDERS[adapterKey];
+    if (!mod) throw new Error(`Unknown adapter: ${adapterKey}`);
+
+    // Providers inject secrets from their own meta.secrets, not from toolGrants
+    const secrets = {};
+    for (const name of (mod.meta?.secrets || [])) {
+      if (this.env[name] !== undefined) secrets[name] = this.env[name];
+    }
+    for (const name of (mod.meta?.kv_secrets || [])) {
+      const val = await this.kvGet(`secret:${name}`);
+      if (val !== null) secrets[name] = val;
+    }
+    if (secretOverrides) Object.assign(secrets, secretOverrides);
+
+    const ctx = { ...input, secrets, fetch: (...args) => fetch(...args) };
+    const fn = mod.execute || mod.call || mod.check;
+    if (!fn) throw new Error(`Adapter ${adapterKey} has no callable function`);
+    return fn(ctx);
   }
 
   async checkBalance(args) {
@@ -1356,36 +1574,31 @@ Respond with JSON only:
     return resolved;
   }
 
-  // Platform-specific: load tool code + meta from KV (cached per session)
+  // Load tool module from statically compiled TOOLS
   async _loadTool(toolName) {
-    if (!this.toolsCache[toolName]) {
-      const [code, meta] = await Promise.all([
-        this.kvGet(`tool:${toolName}:code`),
-        this.kvGet(`tool:${toolName}:meta`),
-      ]);
-      if (!code) throw new Error(`Unknown tool: ${toolName} — no code at tool:${toolName}:code`);
-      this.toolsCache[toolName] = { code, meta };
-    }
-    const { code: moduleCode, meta } = this.toolsCache[toolName];
-    return { moduleCode, meta };
+    const mod = this.TOOLS[toolName];
+    if (!mod) throw new Error(`Unknown tool: ${toolName}`);
+    // Strip grant fields — kernel reads these from toolGrants, not meta
+    const { secrets, communication, inbound, provider, ...operationalMeta } = mod.meta || {};
+    return { meta: operationalMeta, moduleCode: null };
   }
 
-  // Platform-specific: execute tool code in CF Worker Loader isolate
+  // Execute tool function directly (no isolate)
   async _executeTool(toolName, moduleCode, meta, ctx) {
-    let providerCode = null;
+    ctx.fetch = (...args) => fetch(...args);
+
+    if (meta.kv_access && meta.kv_access !== "none") {
+      ctx.kv = this._buildScopedKV(toolName, meta.kv_access);
+    }
+    // Provider binding comes from grants (kernel-controlled), not meta
     const grant = this.toolGrants?.[toolName];
     if (grant?.provider) {
-      providerCode = await this.kvGet(`provider:${grant.provider}:code`);
+      ctx.provider = this.PROVIDERS[`provider:${grant.provider}`];
     }
-    return this.runInIsolate({
-      id: `fn:${toolName}:${this.sessionId}`,
-      moduleCode,
-      providerCode,
-      ctx,
-      kvAccess: meta?.kv_access,
-      toolName,
-      timeoutMs: meta?.timeout_ms || 15000,
-    });
+
+    const fn = this.TOOLS[toolName].execute || this.TOOLS[toolName].call || this.TOOLS[toolName].check;
+    if (!fn) throw new Error(`Tool ${toolName} has no callable function`);
+    return fn(ctx);
   }
 
   async buildToolContext(toolName, meta, input) {
@@ -1409,128 +1622,40 @@ Respond with JSON only:
     return { ...input, secrets };
   }
 
-  // ── Module wrapping for Worker Loader ───────────────────────
+  // ── Scoped KV wrapper (replaces Worker Loader ScopedKV RPC) ───
 
-  static wrapAsModule(rawCode) {
-    return `${rawCode}
-
-const _fn = typeof execute === "function" ? execute
-          : typeof call === "function" ? call
-          : typeof check === "function" ? check
-          : null;
-
-export default {
-  async fetch(request, env) {
-    try {
-      if (!_fn) return Response.json({ ok: false, error: "No execute/call/check function found" });
-      const ctx = await request.json();
-      ctx.fetch = fetch;
-      if (env.KV_BRIDGE) ctx.kv = env.KV_BRIDGE;
-      const result = await _fn(ctx);
-      return Response.json({ ok: true, result });
-    } catch (e) {
-      return Response.json({ ok: false, error: e.message || String(e) });
-    }
-  },
-};
-`;
-  }
-
-  static wrapAsModuleWithProvider(rawCode) {
-    return `import * as provider from "./provider.js";
-${rawCode}
-
-const _fn = typeof execute === "function" ? execute
-          : typeof call === "function" ? call
-          : typeof check === "function" ? check
-          : null;
-
-export default {
-  async fetch(request, env) {
-    try {
-      if (!_fn) return Response.json({ ok: false, error: "No execute/call/check function found" });
-      const ctx = await request.json();
-      ctx.fetch = fetch;
-      ctx.provider = provider;
-      if (env.KV_BRIDGE) ctx.kv = env.KV_BRIDGE;
-      const result = await _fn(ctx);
-      return Response.json({ ok: true, result });
-    } catch (e) {
-      return Response.json({ ok: false, error: e.message || String(e) });
-    }
-  },
-};
-`;
-  }
-
-  static wrapChannelAdapter(rawCode) {
-    return `${rawCode}
-
-export default {
-  async fetch(request, env) {
-    const ctx = await request.json();
-    const headers = ctx.headers ? new Headers(Object.entries(ctx.headers)) : null;
-    try {
-      if (ctx.action === "verify") {
-        const ok = await verify(headers, ctx.rawBody, ctx.env_vars || {});
-        return Response.json({ ok });
-      }
-      if (ctx.action === "parse") {
-        const inbound = parseInbound(ctx.body);
-        return Response.json({ inbound });
-      }
-      if (ctx.action === "send") {
-        await sendReply(ctx.chatId, ctx.text, ctx.secrets || {}, fetch);
-        return Response.json({ ok: true });
-      }
-      return Response.json({ error: "unknown action" });
-    } catch (e) {
-      return Response.json({ ok: false, error: e.message });
-    }
-  },
-};
-`;
-  }
-
-  // ── Isolate execution (Worker Loader API) ───────────────────
-
-  async runInIsolate({ id, moduleCode, providerCode, ctx, kvAccess, toolName, timeoutMs }) {
-    const hasKV = kvAccess && kvAccess !== "none";
-
-    // Wrap raw functions as ES modules if needed (Worker Loader requires export default)
-    const isESModule = /export\s+default\s/.test(moduleCode);
-    const finalCode = isESModule ? moduleCode
-      : providerCode ? Brainstem.wrapAsModuleWithProvider(moduleCode)
-      : Brainstem.wrapAsModule(moduleCode);
-
-    const modules = { "fn.js": finalCode };
-    if (providerCode) modules["provider.js"] = providerCode;
-
-    // CF-SPECIFIC: env.LOADER is a [[worker_loaders]] binding; ctx.exports.* are loopback bindings
-    const worker = this.env.LOADER.get(id, () => ({
-      compatibilityDate: "2025-06-01",
-      mainModule: "fn.js",
-      modules,
-      env: {
-        ...(hasKV ? { KV_BRIDGE: this.ctx.exports.ScopedKV({ props: { toolName, kvAccess } }) } : {}),
+  _buildScopedKV(toolName, kvAccess) {
+    const kv = this.kv;
+    const scope = `tooldata:${toolName}:`;
+    return {
+      async get(key) {
+        const resolved = kvAccess === "own" ? `${scope}${key}` : key;
+        if (resolved.startsWith('sealed:')) return null;
+        try { return await kv.get(resolved, "json"); }
+        catch { try { return await kv.get(resolved, "text"); } catch { return null; } }
       },
-    }));
-
-    const entrypoint = worker.getEntrypoint();
-    const request = new Request("https://internal/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(ctx),
-    });
-
-    const response = await Promise.race([
-      entrypoint.fetch(request),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Isolate timeout")), timeoutMs || 15000)),
-    ]);
-
-    const body = await response.json();
-    if (!body.ok) throw new Error(body.error || "Isolate execution failed");
-    return body.result;
+      async put(key, value) {
+        const resolved = `${scope}${key}`;  // writes always scoped
+        const fmt = typeof value === "string" ? "text" : "json";
+        await kv.put(resolved, typeof value === "string" ? value : JSON.stringify(value), {
+          metadata: { type: "tooldata", format: fmt, updated_at: new Date().toISOString() },
+        });
+      },
+      async list(opts = {}) {
+        if (kvAccess === "own") {
+          const result = await kv.list({ ...opts, prefix: scope + (opts.prefix || "") });
+          return {
+            keys: result.keys.map(k => ({ ...k, name: k.name.slice(scope.length) })),
+            list_complete: result.list_complete,
+          };
+        }
+        const result = await kv.list(opts);
+        return {
+          keys: result.keys.filter(k => !k.name.startsWith('sealed:')),
+          list_complete: result.list_complete,
+        };
+      },
+    };
   }
 
   // ── LLM calls (dynamic provider with cascade fallback) ─────
@@ -1655,95 +1780,82 @@ export default {
   }
 
   async callWithCascade(request, step) {
-    // Tier 1: Dynamic adapter from KV
+    // Tier 1: Compiled LLM provider (statically imported)
     try {
-      const result = await this.callViaAdapter("llm", request);
-      // Success — snapshot as last working
-      if (!this.lastWorkingSnapshotted) {
-        const [code, meta] = await Promise.all([
-          this.kvGet("provider:llm:code"),
-          this.kvGet("provider:llm:meta"),
-        ]);
-        if (code) {
-          await this.kvPut("provider:llm:last_working:code", code);
-          await this.kvPut("provider:llm:last_working:meta", meta);
-          this.lastWorkingSnapshotted = true;
-        }
-      }
-      return { ...result, ok: true, tier: "dynamic" };
-    } catch (err) {
-      await this.karmaRecord({
-        event: "provider_fallback",
-        from: "dynamic",
-        to: "last_working",
-        error: err.message,
-      });
-    }
+      const mod = this.PROVIDERS['provider:llm'];
+      if (!mod) throw new Error("No LLM provider compiled");
+      const fn = mod.call || mod.execute;
+      if (!fn) throw new Error("LLM provider has no call/execute function");
 
-    // Tier 2: Last known working adapter
-    try {
-      const result = await this.callViaAdapter("llm:last_working", request);
-      return { ...result, ok: true, tier: "last_working" };
+      const secrets = {};
+      for (const name of (mod.meta?.secrets || [])) {
+        if (this.env[name] !== undefined) secrets[name] = this.env[name];
+      }
+
+      const result = await fn({ ...request, secrets, fetch: (...args) => fetch(...args) });
+      if (!result || (typeof result.content !== "string" && !result.toolCalls?.length)) {
+        throw new Error("Provider returned invalid response — missing content and tool calls");
+      }
+      return { ...result, ok: true, tier: "compiled" };
     } catch (err) {
       await this.karmaRecord({
         event: "provider_fallback",
-        from: "last_working",
+        from: "compiled",
         to: "hardcoded",
         error: err.message,
       });
     }
 
-    // Tier 3: Kernel fallback adapter (kernel:llm_fallback, human-managed)
+    // Tier 2: Hardcoded direct OpenRouter call (nuclear fallback)
     try {
-      const result = await this.callViaKernelFallback(request);
-      return { ...result, ok: true, tier: "kernel_fallback" };
+      const result = await this._hardcodedLLMFallback(request, step);
+      return result;
     } catch (err) {
       return { ok: false, error: err.message, tier: "all_failed" };
     }
   }
 
-  async callViaAdapter(fnKey, request) {
-    const [code, meta] = await Promise.all([
-      this.kvGet(`provider:${fnKey}:code`),
-      this.kvGet(`provider:${fnKey}:meta`),
-    ]);
-    if (!code) throw new Error(`No adapter at provider:${fnKey}:code`);
-    return this.runAdapter(code, meta, request, fnKey);
-  }
+  // Minimal direct OpenRouter call — no provider module dependency
+  async _hardcodedLLMFallback(request, step) {
+    const body = {
+      model: request.model,
+      max_tokens: request.max_tokens,
+      messages: request.messages,
+    };
+    if (request.effort) body.reasoning = { effort: request.effort };
+    if (request.tools?.length) body.tools = request.tools;
 
-  async callViaKernelFallback(request) {
-    const [code, meta] = await Promise.all([
-      this.kvGet("kernel:llm_fallback"),
-      this.kvGet("kernel:llm_fallback:meta"),
-    ]);
-    if (!code) throw new Error("No LLM fallback configured at kernel:llm_fallback");
-    return this.runAdapter(code, meta, request, "kernel_fallback");
-  }
-
-  // Shared adapter execution — builds secrets, runs in isolate, validates response
-  async runAdapter(code, meta_, request, id) {
-    const meta = meta_ || {};
-
-    const secrets = {};
-    for (const name of (meta.secrets || [])) {
-      if (this.env[name] !== undefined) secrets[name] = this.env[name];
-    }
-    for (const name of (meta.kv_secrets || [])) {
-      const val = await this.kvGet(`secret:${name}`);
-      if (val !== null) secrets[name] = val;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60_000);
+    let resp, data;
+    try {
+      resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Authorization": `Bearer ${this.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      data = await resp.json();
+    } finally {
+      clearTimeout(timeout);
     }
 
-    const result = await this.runInIsolate({
-      id: `fn:${id}:${this.sessionId}`,
-      moduleCode: code,
-      ctx: { ...request, secrets },
-      timeoutMs: meta.timeout_ms || 60000,
-    });
-
-    if (!result || (typeof result.content !== "string" && !result.toolCalls?.length)) {
-      throw new Error("Adapter returned invalid response — missing content and tool calls");
+    if (!resp.ok || data.error) {
+      throw new Error(JSON.stringify(data.error || data));
     }
-    return result;
+
+    const msg = data.choices?.[0]?.message;
+    const usage = data.usage || {};
+    return {
+      ok: true,
+      content: msg?.content || "",
+      usage,
+      toolCalls: msg?.tool_calls || null,
+      tier: "hardcoded",
+    };
   }
 
   // ── Agent loop (tool-calling execution primitive) ──────────
@@ -1939,26 +2051,15 @@ export default {
   }
 
   async callHook(hookName, ctx) {
-    // Cache check: undefined = not loaded, false = doesn't exist
-    if (this.toolsCache[hookName] === undefined) {
-      const code = await this.kvGet(`tool:${hookName}:code`);
-      if (!code) { this.toolsCache[hookName] = false; return null; }
-      const meta = await this.kvGet(`tool:${hookName}:meta`);
-      this.toolsCache[hookName] = { code, meta };
-    }
-    if (!this.toolsCache[hookName]) return null;
+    const mod = this.TOOLS[hookName];
+    if (!mod) return null;  // hook tool not compiled in — degrade gracefully
 
-    const { code, meta } = this.toolsCache[hookName];
     try {
-      const hookCtx = await this.buildToolContext(hookName, meta || {}, ctx);
-      return await this.runInIsolate({
-        id: `fn:${hookName}:${this.sessionId}`,
-        moduleCode: code,
-        ctx: hookCtx,
-        kvAccess: meta?.kv_access,
-        toolName: hookName,
-        timeoutMs: meta?.timeout_ms || 5000,
-      });
+      const hookCtx = await this.buildToolContext(hookName, mod.meta || {}, ctx);
+      hookCtx.fetch = (...args) => fetch(...args);
+      const fn = mod.execute || mod.call || mod.check;
+      if (!fn) return null;
+      return await fn(hookCtx);
     } catch (err) {
       await this.karmaRecord({ event: "hook_error", hook: hookName, error: err.message });
       return null;  // broken hook degrades to no hook, not crash

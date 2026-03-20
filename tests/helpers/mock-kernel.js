@@ -4,7 +4,7 @@ import { makeKVStore } from "./mock-kv.js";
 export function makeMockK(kvInit = {}, opts = {}) {
   const kv = makeKVStore(kvInit);
 
-  return {
+  const mock = {
     // KV reads
     kvGet: vi.fn(async (key) => {
       const val = kv._store.get(key) ?? null;
@@ -124,7 +124,91 @@ export function makeMockK(kvInit = {}, opts = {}) {
     resolveContact: vi.fn(async (platform, userId) => null),
     elapsed: vi.fn(async () => 0),
 
+    // Proposal system
+    createProposal: vi.fn(async () => "p_test_123"),
+    loadProposals: vi.fn(async () => ({})),
+    updateProposalStatus: vi.fn(async () => {}),
+    processProposalVerdicts: vi.fn(async () => {}),
+
+    // Config utilities
+    getMaxSteps: vi.fn(async (state, role, depth) => {
+      const { defaults } = state;
+      if (role === 'orient') return defaults?.execution?.max_steps?.orient || 12;
+      const perLevel = defaults?.reflect_levels?.[depth];
+      if (perLevel?.max_steps) return perLevel.max_steps;
+      return depth === 1
+        ? (defaults?.execution?.max_steps?.reflect || 5)
+        : (defaults?.execution?.max_steps?.deep_reflect || 10);
+    }),
+    getReflectModel: vi.fn(async (state, depth) => {
+      const { defaults } = state;
+      const perLevel = defaults?.reflect_levels?.[depth];
+      if (perLevel?.model) return perLevel.model;
+      return defaults?.deep_reflect?.model || defaults?.orient?.model;
+    }),
+
     // Internal — expose KV store for assertions
     _kv: kv,
   };
+
+  // applyKVOperation needs `this` bound to the mock object (calls kvPutSafe, karmaRecord, etc.)
+  const _SYSTEM_PREFIXES = [
+    'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
+    'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
+    'yama:', 'niyama:', 'viveka:', 'prajna:', 'skill:', 'comms_blocked:',
+    'contact:', 'contact_index:', 'sealed:',
+  ];
+  const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
+  function _isSystemKey(key) {
+    if (_SYSTEM_EXACT.includes(key)) return true;
+    return _SYSTEM_PREFIXES.some(p => key.startsWith(p));
+  }
+
+  mock.applyKVOperation = vi.fn(async (op) => {
+    const key = op.key;
+    const valueSummary = op.value != null
+      ? (typeof op.value === 'string'
+          ? (op.value.length > 500 ? op.value.slice(0, 500) + '\u2026' : op.value)
+          : JSON.stringify(op.value).slice(0, 500))
+      : undefined;
+
+    if (key.startsWith("contact:")) {
+      try { await mock.kvWritePrivileged([op]); }
+      catch (err) {
+        await mock.karmaRecord({ event: "modification_blocked", key, op: op.op, reason: err.message, attempted_value: valueSummary });
+      }
+      return;
+    }
+
+    if (_isSystemKey(key)) {
+      await mock.karmaRecord({ event: "modification_blocked", key, op: op.op, reason: "system_key", attempted_value: valueSummary });
+      return;
+    }
+
+    const { value: existing, metadata } = await mock.kvGetWithMeta(key);
+    if (existing !== null && !metadata?.unprotected) {
+      await mock.karmaRecord({ event: "modification_blocked", key, op: op.op, reason: "protected_key", attempted_value: valueSummary });
+      return;
+    }
+
+    switch (op.op) {
+      case "put":
+        await mock.kvPutSafe(op.key, op.value, { unprotected: true, ...op.metadata });
+        break;
+      case "delete":
+        await mock.kvDeleteSafe(op.key);
+        break;
+      case "patch": {
+        const current = await mock.kvGet(op.key);
+        if (typeof current !== "string") break;
+        if (!current.includes(op.old_string)) break;
+        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) break;
+        const patched = current.replace(op.old_string, op.new_string);
+        await mock.kvPutSafe(op.key, patched, { unprotected: true, ...op.metadata });
+        break;
+      }
+    }
+  });
+
+  return mock;
 }

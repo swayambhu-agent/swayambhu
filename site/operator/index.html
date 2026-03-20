@@ -61,7 +61,7 @@
 </head>
 <body class="text-gray-300 font-mono min-h-screen">
   <div id="root"></div>
-  <script src="config.js"></script>
+  <script src="config.js" onerror="/* optional config — defaults used */"></script>
   <script type="text/babel">
     const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
@@ -1233,10 +1233,11 @@
             )}
             <div className="flex items-center gap-2 ml-auto">
               {health && balances && (() => {
+                const extract = (v) => typeof v === 'object' && v !== null ? v.balance : v;
                 const items = [
-                  ...Object.entries(balances.providers || {}).map(([n, v]) => [n, v?.balance ?? v]),
-                  ...Object.entries(balances.wallets || {}).map(([n, v]) => [n, v?.balance ?? v]),
-                ].filter(([, v]) => v != null);
+                  ...Object.entries(balances.providers || {}).map(([n, v]) => [n, extract(v)]),
+                  ...Object.entries(balances.wallets || {}).map(([n, v]) => [n, extract(v)]),
+                ].filter(([, v]) => v != null && typeof v !== 'object');
                 if (!items.length) return null;
                 return (
                   <>

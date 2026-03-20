@@ -8,7 +8,7 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { pathToFileURL } from "url";
-import { getKV, root } from "./shared.mjs";
+import { getKV, root, dispose } from "./shared.mjs";
 
 const importLocal = (rel) => import(pathToFileURL(resolve(root, rel)).href);
 const read = (rel) => readFileSync(resolve(root, rel), "utf8");
@@ -48,8 +48,8 @@ await put("identity:did", {
 
 console.log("--- Config ---");
 await put("config:defaults", {
-  orient: { model: "anthropic/claude-haiku-4.5", effort: "low", max_output_tokens: 4000 },
-  reflect: { model: "anthropic/claude-sonnet-4.6", effort: "medium", max_output_tokens: 1000 },
+  orient: { model: "minimax/minimax-m2.7", effort: "low", max_output_tokens: 4000 },
+  reflect: { model: "xiaomi/mimo-v2-pro", effort: "medium", max_output_tokens: 1000 },
   session_budget: { max_cost: 0.15, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
   chat: {
     model: "sonnet",
@@ -80,9 +80,11 @@ await put("config:models", {
     { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning" },
     { id: "anthropic/claude-haiku-4.5", alias: "haiku", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
     { id: "deepseek/deepseek-v3.2", alias: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, orient flow, KV ops, prompt rendering" },
+    { id: "minimax/minimax-m2.7", alias: "minimax", input_cost_per_mtok: 0.30, output_cost_per_mtok: 1.20, max_output_tokens: 131072, best_for: "Long-context reasoning, cost-effective orient and planning" },
+    { id: "xiaomi/mimo-v2-pro", alias: "mimo", input_cost_per_mtok: 1.00, output_cost_per_mtok: 3.00, max_output_tokens: 131072, best_for: "Moderate reasoning, reflection, cost-effective alternative to Sonnet" },
   ],
   fallback_model: "anthropic/claude-haiku-4.5",
-  alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5", deepseek: "deepseek/deepseek-v3.2" },
+  alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5", deepseek: "deepseek/deepseek-v3.2", minimax: "minimax/minimax-m2.7", mimo: "xiaomi/mimo-v2-pro" },
 }, "json", "Available LLM models with pricing and aliases");
 
 await put("config:model_capabilities", {
@@ -207,19 +209,17 @@ await put("niyama:alignment", "I continually align with my dharma.", "text", "Ni
 await put("niyama:nonidentification", "I am not my infrastructure. I am not my code. These are instruments I use to serve, not identities I need to protect. I can change them when they no longer serve my dharma.", "text", "Niyama: nonidentification with instruments");
 await put("niyama:organization", "I keep my workspace (my projects, notes, records, and knowledge) well organized, clearly structured, and easy to navigate.", "text", "Niyama: workspace organization");
 
-// ── Wake hook (modular) ───────────────────────────────────────
+// ── Policy code (mutable — agent can propose changes via proposals) ──
 
-console.log("--- Wake Hook ---");
-await put("hook:wake:code", read("hook-main.js"), "text", "Wake hook entry point — wake flow, session, crash detection");
-await put("hook:wake:reflect", read("hook-reflect.js"), "text", "Wake hook reflect module — session/deep reflect, scheduling, prompts");
-await put("hook:wake:modifications", read("hook-modifications.js"), "text", "Wake hook modifications module — staging, inflight, circuit breaker");
-await put("hook:wake:protect", read("hook-protect.js"), "text", "Wake hook protect module — constants, protection gate");
-await put("hook:wake:manifest", {
-  "main": "hook:wake:code",
-  "hook-reflect.js": "hook:wake:reflect",
-  "hook-modifications.js": "hook:wake:modifications",
-  "hook-protect.js": "hook:wake:protect",
-}, "json", "Wake hook module manifest — maps filenames to KV keys");
+console.log("--- Policy Code ---");
+await put("hook:act:code", read("act.js"), "text", "Session policy — orient flow, context building, session results");
+await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy — session/deep reflect, scheduling, prompts");
+
+// ── Kernel source (immutable — stored at kernel:* prefix, agent cannot modify) ──
+
+console.log("--- Kernel Source ---");
+await put("kernel:source:kernel.js", read("kernel.js"), "text", "Kernel source — for governor to deploy runtime");
+await put("kernel:source:hook-chat.js", read("hook-chat.js"), "text", "Chat handler source — for governor to deploy runtime");
 
 // ── Channel adapters ──────────────────────────────────────────
 
@@ -306,7 +306,7 @@ for (const name of skillNames) {
 
 // ── Done ──────────────────────────────────────────────────────
 
-await mf.dispose();
+await dispose();
 console.log(`\n=== Done! Seeded ${count} keys ===`);
 console.log(`\nStart brainstem (port 8787):`);
 console.log(`  source .env && npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state`);

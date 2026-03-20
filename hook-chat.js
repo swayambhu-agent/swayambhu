@@ -1,9 +1,9 @@
 // Swayambhu Chat Handler — Platform-agnostic chat session pipeline
-// Channel adapters (KV-loaded) handle platform specifics.
+// Channel adapters handle platform specifics (statically imported).
 // The chat system prompt (prompt:chat) is in KV = agent-evolvable.
 //
-// Every kernel method is called via K (the KernelRPC binding or DevBrainstem).
-// This module is kernel-level code — imported directly, not loaded from KV.
+// Every kernel method is called via K (the kernel interface).
+// This module is kernel-level code — immutable, imported directly.
 
 export async function handleChat(K, channel, inbound, adapter) {
   const { chatId, text, command } = inbound;

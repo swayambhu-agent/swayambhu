@@ -126,9 +126,9 @@ describe("module structure", () => {
   }
 });
 
-// ── 2. No export default (compatible with wrapAsModule) ──────
+// ── 2. No export default (tools use named exports only) ──────
 
-describe("wrapAsModule compatibility", () => {
+describe("no export default", () => {
   const root = resolve(import.meta.dirname, "..");
 
   for (const name of Object.keys(allTools)) {

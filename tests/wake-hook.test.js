@@ -1,35 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   buildOrientContext,
   detectCrash,
-  evaluateTripwires,
   writeSessionResults,
   getBalances,
   runSession,
   summarizeKarma,
-} from "../hook-main.js";
-import {
-  applyKVOperation,
-} from "../hook-protect.js";
-import {
-  evaluatePredicate,
-  stageModification,
-  findInflightConflict,
-  promoteInflight,
-  rollbackInflight,
-  processReflectVerdicts,
-  processDeepReflectVerdicts,
-  runCircuitBreaker,
-  loadStagedModifications,
-  loadInflightModifications,
-  initTracking,
-  acceptStaged,
-  acceptDirect,
-} from "../hook-modifications.js";
+} from "../act.js";
+import { Brainstem } from "../kernel.js";
 import {
   executeReflect,
-  getMaxSteps,
-  getReflectModel,
   isReflectDue,
   highestReflectDepthDue,
   defaultReflectPrompt,
@@ -40,13 +20,17 @@ import {
   loadBelowPrompt,
   loadReflectHistory,
   runReflect,
-} from "../hook-reflect.js";
-import { makeMockK } from "./helpers/mock-kernel.js";
+} from "../reflect.js";
 
-// Reset modification tracking state before each test
-beforeEach(() => {
-  initTracking([], []);
-});
+// Aliases for functions moved to kernel static methods
+const evaluateTripwires = Brainstem.evaluateTripwires;
+const getMaxSteps = Brainstem.getMaxSteps;
+const getReflectModel = Brainstem.getReflectModel;
+
+// applyKVOperation is now a kernel instance method called via K.applyKVOperation(op).
+// Tests used the old standalone signature applyKVOperation(K, op) — this wrapper preserves it.
+async function applyKVOperation(K, op) { return K.applyKVOperation(op); }
+import { makeMockK } from "./helpers/mock-kernel.js";
 
 function makeState(overrides = {}) {
   return {
@@ -410,32 +394,32 @@ describe("evaluateTripwires", () => {
 
 describe("evaluatePredicate", () => {
   it("exists", () => {
-    expect(evaluatePredicate("val", "exists")).toBe(true);
-    expect(evaluatePredicate(null, "exists")).toBe(false);
+    expect(Brainstem.evaluatePredicate("val", "exists")).toBe(true);
+    expect(Brainstem.evaluatePredicate(null, "exists")).toBe(false);
   });
 
   it("equals", () => {
-    expect(evaluatePredicate(42, "equals", 42)).toBe(true);
-    expect(evaluatePredicate(42, "equals", 43)).toBe(false);
+    expect(Brainstem.evaluatePredicate(42, "equals", 42)).toBe(true);
+    expect(Brainstem.evaluatePredicate(42, "equals", 43)).toBe(false);
   });
 
   it("gt / lt", () => {
-    expect(evaluatePredicate(10, "gt", 5)).toBe(true);
-    expect(evaluatePredicate(10, "lt", 5)).toBe(false);
+    expect(Brainstem.evaluatePredicate(10, "gt", 5)).toBe(true);
+    expect(Brainstem.evaluatePredicate(10, "lt", 5)).toBe(false);
   });
 
   it("matches", () => {
-    expect(evaluatePredicate("hello world", "matches", "hello")).toBe(true);
-    expect(evaluatePredicate("hello world", "matches", "^world")).toBe(false);
+    expect(Brainstem.evaluatePredicate("hello world", "matches", "hello")).toBe(true);
+    expect(Brainstem.evaluatePredicate("hello world", "matches", "^world")).toBe(false);
   });
 
   it("type", () => {
-    expect(evaluatePredicate(42, "type", "number")).toBe(true);
-    expect(evaluatePredicate("str", "type", "string")).toBe(true);
+    expect(Brainstem.evaluatePredicate(42, "type", "number")).toBe(true);
+    expect(Brainstem.evaluatePredicate("str", "type", "string")).toBe(true);
   });
 
   it("unknown predicate fails closed", () => {
-    expect(evaluatePredicate("val", "unknown_pred")).toBe(false);
+    expect(Brainstem.evaluatePredicate("val", "unknown_pred")).toBe(false);
   });
 });
 
@@ -512,17 +496,7 @@ describe("default prompts", () => {
   });
 });
 
-// ── 13. runCircuitBreaker ──────────────────────────────────
-
-describe("runCircuitBreaker", () => {
-  it("no-op without last_danger", async () => {
-    const K = makeMockK();
-    await runCircuitBreaker(K);
-    expect(K.kvWritePrivileged).not.toHaveBeenCalled();
-  });
-});
-
-// ── 14. getBalances ─────────────────────────────────────────
+// ── 13. getBalances ─────────────────────────────────────────
 
 describe("getBalances", () => {
   it("delegates to K.checkBalance", async () => {
@@ -695,55 +669,7 @@ describe("runReflect budget_multiplier", () => {
   });
 });
 
-// ── 18. patch op in mock kernel ──────────────────────────────
-
-describe("patch op", () => {
-  it("replaces old_string with new_string in KV value", async () => {
-    const K = makeMockK({ "hook:wake:modifications": "function old() { return 1; }" });
-    await K.kvWritePrivileged([{
-      op: "patch",
-      key: "hook:wake:modifications",
-      old_string: "return 1",
-      new_string: "return 2",
-    }]);
-    const result = K._kv._store.get("hook:wake:modifications");
-    expect(result).toBe("function old() { return 2; }");
-  });
-
-  it("rejects when old_string not found", async () => {
-    const K = makeMockK({ "hook:wake:modifications": "function old() { return 1; }" });
-    await expect(K.kvWritePrivileged([{
-      op: "patch",
-      key: "hook:wake:modifications",
-      old_string: "nonexistent string",
-      new_string: "replacement",
-    }])).rejects.toThrow("old_string not found");
-  });
-
-  it("rejects when old_string matches multiple locations", async () => {
-    const K = makeMockK({ "hook:wake:modifications": "aaa bbb aaa" });
-    await expect(K.kvWritePrivileged([{
-      op: "patch",
-      key: "hook:wake:modifications",
-      old_string: "aaa",
-      new_string: "ccc",
-    }])).rejects.toThrow("matches multiple locations");
-  });
-
-  it("rejects when value is not a string", async () => {
-    const K = makeMockK({ "hook:wake:modifications": JSON.stringify({ a: 1 }) });
-    // The mock stores it as a string via JSON.stringify, so set a non-string
-    K._kv._store.set("hook:wake:modifications", 42);
-    await expect(K.kvWritePrivileged([{
-      op: "patch",
-      key: "hook:wake:modifications",
-      old_string: "something",
-      new_string: "else",
-    }])).rejects.toThrow("not a string value");
-  });
-});
-
-// ── 19. applyKVOperation blocks yama/niyama (system keys) ───
+// ── 18. applyKVOperation blocks yama/niyama (system keys) ───
 
 describe("applyKVOperation blocks yama/niyama", () => {
   it("blocks yama: prefix as system key", async () => {
@@ -798,32 +724,6 @@ describe("applyKVOperation routes contact: to kvWritePrivileged", () => {
     expect(K.kvWritePrivileged).toHaveBeenCalledWith([
       { op: "delete", key: "contact:alice" },
     ]);
-  });
-});
-
-// ── 20. acceptStaged with patch op ────────────────
-
-describe("acceptStaged with patch op", () => {
-  it("forwards patch ops through to kvWritePrivileged", async () => {
-    const K = makeMockK({
-      "hook:wake:modifications": "function old() { return 1; }",
-    });
-
-    // Stage a modification with a patch op
-    const modificationId = await stageModification(K, {
-      claims: ["test patch"],
-      ops: [{ op: "patch", key: "hook:wake:modifications", old_string: "return 1", new_string: "return 2" }],
-      checks: [{ type: "kv_assert", key: "hook:wake:modifications", predicate: "exists" }],
-    }, "test_session");
-
-    expect(modificationId).toBeTruthy();
-
-    // Accept staged modification
-    await acceptStaged(K, modificationId);
-
-    // Check that the patch was applied
-    const afterValue = K._kv._store.get("hook:wake:modifications");
-    expect(afterValue).toBe("function old() { return 2; }");
   });
 });
 
@@ -1134,266 +1034,33 @@ describe("applyReflectOutput conditional fields", () => {
   });
 });
 
-// ── stageModification: criteria + staged_at_session ─────────
+// ── Proposal system (kernel) ────────────────────────────────
 
-describe("stageModification new fields", () => {
-  it("passes through criteria", async () => {
-    const K = makeMockK({}, { sessionCount: 10 });
-    const id = await stageModification(K, {
-      claims: ["test"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-      criteria: "Observe cost reduction over 10 sessions",
-    }, "s_test", 1);
-
-    expect(id).toBeTruthy();
-    const staged = K._kv._store.get(`modification_staged:${id}`);
-    const record = JSON.parse(staged);
-    expect(record.criteria).toBe("Observe cost reduction over 10 sessions");
+describe("Proposal system (kernel)", () => {
+  // Test Brainstem.isCodeKey
+  it("identifies code keys correctly", () => {
+    expect(Brainstem.isCodeKey("tool:kv_query:code")).toBe(true);
+    expect(Brainstem.isCodeKey("provider:llm:code")).toBe(true);
+    expect(Brainstem.isCodeKey("hook:act:code")).toBe(true);
+    expect(Brainstem.isCodeKey("channel:slack:code")).toBe(true);
+    expect(Brainstem.isCodeKey("config:defaults")).toBe(false);
+    expect(Brainstem.isCodeKey("tool:kv_query:meta")).toBe(false);
+    expect(Brainstem.isCodeKey("prompt:orient")).toBe(false);
   });
 
-  it("stores staged_at_session", async () => {
-    const K = makeMockK({}, { sessionCount: 42 });
-    const id = await stageModification(K, {
-      claims: ["test"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-    }, "s_test", 1);
-
-    const staged = K._kv._store.get(`modification_staged:${id}`);
-    const record = JSON.parse(staged);
-    expect(record.staged_at_session).toBe(42);
-  });
-});
-
-// ── acceptDirect wisdom gate ──────────────────────────────
-
-describe("acceptDirect wisdom gate", () => {
-  it("allows prajna wisdom via acceptDirect", async () => {
-    const K = makeMockK({}, { sessionCount: 5 });
-    const id = await acceptDirect(K, {
-      type: "wisdom",
-      validation: "Tested over 20 sessions",
-      ops: [{ op: "put", key: "prajna:test:entry", value: { text: "test", type: "prajna" } }],
-    }, "s_test");
-
-    expect(id).toBeTruthy();
-    expect(id).toMatch(/^m_/);
-  });
-
-  it("blocks yama wisdom via acceptDirect", async () => {
-    const K = makeMockK({}, { sessionCount: 5 });
-    const id = await acceptDirect(K, {
-      type: "wisdom",
-      validation: "Should be blocked",
-      ops: [{ op: "put", key: "yama:test", value: "new value" }],
-    }, "s_test");
-
-    expect(id).toBeNull();
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "modification_invalid", reason: "yama/niyama wisdom must be staged" })
-    );
-  });
-
-  it("blocks mixed yama+prajna ops", async () => {
-    const K = makeMockK({}, { sessionCount: 5 });
-    const id = await acceptDirect(K, {
-      type: "wisdom",
-      validation: "Mixed ops",
-      ops: [
-        { op: "put", key: "prajna:safe", value: { text: "ok" } },
-        { op: "put", key: "yama:blocked", value: "nope" },
-      ],
-    }, "s_test");
-
-    expect(id).toBeNull();
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "modification_invalid", reason: "yama/niyama wisdom must be staged" })
-    );
-  });
-
-  it("stores type 'wisdom' in snapshot for wisdom requests", async () => {
-    const K = makeMockK({}, { sessionCount: 5, sessionId: "s_test" });
-    const id = await acceptDirect(K, {
-      type: "wisdom",
-      validation: "Test validation",
-      ops: [{ op: "put", key: "viveka:test:entry", value: { text: "test", type: "viveka" } }],
-    }, "s_test");
-
-    const snapshot = K._kv._store.get(`modification_snapshot:${id}`);
-    const record = JSON.parse(snapshot);
-    expect(record.type).toBe("wisdom");
-  });
-
-  it("injects validation into op values for wisdom", async () => {
-    const K = makeMockK({}, { sessionCount: 5 });
-    const id = await acceptDirect(K, {
-      type: "wisdom",
-      validation: "Observed in 5 sessions",
-      ops: [{ op: "put", key: "prajna:test:inject", value: { text: "test", type: "prajna" } }],
-    }, "s_test");
-
-    // The written value should have validation injected
-    const written = K._kv._store.get("prajna:test:inject");
-    const value = JSON.parse(written);
-    expect(value.validation).toBe("Observed in 5 sessions");
-  });
-});
-
-// ── acceptDirect additional fields ──────────────────────────
-
-describe("acceptDirect criteria + activated_at_session", () => {
-  it("stores criteria in snapshot", async () => {
-    const K = makeMockK({}, { sessionCount: 10 });
-    const id = await acceptDirect(K, {
-      claims: ["test"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-      criteria: "Watch for parse errors",
-    }, "s_test");
-
-    const snapshot = K._kv._store.get(`modification_snapshot:${id}`);
-    const record = JSON.parse(snapshot);
-    expect(record.criteria).toBe("Watch for parse errors");
-  });
-
-  it("stores activated_at_session in snapshot", async () => {
-    const K = makeMockK({}, { sessionCount: 15 });
-    const id = await acceptDirect(K, {
-      claims: ["test"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-    }, "s_test");
-
-    const snapshot = K._kv._store.get(`modification_snapshot:${id}`);
-    const record = JSON.parse(snapshot);
-    expect(record.activated_at_session).toBe(15);
-  });
-});
-
-// ── acceptStaged activated_at_session ───────────────────────
-
-describe("acceptStaged additional fields", () => {
-  it("stores activated_at_session in snapshot", async () => {
-    const K = makeMockK({}, { sessionCount: 20 });
-    const id = await stageModification(K, {
-      claims: ["test"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-    }, "s_stage", 1);
-
-    await acceptStaged(K, id);
-
-    const snapshot = K._kv._store.get(`modification_snapshot:${id}`);
-    const record = JSON.parse(snapshot);
-    expect(record.activated_at_session).toBe(20);
-  });
-
-  it("includes type in karma event", async () => {
-    const K = makeMockK({}, { sessionCount: 5 });
-    const id = await stageModification(K, {
-      claims: ["test"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-    }, "s_test", 1);
-
-    await acceptStaged(K, id);
-
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "modification_accepted", modification_id: id, type: "code" })
-    );
-  });
-});
-
-// ── rename op blocked in modifications ──────────────────────
-
-describe("rename op blocked in modifications", () => {
-  it("stageModification rejects rename ops", async () => {
-    const K = makeMockK({}, { sessionCount: 5 });
-    const id = await stageModification(K, {
-      claims: ["rename key"],
-      ops: [{ op: "rename", key: "old:key", value: "new:key" }],
-      checks: [{ type: "kv_assert", key: "new:key", predicate: "exists" }],
-    }, "s_test", 1);
-
-    expect(id).toBeNull();
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "modification_invalid", reason: "rename op not supported in modifications — use delete + put" })
-    );
-  });
-
-  it("acceptDirect rejects rename ops", async () => {
-    const K = makeMockK({}, { sessionCount: 5 });
-    const id = await acceptDirect(K, {
-      claims: ["rename key"],
-      ops: [{ op: "rename", key: "old:key", value: "new:key" }],
-      checks: [{ type: "kv_assert", key: "new:key", predicate: "exists" }],
-    }, "s_test");
-
-    expect(id).toBeNull();
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "modification_invalid", reason: "rename op not supported in modifications — use delete + put" })
-    );
-  });
-});
-
-// ── sessions_since computation ──────────────────────────────
-
-describe("sessions_since computation", () => {
-  it("loadInflightModifications computes sessions_since_activation", async () => {
-    const K = makeMockK({}, { sessionCount: 30 });
-    // Stage and accept to create an inflight modification
-    const id = await stageModification(K, {
-      claims: ["test"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-    }, "s_test", 1);
-
-    // Override session count for acceptance to 25
-    K.getSessionCount = vi.fn(async () => 25);
-    await acceptStaged(K, id);
-
-    // Now load with session count 30
-    K.getSessionCount = vi.fn(async () => 30);
-    const result = await loadInflightModifications(K);
-    const entry = Object.values(result)[0];
-    expect(entry.sessions_since_activation).toBe(5); // 30 - 25
-  });
-
-  it("loadInflightModifications returns null for missing activated_at_session", async () => {
-    const K = makeMockK({}, { sessionCount: 30 });
-    // Manually create an inflight mod without activated_at_session (backward compat)
-    const id = "m_legacy_test";
-    initTracking([], [id]);
-    K._kv._store.set(`modification_snapshot:${id}`, JSON.stringify({
-      id,
-      type: "direct",
-      claims: ["old"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-      snapshots: {},
-      activated_at: "2026-01-01T00:00:00Z",
-      // No activated_at_session field
-    }));
-
-    const result = await loadInflightModifications(K);
-    expect(result[id].sessions_since_activation).toBeNull();
-  });
-
-  it("loadStagedModifications computes sessions_since_staged", async () => {
-    const K = makeMockK({}, { sessionCount: 15 });
-    // Stage at session 10
-    K.getSessionCount = vi.fn(async () => 10);
-    const id = await stageModification(K, {
-      claims: ["test"],
-      ops: [{ op: "put", key: "config:defaults", value: {} }],
-      checks: [{ type: "kv_assert", key: "config:defaults", predicate: "exists" }],
-    }, "s_test", 1);
-
-    // Load at session 15
-    K.getSessionCount = vi.fn(async () => 15);
-    const result = await loadStagedModifications(K);
-    const entry = Object.values(result)[0];
-    expect(entry.sessions_since_staged).toBe(5); // 15 - 10
+  // Test evaluatePredicate
+  it("evaluatePredicate handles all predicates", () => {
+    expect(Brainstem.evaluatePredicate("hello", "exists")).toBe(true);
+    expect(Brainstem.evaluatePredicate(null, "exists")).toBe(false);
+    expect(Brainstem.evaluatePredicate(42, "equals", 42)).toBe(true);
+    expect(Brainstem.evaluatePredicate(42, "equals", 43)).toBe(false);
+    expect(Brainstem.evaluatePredicate(10, "gt", 5)).toBe(true);
+    expect(Brainstem.evaluatePredicate(3, "gt", 5)).toBe(false);
+    expect(Brainstem.evaluatePredicate(3, "lt", 5)).toBe(true);
+    expect(Brainstem.evaluatePredicate("hello", "matches", "^h")).toBe(true);
+    expect(Brainstem.evaluatePredicate("hello", "matches", "^x")).toBe(false);
+    expect(Brainstem.evaluatePredicate("hello", "type", "string")).toBe(true);
+    expect(Brainstem.evaluatePredicate(42, "type", "number")).toBe(true);
+    expect(Brainstem.evaluatePredicate(42, "unknown_pred")).toBe(false);
   });
 });

@@ -7,6 +7,7 @@
 #   --reset-all-state       Wipe ALL local KV state and re-seed from scratch
 #                           (deletes sessions, karma, wisdom, config, everything)
 #   --yes                   Skip confirmation prompt (for scripts/CI)
+#   --governor              Also start the governor worker (not needed for normal dev)
 #   --set path=value        Override a config:defaults value after seeding
 #                           (dot-path, e.g. orient.model=deepseek)
 #                           Can be specified multiple times
@@ -33,12 +34,14 @@ DASHBOARD_PORT=8790
 RESET=false
 WAKE=false
 SKIP_CONFIRM=false
+GOVERNOR=false
 OVERRIDES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wake) WAKE=true; shift ;;
     --reset-all-state) RESET=true; shift ;;
     --yes) SKIP_CONFIRM=true; shift ;;
+    --governor) GOVERNOR=true; shift ;;
     --set)
       [[ -z "${2:-}" || "$2" != *=* ]] && { echo "ERROR: --set requires path=value (e.g. --set orient.model=deepseek)"; exit 1; }
       OVERRIDES+=("$2"); shift 2 ;;
@@ -221,6 +224,13 @@ echo "=== Starting dashboard SPA (port $SPA_PORT) ==="
 setsid node scripts/dev-serve.mjs "$SPA_PORT" &
 PGIDS+=($!)
 
+if $GOVERNOR; then
+  GOVERNOR_PORT=8791
+  echo "=== Starting governor (port $GOVERNOR_PORT) ==="
+  setsid bash -c 'cd governor && exec npx wrangler dev --port "'"$GOVERNOR_PORT"'" --persist-to ../.wrangler/shared-state' &
+  PGIDS+=($!)
+fi
+
 # ── 5. Wait for services to be ready ──────────────────────────
 echo ""
 echo "=== Waiting for services to start... ==="
@@ -232,6 +242,9 @@ if $WAKE; then
   echo "=== Snapshotting state (pre-wake) ==="
   rm -rf .wrangler/pre-wake-snapshot
   cp -r .wrangler/shared-state .wrangler/pre-wake-snapshot
+
+  echo "=== Clearing wake timer (--wake overrides sleep) ==="
+  node scripts/clear-wake.mjs
 
   echo "=== Triggering wake cycle ==="
   if ! curl -sf http://localhost:$BRAINSTEM_PORT/__scheduled; then
@@ -245,10 +258,17 @@ echo "=== Running ==="
 echo "  Brainstem:      http://localhost:$BRAINSTEM_PORT"
 echo "  Dashboard API:  http://localhost:$DASHBOARD_PORT"
 echo "  Dashboard SPA:  http://localhost:$SPA_PORT/operator/"
+if $GOVERNOR; then
+  echo "  Governor:       http://localhost:$GOVERNOR_PORT"
+fi
 echo ""
-echo "  Wake:  curl http://localhost:$BRAINSTEM_PORT/__scheduled"
+echo "  Wake:    curl http://localhost:$BRAINSTEM_PORT/__scheduled"
+if $GOVERNOR; then
+  echo "  Deploy:  curl -X POST http://localhost:$GOVERNOR_PORT/deploy"
+  echo "  Status:  curl http://localhost:$GOVERNOR_PORT/status"
+fi
 echo "  Restore: bash scripts/restore-snapshot.sh"
-echo "  Stop:  Ctrl+C"
+echo "  Stop:    Ctrl+C"
 echo ""
 
 wait
