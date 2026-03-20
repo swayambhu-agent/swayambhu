@@ -7,8 +7,9 @@
 // Both workers communicate solely through the shared KV namespace.
 // The governor reads code from KV, generates index.js, and deploys via CF API.
 
-import { readCodeFromKV, generateIndexJS } from './builder.js';
+import { readCodeFromKV, generateIndexJS, keyToFilePath } from './builder.js';
 import { deploy, recordDeployment, hashCode } from './deployer.js';
+import { syncToGitHub } from './git-sync.js';
 
 export default {
   async scheduled(event, env, ctx) {
@@ -116,10 +117,27 @@ async function performDeploy(kv, env) {
     });
   }
 
+  // 9. Sync to GitHub (best-effort — failure never blocks deploy)
+  let gitSync = null;
+  try {
+    const changedFiles = {};
+    for (const proposal of acceptedProposals) {
+      for (const [kvKey] of Object.entries(proposal.changes || {})) {
+        const path = keyToFilePath(kvKey);
+        if (path) changedFiles[path] = await kv.get(kvKey, 'text');
+      }
+    }
+    if (Object.keys(changedFiles).length > 0) {
+      const claims = acceptedProposals.flatMap(p => p.claims || []);
+      gitSync = await syncToGitHub(env, changedFiles, `deploy: ${versionId}\n\n${claims.join('\n')}`);
+    }
+  } catch {}
+
   return {
     version_id: versionId,
     proposals_deployed: acceptedProposals.length,
     files_count: Object.keys(files).length,
+    git_sync: gitSync,
   };
 }
 

@@ -90,7 +90,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     isSystemKey: vi.fn(async (key) => {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
+        'proposal:', 'hook:', 'doc:',
         'yama:', 'niyama:', 'viveka:', 'prajna:', 'comms_blocked:',
         'contact:', 'contact_index:', 'sealed:',
       ];
@@ -101,7 +101,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     getSystemKeyPatterns: vi.fn(async () => ({
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
+        'proposal:', 'hook:', 'doc:',
         'yama:', 'niyama:', 'viveka:', 'prajna:', 'comms_blocked:',
         'contact:', 'contact_index:', 'sealed:',
       ],
@@ -154,7 +154,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   // applyKVOperation needs `this` bound to the mock object (calls kvPutSafe, karmaRecord, etc.)
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
+    'proposal:', 'hook:', 'doc:',
     'yama:', 'niyama:', 'viveka:', 'prajna:', 'skill:', 'comms_blocked:',
     'contact:', 'contact_index:', 'sealed:',
   ];

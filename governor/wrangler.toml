@@ -15,3 +15,6 @@ crons = ["* * * * *"]
 # CF_API_TOKEN — Cloudflare API token with Workers Scripts Write permission
 # CF_ACCOUNT_ID — Cloudflare account ID
 # CF_SCRIPT_NAME — (optional) runtime worker script name, defaults to "swayambhu-cns"
+# GITHUB_TOKEN — GitHub fine-grained PAT with Contents: Write (for git sync)
+# GITHUB_REPO — GitHub repo in "owner/repo" format (for git sync)
+# GITHUB_BRANCH — (optional) branch to sync to, defaults to "main"

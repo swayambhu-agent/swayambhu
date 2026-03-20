@@ -43,7 +43,7 @@ class Brainstem {
 
   static SYSTEM_KEY_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
+    'proposal:', 'hook:', 'doc:',
     'yama:', 'niyama:',
     'viveka:', 'prajna:',
     'skill:',
@@ -2275,11 +2275,9 @@ Respond with JSON only:
       reflect:    { type: "reflect_output", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
-      modification_staged:    { type: "modification", format: "json" },
-      modification_snapshot: { type: "modification", format: "json" },
+      proposal:   { type: "proposal", format: "json" },
       viveka:     { type: "wisdom", format: "json" },
       prajna:     { type: "wisdom", format: "json" },
-      git_pending:    { type: "git_sync", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },
       yama:       { type: "yama", format: "text" },

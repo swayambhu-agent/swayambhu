@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { generateIndexJS } from "../governor/builder.js";
+import { generateIndexJS, keyToFilePath } from "../governor/builder.js";
 
 // ── 1. generateIndexJS ──────────────────────────────────────
 
@@ -71,7 +71,36 @@ describe("generateIndexJS", () => {
   });
 });
 
-// ── 2. Builder utility functions ─────────────────────────────
+// ── 2. keyToFilePath ─────────────────────────────────────────
+
+describe("keyToFilePath", () => {
+  it("maps tool code keys to tools/ paths", () => {
+    expect(keyToFilePath("tool:kv_query:code")).toBe("tools/kv_query.js");
+    expect(keyToFilePath("tool:send_slack:code")).toBe("tools/send_slack.js");
+  });
+
+  it("maps provider code keys to providers/ paths", () => {
+    expect(keyToFilePath("provider:llm:code")).toBe("providers/llm.js");
+    expect(keyToFilePath("provider:llm_balance:code")).toBe("providers/llm_balance.js");
+  });
+
+  it("maps channel code keys to channels/ paths", () => {
+    expect(keyToFilePath("channel:slack:code")).toBe("channels/slack.js");
+  });
+
+  it("maps hook code keys to root paths", () => {
+    expect(keyToFilePath("hook:act:code")).toBe("act.js");
+    expect(keyToFilePath("hook:reflect:code")).toBe("reflect.js");
+  });
+
+  it("returns null for non-code keys", () => {
+    expect(keyToFilePath("config:defaults")).toBeNull();
+    expect(keyToFilePath("tool:kv_query:meta")).toBeNull();
+    expect(keyToFilePath("prompt:orient")).toBeNull();
+  });
+});
+
+// ── 3. Builder utility functions ─────────────────────────────
 
 describe("builder utilities", () => {
   it("generateIndexJS includes auto-generated comment", () => {

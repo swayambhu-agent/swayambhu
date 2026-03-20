@@ -989,7 +989,7 @@ describe("isSystemKey / isKernelOnly", () => {
     expect(Brainstem.isSystemKey("prompt:orient")).toBe(true);
     expect(Brainstem.isSystemKey("tool:kv_query:code")).toBe(true);
     expect(Brainstem.isSystemKey("hook:wake:code")).toBe(true);
-    expect(Brainstem.isSystemKey("modification_staged:m_1")).toBe(true);
+    expect(Brainstem.isSystemKey("proposal:p_1")).toBe(true);
     expect(Brainstem.isSystemKey("doc:modification_guide")).toBe(true);
     expect(Brainstem.isSystemKey("skill:model-config")).toBe(true);
   });

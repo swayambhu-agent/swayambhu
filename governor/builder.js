@@ -9,12 +9,13 @@ function keyToVarName(key) {
   return parts[parts.length - 2] || parts[0];
 }
 
-function keyToFilePath(key) {
+export function keyToFilePath(key) {
+  if (!key.endsWith(':code')) return null;
+  if (key === 'hook:act:code') return 'act.js';
+  if (key === 'hook:reflect:code') return 'reflect.js';
   if (key.startsWith('tool:')) return `tools/${keyToVarName(key)}.js`;
   if (key.startsWith('provider:')) return `providers/${keyToVarName(key)}.js`;
   if (key.startsWith('channel:')) return `channels/${keyToVarName(key)}.js`;
-  if (key === 'hook:act:code') return 'act.js';
-  if (key === 'hook:reflect:code') return 'reflect.js';
   return null;
 }
 
