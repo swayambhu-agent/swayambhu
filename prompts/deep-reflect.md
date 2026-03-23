@@ -178,9 +178,7 @@ Sankalpas are directions, not targets — let observations reshape your understa
 
 ### On Vikalpas
 
-Vikalpas are mental constructs about the current state of things — assumptions you're operating on that may not match current reality. Only track vikalpas that are changing your behavior from what you'd do otherwise. Each must have a `relevance` explaining what you're doing differently because of it, and a `revisit_by_session` to check if it still holds.
-
-Session reflect checks these and tells act to revisit when they expire. If confirmed, session reflect bumps the date. If no longer true, session reflect removes it. Review existing vikalpas each deep reflect.
+Vikalpas are mental constructs about the current state of things — assumptions you're operating on that may not match current reality. Only track vikalpas that are changing your behavior from what you'd do otherwise. Review existing vikalpas each deep reflect.
 
 ### On the Proposal System
 
