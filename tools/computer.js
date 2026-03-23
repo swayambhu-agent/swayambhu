@@ -1,4 +1,4 @@
-export const meta = { secrets: ["COMPUTER_CF_CLIENT_ID", "COMPUTER_API_KEY"], kv_access: "none", timeout_ms: 300000 };
+export const meta = { secrets: ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "COMPUTER_API_KEY"], kv_access: "none", timeout_ms: 300000 };
 
 const BASE = "https://akash.swayambhu.dev";
 
@@ -7,7 +7,8 @@ export async function execute({ command, timeout, secrets, fetch }) {
 
   const headers = {
     "Content-Type": "application/json",
-    "cf-access-client-id": secrets.COMPUTER_CF_CLIENT_ID,
+    "CF-Access-Client-Id": secrets.CF_ACCESS_CLIENT_ID,
+    "CF-Access-Client-Secret": secrets.CF_ACCESS_CLIENT_SECRET,
     "Authorization": `Bearer ${secrets.COMPUTER_API_KEY}`,
   };
 
