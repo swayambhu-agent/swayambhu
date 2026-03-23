@@ -166,7 +166,8 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "next_wake_config": {
     "sleep_seconds": 21600,
-    "effort": "low"
+    "effort": "low",
+    "act": { "model": "sonnet" }
   }
 }
 ```
