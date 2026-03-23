@@ -142,6 +142,7 @@ Respond with a single JSON object. Nothing outside the JSON.
   "current_intentions": [
     {
       "intention": "What you're working toward",
+      "horizon": "optional — timeframe (e.g. '3 sessions', '2026-04-01', 'ongoing')",
       "dharma_basis": "How this serves dharma",
       "status": "active|revised|completed|abandoned",
       "observation": "What you've observed since setting this intention"
