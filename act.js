@@ -106,6 +106,7 @@ export function buildActContext(context) {
     ...(context.patronPlatforms ? { patron_platforms: context.patronPlatforms } : {}),
     additional_context: context.additionalContext,
     last_reflect: context.lastReflect,
+    ...(context.reflectSchedule ? { reflect_schedule: context.reflectSchedule } : {}),
     effort: context.effort,
     crash_data: context.crashData,
     balances: context.balances,

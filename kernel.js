@@ -1175,6 +1175,22 @@ class Kernel {
         ? (defaults?.act_after_dm?.effort || "high")
         : effort;
 
+      // 7c. Load reflect schedules for all depths
+      const maxReflectDepth = defaults?.execution?.max_reflect_depth || 1;
+      const reflectSchedule = {};
+      const sessionCount = await this.getSessionCount();
+      for (let d = 1; d <= maxReflectDepth; d++) {
+        const sched = await this.kvGet(`reflect:schedule:${d}`);
+        if (sched) {
+          const interval = sched.after_sessions
+            || defaults?.deep_reflect?.default_interval_sessions || 20;
+          reflectSchedule[d] = {
+            last_ran: sched.last_reflect_session || 0,
+            next_due: (sched.last_reflect_session || 0) + interval,
+          };
+        }
+      }
+
       // 8. Build context
       const context = {
         balances, lastReflect, additionalContext,
@@ -1183,6 +1199,7 @@ class Kernel {
         directMessage: directMsg
           ? (typeof directMsg === "string" ? directMsg : directMsg.message)
           : null,
+        reflectSchedule: Object.keys(reflectSchedule).length > 0 ? reflectSchedule : null,
         patronPlatforms: this.patronContact?.platforms || null,
       };
 
