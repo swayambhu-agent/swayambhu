@@ -96,7 +96,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 ### next_wake_config
 
-Merged over `config:defaults` for the next session. `sleep_seconds` sets the wake interval. `effort` sets the default effort level (low, medium, high, xhigh). Any `config:defaults` field can be overridden.
+Merged over `config:defaults` for the next session. Any field can be overridden.
 
 ### next_act_context.load_keys
 
