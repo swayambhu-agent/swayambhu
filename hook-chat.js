@@ -166,5 +166,23 @@ export async function handleChat(K, channel, inbound, adapter) {
   }
   await K.kvPutSafe(convKey, conv);
 
+  // Advance next wake for approved contacts — conversation is a signal to wake sooner
+  if (contact?.approved) {
+    try {
+      const advanceSecs = chatConfig.wake_advance_seconds ?? 30;
+      const wakeConfig = await K.kvGet("wake_config");
+      if (wakeConfig?.next_wake_after) {
+        const wakeAt = new Date(wakeConfig.next_wake_after).getTime();
+        const advanceTo = Date.now() + advanceSecs * 1000;
+        if (wakeAt > advanceTo) {
+          await K.kvPutSafe("wake_config", {
+            ...wakeConfig,
+            next_wake_after: new Date(advanceTo).toISOString(),
+          });
+        }
+      }
+    } catch {}
+  }
+
   return { ok: true, turn: conv.turn_count };
 }
