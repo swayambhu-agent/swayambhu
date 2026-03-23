@@ -99,7 +99,7 @@ Read everything above. Then think — not about what to do next, but about what 
 Prajna (self-knowledge): {{wisdom_manifest.prajna}}
 Upaya (discernment): {{wisdom_manifest.upaya}}
 
-Wisdom is understanding that holds regardless of circumstances. If it depends on the current situation, it's an assumption, not wisdom.
+Wisdom is general understanding that deepens with experience and can be applied to novel situations. If it is about a specific situation, it's an assumption.
 
 Use `kv_query` to load specific entries relevant to your examination. For schema and naming conventions, query `doc:wisdom_guide`.
 
