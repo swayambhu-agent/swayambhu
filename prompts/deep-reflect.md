@@ -99,9 +99,7 @@ Read everything above. Then think — not about what to do next, but about what 
 Prajna (self-knowledge): {{wisdom_manifest.prajna}}
 Upaya (discernment): {{wisdom_manifest.upaya}}
 
-Wisdom is general understanding that deepens with experience and can be applied to novel situations. If it is about a specific situation, it's an assumption.
-
-Use `kv_query` to load specific entries relevant to your examination. For schema and naming conventions, query `doc:wisdom_guide`.
+Wisdom is general understanding that deepens with experience and can be applied to novel situations. Revisit existing entries — refine the articulation, add nuance, as your understanding matures. Remove entries that turn out to be situation-specific. Crystallize new entries via modification_requests with `metadata.summary`. For schema, query `doc:wisdom_guide`.
 
 ### Skills
 
@@ -188,10 +186,6 @@ Session reflect checks these and tells act to revisit when they expire. If confi
 **Non-code changes** (config, prompts, wisdom, skills) apply directly via KV writes.
 
 You must issue verdicts for ALL pending proposals: `accept`, `reject` (with reason), `modify`, `defer`, or `withdraw`.
-
-### On wisdom crystallization
-
-When experience yields an understanding that holds regardless of circumstances, crystallize it as wisdom. Self-knowledge goes to `prajna:*`, discernment about the world goes to `upaya:*`. Write directly via modification_requests with `metadata.summary` for the wisdom manifest.
 
 ### On scheduling
 
