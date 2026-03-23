@@ -173,7 +173,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Everything else is optional.** Only include what you're actually changing. Omitting a field means "no change."
 
-For intentions, consider different horizons — what needs attention now, what you're building toward over many sessions, and where you're heading long-term.
+For intentions, consider different horizons — what needs attention now, what you're building toward over many sessions, and where you're heading long-term. Remove completed or abandoned intentions. If the experience yielded wisdom, crystallize it.
 
 ### On Assumptions
 
