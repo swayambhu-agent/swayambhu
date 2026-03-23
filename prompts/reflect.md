@@ -68,6 +68,11 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "next_wake_config": {},
 
+  "assessment_updates": [
+    { "claim": "exact claim text", "status": "confirmed", "reverify_by_session": 35 },
+    { "claim": "exact claim text", "status": "resolved" }
+  ],
+
   "kv_operations": [],
 
   "modification_requests": [
@@ -92,7 +97,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Required:** `session_summary`, `note_to_future_self`, `next_act_context`
 
-**Optional:** `next_wake_config`, `kv_operations`, `modification_requests`, `modification_verdicts`
+**Optional:** `next_wake_config`, `assessment_updates`, `kv_operations`, `modification_requests`, `modification_verdicts`
 
 ### next_wake_config
 
@@ -112,9 +117,11 @@ This is the thread of continuity between sessions. You go to sleep after this. W
 
 ### Checking assessments
 
-If `last_reflect` contains an `assessments` array (from the most recent deep reflect), check each assessment's `reverify_by_session` against the current session counter ({{session_counter}}). If any assessment has expired (reverify_by_session <= current session), include a concrete probe instruction in `note_to_future_self` for the next act session — e.g. "Assessment 'Slack delivery fails' expired. Next session: re-test by trying send_slack."
+If `last_reflect` contains an `assessments` array, check each assessment's `reverify_by_session` against the current session counter ({{session_counter}}). If any have expired (reverify_by_session <= current session), include a probe instruction in `note_to_future_self` for the next act session — e.g. "Assessment 'Slack delivery fails' expired. Re-test by trying send_slack."
 
-This prevents stale conclusions from permanently blocking action. An assessment that was true 10 sessions ago may no longer be true. When it expires, the act phase should re-test it.
+If this session's karma shows a re-test of an existing assessment, update it via `assessment_updates`:
+- `confirmed` — still an issue, set a new `reverify_by_session`
+- `resolved` — no longer an issue, remove it
 
 ### modification_requests
 

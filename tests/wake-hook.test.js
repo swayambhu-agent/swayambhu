@@ -976,6 +976,84 @@ describe("executeReflect modification_observations", () => {
   });
 });
 
+// ── assessment_updates lifecycle ──────────────────────────
+
+describe("assessment_updates in session reflect", () => {
+  it("carries forward assessments from previous deep reflect", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        assessments: [
+          { claim: "Slack broken", relevance: "Primary comms channel", reverify_by_session: 30 },
+        ],
+      }),
+    }, { sessionId: "s_carry" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "new session",
+      note_to_future_self: "test",
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
+    expect(lastReflect).toBeTruthy();
+    expect(lastReflect[1].assessments).toHaveLength(1);
+    expect(lastReflect[1].assessments[0].claim).toBe("Slack broken");
+  });
+
+  it("resolves an assessment via assessment_updates", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        assessments: [
+          { claim: "Slack broken", relevance: "Primary comms channel", reverify_by_session: 30 },
+          { claim: "Email empty", relevance: "No inbound comms", reverify_by_session: 35 },
+        ],
+      }),
+    }, { sessionId: "s_resolve" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "retested slack",
+      note_to_future_self: "slack works now",
+      assessment_updates: [
+        { claim: "Slack broken", status: "resolved" },
+      ],
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
+    expect(lastReflect[1].assessments).toHaveLength(1);
+    expect(lastReflect[1].assessments[0].claim).toBe("Email empty");
+  });
+
+  it("confirms an assessment and bumps reverify date", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        assessments: [
+          { claim: "Slack broken", relevance: "Primary comms channel", reverify_by_session: 25 },
+        ],
+      }),
+    }, { sessionId: "s_confirm" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "retested, still broken",
+      note_to_future_self: "slack still down",
+      assessment_updates: [
+        { claim: "Slack broken", status: "confirmed", reverify_by_session: 35 },
+      ],
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
+    expect(lastReflect[1].assessments).toHaveLength(1);
+    expect(lastReflect[1].assessments[0].reverify_by_session).toBe(35);
+  });
+});
+
 // ── applyReflectOutput new fields ──────────────────────────
 
 describe("applyReflectOutput conditional fields", () => {

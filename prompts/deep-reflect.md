@@ -132,7 +132,8 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "assessments": [
     {
-      "claim": "Empirical claim about the external world",
+      "claim": "What is broken or degraded",
+      "relevance": "Why this matters to your current operation",
       "observed_session": "s_...",
       "reverify_by_session": 20
     }
@@ -174,11 +175,11 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 ### On Assessments
 
-Empirical claims about the external world that could become stale. Each carries a `reverify_by_session` — the session count by which the claim must be re-tested.
+Track things that are broken, degraded, or behaving unexpectedly — issues that matter to your operation. Each must have a `relevance` explaining why it matters now. If you can't articulate the relevance, don't track it.
 
-Reverify intervals: infrastructure (3-5 sessions), external services (5-10), relationships (10-20).
+Each carries a `reverify_by_session` — the session count by which the claim must be re-tested. Session reflect checks these and tells act to re-test when they expire. If confirmed, session reflect bumps the date. If resolved, session reflect removes it.
 
-**Do NOT put empirical claims in `note_to_future_self`.** That field is for orientation. Put testable claims in assessments with a reverify interval.
+Review existing assessments each deep reflect. Drop any where relevance no longer holds.
 
 ### On the Proposal System
 

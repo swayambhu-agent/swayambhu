@@ -86,8 +86,23 @@ export async function executeReflect(K, state, step) {
     return;
   }
 
+  // Carry forward assessments from previous deep reflect, apply any updates
+  const prevLastReflect = await K.kvGet("last_reflect");
+  let assessments = prevLastReflect?.assessments || [];
+  if (output.assessment_updates) {
+    for (const update of output.assessment_updates) {
+      if (update.status === "resolved") {
+        assessments = assessments.filter(a => a.claim !== update.claim);
+      } else if (update.status === "confirmed") {
+        const existing = assessments.find(a => a.claim === update.claim);
+        if (existing) existing.reverify_by_session = update.reverify_by_session;
+      }
+    }
+  }
+
   await K.kvPutSafe("last_reflect", {
     ...output,
+    assessments,
     session_id: sessionId,
   });
 
