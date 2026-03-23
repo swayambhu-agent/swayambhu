@@ -984,7 +984,7 @@ describe("vikalpa_updates in session reflect", () => {
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         vikalpas: [
-          { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
+          { vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
         ],
       }),
     }, { sessionId: "s_carry" });
@@ -999,7 +999,7 @@ describe("vikalpa_updates in session reflect", () => {
     const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect).toBeTruthy();
     expect(lastReflect[1].vikalpas).toHaveLength(1);
-    expect(lastReflect[1].vikalpas[0].claim).toBe("Slack broken");
+    expect(lastReflect[1].vikalpas[0].vikalpa).toBe("Slack broken");
   });
 
   it("resolves a vikalpa via vikalpa_updates", async () => {
@@ -1007,8 +1007,8 @@ describe("vikalpa_updates in session reflect", () => {
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         vikalpas: [
-          { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
-          { claim: "Email empty", relevance: "No inbound comms", revisit_by_session: 35 },
+          { vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
+          { vikalpa: "Email empty", relevance: "No inbound comms", revisit_by_session: 35 },
         ],
       }),
     }, { sessionId: "s_resolve" });
@@ -1016,7 +1016,7 @@ describe("vikalpa_updates in session reflect", () => {
       session_summary: "retested slack",
       note_to_future_self: "slack works now",
       vikalpa_updates: [
-        { claim: "Slack broken", status: "resolved" },
+        { vikalpa: "Slack broken", status: "resolved" },
       ],
     }));
     const state = makeState({ defaults: { reflect: { model: "test/model" } } });
@@ -1025,7 +1025,7 @@ describe("vikalpa_updates in session reflect", () => {
 
     const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect[1].vikalpas).toHaveLength(1);
-    expect(lastReflect[1].vikalpas[0].claim).toBe("Email empty");
+    expect(lastReflect[1].vikalpas[0].vikalpa).toBe("Email empty");
   });
 
   it("confirms a vikalpa and bumps revisit date", async () => {
@@ -1033,7 +1033,7 @@ describe("vikalpa_updates in session reflect", () => {
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         vikalpas: [
-          { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 25 },
+          { vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 25 },
         ],
       }),
     }, { sessionId: "s_confirm" });
@@ -1041,7 +1041,7 @@ describe("vikalpa_updates in session reflect", () => {
       session_summary: "retested, still broken",
       note_to_future_self: "slack still down",
       vikalpa_updates: [
-        { claim: "Slack broken", status: "confirmed", revisit_by_session: 35 },
+        { vikalpa: "Slack broken", status: "confirmed", revisit_by_session: 35 },
       ],
     }));
     const state = makeState({ defaults: { reflect: { model: "test/model" } } });

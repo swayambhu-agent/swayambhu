@@ -92,9 +92,9 @@ export async function executeReflect(K, state, step) {
   if (output.vikalpa_updates) {
     for (const update of output.vikalpa_updates) {
       if (update.status === "resolved") {
-        vikalpas = vikalpas.filter(a => a.claim !== update.claim);
+        vikalpas = vikalpas.filter(a => a.vikalpa !== update.vikalpa);
       } else if (update.status === "confirmed") {
-        const existing = vikalpas.find(a => a.claim === update.claim);
+        const existing = vikalpas.find(a => a.vikalpa === update.vikalpa);
         if (existing) existing.revisit_by_session = update.revisit_by_session;
       }
     }

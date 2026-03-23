@@ -69,8 +69,8 @@ Respond with a single JSON object. Nothing outside the JSON.
   "next_wake_config": {},
 
   "vikalpa_updates": [
-    { "claim": "exact claim text", "status": "confirmed", "revisit_by_session": 35 },
-    { "claim": "exact claim text", "status": "resolved" }
+    { "vikalpa": "exact vikalpa text", "status": "confirmed", "revisit_by_session": 35 },
+    { "vikalpa": "exact vikalpa text", "status": "resolved" }
   ],
 
   "kv_operations": [],

@@ -132,8 +132,8 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "vikalpas": [
     {
-      "claim": "What you concluded from observation",
-      "relevance": "Why this matters to your current operation",
+      "vikalpa": "The assumption",
+      "relevance": "What you're doing differently because of it",
       "observed_session": "s_...",
       "revisit_by_session": 20
     }
