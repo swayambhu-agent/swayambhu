@@ -95,7 +95,7 @@ export async function executeReflect(K, state, step) {
         conclusions = conclusions.filter(a => a.claim !== update.claim);
       } else if (update.status === "confirmed") {
         const existing = conclusions.find(a => a.claim === update.claim);
-        if (existing) existing.reverify_by_session = update.reverify_by_session;
+        if (existing) existing.revisit_by_session = update.revisit_by_session;
       }
     }
   }

@@ -984,7 +984,7 @@ describe("conclusion_updates in session reflect", () => {
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         conclusions: [
-          { claim: "Slack broken", relevance: "Primary comms channel", reverify_by_session: 30 },
+          { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
         ],
       }),
     }, { sessionId: "s_carry" });
@@ -1007,8 +1007,8 @@ describe("conclusion_updates in session reflect", () => {
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         conclusions: [
-          { claim: "Slack broken", relevance: "Primary comms channel", reverify_by_session: 30 },
-          { claim: "Email empty", relevance: "No inbound comms", reverify_by_session: 35 },
+          { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
+          { claim: "Email empty", relevance: "No inbound comms", revisit_by_session: 35 },
         ],
       }),
     }, { sessionId: "s_resolve" });
@@ -1028,12 +1028,12 @@ describe("conclusion_updates in session reflect", () => {
     expect(lastReflect[1].conclusions[0].claim).toBe("Email empty");
   });
 
-  it("confirms a conclusion and bumps reverify date", async () => {
+  it("confirms a conclusion and bumps revisit date", async () => {
     const K = makeMockK({
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         conclusions: [
-          { claim: "Slack broken", relevance: "Primary comms channel", reverify_by_session: 25 },
+          { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 25 },
         ],
       }),
     }, { sessionId: "s_confirm" });
@@ -1041,7 +1041,7 @@ describe("conclusion_updates in session reflect", () => {
       session_summary: "retested, still broken",
       note_to_future_self: "slack still down",
       conclusion_updates: [
-        { claim: "Slack broken", status: "confirmed", reverify_by_session: 35 },
+        { claim: "Slack broken", status: "confirmed", revisit_by_session: 35 },
       ],
     }));
     const state = makeState({ defaults: { reflect: { model: "test/model" } } });
@@ -1050,7 +1050,7 @@ describe("conclusion_updates in session reflect", () => {
 
     const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect[1].conclusions).toHaveLength(1);
-    expect(lastReflect[1].conclusions[0].reverify_by_session).toBe(35);
+    expect(lastReflect[1].conclusions[0].revisit_by_session).toBe(35);
   });
 });
 

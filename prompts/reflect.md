@@ -69,7 +69,7 @@ Respond with a single JSON object. Nothing outside the JSON.
   "next_wake_config": {},
 
   "conclusion_updates": [
-    { "claim": "exact claim text", "status": "confirmed", "reverify_by_session": 35 },
+    { "claim": "exact claim text", "status": "confirmed", "revisit_by_session": 35 },
     { "claim": "exact claim text", "status": "resolved" }
   ],
 
@@ -117,11 +117,11 @@ This is the thread of continuity between sessions. You go to sleep after this. W
 
 ### Checking conclusions
 
-If `last_reflect` contains a `conclusions` array, check each conclusion's `reverify_by_session` against the current session counter ({{session_counter}}). If any have expired (reverify_by_session <= current session), include a probe instruction in `note_to_future_self` for the next act session — e.g. "Conclusion 'Slack delivery fails' expired. Re-test by trying send_slack."
+If `last_reflect` contains a `conclusions` array, check each conclusion's `revisit_by_session` against the current session counter ({{session_counter}}). If any have expired (revisit_by_session <= current session), include a probe instruction in `note_to_future_self` for the next act session — e.g. "Conclusion 'Slack delivery fails' expired. Revisit by trying send_slack."
 
-If this session's karma shows a re-test of an existing conclusion, update it via `conclusion_updates`:
-- `confirmed` — still an issue, set a new `reverify_by_session`
-- `resolved` — no longer an issue, remove it
+If this session's karma shows a revisit of an existing conclusion, update it via `conclusion_updates`:
+- `confirmed` — still holds, set a new `revisit_by_session`
+- `resolved` — no longer holds, remove it
 
 ### modification_requests
 

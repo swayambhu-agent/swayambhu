@@ -135,7 +135,7 @@ Respond with a single JSON object. Nothing outside the JSON.
       "claim": "What you concluded from observation",
       "relevance": "Why this matters to your current operation",
       "observed_session": "s_...",
-      "reverify_by_session": 20
+      "revisit_by_session": 20
     }
   ],
 
@@ -177,7 +177,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 Any conclusion drawn from observation — about infrastructure, contacts, patterns, the world — that could become stale. Positive or negative. Each must have a `relevance` explaining why it matters now. If you can't articulate the relevance, don't track it.
 
-Each carries a `reverify_by_session` — the session count by which the conclusion must be re-tested. Session reflect checks these and tells act to re-test when they expire. If confirmed, session reflect bumps the date. If resolved or invalidated, session reflect removes it.
+Each carries a `revisit_by_session` — the session count by which the conclusion should be revisited. Session reflect checks these and tells act to revisit when they expire. If confirmed, session reflect bumps the date. If no longer true, session reflect removes it.
 
 Review existing conclusions each deep reflect. Drop any where relevance no longer holds.
 
