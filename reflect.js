@@ -86,15 +86,15 @@ export async function executeReflect(K, state, step) {
     return;
   }
 
-  // Carry forward assumptions from previous deep reflect, apply any updates
+  // Carry forward vikalpas from previous deep reflect, apply any updates
   const prevLastReflect = await K.kvGet("last_reflect");
-  let assumptions = prevLastReflect?.assumptions || [];
-  if (output.assumption_updates) {
-    for (const update of output.assumption_updates) {
+  let vikalpas = prevLastReflect?.vikalpas || [];
+  if (output.vikalpa_updates) {
+    for (const update of output.vikalpa_updates) {
       if (update.status === "resolved") {
-        assumptions = assumptions.filter(a => a.claim !== update.claim);
+        vikalpas = vikalpas.filter(a => a.claim !== update.claim);
       } else if (update.status === "confirmed") {
-        const existing = assumptions.find(a => a.claim === update.claim);
+        const existing = vikalpas.find(a => a.claim === update.claim);
         if (existing) existing.revisit_by_session = update.revisit_by_session;
       }
     }
@@ -102,7 +102,7 @@ export async function executeReflect(K, state, step) {
 
   await K.kvPutSafe("last_reflect", {
     ...output,
-    assumptions,
+    vikalpas,
     session_id: sessionId,
   });
 
@@ -368,14 +368,14 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   if (output.sankalpas) reflectRecord.sankalpas = output.sankalpas;
   if (output.modification_observations) reflectRecord.modification_observations = output.modification_observations;
   if (output.system_trajectory) reflectRecord.system_trajectory = output.system_trajectory;
-  if (output.assumptions) reflectRecord.assumptions = output.assumptions;
+  if (output.vikalpas) reflectRecord.vikalpas = output.vikalpas;
   await K.kvPutSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 6. Only depth 1: write last_reflect and wake_config
   if (depth === 1) {
     await K.kvPutSafe("last_reflect", {
       session_summary: output.reflection,
-      assumptions: output.assumptions || [],
+      vikalpas: output.vikalpas || [],
       was_deep_reflect: true,
       depth,
       session_id: sessionId,

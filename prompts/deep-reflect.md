@@ -130,7 +130,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 {
   "reflection": "What you see when you look at yourself as a system — honest, specific, unflinching.",
 
-  "assumptions": [
+  "vikalpas": [
     {
       "claim": "What you concluded from observation",
       "relevance": "Why this matters to your current operation",
@@ -170,17 +170,17 @@ Respond with a single JSON object. Nothing outside the JSON.
 }
 ```
 
-**Required:** `reflection`, `assumptions`
+**Required:** `reflection`, `vikalpas`
 
 **Everything else is optional.** Only include what you're actually changing. Omitting a field means "no change."
 
 Sankalpas are directions, not targets — let observations reshape your understanding of what you're working toward and how. Consider different horizons — what needs attention now, what you're building toward over many sessions, and where you're heading long-term. Remove completed or abandoned sankalpas. If the experience yielded wisdom, crystallize it.
 
-### On Assumptions
+### On Vikalpas
 
-Only track assumptions that are changing your behavior from what you'd do otherwise. Each must have a `relevance` explaining what you're doing differently because of it, and a `revisit_by_session` to check if it still holds.
+Only track vikalpas that are changing your behavior from what you'd do otherwise. Each must have a `relevance` explaining what you're doing differently because of it, and a `revisit_by_session` to check if it still holds.
 
-Session reflect checks these and tells act to revisit when they expire. If confirmed, session reflect bumps the date. If no longer true, session reflect removes it. Review existing assumptions each deep reflect.
+Session reflect checks these and tells act to revisit when they expire. If confirmed, session reflect bumps the date. If no longer true, session reflect removes it. Review existing vikalpas each deep reflect.
 
 ### On the Proposal System
 
