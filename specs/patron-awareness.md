@@ -462,16 +462,16 @@ All phases implemented, all gaps closed.
 | Chat tests | `tests/chat.test.js` | DONE |
 | Comms gate: upaya:contact → contact migration | `kernel.js` | DONE |
 | Comms gate: loadCommsUpaya without upaya:contact | `kernel.js` | DONE |
-| Comms gate tests | `tests/brainstem.test.js` | DONE |
+| Comms gate tests | `tests/kernel.test.js` | DONE |
 | Deep reflect: patron context + dispute in gatherReflectContext | `reflect.js` | DONE |
 | Deep reflect prompt: patron awareness + dispute | `prompts/deep-reflect.md` | DONE |
 | Deep reflect prompt: blocked comms reference update | `prompts/deep-reflect.md` | DONE |
 | Reflect tests: patron context loading | `tests/wake-hook.test.js` | DONE |
-| Immutable key test (patron:public_key) | `tests/brainstem.test.js` | DONE |
+| Immutable key test (patron:public_key) | `tests/kernel.test.js` | DONE |
 | resolveContact snapshot fallback when disputed | `kernel.js` | DONE |
 | key_type + public_key in contact seed | `scripts/seed-local-kv.mjs` | DONE |
-| Identity monitor tests (4 cases) | `tests/brainstem.test.js` | DONE |
-| Snapshot-based resolution test | `tests/brainstem.test.js` | DONE |
+| Identity monitor tests (4 cases) | `tests/kernel.test.js` | DONE |
+| Snapshot-based resolution test | `tests/kernel.test.js` | DONE |
 
 ### Phase 5: Identity verification (future)
 
@@ -496,7 +496,7 @@ When the verification utility is built:
 | `prompts/deep-reflect.md` | Done |
 | `tests/helpers/mock-kernel.js` | Done |
 | `tests/chat.test.js` | Done |
-| `tests/brainstem.test.js` | Done |
+| `tests/kernel.test.js` | Done |
 | `tests/wake-hook.test.js` | Done |
 
 ## What this does NOT do

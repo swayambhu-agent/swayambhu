@@ -407,7 +407,7 @@ For local development:
 pkill -f workerd
 ```
 
-This kills both the brainstem and dashboard API workers. Press `Ctrl+C` in
+This kills both the kernel and dashboard API workers. Press `Ctrl+C` in
 the start script terminal for a cleaner shutdown.
 
 ### Reset All State

@@ -16,7 +16,7 @@ This skill teaches you to manage LLM models in your own configuration — discov
 ### Critical invariants
 
 - **Every model used in config:defaults SHOULD have an entry in config:models.** If it doesn't, `estimateCost()` returns null and the caller (`callLLM()`) falls back to a pessimistic cost estimate (using the most expensive model's rates). Budget tracking still works, but overestimates spend — which may cause premature budget exhaustion. A karma warning is logged.
-- **`kernel:fallback_model`** is a kernel-only last-resort fallback (under `KERNEL_ONLY_PREFIXES` — blocked by `kvWritePrivileged()`), separate from `config:models.fallback_model`. The agent can modify the latter but not the former. The brainstem itself can write to kernel-only keys internally, but the agent cannot. Don't confuse the two fallback keys.
+- **`kernel:fallback_model`** is a kernel-only last-resort fallback (under `KERNEL_ONLY_PREFIXES` — blocked by `kvWritePrivileged()`), separate from `config:models.fallback_model`. The agent can modify the latter but not the former. The kernel itself can write to kernel-only keys internally, but the agent cannot. Don't confuse the two fallback keys.
 
 ### Alias resolution
 

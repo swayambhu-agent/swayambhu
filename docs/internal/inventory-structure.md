@@ -10,8 +10,8 @@ Generated 2026-03-17. Covers every file in the project.
 
 | File | Purpose | Exports | Imports | Imported by |
 |------|---------|---------|---------|-------------|
-| `kernel.js` | Production kernel — all hardcoded primitives, safety, alerting, hook dispatch, LLM cascade, agent loop, tool execution, communication gate, inbound gate, KV write tiers, patron verification | `class ScopedKV` (WorkerEntrypoint), `class KernelRPC` (WorkerEntrypoint), `class Brainstem`, `default` (fetch+scheduled handlers) | `cloudflare:workers` (WorkerEntrypoint), `./hook-chat.js` (handleChat) | `index.js` |
-| `index.js` | Dev-mode kernel subclass — direct imports instead of CF static imports, direct OpenRouter fetch instead of adapter cascade | `default` (fetch+scheduled handlers), `class Brainstem` (implicit) | `./kernel.js` (Brainstem), `./act.js` (wake), `./hook-chat.js` (handleChat), `./channels/slack.js`, all `./tools/*.js`, all `./providers/*.js` | None (entry point via `wrangler.dev.toml`) |
+| `kernel.js` | Production kernel — all hardcoded primitives, safety, alerting, hook dispatch, LLM cascade, agent loop, tool execution, communication gate, inbound gate, KV write tiers, patron verification | `class ScopedKV` (WorkerEntrypoint), `class KernelRPC` (WorkerEntrypoint), `class Kernel`, `default` (fetch+scheduled handlers) | `cloudflare:workers` (WorkerEntrypoint), `./hook-chat.js` (handleChat) | `index.js` |
+| `index.js` | Dev-mode kernel subclass — direct imports instead of CF static imports, direct OpenRouter fetch instead of adapter cascade | `default` (fetch+scheduled handlers), `class Kernel` (implicit) | `./kernel.js` (Kernel), `./act.js` (wake), `./hook-chat.js` (handleChat), `./channels/slack.js`, all `./tools/*.js`, all `./providers/*.js` | None (entry point via `wrangler.dev.toml`) |
 
 ### Hook Modules (Wake Cycle Policy Layer)
 
@@ -96,7 +96,7 @@ Generated 2026-03-17. Covers every file in the project.
 
 | File | Purpose | Test count | Imports |
 |------|---------|------------|---------|
-| `tests/brainstem.test.js` | Kernel logic — KV tiers, tool execution, LLM calls, agent loop, communication gate, inbound gate, patron verification, hook safety | ~104 | `kernel.js`, `tests/helpers/mock-kv.js` |
+| `tests/kernel.test.js` | Kernel logic — KV tiers, tool execution, LLM calls, agent loop, communication gate, inbound gate, patron verification, hook safety | ~104 | `kernel.js`, `tests/helpers/mock-kv.js` |
 | `tests/wake-hook.test.js` | Wake flow, reflect, modifications, circuit breaker, git sync | ~62 | `act.js`, `reflect.js`, `kernel.js (proposal methods)`, `kernel.js (applyKVOperation)`, `tests/helpers/mock-kernel.js` |
 | `tests/tools.test.js` | Tool/provider execute(), module structure, meta field validation | ~100 | All `tools/*.js`, all `providers/*.js` |
 | `tests/chat.test.js` | Chat system — conversation flow, budgets, commands, unknown contacts | ~12 | `hook-chat.js`, `tests/helpers/mock-kernel.js` |
@@ -196,7 +196,7 @@ graph TD
     end
 
     subgraph Tests
-        TB[tests/brainstem.test.js]
+        TB[tests/kernel.test.js]
         TW[tests/wake-hook.test.js]
         TT[tests/tools.test.js]
         TC[tests/chat.test.js]
@@ -251,14 +251,14 @@ The cron fires every minute. The hook checks `wake_config.next_wake_after` and r
 ```
 CF Cron trigger
   → export default.scheduled(event, env, ctx)
-    → new Brainstem(env, {ctx})
-    → brain.runScheduled()
-      → brain.detectPlatformKill()          // check for stale kernel:active_session
-      → brain.checkHookSafety()             // 3-consecutive-failure tripwire
-      → brain.kvGet("hook:wake:manifest")   // load module manifest
-      → brain.executeHook(modules, mainModule)
-        → brain.kvPut("kernel:active_session", sessionId)
-        → brain._invokeHookModules(modules, mainModule)
+    → new Kernel(env, {ctx})
+    → kernel.runScheduled()
+      → kernel.detectPlatformKill()          // check for stale kernel:active_session
+      → kernel.checkHookSafety()             // 3-consecutive-failure tripwire
+      → kernel.kvGet("hook:wake:manifest")   // load module manifest
+      → kernel.executeHook(modules, mainModule)
+        → kernel.kvPut("kernel:active_session", sessionId)
+        → kernel._invokeHookModules(modules, mainModule)
           → [CF static import static import]
             → act.js default.fetch()
               → wake(K, input)               // K = env.KERNEL (KernelRPC binding)
@@ -283,8 +283,8 @@ CF Cron trigger
                   → applyKVOperation(K, op)             // for each kv_operation
                   → executeReflect(K, state, ...)       // session reflect (depth 0)
                   → writeSessionResults(K, output, config)
-        → brain.updateSessionOutcome(outcome)
-        → brain.kv.delete("kernel:active_session")
+        → kernel.updateSessionOutcome(outcome)
+        → kernel.kv.delete("kernel:active_session")
 ```
 
 #### Dev call chain (`index.js`)
@@ -292,20 +292,20 @@ CF Cron trigger
 ```
 CF Cron trigger (or curl /__scheduled)
   → export default.scheduled(event, env, ctx)
-    → new Brainstem(env, {ctx})
-    → brain.runScheduled()                  // inherited from Brainstem
-      → brain.executeHook(modules, mainModule)
-        → brain._invokeHookModules()        // OVERRIDDEN in Brainstem
-          → brain.loadEagerConfig()
-          → Brainstem._buildToolGrants()
-          → wake(brain, {sessionId})        // direct call, no static import
-            → (same wake flow as above, but K = brain directly)
-            → K methods resolve to Brainstem.getSessionId(), etc.
+    → new Kernel(env, {ctx})
+    → kernel.runScheduled()                  // inherited from Kernel
+      → kernel.executeHook(modules, mainModule)
+        → kernel._invokeHookModules()        // OVERRIDDEN in Kernel
+          → kernel.loadEagerConfig()
+          → Kernel._buildToolGrants()
+          → wake(kernel, {sessionId})        // direct call, no static import
+            → (same wake flow as above, but K = kernel directly)
+            → K methods resolve to Kernel.getSessionId(), etc.
 ```
 
 #### Key differences prod vs dev:
 - **Prod:** Hook runs in CF static import static import, K = KernelRPC (RPC bridge)
-- **Dev:** Hook called directly, K = Brainstem instance (has same methods)
+- **Dev:** Hook called directly, K = Kernel instance (has same methods)
 - **Prod:** Tools/providers run in static imports via `runInIsolate()`
 - **Dev:** Tools/providers called directly from imported modules
 
@@ -318,32 +318,32 @@ CF Cron trigger (or curl /__scheduled)
 ```
 HTTP POST /channel/slack
   → export default.fetch(request, env, ctx)
-    → new Brainstem(env, {ctx})
-    → brain.kvGet("channel:slack:code")       // load adapter from KV
-    → brain.runInIsolate({action: "verify"})   // HMAC verification in static import
-    → brain.runInIsolate({action: "parse"})    // parse inbound message
+    → new Kernel(env, {ctx})
+    → kernel.kvGet("channel:slack:code")       // load adapter from KV
+    → kernel.runInIsolate({action: "verify"})   // HMAC verification in static import
+    → kernel.runInIsolate({action: "parse"})    // parse inbound message
     → [challenge response if _challenge]
     → [dedup check via dedup:{msgId}]
     → Response("OK", 200)                      // return immediately
     → ctx.waitUntil(async () => {
-        → brain.loadEagerConfig()
-        → brain.runInIsolate({action: "send"}) // adapter.sendReply
-        → handleChat(brain, channel, inbound, adapter)
-          → brain.kvGet(convKey)               // load/init conversation
+        → kernel.loadEagerConfig()
+        → kernel.runInIsolate({action: "send"}) // adapter.sendReply
+        → handleChat(kernel, channel, inbound, adapter)
+          → kernel.kvGet(convKey)               // load/init conversation
           → [handle commands: /reset, /clear]
-          → brain.resolveContact(channel, userId)
-          → brain.buildToolDefinitions()       // known contacts get tools
-          → brain.callLLM({...})               // tool-calling loop
+          → kernel.resolveContact(channel, userId)
+          → kernel.buildToolDefinitions()       // known contacts get tools
+          → kernel.callLLM({...})               // tool-calling loop
             → [dharma + yamas/niyamas injected]
-            → brain.callWithCascade(request, step)
-          → brain.executeToolCall(tc)          // per tool call
+            → kernel.callWithCascade(request, step)
+          → kernel.executeToolCall(tc)          // per tool call
             → [communication gate check]
-            → brain.executeAction({tool, input})
-              → brain._loadTool(name)          // from KV
-              → brain._executeTool(...)        // in static import
+            → kernel.executeAction({tool, input})
+              → kernel._loadTool(name)          // from KV
+              → kernel._executeTool(...)        // in static import
             → [inbound content gate]
           → adapter.sendReply(chatId, reply)
-          → brain.kvPutSafe(convKey, conv)     // save state
+          → kernel.kvPutSafe(convKey, conv)     // save state
       })
 ```
 
@@ -352,15 +352,15 @@ HTTP POST /channel/slack
 ```
 HTTP POST /channel/slack
   → export default.fetch(request, env, ctx)
-    → new Brainstem(env, {ctx})
+    → new Kernel(env, {ctx})
     → CHANNELS[channel]                       // direct import via index.js
     → slackAdapter.parseInbound(body)         // direct call, no static import
     → [skip verification in dev]
     → Response("OK", 200)
     → ctx.waitUntil(async () => {
-        → brain.loadEagerConfig()
-        → Brainstem._buildToolGrants()
-        → handleChat(brain, channel, inbound, adapter)
+        → kernel.loadEagerConfig()
+        → Kernel._buildToolGrants()
+        → handleChat(kernel, channel, inbound, adapter)
           → (same flow, but tool execution is direct, not static import)
       })
 ```

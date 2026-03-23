@@ -270,7 +270,7 @@ the immutable `patron:public_key`.
 
 1. Loads `patron:public_key` from KV
 2. Parses SSH ed25519 wire format to extract 32-byte raw key
-   (`Brainstem.parseSSHEd25519`)
+   (`Kernel.parseSSHEd25519`)
 3. Imports key via `crypto.subtle.importKey("raw", ..., "Ed25519")`
 4. Verifies signature via `crypto.subtle.verify("Ed25519", ...)`
 5. Records `patron_verified` or `patron_verification_failed` karma event
@@ -379,7 +379,7 @@ Sends to `https://openrouter.ai/api/v1/chat/completions`. Adds
 ephemeral` for Anthropic models. Returns `{ content, usage, toolCalls }`.
 
 Used by the kernel's provider cascade (`callWithCascade`) in prod. In dev,
-`Brainstem.callWithCascade` makes the OpenRouter call directly instead
+`Kernel.callWithCascade` makes the OpenRouter call directly instead
 of going through this adapter.
 
 ### llm_balance.js — OpenRouter Balance

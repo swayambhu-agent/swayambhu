@@ -14,7 +14,7 @@ describe("generateIndexJS", () => {
     const code = generateIndexJS(metadata);
 
     // Imports
-    expect(code).toContain("import { Brainstem } from './kernel.js'");
+    expect(code).toContain("import { Kernel } from './kernel.js'");
     expect(code).toContain("import { handleChat } from './hook-chat.js'");
     expect(code).toContain("import * as act from './act.js'");
     expect(code).toContain("import * as reflect from './reflect.js'");
@@ -35,8 +35,8 @@ describe("generateIndexJS", () => {
 
     // Entry points
     expect(code).toContain("async scheduled(event, env, ctx)");
-    expect(code).toContain("new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS })");
-    expect(code).toContain("await brain.runScheduled()");
+    expect(code).toContain("new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS })");
+    expect(code).toContain("await kernel.runScheduled()");
     expect(code).toContain("async fetch(request, env, ctx)");
     expect(code).toContain("handleChat(K, channel, inbound, adapter)");
   });
@@ -48,7 +48,7 @@ describe("generateIndexJS", () => {
     expect(code).toContain("const PROVIDERS = {");
     expect(code).toContain("const CHANNELS = {");
     // Should still have kernel + hook imports
-    expect(code).toContain("import { Brainstem } from './kernel.js'");
+    expect(code).toContain("import { Kernel } from './kernel.js'");
     expect(code).toContain("import * as act from './act.js'");
   });
 

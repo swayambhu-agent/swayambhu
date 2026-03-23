@@ -7,7 +7,7 @@ import {
   runSession,
   summarizeKarma,
 } from "../act.js";
-import { Brainstem } from "../kernel.js";
+import { Kernel } from "../kernel.js";
 import {
   executeReflect,
   isReflectDue,
@@ -23,9 +23,9 @@ import {
 } from "../reflect.js";
 
 // Aliases for functions moved to kernel static methods
-const evaluateTripwires = Brainstem.evaluateTripwires;
-const getMaxSteps = Brainstem.getMaxSteps;
-const getReflectModel = Brainstem.getReflectModel;
+const evaluateTripwires = Kernel.evaluateTripwires;
+const getMaxSteps = Kernel.getMaxSteps;
+const getReflectModel = Kernel.getReflectModel;
 
 // applyKVOperation is now a kernel instance method called via K.applyKVOperation(op).
 // Tests used the old standalone signature applyKVOperation(K, op) — this wrapper preserves it.
@@ -394,32 +394,32 @@ describe("evaluateTripwires", () => {
 
 describe("evaluatePredicate", () => {
   it("exists", () => {
-    expect(Brainstem.evaluatePredicate("val", "exists")).toBe(true);
-    expect(Brainstem.evaluatePredicate(null, "exists")).toBe(false);
+    expect(Kernel.evaluatePredicate("val", "exists")).toBe(true);
+    expect(Kernel.evaluatePredicate(null, "exists")).toBe(false);
   });
 
   it("equals", () => {
-    expect(Brainstem.evaluatePredicate(42, "equals", 42)).toBe(true);
-    expect(Brainstem.evaluatePredicate(42, "equals", 43)).toBe(false);
+    expect(Kernel.evaluatePredicate(42, "equals", 42)).toBe(true);
+    expect(Kernel.evaluatePredicate(42, "equals", 43)).toBe(false);
   });
 
   it("gt / lt", () => {
-    expect(Brainstem.evaluatePredicate(10, "gt", 5)).toBe(true);
-    expect(Brainstem.evaluatePredicate(10, "lt", 5)).toBe(false);
+    expect(Kernel.evaluatePredicate(10, "gt", 5)).toBe(true);
+    expect(Kernel.evaluatePredicate(10, "lt", 5)).toBe(false);
   });
 
   it("matches", () => {
-    expect(Brainstem.evaluatePredicate("hello world", "matches", "hello")).toBe(true);
-    expect(Brainstem.evaluatePredicate("hello world", "matches", "^world")).toBe(false);
+    expect(Kernel.evaluatePredicate("hello world", "matches", "hello")).toBe(true);
+    expect(Kernel.evaluatePredicate("hello world", "matches", "^world")).toBe(false);
   });
 
   it("type", () => {
-    expect(Brainstem.evaluatePredicate(42, "type", "number")).toBe(true);
-    expect(Brainstem.evaluatePredicate("str", "type", "string")).toBe(true);
+    expect(Kernel.evaluatePredicate(42, "type", "number")).toBe(true);
+    expect(Kernel.evaluatePredicate("str", "type", "string")).toBe(true);
   });
 
   it("unknown predicate fails closed", () => {
-    expect(Brainstem.evaluatePredicate("val", "unknown_pred")).toBe(false);
+    expect(Kernel.evaluatePredicate("val", "unknown_pred")).toBe(false);
   });
 });
 
@@ -1022,30 +1022,30 @@ describe("applyReflectOutput conditional fields", () => {
 // ── Proposal system (kernel) ────────────────────────────────
 
 describe("Proposal system (kernel)", () => {
-  // Test Brainstem.isCodeKey
+  // Test Kernel.isCodeKey
   it("identifies code keys correctly", () => {
-    expect(Brainstem.isCodeKey("tool:kv_query:code")).toBe(true);
-    expect(Brainstem.isCodeKey("provider:llm:code")).toBe(true);
-    expect(Brainstem.isCodeKey("hook:act:code")).toBe(true);
-    expect(Brainstem.isCodeKey("channel:slack:code")).toBe(true);
-    expect(Brainstem.isCodeKey("config:defaults")).toBe(false);
-    expect(Brainstem.isCodeKey("tool:kv_query:meta")).toBe(false);
-    expect(Brainstem.isCodeKey("prompt:act")).toBe(false);
+    expect(Kernel.isCodeKey("tool:kv_query:code")).toBe(true);
+    expect(Kernel.isCodeKey("provider:llm:code")).toBe(true);
+    expect(Kernel.isCodeKey("hook:act:code")).toBe(true);
+    expect(Kernel.isCodeKey("channel:slack:code")).toBe(true);
+    expect(Kernel.isCodeKey("config:defaults")).toBe(false);
+    expect(Kernel.isCodeKey("tool:kv_query:meta")).toBe(false);
+    expect(Kernel.isCodeKey("prompt:act")).toBe(false);
   });
 
   // Test evaluatePredicate
   it("evaluatePredicate handles all predicates", () => {
-    expect(Brainstem.evaluatePredicate("hello", "exists")).toBe(true);
-    expect(Brainstem.evaluatePredicate(null, "exists")).toBe(false);
-    expect(Brainstem.evaluatePredicate(42, "equals", 42)).toBe(true);
-    expect(Brainstem.evaluatePredicate(42, "equals", 43)).toBe(false);
-    expect(Brainstem.evaluatePredicate(10, "gt", 5)).toBe(true);
-    expect(Brainstem.evaluatePredicate(3, "gt", 5)).toBe(false);
-    expect(Brainstem.evaluatePredicate(3, "lt", 5)).toBe(true);
-    expect(Brainstem.evaluatePredicate("hello", "matches", "^h")).toBe(true);
-    expect(Brainstem.evaluatePredicate("hello", "matches", "^x")).toBe(false);
-    expect(Brainstem.evaluatePredicate("hello", "type", "string")).toBe(true);
-    expect(Brainstem.evaluatePredicate(42, "type", "number")).toBe(true);
-    expect(Brainstem.evaluatePredicate(42, "unknown_pred")).toBe(false);
+    expect(Kernel.evaluatePredicate("hello", "exists")).toBe(true);
+    expect(Kernel.evaluatePredicate(null, "exists")).toBe(false);
+    expect(Kernel.evaluatePredicate(42, "equals", 42)).toBe(true);
+    expect(Kernel.evaluatePredicate(42, "equals", 43)).toBe(false);
+    expect(Kernel.evaluatePredicate(10, "gt", 5)).toBe(true);
+    expect(Kernel.evaluatePredicate(3, "gt", 5)).toBe(false);
+    expect(Kernel.evaluatePredicate(3, "lt", 5)).toBe(true);
+    expect(Kernel.evaluatePredicate("hello", "matches", "^h")).toBe(true);
+    expect(Kernel.evaluatePredicate("hello", "matches", "^x")).toBe(false);
+    expect(Kernel.evaluatePredicate("hello", "type", "string")).toBe(true);
+    expect(Kernel.evaluatePredicate(42, "type", "number")).toBe(true);
+    expect(Kernel.evaluatePredicate(42, "unknown_pred")).toBe(false);
   });
 });

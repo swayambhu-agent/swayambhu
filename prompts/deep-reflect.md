@@ -299,4 +299,4 @@ You decide when to do this again. If things are changing fast — schedule soone
 
 `next_wake_config.effort` levels: low, medium, high, xhigh. Higher = deeper reasoning, higher cost. Default to low. Scale with the complexity of what the next session faces.
 
-The brainstem has a fallback: if you don't schedule one, it triggers automatically after {{currentDefaults.deep_reflect.default_interval_sessions}} sessions or {{currentDefaults.deep_reflect.default_interval_days}} days, whichever comes first. You can change those defaults too.
+The kernel has a fallback: if you don't schedule one, it triggers automatically after {{currentDefaults.deep_reflect.default_interval_sessions}} sessions or {{currentDefaults.deep_reflect.default_interval_days}} days, whichever comes first. You can change those defaults too.

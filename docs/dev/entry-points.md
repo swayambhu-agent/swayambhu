@@ -17,10 +17,10 @@ Cloudflare cron trigger
 │
 ▼
 scheduled(event, env, ctx)                          kernel.js:142
-│ new Brainstem(env, { ctx })
+│ new Kernel(env, { ctx })
 │
 ▼
-brain.runScheduled()                                kernel.js:881
+kernel.runScheduled()                                kernel.js:881
 │
 ├─► detectPlatformKill()                            kernel.js:920
 │   │ Read kernel:active_session
@@ -49,7 +49,7 @@ brain.runScheduled()                                kernel.js:881
 │
 ▼
 [modules loaded?]
-├─ YES → brain.executeHook(modules, mainModule)     kernel.js:979
+├─ YES → kernel.executeHook(modules, mainModule)     kernel.js:979
 │         │
 │         ├─► Write kernel:active_session = sessionId
 │         │
@@ -169,7 +169,7 @@ brain.runScheduled()                                kernel.js:881
 │         │
 │         └─► Delete kernel:active_session
 │
-└─ NO → brain.wake()                                 kernel.js:1112
+└─ NO → kernel.wake()                                 kernel.js:1112
           runMinimalFallback() + updateSessionOutcome("clean")
 ```
 
@@ -200,7 +200,7 @@ POST /channel/slack
 ▼
 fetch(request, env, ctx)                            kernel.js:147
 │ Match /channel/(\w+) — if no match or not POST → 404
-│ new Brainstem(env, { ctx })
+│ new Kernel(env, { ctx })
 │
 ├─► Load adapter from KV                            kernel.js:158
 │   Read channel:slack:code → adapterCode
@@ -246,7 +246,7 @@ fetch(request, env, ctx)                            kernel.js:147
 │
 └─► ctx.waitUntil(background work)                   kernel.js:223
     │
-    ├─► brain.loadEagerConfig()                      kernel.js:312
+    ├─► kernel.loadEagerConfig()                      kernel.js:312
     │   Load config:defaults, config:models, config:model_capabilities,
     │   dharma, config:tool_registry, yamas/niyamas, patron context
     │
@@ -256,7 +256,7 @@ fetch(request, env, ctx)                            kernel.js:147
     │   │   POST https://slack.com/api/chat.postMessage
     │
     ▼
-    handleChat(brain, channel, inbound, adapter)     hook-chat.js:8
+    handleChat(kernel, channel, inbound, adapter)     hook-chat.js:8
     │
     ├─► Load conversation state                      hook-chat.js:13
     │   Read chat:state:slack:{chatId} or init new { messages: [], total_cost: 0, ... }
@@ -328,7 +328,7 @@ Dev mode may skip webhook signature verification for convenience during testing.
 
 ## 3. Dashboard API
 
-**Separate Cloudflare Worker.** Source: `dashboard-api/worker.js`. Shares the same KV namespace as brainstem.
+**Separate Cloudflare Worker.** Source: `dashboard-api/worker.js`. Shares the same KV namespace as kernel.
 
 **Wrangler config:** `dashboard-api/wrangler.toml`. Dev port 8790. `OPERATOR_KEY` is `"test"` in dev (set as `[vars]`), overridden by secret in prod.
 
@@ -392,7 +392,7 @@ DELETE /quarantine/:key                  → auth required
 │ Return { ok: true }
 ```
 
-**NOTE:** The dashboard reads `kernel:active_session` and `sealed:quarantine:*` directly from KV. The brainstem's `K interface.kvGet()` blocks `sealed:*` reads, but the dashboard doesn't go through RPC — it uses `env.KV` directly. This is by design: the dashboard is operator-only, and quarantine content is intended for patron review.
+**NOTE:** The dashboard reads `kernel:active_session` and `sealed:quarantine:*` directly from KV. The kernel's `K interface.kvGet()` blocks `sealed:*` reads, but the dashboard doesn't go through RPC — it uses `env.KV` directly. This is by design: the dashboard is operator-only, and quarantine content is intended for patron review.
 
 **NOTE:** `GET /health` reads a key called `session` (plain text). This key is never written by any code in the codebase. The result is `null` and falls through to `activeSession` via the `||` operator, so it's harmless but dead.
 
@@ -456,10 +456,10 @@ Execution flow:
    - Apply `--set` overrides via Miniflare (read `config:defaults`, deep-set paths, write back)
 4. Else:
    - `node scripts/reset-wake-timer.mjs` (set `wake_config.next_wake_after` to past)
-5. Start brainstem: `npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state`
+5. Start kernel: `npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state`
 6. Start dashboard API: `cd dashboard-api && npx wrangler dev --port 8790 --persist-to ../.wrangler/shared-state`
 7. Start dashboard SPA: `node scripts/dev-serve.mjs 3001`
-8. Wait for brainstem and dashboard API to respond
+8. Wait for kernel and dashboard API to respond
 9. If `--wake`: `curl http://localhost:8787/__scheduled`
 10. Print service URLs, wait for Ctrl+C
 11. On exit: kill all process groups

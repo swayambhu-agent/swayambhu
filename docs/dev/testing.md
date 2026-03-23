@@ -102,10 +102,10 @@ Internal KV exposed via `_kv` for direct assertions.
 
 ## Test Suites
 
-### tests/brainstem.test.js — 171 tests
+### tests/kernel.test.js — 171 tests
 
-Tests the kernel (`Brainstem` class) directly. Uses a `makeBrain(kvInit, opts)`
-helper that constructs a real `Brainstem` instance with a mock KV store
+Tests the kernel (`Kernel` class) directly. Uses a `makeBrain(kvInit, opts)`
+helper that constructs a real `Kernel` instance with a mock KV store
 and environment.
 
 **Core parsing and output:**
@@ -308,7 +308,7 @@ Tests `handleChat` from `hook-chat.js` with a mock kernel (real
 
 Each suite uses factory functions to create test fixtures:
 
-- `makeBrain(kvInit, opts)` — brainstem.test.js: real `Brainstem` with
+- `makeBrain(kvInit, opts)` — kernel.test.js: real `Kernel` with
   mock KV
 - `makeState(overrides)` — wake-hook.test.js: state object for hook
   functions
@@ -338,13 +338,13 @@ the module-level `activeStaged`/`activeInflight` arrays between tests.
    module structure compatibility)
 2. Add execution tests with a mock `fetch` and mock `kv` (if applicable)
 3. If the tool has `communication` meta: add comms gate tests in
-   `brainstem.test.js`
+   `kernel.test.js`
 4. If the tool has `inbound` meta: add inbound gate tests in
-   `brainstem.test.js`
+   `kernel.test.js`
 
 ### For new kernel behavior
 
-Add tests in `brainstem.test.js` using `makeBrain()`. The mock KV
+Add tests in `kernel.test.js` using `makeBrain()`. The mock KV
 supports pre-seeding via the `kvInit` parameter.
 
 ### For new hook logic

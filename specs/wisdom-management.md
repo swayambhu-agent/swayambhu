@@ -157,7 +157,7 @@ And in code identifiers:
 - `prompts/reflect.md` — terminology
 - `prompts/orient.md` — terminology
 - `docs/doc-mutation-guide.md` → rename to `docs/doc-modification-guide.md`
-- `tests/brainstem.test.js` — all references
+- `tests/kernel.test.js` — all references
 - `tests/wake-hook.test.js` — all references
 - `scripts/seed-local-kv.mjs` — KV key references if any
 
@@ -613,6 +613,6 @@ Updated hierarchy:
 | `prompts/reflect.md` | Add wisdom awareness; rename mutation → modification; remove wisdom from protected keys; update output schema |
 | `scripts/seed-local-kv.mjs` | Remove wisdom seed; remove from default_load_keys; update any mutation references |
 | `docs/doc-mutation-guide.md` | Rename → `docs/doc-modification-guide.md`; update all terminology |
-| `tests/brainstem.test.js` | Rename all `mutation_*` references |
+| `tests/kernel.test.js` | Rename all `mutation_*` references |
 | `tests/wake-hook.test.js` | Rename all `mutation_*` references |
 | Hook manifest | Update `kernel.js (proposal methods)` → `kernel.js (proposal methods)` mapping |

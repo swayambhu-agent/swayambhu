@@ -27,7 +27,7 @@ const MIME = {
 };
 
 createServer((req, res) => {
-  // Proxy /wake to brainstem
+  // Proxy /wake to kernel
   if (req.url === "/wake" && req.method === "POST") {
     import("http").then(({ default: http }) => {
       http.get("http://localhost:8787/__scheduled", (r) => {

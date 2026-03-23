@@ -17,7 +17,7 @@ Key design decisions (from conversation):
 - Config/prompts/wisdom stay in KV (no deployment needed for changes)
 - Governor is the single authority for code rollback (version-based)
 
-**Critical finding**: `brainstem-dev.js` already implements the target pattern as a subclass — direct imports, no Worker Loader, scoped KV via wrapper functions. The migration promotes this pattern to be canonical.
+**Critical finding**: `kernel-dev.js` already implements the target pattern as a subclass — direct imports, no Worker Loader, scoped KV via wrapper functions. The migration promotes this pattern to be canonical.
 
 ## Errata — Issues Found During Scrutiny
 
@@ -25,7 +25,7 @@ These issues are addressed inline in the phases below, but listed here for visib
 
 1. **`buildKernelInterface()` must filter sealed: keys** — KernelRPC blocks `sealed:*` in kvGet/kvGetWithMeta/loadKeys. The K interface must do the same. Without this, hook code could read quarantined content.
 
-2. **`callHook()` (validate, validate_result, parse_repair)** — currently loads optional hook-tools from KV and runs in isolates. Plan didn't address this. Fix: look up in TOOLS first, call directly if found, otherwise return null (same as brainstem-dev.js).
+2. **`callHook()` (validate, validate_result, parse_repair)** — currently loads optional hook-tools from KV and runs in isolates. Plan didn't address this. Fix: look up in TOOLS first, call directly if found, otherwise return null (same as kernel-dev.js).
 
 3. **`checkHookSafety()` can't reset KV hook code** — in the new architecture there's no hook code in KV to delete/restore. Fix: on 3 consecutive crashes, signal governor (write `deploy:rollback_requested` to KV) and run minimal fallback. Governor's cron picks up the signal.
 
@@ -39,7 +39,7 @@ These issues are addressed inline in the phases below, but listed here for visib
 
 8. **Hook code KV keys for governor** — need explicit naming. Governor reads act.js source from `hook:act:code` and reflect.js source from `hook:reflect:code`. Seed script updated accordingly.
 
-9. **Proposal mechanics belong in the kernel** — they control the proposal/review mechanism (structural safety, same category as kvWritePrivileged and the communication gate). If mutable, the agent could bypass review. So proposals.js doesn't exist as a separate file — its ~150 lines become methods on the Brainstem class in kernel.js. reflect.js calls `K.createProposal()`, `K.loadProposals()`, `K.processProposalVerdicts()`. This keeps the immutable/mutable boundary clean: kernel.js = immutable, everything else = mutable.
+9. **Proposal mechanics belong in the kernel** — they control the proposal/review mechanism (structural safety, same category as kvWritePrivileged and the communication gate). If mutable, the agent could bypass review. So proposals.js doesn't exist as a separate file — its ~150 lines become methods on the Kernel class in kernel.js. reflect.js calls `K.createProposal()`, `K.loadProposals()`, `K.processProposalVerdicts()`. This keeps the immutable/mutable boundary clean: kernel.js = immutable, everything else = mutable.
 
 10. **Proposals are code-only** — the proposal system only handles executable code changes (`tool:*:code`, `hook:*:code`, `provider:*:code`, `channel:*:code`). Config, prompt, wisdom, and skill changes continue through existing KV write tiers (kvPutSafe, kvWritePrivileged, applyKVOperation) and take effect on the next session without deployment. reflect.js must route these differently: code targets → createProposal(), non-code targets → direct KV write.
 
@@ -50,8 +50,8 @@ These issues are addressed inline in the phases below, but listed here for visib
 ## Files Reference
 
 **Core (to refactor):**
-- `brainstem.js` (2274 lines) — current kernel with Worker Loader
-- `brainstem-dev.js` (317 lines) — already implements target pattern as subclass
+- `kernel.js` (2274 lines) — current kernel with Worker Loader
+- `kernel-dev.js` (317 lines) — already implements target pattern as subclass
 - `hook-main.js` (362 lines) — wake flow + session policy
 - `hook-reflect.js` (485 lines) — reflection hierarchy
 - `kernel.js (proposal methods)` (694 lines) — modification protocol (to simplify)
@@ -64,24 +64,24 @@ These issues are addressed inline in the phases below, but listed here for visib
 
 **Config/tests/scripts:**
 - `wrangler.toml`, `wrangler.dev.toml` — need Worker Loader removal
-- `tests/brainstem.test.js` (104 tests), `tests/wake-hook.test.js` (62 tests), `tests/tools.test.js` (100 tests), `tests/chat.test.js` (12 tests)
+- `tests/kernel.test.js` (104 tests), `tests/wake-hook.test.js` (62 tests), `tests/tools.test.js` (100 tests), `tests/chat.test.js` (12 tests)
 - `tests/helpers/mock-kernel.js` — KernelRPC mock (defines the K interface contract)
 - `scripts/seed-local-kv.mjs` — KV seeding
 - `scripts/start.sh` — dev startup
 
 ---
 
-## Phase 1: Create kernel.js (merge brainstem.js + brainstem-dev.js)
+## Phase 1: Create kernel.js (merge kernel.js + kernel-dev.js)
 
-**Goal**: Single Brainstem class with direct-import execution, no Worker Loader dependency.
+**Goal**: Single Kernel class with direct-import execution, no Worker Loader dependency.
 
-**Approach**: Start from `brainstem.js`, merge in `brainstem-dev.js` overrides, remove Worker Loader code.
+**Approach**: Start from `kernel.js`, merge in `kernel-dev.js` overrides, remove Worker Loader code.
 
 ### Create `kernel.js`
 
-**Remove from brainstem.js:**
+**Remove from kernel.js:**
 - `import { WorkerEntrypoint } from "cloudflare:workers"` (line 15)
-- `ScopedKV` class (lines 19-51) — replaced by `_buildScopedKV()` from brainstem-dev.js:215-247
+- `ScopedKV` class (lines 19-51) — replaced by `_buildScopedKV()` from kernel-dev.js:215-247
 - `KernelRPC` class (lines 58-139) — replaced by `buildKernelInterface()` (new method)
 - `_activeBrain` module-level singleton (line 55)
 - `export default { scheduled, fetch }` block (lines 142-247) — moves to index.js
@@ -89,17 +89,17 @@ These issues are addressed inline in the phases below, but listed here for visib
 - `runInIsolate()` (lines 1497-1534)
 - `enable_ctx_exports` compat flag dependency
 
-**Replace with brainstem-dev.js patterns:**
-- `_invokeHookModules()` (line 1076) → call `this.HOOKS.act.wake(K, input)` directly (brainstem-dev.js:143-153)
-- `_loadTool()` (line 1360) → return from `this.TOOLS[toolName]` (brainstem-dev.js:173-179)
-- `_executeTool()` (line 1374) → direct function call (brainstem-dev.js:198-211)
-- `executeAdapter()` (line 1238) → direct provider call (brainstem-dev.js:184-193)
-- `callWithCascade()` (line 1657) → use compiled provider, fall back to hardcoded direct OpenRouter call (merge brainstem-dev.js:252-302 as fallback tier)
+**Replace with kernel-dev.js patterns:**
+- `_invokeHookModules()` (line 1076) → call `this.HOOKS.act.wake(K, input)` directly (kernel-dev.js:143-153)
+- `_loadTool()` (line 1360) → return from `this.TOOLS[toolName]` (kernel-dev.js:173-179)
+- `_executeTool()` (line 1374) → direct function call (kernel-dev.js:198-211)
+- `executeAdapter()` (line 1238) → direct provider call (kernel-dev.js:184-193)
+- `callWithCascade()` (line 1657) → use compiled provider, fall back to hardcoded direct OpenRouter call (merge kernel-dev.js:252-302 as fallback tier)
 
 **Add new:**
 - Constructor accepts `{ ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS }` — dependency injection
-- `_buildScopedKV(toolName, kvAccess)` — from brainstem-dev.js:215-247
-- `_buildToolGrantsFromModules()` — from brainstem-dev.js:156-167, used as FALLBACK only when `kernel:tool_grants` not in KV
+- `_buildScopedKV(toolName, kvAccess)` — from kernel-dev.js:215-247
+- `_buildToolGrantsFromModules()` — from kernel-dev.js:156-167, used as FALLBACK only when `kernel:tool_grants` not in KV
 - `buildKernelInterface()` — returns K object matching KernelRPC API surface (see `tests/helpers/mock-kernel.js` for the wake hook contract + `callLLM` for hook-chat.js). **Must include sealed: key filtering** in kvGet, kvGetWithMeta, and loadKeys (matching KernelRPC lines 68-70, 73-74, 112-114). All methods async (hooks await them). Note: mock-kernel.js doesn't include `callLLM` because wake hooks don't call it directly — but hook-chat.js does, so `buildKernelInterface()` must include it.
 - `applyKVOperation(op)` — moved from hook-protect.js (kernel safety, immutable)
 
@@ -120,7 +120,7 @@ These issues are addressed inline in the phases below, but listed here for visib
 Static file importing all modules and wiring them to the kernel:
 
 ```javascript
-import { Brainstem } from './kernel.js';
+import { Kernel } from './kernel.js';
 import { handleChat } from './hook-chat.js';
 import * as act from './act.js';      // Phase 2
 import * as reflect from './reflect.js'; // Phase 2
@@ -134,11 +134,11 @@ const HOOKS = { act, reflect };
 
 export default {
   async scheduled(event, env, ctx) {
-    const brain = new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS });
-    await brain.runScheduled();
+    const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS });
+    await kernel.runScheduled();
   },
   async fetch(request, env, ctx) {
-    // Channel routing with direct adapter calls (from brainstem-dev.js:56-113)
+    // Channel routing with direct adapter calls (from kernel-dev.js:56-113)
   },
 };
 ```
@@ -152,13 +152,13 @@ export default {
 
 ### Update tests
 
-- `tests/brainstem.test.js`: import from `kernel.js`, update `makeBrain()` to pass TOOLS/PROVIDERS where tool execution tests need them
+- `tests/kernel.test.js`: import from `kernel.js`, update `makeBrain()` to pass TOOLS/PROVIDERS where tool execution tests need them
 - `tests/helpers/mock-kernel.js`: add `applyKVOperation` to the mock interface
 
 ### Delete
 
-- `brainstem.js`
-- `brainstem-dev.js`
+- `kernel.js`
+- `kernel-dev.js`
 
 **Verify**: `npm test` passes (all 278 tests). `start.sh --reset-all-state --wake` works.
 
@@ -358,7 +358,7 @@ No service binding or HTTP needed. Both workers communicate solely through the s
 
 ### Update start.sh
 
-- Add optional `--governor` flag to start governor worker alongside brainstem
+- Add optional `--governor` flag to start governor worker alongside kernel
 - Not needed for normal dev (index.js is hand-written locally)
 
 **Verify**: Governor tests pass. Manual test: `curl localhost:GOVERNOR_PORT/deploy` triggers a build cycle.
@@ -369,8 +369,8 @@ No service binding or HTTP needed. Both workers communicate solely through the s
 
 ### Delete remaining old files
 
-- `brainstem.js` (deleted in Phase 1)
-- `brainstem-dev.js` (deleted in Phase 1)
+- `kernel.js` (deleted in Phase 1)
+- `kernel-dev.js` (deleted in Phase 1)
 - `hook-main.js` (deleted in Phase 2)
 - `hook-protect.js` (deleted in Phase 2)
 - `hook-reflect.js` (deleted in Phase 2)
@@ -413,7 +413,7 @@ Phase 4 (governor) can start after Phase 1 since it's new code, but needs Phase 
 
 | New File | Lines | Source |
 |----------|-------|--------|
-| kernel.js | ~1950 | brainstem.js - Worker Loader + brainstem-dev.js overrides + wake orchestration + applyKVOperation + proposal methods (~150 lines) |
+| kernel.js | ~1950 | kernel.js - Worker Loader + kernel-dev.js overrides + wake orchestration + applyKVOperation + proposal methods (~150 lines) |
 | index.js | ~60 | Entry point wiring |
 | act.js | ~150 | hook-main.js session logic |
 | reflect.js | ~450 | hook-reflect.js (minor changes) |
@@ -425,8 +425,8 @@ Phase 4 (governor) can start after Phase 1 since it's new code, but needs Phase 
 
 | File | Lines | Replacement |
 |------|-------|-------------|
-| brainstem.js | 2274 | kernel.js |
-| brainstem-dev.js | 317 | Merged into kernel.js |
+| kernel.js | 2274 | kernel.js |
+| kernel-dev.js | 317 | Merged into kernel.js |
 | hook-main.js | 362 | kernel.js (orchestration) + act.js (session) |
 | hook-protect.js | 87 | kernel.js (applyKVOperation method) |
 | kernel.js (proposal methods) | 694 | kernel.js (proposal methods) |

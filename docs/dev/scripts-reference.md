@@ -314,10 +314,10 @@ source .env && bash scripts/start.sh [options]
      `seed-local-kv.mjs`, applies `--set` overrides
    - Without reset: runs `reset-wake-timer.mjs` to ensure next wake runs
 4. **Start services** (all via `setsid` for process group management):
-   - Brainstem: `npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state` (port 8787)
+   - Kernel: `npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state` (port 8787)
    - Dashboard API: `npx wrangler dev --port 8790 --persist-to ../.wrangler/shared-state` (from `dashboard-api/`)
    - Dashboard SPA: `node scripts/dev-serve.mjs 3001`
-5. **Wait for ready** — polls brainstem and dashboard API with curl
+5. **Wait for ready** — polls kernel and dashboard API with curl
    (up to 30s each)
 6. **Trigger wake** (if `--wake`): `curl http://localhost:8787/__scheduled`
 

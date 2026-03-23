@@ -243,7 +243,7 @@ In prod, verification runs in a direct call
 1. Reads `channel:{name}:config` to find `secrets` and
    `webhook_secret_env`
 2. Collects matching env vars into `envVars`
-3. Wraps adapter code with `Brainstem.channel adapter()` — appends an
+3. Wraps adapter code with `Kernel.channel adapter()` — appends an
    `export default { fetch() }` handler that dispatches by `ctx.action`
 4. Calls `direct call` with `action: "verify"`, passing headers (as plain
    object), raw body, and env vars

@@ -7,7 +7,7 @@
 //
 // Entry point is index.js, which imports all modules and wires them here.
 
-class Brainstem {
+class Kernel {
   constructor(env, opts = {}) {
     this.env = env;
     this.ctx = opts.ctx || null;
@@ -61,20 +61,20 @@ class Brainstem {
   static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 
   static isSystemKey(key) {
-    if (Brainstem.SYSTEM_KEY_EXACT.includes(key)) return true;
-    return Brainstem.SYSTEM_KEY_PREFIXES.some(p => key.startsWith(p));
+    if (Kernel.SYSTEM_KEY_EXACT.includes(key)) return true;
+    return Kernel.SYSTEM_KEY_PREFIXES.some(p => key.startsWith(p));
   }
 
   static isKernelOnly(key) {
-    return Brainstem.KERNEL_ONLY_PREFIXES.some(p => key.startsWith(p));
+    return Kernel.KERNEL_ONLY_PREFIXES.some(p => key.startsWith(p));
   }
 
   static isPrincipleKey(key) {
-    return Brainstem.PRINCIPLE_PREFIXES.some(p => key.startsWith(p));
+    return Kernel.PRINCIPLE_PREFIXES.some(p => key.startsWith(p));
   }
 
   static isPrincipleAuditKey(key) {
-    return Brainstem.isPrincipleKey(key) && key.endsWith(':audit');
+    return Kernel.isPrincipleKey(key) && key.endsWith(':audit');
   }
 
   // ── SSH Ed25519 key parsing ───────────────────────────────
@@ -113,7 +113,7 @@ class Brainstem {
   async loadYamasNiyamas() {
     this.yamas = {};
     this.niyamas = {};
-    for (const prefix of Brainstem.PRINCIPLE_PREFIXES) {
+    for (const prefix of Kernel.PRINCIPLE_PREFIXES) {
       const principleKeys = await this.kvListAll({ prefix });
       for (const { name: key } of principleKeys) {
         if (key.endsWith(':audit')) continue;
@@ -381,7 +381,7 @@ class Brainstem {
       await this.kvPut(`karma:${this.sessionId}`, this.karma);
     }
 
-    if (Brainstem.DANGER_SIGNALS.includes(entry.event)) {
+    if (Kernel.DANGER_SIGNALS.includes(entry.event)) {
       await this.kvPut("last_danger", {
         t: record.t,
         event: entry.event,
@@ -422,15 +422,15 @@ class Brainstem {
 
   async kvPutSafe(key, value, metadata) {
     if (key === "dharma") throw new Error("Cannot overwrite dharma — immutable key");
-    if (Brainstem.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
-    if (Brainstem.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWritePrivileged`);
+    if (Kernel.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
+    if (Kernel.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWritePrivileged`);
     return this.kvPut(key, value, metadata);
   }
 
   async kvDeleteSafe(key) {
     if (key === "dharma") throw new Error("Cannot delete dharma — immutable key");
-    if (Brainstem.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
-    if (Brainstem.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWritePrivileged`);
+    if (Kernel.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
+    if (Kernel.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWritePrivileged`);
     return this.kv.delete(key);
   }
 
@@ -439,10 +439,10 @@ class Brainstem {
 
     // ── Pre-validation: reject entire batch before any writes ──
     for (const op of ops) {
-      if (op.key === "dharma" || Brainstem.IMMUTABLE_KEYS.includes(op.key)) {
+      if (op.key === "dharma" || Kernel.IMMUTABLE_KEYS.includes(op.key)) {
         throw new Error(`Cannot write "${op.key}" — immutable key`);
       }
-      if (Brainstem.isKernelOnly(op.key)) throw new Error(`Blocked: kernel-only key "${op.key}"`);
+      if (Kernel.isKernelOnly(op.key)) throw new Error(`Blocked: kernel-only key "${op.key}"`);
 
       // Contact index is kernel-managed (auto-built by resolveContact)
       if (op.key.startsWith("contact_index:")) {
@@ -497,7 +497,7 @@ class Brainstem {
       }
 
       // Yama/Niyama gates — validate before any writes execute
-      if (Brainstem.isPrincipleKey(op.key) && !Brainstem.isPrincipleAuditKey(op.key)) {
+      if (Kernel.isPrincipleKey(op.key) && !Kernel.isPrincipleAuditKey(op.key)) {
         const isYama = op.key.startsWith('yama:');
         const type = isYama ? 'yama' : 'niyama';
         const minChars = isYama ? 200 : 100;
@@ -513,8 +513,8 @@ class Brainstem {
       }
     }
 
-    if (this.privilegedWriteCount + ops.length > Brainstem.MAX_PRIVILEGED_WRITES) {
-      throw new Error(`Privileged write limit (${Brainstem.MAX_PRIVILEGED_WRITES}/session) exceeded`);
+    if (this.privilegedWriteCount + ops.length > Kernel.MAX_PRIVILEGED_WRITES) {
+      throw new Error(`Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded`);
     }
 
     const configKeys = ["config:defaults", "config:models", "config:tool_registry", "config:model_capabilities"];
@@ -523,7 +523,7 @@ class Brainstem {
 
     for (const op of ops) {
       // ── Yama/Niyama diff warning (gates already passed in pre-validation) ──
-      if (Brainstem.isPrincipleKey(op.key) && !Brainstem.isPrincipleAuditKey(op.key)) {
+      if (Kernel.isPrincipleKey(op.key) && !Kernel.isPrincipleAuditKey(op.key)) {
         const isYama = op.key.startsWith('yama:');
         const type = isYama ? 'yama' : 'niyama';
 
@@ -582,7 +582,7 @@ class Brainstem {
       this.privilegedWriteCount++;
 
       // Audit trail for yama/niyama writes
-      if (Brainstem.isPrincipleKey(op.key) && !Brainstem.isPrincipleAuditKey(op.key)) {
+      if (Kernel.isPrincipleKey(op.key) && !Kernel.isPrincipleAuditKey(op.key)) {
         const auditKey = `${op.key}:audit`;
         const existing = await this.kvGet(auditKey) || [];
         existing.push({
@@ -631,94 +631,94 @@ class Brainstem {
   // Includes sealed: key filtering for security.
 
   buildKernelInterface() {
-    const brain = this;
+    const kernel = this;
     return {
       // LLM
-      callLLM: async (opts) => brain.callLLM(opts),
+      callLLM: async (opts) => kernel.callLLM(opts),
 
       // KV reads (sealed keys blocked — hook code must not read quarantined data)
       kvGet: async (key) => {
         if (key.startsWith("sealed:")) return null;
-        return brain.kvGet(key);
+        return kernel.kvGet(key);
       },
       kvGetWithMeta: async (key) => {
         if (key.startsWith("sealed:")) return { value: null, metadata: null };
-        return brain.kvGetWithMeta(key);
+        return kernel.kvGetWithMeta(key);
       },
-      kvList: async (opts) => brain.kv.list(opts),
+      kvList: async (opts) => kernel.kv.list(opts),
 
       // KV writes
-      kvPutSafe: async (key, value, metadata) => brain.kvPutSafe(key, value, metadata),
-      kvDeleteSafe: async (key) => brain.kvDeleteSafe(key),
-      kvWritePrivileged: async (ops) => brain.kvWritePrivileged(ops),
+      kvPutSafe: async (key, value, metadata) => kernel.kvPutSafe(key, value, metadata),
+      kvDeleteSafe: async (key) => kernel.kvDeleteSafe(key),
+      kvWritePrivileged: async (ops) => kernel.kvWritePrivileged(ops),
 
       // Agent loop
-      runAgentLoop: async (opts) => brain.runAgentLoop(opts),
-      executeToolCall: async (tc) => brain.executeToolCall(tc),
-      buildToolDefinitions: async (extra) => brain.buildToolDefinitions(extra),
-      spawnSubplan: async (args, depth) => brain.spawnSubplan(args, depth),
-      callHook: async (name, ctx) => brain.callHook(name, ctx),
-      executeAction: async (step) => brain.executeAction(step),
-      executeAdapter: async (adapterKey, input) => brain.executeAdapter(adapterKey, input),
+      runAgentLoop: async (opts) => kernel.runAgentLoop(opts),
+      executeToolCall: async (tc) => kernel.executeToolCall(tc),
+      buildToolDefinitions: async (extra) => kernel.buildToolDefinitions(extra),
+      spawnSubplan: async (args, depth) => kernel.spawnSubplan(args, depth),
+      callHook: async (name, ctx) => kernel.callHook(name, ctx),
+      executeAction: async (step) => kernel.executeAction(step),
+      executeAdapter: async (adapterKey, input) => kernel.executeAdapter(adapterKey, input),
 
       // Blocked communications
-      listBlockedComms: async () => brain.listBlockedComms(),
-      processCommsVerdict: async (id, verdict, revision) => brain.processCommsVerdict(id, verdict, revision),
+      listBlockedComms: async () => kernel.listBlockedComms(),
+      processCommsVerdict: async (id, verdict, revision) => kernel.processCommsVerdict(id, verdict, revision),
 
       // Balance
-      checkBalance: async (args) => brain.checkBalance(args),
+      checkBalance: async (args) => kernel.checkBalance(args),
 
       // Karma
-      karmaRecord: async (entry) => brain.karmaRecord(entry),
+      karmaRecord: async (entry) => kernel.karmaRecord(entry),
 
       // Utility
-      resolveModel: async (m) => brain.resolveModel(m),
-      estimateCost: async (model, usage) => brain.estimateCost(model, usage),
-      buildPrompt: async (template, vars) => brain.buildPrompt(template, vars),
-      parseAgentOutput: async (content) => brain.parseAgentOutput(content),
+      resolveModel: async (m) => kernel.resolveModel(m),
+      estimateCost: async (model, usage) => kernel.estimateCost(model, usage),
+      buildPrompt: async (template, vars) => kernel.buildPrompt(template, vars),
+      parseAgentOutput: async (content) => kernel.parseAgentOutput(content),
       loadKeys: async (keys) => {
         const filtered = keys.filter(k => !k.startsWith("sealed:"));
-        return brain.loadKeys(filtered);
+        return kernel.loadKeys(filtered);
       },
-      getSessionCount: async () => brain.getSessionCount(),
-      mergeDefaults: async (defaults, overrides) => brain.mergeDefaults(defaults, overrides),
-      isSystemKey: async (key) => Brainstem.isSystemKey(key),
+      getSessionCount: async () => kernel.getSessionCount(),
+      mergeDefaults: async (defaults, overrides) => kernel.mergeDefaults(defaults, overrides),
+      isSystemKey: async (key) => Kernel.isSystemKey(key),
       getSystemKeyPatterns: async () => ({
-        prefixes: Brainstem.SYSTEM_KEY_PREFIXES,
-        exact: Brainstem.SYSTEM_KEY_EXACT,
+        prefixes: Kernel.SYSTEM_KEY_PREFIXES,
+        exact: Kernel.SYSTEM_KEY_EXACT,
       }),
 
       // KV operation gating (moved from hook-protect.js — immutable safety)
-      applyKVOperation: async (op) => brain.applyKVOperation(op),
+      applyKVOperation: async (op) => kernel.applyKVOperation(op),
 
       // Config utilities (used by both act.js and reflect.js)
-      getMaxSteps: async (state, role, depth) => Brainstem.getMaxSteps(state, role, depth),
-      getReflectModel: async (state, depth) => Brainstem.getReflectModel(state, depth),
+      getMaxSteps: async (state, role, depth) => Kernel.getMaxSteps(state, role, depth),
+      getReflectModel: async (state, depth) => Kernel.getReflectModel(state, depth),
 
       // Proposal system (code change proposals)
-      createProposal: async (request, sessionId, depth) => brain.createProposal(request, sessionId, depth),
-      loadProposals: async (statusFilter) => brain.loadProposals(statusFilter),
-      updateProposalStatus: async (id, newStatus, metadata) => brain.updateProposalStatus(id, newStatus, metadata),
-      processProposalVerdicts: async (verdicts, depth) => brain.processProposalVerdicts(verdicts, depth),
+      createProposal: async (request, sessionId, depth) => kernel.createProposal(request, sessionId, depth),
+      loadProposals: async (statusFilter) => kernel.loadProposals(statusFilter),
+      updateProposalStatus: async (id, newStatus, metadata) => kernel.updateProposalStatus(id, newStatus, metadata),
+      processProposalVerdicts: async (verdicts, depth) => kernel.processProposalVerdicts(verdicts, depth),
 
       // State (read-only)
-      getSessionId: async () => brain.sessionId,
-      getSessionCost: async () => brain.sessionCost,
-      getKarma: async () => brain.karma,
-      getChatKarma: async () => brain.mode === 'chat' ? [...brain.karma] : [],
-      getDefaults: async () => brain.defaults,
-      getModelsConfig: async () => brain.modelsConfig,
-      getModelCapabilities: async () => brain.modelCapabilities,
-      getDharma: async () => brain.dharma,
-      getToolRegistry: async () => brain.toolRegistry,
-      getYamas: async () => brain.yamas,
-      getNiyamas: async () => brain.niyamas,
-      getPatronId: async () => brain.patronId,
-      getPatronContact: async () => brain.patronContact,
-      isPatronIdentityDisputed: async () => brain.patronIdentityDisputed,
-      rotatePatronKey: async (newPublicKey, signature) => brain.rotatePatronKey(newPublicKey, signature),
-      resolveContact: async (platform, platformUserId) => brain.resolveContact(platform, platformUserId),
-      elapsed: async () => brain.elapsed(),
+      getSessionId: async () => kernel.sessionId,
+      getSessionCost: async () => kernel.sessionCost,
+      getKarma: async () => kernel.karma,
+      getChatKarma: async () => kernel.mode === 'chat' ? [...kernel.karma] : [],
+      getDefaults: async () => kernel.defaults,
+      getModelsConfig: async () => kernel.modelsConfig,
+      getModelCapabilities: async () => kernel.modelCapabilities,
+      getDharma: async () => kernel.dharma,
+      getToolRegistry: async () => kernel.toolRegistry,
+      getYamas: async () => kernel.yamas,
+      getNiyamas: async () => kernel.niyamas,
+      getPatronId: async () => kernel.patronId,
+      getPatronContact: async () => kernel.patronContact,
+      isPatronIdentityDisputed: async () => kernel.patronIdentityDisputed,
+      rotatePatronKey: async (newPublicKey, signature) => kernel.rotatePatronKey(newPublicKey, signature),
+      resolveContact: async (platform, platformUserId) => kernel.resolveContact(platform, platformUserId),
+      elapsed: async () => kernel.elapsed(),
     };
   }
 
@@ -747,7 +747,7 @@ class Brainstem {
       return;
     }
 
-    if (Brainstem.isSystemKey(key)) {
+    if (Kernel.isSystemKey(key)) {
       await this.karmaRecord({
         event: "modification_blocked", key, op: op.op,
         reason: "system_key", attempted_value: valueSummary,
@@ -801,7 +801,7 @@ class Brainstem {
   static CODE_KEY_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
 
   static isCodeKey(key) {
-    return Brainstem.CODE_KEY_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code');
+    return Kernel.CODE_KEY_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code');
   }
 
   _generateProposalId() {
@@ -815,7 +815,7 @@ class Brainstem {
     }
 
     // Validate all ops target code keys
-    const nonCodeOps = request.ops.filter(op => !Brainstem.isCodeKey(op.key));
+    const nonCodeOps = request.ops.filter(op => !Kernel.isCodeKey(op.key));
     if (nonCodeOps.length > 0) {
       await this.karmaRecord({
         event: "proposal_invalid",
@@ -954,7 +954,7 @@ class Brainstem {
           if (check.path && value != null) {
             value = check.path.split(".").reduce((o, k) => o?.[k], value);
           }
-          const passed = Brainstem.evaluatePredicate(value, check.predicate, check.expected);
+          const passed = Kernel.evaluatePredicate(value, check.predicate, check.expected);
           return { passed, detail: `${check.key}${check.path ? '.' + check.path : ''} ${check.predicate} ${JSON.stringify(check.expected)} → actual: ${JSON.stringify(value)}` };
         }
         case "tool_call": {
@@ -962,7 +962,7 @@ class Brainstem {
             tool: check.tool, input: check.input || {}, id: `check_${check.tool}`,
           });
           if (check.assert) {
-            const passed = Brainstem.evaluatePredicate(result, check.assert.predicate, check.assert.expected);
+            const passed = Kernel.evaluatePredicate(result, check.assert.predicate, check.assert.expected);
             return { passed, detail: `${check.tool} result ${check.assert.predicate} ${JSON.stringify(check.assert.expected)} → actual: ${JSON.stringify(result)}` };
           }
           return { passed: true, detail: `${check.tool} executed successfully` };
@@ -1148,7 +1148,7 @@ class Brainstem {
         : 0;
 
       // 6. Evaluate tripwires
-      const effort = Brainstem.evaluateTripwires(config, { balances });
+      const effort = Kernel.evaluateTripwires(config, { balances });
 
       // 7. Load context keys
       const loadKeys = lastReflect?.next_act_context?.load_keys
@@ -1483,7 +1483,7 @@ class Brainstem {
   async verifyPatronSignature(message, signatureBase64) {
     const pubKeyStr = await this.kvGet("patron:public_key");
     if (!pubKeyStr) throw new Error("No patron public key configured");
-    const rawPubKey = Brainstem.parseSSHEd25519(pubKeyStr);
+    const rawPubKey = Kernel.parseSSHEd25519(pubKeyStr);
     const key = await crypto.subtle.importKey(
       "raw", rawPubKey, { name: "Ed25519" }, false, ["verify"],
     );
@@ -1514,7 +1514,7 @@ class Brainstem {
     if (!valid) throw new Error("Invalid signature — rotation rejected");
 
     // Validate the new key parses correctly
-    Brainstem.parseSSHEd25519(newPublicKey);
+    Kernel.parseSSHEd25519(newPublicKey);
 
     // Write directly to KV binding — bypasses kvPut immutability guard
     await this.kv.put("patron:public_key", newPublicKey, {
@@ -2296,12 +2296,12 @@ class Brainstem {
 
   async kvPut(key, value, metadata = {}) {
     // Protect immutable keys
-    if (key === "dharma" || Brainstem.IMMUTABLE_KEYS.includes(key)) {
+    if (key === "dharma" || Kernel.IMMUTABLE_KEYS.includes(key)) {
       throw new Error(`Cannot write "${key}" — immutable key`);
     }
 
     // System keys cannot be marked unprotected
-    if (Brainstem.isSystemKey(key)) delete metadata.unprotected;
+    if (Kernel.isSystemKey(key)) delete metadata.unprotected;
 
     // Auto-tag: guarantee every key has at minimum a type based on prefix
     const prefix = key.split(":")[0];
@@ -2415,4 +2415,4 @@ Budget: max {{maxSteps}} turns, max ${{maxCost}}.`;
   }
 }
 
-export { Brainstem };
+export { Kernel };

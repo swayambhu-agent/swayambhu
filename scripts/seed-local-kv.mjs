@@ -312,7 +312,7 @@ for (const name of skillNames) {
 
 await dispose();
 console.log(`\n=== Done! Seeded ${count} keys ===`);
-console.log(`\nStart brainstem (port 8787):`);
+console.log(`\nStart kernel (port 8787):`);
 console.log(`  source .env && npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state`);
 console.log(`\nTrigger the cron:`);
 console.log(`  curl http://localhost:8787/__scheduled`);

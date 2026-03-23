@@ -26,7 +26,7 @@ describe("readCodeFromKV", () => {
       "hook:act:code": "export async function orient() {}",
       "hook:reflect:code": "export async function reflect() {}",
       // Kernel source (immutable)
-      "kernel:source:kernel.js": "class Brainstem {}",
+      "kernel:source:kernel.js": "class Kernel {}",
       "kernel:source:hook-chat.js": "export function handleChat() {}",
       // Non-code keys (should be ignored by readCodeFromKV)
       "config:defaults": JSON.stringify({ wake: {} }),
@@ -44,7 +44,7 @@ describe("readCodeFromKV", () => {
     expect(files["channels/slack.js"]).toBe("export function parseInbound() {}");
     expect(files["act.js"]).toBe("export async function orient() {}");
     expect(files["reflect.js"]).toBe("export async function reflect() {}");
-    expect(files["kernel.js"]).toBe("class Brainstem {}");
+    expect(files["kernel.js"]).toBe("class Kernel {}");
     expect(files["hook-chat.js"]).toBe("export function handleChat() {}");
   });
 
@@ -208,7 +208,7 @@ describe("deploy", () => {
       };
       const files = {
         "index.js": 'export default { async fetch() { return new Response("ok"); } }',
-        "kernel.js": "class Brainstem {}",
+        "kernel.js": "class Kernel {}",
       };
 
       const result = await deploy(env, files);

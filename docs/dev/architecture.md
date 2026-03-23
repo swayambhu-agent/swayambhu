@@ -9,7 +9,7 @@ Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a
                         │        Cloudflare Workers        │
                         │                                  │
                         │  ┌────────────┐  ┌────────────┐  │
- Cron (every minute) ──►│  │ brainstem  │  │ dashboard  │  │◄── Operator browser
+ Cron (every minute) ──►│  │ kernel  │  │ dashboard  │  │◄── Operator browser
                         │  │   :8787    │  │  API :8790 │  │
  POST /channel/slack ──►│  │            │  │            │  │
                         │  └─────┬──────┘  └─────┬──────┘  │
@@ -34,16 +34,16 @@ Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a
 
 | Worker | Source | Port (dev) | Entry points |
 |--------|--------|------------|-------------|
-| Brainstem (main) | `kernel.js` | 8787 | `scheduled()` (cron), `fetch()` (HTTP) |
+| Kernel (main) | `kernel.js` | 8787 | `scheduled()` (cron), `fetch()` (HTTP) |
 | Dashboard API | `dashboard-api/worker.js` | 8790 | `fetch()` only |
 
-The brainstem handles all agent logic — wake cycles, chat, tool execution, LLM calls. The dashboard API is a stateless KV reader that serves the operator UI. It authenticates via `X-Operator-Key` header against an `OPERATOR_KEY` env var.
+The kernel handles all agent logic — wake cycles, chat, tool execution, LLM calls. The dashboard API is a stateless KV reader that serves the operator UI. It authenticates via `X-Operator-Key` header against an `OPERATOR_KEY` env var.
 
 ---
 
-## The kernel: `Brainstem` class
+## The kernel: `Kernel` class
 
-`kernel.js:248` defines `class Brainstem` — the hardcoded kernel. It enforces safety invariants that the agent cannot modify.
+`kernel.js:248` defines `class Kernel` — the hardcoded kernel. It enforces safety invariants that the agent cannot modify.
 
 ### Static safety properties
 

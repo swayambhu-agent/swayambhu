@@ -3,7 +3,7 @@
 // In production, the governor auto-generates this file from KV source-of-truth.
 // In local dev, this is a static hand-written file importing from disk.
 
-import { Brainstem } from './kernel.js';
+import { Kernel } from './kernel.js';
 import { handleChat } from './hook-chat.js';
 
 // Hook modules (mutable policy — agent can propose changes)
@@ -52,8 +52,8 @@ const HOOKS = { act, reflect };
 
 export default {
   async scheduled(event, env, ctx) {
-    const brain = new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS });
-    await brain.runScheduled();
+    const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS });
+    await kernel.runScheduled();
   },
 
   async fetch(request, env, ctx) {
@@ -64,7 +64,7 @@ export default {
     }
 
     const channel = match[1];
-    const brain = new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, mode: 'chat' });
+    const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, mode: 'chat' });
 
     // Load adapter from static imports
     const adapterMod = CHANNELS[channel];
@@ -90,15 +90,15 @@ export default {
     // Deduplication: ignore Slack retries
     if (inbound.msgId) {
       const dedupKey = `dedup:${inbound.msgId}`;
-      const seen = await brain.kv.get(dedupKey);
+      const seen = await kernel.kv.get(dedupKey);
       if (seen) return new Response("OK", { status: 200 });
-      await brain.kv.put(dedupKey, "1", { expirationTtl: 60 });
+      await kernel.kv.put(dedupKey, "1", { expirationTtl: 60 });
     }
 
     // Process in background, return 200 immediately
     const work = (async () => {
       try {
-        await brain.loadEagerConfig();
+        await kernel.loadEagerConfig();
 
         const adapter = {
           sendReply: async (chatId, text) => {
@@ -110,10 +110,10 @@ export default {
           },
         };
 
-        const K = brain.buildKernelInterface();
+        const K = kernel.buildKernelInterface();
         await handleChat(K, channel, inbound, adapter);
       } catch (err) {
-        brain.karmaRecord({ event: "chat_error", channel, error: err.message });
+        kernel.karmaRecord({ event: "chat_error", channel, error: err.message });
       }
     })();
     if (ctx?.waitUntil) ctx.waitUntil(work);

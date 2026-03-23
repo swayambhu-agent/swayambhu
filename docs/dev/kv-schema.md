@@ -41,7 +41,7 @@ The kernel enforces a hierarchy of write access. From most restrictive to least:
 | Value | SSH ed25519 public key string (e.g. `ssh-ed25519 AAAA... comment`) |
 | Read by | `verifyPatronSignature()` — parses SSH wire format, extracts 32-byte raw key, verifies Ed25519 signatures via `crypto.subtle` |
 | Written by | Seed script; `rotatePatronKey()` (self-authenticating — must be signed by current key holder) |
-| Protection | Immutable — in `Brainstem.IMMUTABLE_KEYS`. Both `kvPut()` and `kvWritePrivileged()` reject. `rotatePatronKey()` bypasses via direct `this.kv.put()` after verifying the rotation signature. |
+| Protection | Immutable — in `Kernel.IMMUTABLE_KEYS`. Both `kvPut()` and `kvWritePrivileged()` reject. `rotatePatronKey()` bypasses via direct `this.kv.put()` after verifying the rotation signature. |
 | Seeded | Yes |
 
 Used by the `verify_patron` built-in tool (kernel-hardcoded, not in `config:tool_registry`). The agent calls it when it needs to confirm the patron's identity — e.g. after noticing unusual behavior from the patron's Slack account.
@@ -50,7 +50,7 @@ Used by the `verify_patron` built-in tool (kernel-hardcoded, not in `config:tool
 
 ## System exact keys
 
-These keys are in `Brainstem.SYSTEM_KEY_EXACT` — matched by exact name, not prefix. Writable only via `kvWritePrivileged()`.
+These keys are in `Kernel.SYSTEM_KEY_EXACT` — matched by exact name, not prefix. Writable only via `kvWritePrivileged()`.
 
 ### `providers`
 
@@ -352,7 +352,7 @@ Seeded: `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`
 
 System prefix (`channel:` is not in `SYSTEM_KEY_PREFIXES`).
 
-**NOTE:** `channel:` is NOT in `Brainstem.SYSTEM_KEY_PREFIXES`. This means `channel:*` keys are not protected by `kvPutSafe()` — they are regular keys, not system keys. However, in practice the agent has no reason to write them directly (the orient prompt doesn't expose channel management), and the Modification Protocol would be the proper path to modify them.
+**NOTE:** `channel:` is NOT in `Kernel.SYSTEM_KEY_PREFIXES`. This means `channel:*` keys are not protected by `kvPutSafe()` — they are regular keys, not system keys. However, in practice the agent has no reason to write them directly (the orient prompt doesn't expose channel management), and the Modification Protocol would be the proper path to modify them.
 
 ---
 

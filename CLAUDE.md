@@ -26,7 +26,7 @@ cycle after startup. Use `--reset-all-state` to wipe state and re-seed
 from scratch. Use `--set` to override any `config:defaults` value after seeding.
 
 ```bash
-# Start services only (dashboard, brainstem — no wake)
+# Start services only (dashboard, kernel — no wake)
 source .env && bash scripts/start.sh
 
 # Start + trigger a wake cycle
@@ -42,20 +42,20 @@ source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepse
 The script automatically:
 - Kills stale workers (`pkill -f workerd`)
 - Waits for ports to actually free (avoids port conflict footgun)
-- Starts brainstem, dashboard API, and dashboard SPA
+- Starts kernel, dashboard API, and dashboard SPA
 - Waits for services to be ready
 - Triggers `/__scheduled` if `--wake` is passed
 
 ### IMPORTANT: `pkill -f workerd` kills ALL workers
 
-This kills both brainstem (8787) and dashboard API (8790). The start
+This kills both kernel (8787) and dashboard API (8790). The start
 script handles restarting both automatically.
 
 ### Ports
 
 | Service        | Port | Notes                                    |
 |----------------|------|------------------------------------------|
-| Brainstem      | 8787 | `--test-scheduled` enables `/__scheduled` |
+| Kernel         | 8787 | `--test-scheduled` enables `/__scheduled` |
 | Dashboard API  | 8790 | SPA hardcodes this for localhost          |
 | Dashboard SPA  | 3001 | `dev-serve.mjs` — no-cache static server  |
 | Governor       | 8791 | Only with `--governor` flag               |
@@ -74,7 +74,7 @@ npm test          # vitest — all unit tests, no network, no Workers runtime
 ```
 
 Tests cover:
-- `tests/brainstem.test.js` — kernel logic, safety gates, tool dispatch
+- `tests/kernel.test.js` — kernel logic, safety gates, tool dispatch
 - `tests/wake-hook.test.js` — wake flow, reflect, proposals, KV gating
 - `tests/tools.test.js` — tool/provider execute(), module structure
 - `tests/chat.test.js` — chat system

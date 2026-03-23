@@ -416,7 +416,7 @@ This:
 1. Kills any stale worker processes.
 2. Wipes all local KV state and re-seeds from scratch.
 3. Starts three services:
-   - **Brainstem** at `http://localhost:8787` — the agent
+   - **Kernel** at `http://localhost:8787` — the agent
    - **Dashboard API** at `http://localhost:8790` — KV reader for the dashboard
    - **Dashboard SPA** at `http://localhost:3001/operator/` — the operator dashboard
 4. Triggers a wake cycle (the agent orients, acts, and reflects).

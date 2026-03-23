@@ -7,7 +7,7 @@
 Fast, no network, no Workers runtime. Uses vitest with mock KV and mock fetch.
 
 **What's tested:**
-- Kernel logic (brainstem.test.js): parseAgentOutput, buildPrompt, budget
+- Kernel logic (kernel.test.js): parseAgentOutput, buildPrompt, budget
   enforcement, karma recording, tool definitions, session management
 - Wake hook (wake-hook.test.js): orient context, reflect scheduling, proposal
   system, circuit breaker, tripwire evaluation
@@ -69,6 +69,6 @@ Shared mocks live in `tests/helpers/`:
 ## Adding tests
 
 - Tool tests go in `tests/tools.test.js`
-- Kernel tests go in `tests/brainstem.test.js` (imports from `kernel.js`)
+- Kernel tests go in `tests/kernel.test.js` (imports from `kernel.js`)
 - Wake hook tests go in `tests/wake-hook.test.js` (imports from `act.js`, `reflect.js`)
 - Use shared helpers from `tests/helpers/` for mocks

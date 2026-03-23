@@ -40,7 +40,7 @@ export async function verify(headers, rawBody, env) {
 }
 
 export function parseInbound(body) {
-  // Slack URL verification challenge — signal brainstem to echo it back
+  // Slack URL verification challenge — signal kernel to echo it back
   if (body.type === "url_verification") {
     return { _challenge: body.challenge };
   }

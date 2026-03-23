@@ -20,7 +20,7 @@
 #   bash scripts/start.sh --reset-all-state --yes   # skip confirmation
 #
 # Starts:
-#   Brainstem      http://localhost:8787
+#   Kernel      http://localhost:8787
 #   Dashboard API  http://localhost:8790
 #   Dashboard SPA  http://localhost:3001
 
@@ -28,7 +28,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SPA_PORT=3001
-BRAINSTEM_PORT=8787
+KERNEL_PORT=8787
 DASHBOARD_PORT=8790
 
 RESET=false
@@ -176,7 +176,7 @@ pkill -9 -f workerd 2>/dev/null || true
 pkill -f "dev-serve.mjs" 2>/dev/null || true
 
 # ── 2. Wait for ports to actually free ─────────────────────────
-wait_ports_free "$BRAINSTEM_PORT,$DASHBOARD_PORT,$SPA_PORT"
+wait_ports_free "$KERNEL_PORT,$DASHBOARD_PORT,$SPA_PORT"
 
 # ── 3. Reset or preserve state ─────────────────────────────────
 if $RESET; then
@@ -213,7 +213,7 @@ fi
 
 # ── 4. Start all services ─────────────────────────────────────
 echo ""
-echo "=== Starting brainstem (port $BRAINSTEM_PORT) ==="
+echo "=== Starting kernel (port $KERNEL_PORT) ==="
 setsid npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state &
 PGIDS+=($!)
 
@@ -235,7 +235,7 @@ fi
 # ── 5. Wait for services to be ready ──────────────────────────
 echo ""
 echo "=== Waiting for services to start... ==="
-wait_service "brainstem" "http://localhost:$BRAINSTEM_PORT" 30
+wait_service "kernel" "http://localhost:$KERNEL_PORT" 30
 wait_service "dashboard API" "http://localhost:$DASHBOARD_PORT" 30
 
 # ── 6. Trigger wake cycle (if requested) ──────────────────────
@@ -248,7 +248,7 @@ if $WAKE; then
   node scripts/clear-wake.mjs
 
   echo "=== Triggering wake cycle ==="
-  if ! curl -sf http://localhost:$BRAINSTEM_PORT/__scheduled; then
+  if ! curl -sf http://localhost:$KERNEL_PORT/__scheduled; then
     echo "WARNING: wake trigger failed"
   fi
   echo ""
@@ -256,14 +256,14 @@ fi
 
 echo ""
 echo "=== Running ==="
-echo "  Brainstem:      http://localhost:$BRAINSTEM_PORT"
+echo "  Kernel:      http://localhost:$KERNEL_PORT"
 echo "  Dashboard API:  http://localhost:$DASHBOARD_PORT"
 echo "  Dashboard SPA:  http://localhost:$SPA_PORT/operator/"
 if $GOVERNOR; then
   echo "  Governor:       http://localhost:$GOVERNOR_PORT"
 fi
 echo ""
-echo "  Wake:    curl http://localhost:$BRAINSTEM_PORT/__scheduled"
+echo "  Wake:    curl http://localhost:$KERNEL_PORT/__scheduled"
 if $GOVERNOR; then
   echo "  Deploy:  curl -X POST http://localhost:$GOVERNOR_PORT/deploy"
   echo "  Status:  curl http://localhost:$GOVERNOR_PORT/status"

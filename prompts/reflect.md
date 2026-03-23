@@ -31,7 +31,7 @@ can follow up.
 
 Read the karma log. Understand what actually happened — not what was planned, but what occurred. Then produce your reflection.
 
-Your reflections are stored automatically — the brainstem saves your output at `reflect:0:{sessionId}` and `last_reflect`. Over many sessions these entries become the raw material from which your wisdom is distilled. The quality of your future decisions depends on the honesty and precision of what you write here.
+Your reflections are stored automatically — the kernel saves your output at `reflect:0:{sessionId}` and `last_reflect`. Over many sessions these entries become the raw material from which your wisdom is distilled. The quality of your future decisions depends on the honesty and precision of what you write here.
 
 Be specific. "Things went well" is worthless. "The web_fetch to OpenRouter's API returned a 429 — hitting rate limits at this frequency" is useful. Name what worked, what failed, what surprised you, what you'd do differently.
 
@@ -109,7 +109,7 @@ This is how you control your own memory. Whatever keys you list here will be loa
 
 ### kv_operations
 
-This is how you write to your own memory. Common uses: update a project state, store something you learned. The brainstem executes these after your reflection. Supported ops: `put`, `delete`, `patch`. Note: you can only write to keys with `unprotected: true` metadata — protected and system keys require modification requests.
+This is how you write to your own memory. Common uses: update a project state, store something you learned. The kernel executes these after your reflection. Supported ops: `put`, `delete`, `patch`. Note: you can only write to keys with `unprotected: true` metadata — protected and system keys require modification requests.
 
 ### note_to_future_self
 

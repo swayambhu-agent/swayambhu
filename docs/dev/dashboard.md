@@ -1,7 +1,7 @@
 # Dashboard API & Operator Interface
 
 Separate Cloudflare Worker providing read (and limited write) access to
-the same KV namespace used by the brainstem. Stateless — no database, no
+the same KV namespace used by the kernel. Stateless — no database, no
 session, just KV reads and CORS headers.
 
 ---
@@ -22,12 +22,12 @@ session, just KV reads and CORS headers.
 │  dashboard-api/worker.js                                  │
 │  port 8790 (dev)                                          │
 │                                                           │
-│  Reads from same KV namespace as brainstem                │
+│  Reads from same KV namespace as kernel                │
 │  Writes only: contacts, quarantine delete                 │
 └──────────────────────────────────────────────────────────┘
 ```
 
-The dashboard API and brainstem share the same KV namespace ID
+The dashboard API and kernel share the same KV namespace ID
 (`05720444f9654ed4985fb67af4aea24d` in `dashboard-api/wrangler.toml`).
 In dev, both use `--persist-to .wrangler/shared-state` to share the same
 SQLite-backed store.

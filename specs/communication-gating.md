@@ -291,7 +291,7 @@ async communicationGate(toolName, args, meta) {
     : '(No accumulated wisdom about communication contexts yet. Be conservative.)';
 
   // 4. Build gate prompt with upaya injected
-  const gatePrompt = Brainstem.COMMS_GATE_PROMPT.replace('{{upaya}}', upayaBlock);
+  const gatePrompt = Kernel.COMMS_GATE_PROMPT.replace('{{upaya}}', upayaBlock);
 
   // 5. Build context message
   const contextMessage = JSON.stringify({
@@ -423,10 +423,10 @@ Add methods for the hook to read and process blocked comms:
 // In KernelRPC extends WorkerEntrypoint:
 
 async listBlockedComms() {
-  const result = await this.brainstem.kv.list({ prefix: 'comms_blocked:' });
+  const result = await this.kernel.kv.list({ prefix: 'comms_blocked:' });
   const entries = [];
   for (const { name: key } of result.keys) {
-    const value = await this.brainstem.kvGet(key);
+    const value = await this.kernel.kvGet(key);
     if (value) entries.push(typeof value === 'string' ? JSON.parse(value) : value);
   }
   return entries;
@@ -434,7 +434,7 @@ async listBlockedComms() {
 
 async processCommsVerdict(id, verdict, revision) {
   const key = `comms_blocked:${id}`;
-  const raw = await this.brainstem.kvGet(key);
+  const raw = await this.kernel.kvGet(key);
   if (!raw) return { error: `No blocked comm found: ${id}` };
   const record = typeof raw === 'string' ? JSON.parse(raw) : raw;
 
@@ -446,12 +446,12 @@ async processCommsVerdict(id, verdict, revision) {
       if (args.body !== undefined) args.body = revision.text;
     }
     // Execute directly via executeAction — bypasses gate (already approved by deep reflect)
-    const result = await this.brainstem.executeAction({
+    const result = await this.kernel.executeAction({
       tool: record.tool,
       input: args,
       id: `comms_verdict_${id}`,
     });
-    await this.brainstem.karmaRecord({
+    await this.kernel.karmaRecord({
       event: 'comms_verdict_sent',
       id,
       tool: record.tool,
@@ -460,19 +460,19 @@ async processCommsVerdict(id, verdict, revision) {
       revised: verdict === 'revise_and_send',
     });
     // Delete the blocked record
-    await this.brainstem.kv.delete(key);
+    await this.kernel.kv.delete(key);
     return { ok: true, result };
   }
 
   if (verdict === 'drop') {
-    await this.brainstem.karmaRecord({
+    await this.kernel.karmaRecord({
       event: 'comms_verdict_dropped',
       id,
       tool: record.tool,
       recipient: record.recipient,
       reason: revision?.reason || 'dropped by deep reflect',
     });
-    await this.brainstem.kv.delete(key);
+    await this.kernel.kv.delete(key);
     return { ok: true, dropped: true };
   }
 
@@ -586,7 +586,7 @@ If you are initiating contact with someone you have no upaya entry for, the mess
 
 ## Phase 10: Tests
 
-### tests/brainstem.test.js
+### tests/kernel.test.js
 
 New test group: "Communication gate":
 
@@ -616,7 +616,7 @@ Add tests for deep reflect blocked comms integration:
 
 The dev subclass overrides `_executeTool` and `callWithCascade` but NOT `executeToolCall`. Since the gate lives in `executeToolCall`, it works in dev mode without changes.
 
-Verify: `_getToolMeta` uses `this.kvGet` which works in both prod and dev. `communicationGate` calls `this.callLLM` which DevBrainstem overrides to use direct fetch. No dev-specific changes needed.
+Verify: `_getToolMeta` uses `this.kvGet` which works in both prod and dev. `communicationGate` calls `this.callLLM` which DevKernel overrides to use direct fetch. No dev-specific changes needed.
 
 ---
 
@@ -631,7 +631,7 @@ Verify: `_getToolMeta` uses `this.kvGet` which works in both prod and dev. `comm
 | `reflect.js` | EDIT | Load blocked comms, process comms_verdicts |
 | `prompts/deep-reflect.md` | EDIT | Add blocked comms section + comms_verdicts schema |
 | `prompts/orient.md` | EDIT | Add communication gating note |
-| `tests/brainstem.test.js` | EDIT | Add communication gate tests |
+| `tests/kernel.test.js` | EDIT | Add communication gate tests |
 | `tests/wake-hook.test.js` | EDIT | Add blocked comms reflect tests |
 
 ## Verification
