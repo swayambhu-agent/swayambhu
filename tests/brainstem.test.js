@@ -1340,32 +1340,47 @@ describe("checkHookSafety", () => {
   });
 });
 
-// ── 17. detectPlatformKill ─────────────────────────────────
+// ── 17. session lock (runScheduled) ───────────────────────
 
-describe("detectPlatformKill", () => {
-  it("no-op when no active session marker", async () => {
-    const { brain, env } = makeBrain();
-    await brain.detectPlatformKill();
-    // No writes to kernel:last_sessions
-    const putCalls = env.KV.put.mock.calls.filter(
-      ([key]) => key === "kernel:last_sessions"
-    );
-    expect(putCalls).toHaveLength(0);
+describe("session lock", () => {
+  it("proceeds when no active session marker", async () => {
+    const { brain } = makeBrain();
+    brain.checkHookSafety = vi.fn(async () => true);
+    brain.executeHook = vi.fn(async () => {});
+    await brain.runScheduled();
+    expect(brain.executeHook).toHaveBeenCalled();
   });
 
-  it("injects killed outcome when active session found", async () => {
-    const { brain, env } = makeBrain({
-      "kernel:active_session": JSON.stringify("s_dead"),
+  it("bails when active session is recent", async () => {
+    const { brain } = makeBrain({
+      "kernel:active_session": JSON.stringify({ id: "s_other", started_at: new Date().toISOString() }),
+      "config:defaults": JSON.stringify({ session_budget: { max_duration_seconds: 600 } }),
     });
-    await brain.detectPlatformKill();
+    brain.checkHookSafety = vi.fn(async () => true);
+    brain.executeHook = vi.fn(async () => {});
+    await brain.runScheduled();
+    expect(brain.executeHook).not.toHaveBeenCalled();
+  });
 
-    // Should have written kernel:last_sessions with killed entry
-    const putCalls = env.KV.put.mock.calls;
-    const lastSessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
-    expect(lastSessionsPut).toBeTruthy();
+  it("treats stale marker as killed session and proceeds", async () => {
+    const staleTime = new Date(Date.now() - 1300 * 1000).toISOString(); // older than 2x 600s
+    const { brain, env } = makeBrain({
+      "kernel:active_session": JSON.stringify({ id: "s_dead", started_at: staleTime }),
+      "config:defaults": JSON.stringify({ session_budget: { max_duration_seconds: 600 } }),
+    });
+    brain.checkHookSafety = vi.fn(async () => true);
+    brain.executeHook = vi.fn(async () => {});
+    await brain.runScheduled();
 
-    // Should have deleted kernel:active_session
-    expect(env.KV.delete).toHaveBeenCalledWith("kernel:active_session");
+    // Should have recorded the killed session
+    const historyPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:last_sessions");
+    expect(historyPut).toBeTruthy();
+    const history = JSON.parse(historyPut[1]);
+    expect(history[0].outcome).toBe("killed");
+    expect(history[0].id).toBe("s_dead");
+
+    // Should have proceeded
+    expect(brain.executeHook).toHaveBeenCalled();
   });
 });
 
@@ -1437,23 +1452,21 @@ describe("updateSessionOutcome", () => {
 // ── 20. runScheduled hook execution flow ──────────────────
 
 describe("runScheduled hook execution flow", () => {
-  it("calls detectPlatformKill → checkHookSafety → executeHook when safe", async () => {
+  it("calls checkHookSafety → executeHook when safe", async () => {
     const { brain } = makeBrain();
     const callOrder = [];
-    brain.detectPlatformKill = vi.fn(async () => callOrder.push("detectPlatformKill"));
     brain.checkHookSafety = vi.fn(async () => { callOrder.push("checkHookSafety"); return true; });
     brain.executeHook = vi.fn(async () => callOrder.push("executeHook"));
     brain.wake = vi.fn(async () => callOrder.push("wake"));
 
     await brain.runScheduled();
 
-    expect(callOrder).toEqual(["detectPlatformKill", "checkHookSafety", "executeHook"]);
+    expect(callOrder).toEqual(["checkHookSafety", "executeHook"]);
     expect(brain.wake).not.toHaveBeenCalled();
   });
 
   it("falls back to wake() when checkHookSafety returns false", async () => {
     const { brain } = makeBrain();
-    brain.detectPlatformKill = vi.fn(async () => {});
     brain.checkHookSafety = vi.fn(async () => false);
     brain.executeHook = vi.fn(async () => {});
     brain.wake = vi.fn(async () => {});
@@ -1464,18 +1477,18 @@ describe("runScheduled hook execution flow", () => {
     expect(brain.wake).toHaveBeenCalled();
   });
 
-  it("always calls detectPlatformKill before checkHookSafety", async () => {
-    const { brain } = makeBrain();
-    const callOrder = [];
-    brain.detectPlatformKill = vi.fn(async () => callOrder.push("detect"));
-    brain.checkHookSafety = vi.fn(async () => { callOrder.push("safety"); return false; });
+  it("writes active session marker before executing", async () => {
+    const { brain, env } = makeBrain();
+    brain.checkHookSafety = vi.fn(async () => true);
     brain.executeHook = vi.fn(async () => {});
-    brain.wake = vi.fn(async () => {});
 
     await brain.runScheduled();
 
-    expect(callOrder[0]).toBe("detect");
-    expect(callOrder[1]).toBe("safety");
+    const markerPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:active_session");
+    expect(markerPut).toBeTruthy();
+    const marker = JSON.parse(markerPut[1]);
+    expect(marker.id).toBe(brain.sessionId);
+    expect(marker.started_at).toBeTruthy();
   });
 });
 

@@ -1001,32 +1001,42 @@ class Brainstem {
   // ── Hook dispatch (scheduled entry point) ─────────────────
 
   async runScheduled() {
-    // 1. Detect platform kill from previous session
-    await this.detectPlatformKill();
+    // 1. Session lock — prevent overlapping sessions
+    const active = await this.kvGet("kernel:active_session");
+    if (active?.started_at) {
+      const maxDuration = this.defaults?.session_budget?.max_duration_seconds
+        || (await this.kvGet("config:defaults"))?.session_budget?.max_duration_seconds
+        || 600;
+      const ttl = maxDuration * 2 * 1000;
+      const age = Date.now() - new Date(active.started_at).getTime();
 
-    // 2. Meta-safety check (3 consecutive crashes → signal governor + fallback)
+      if (age < ttl) {
+        // Session is still alive — bail out
+        return;
+      }
+
+      // Stale marker — previous session is dead (platform kill / OOM)
+      const history = await this.kvGet("kernel:last_sessions") || [];
+      history.unshift({ id: active.id, outcome: "killed", ts: new Date().toISOString() });
+      while (history.length > 5) history.pop();
+      await this.kvPut("kernel:last_sessions", history);
+    }
+
+    // 2. Acquire lock — write marker before any work
+    await this.kvPut("kernel:active_session", {
+      id: this.sessionId,
+      started_at: new Date().toISOString(),
+    });
+
+    // 3. Meta-safety check (3 consecutive crashes → signal governor + fallback)
     const hookSafe = await this.checkHookSafety();
 
-    // 3. Execute hook or fallback
+    // 4. Execute hook or fallback
     if (hookSafe) {
       await this.executeHook();
     } else {
       await this.wake();
     }
-  }
-
-  async detectPlatformKill() {
-    const activeSession = await this.kvGet("kernel:active_session");
-    if (!activeSession) return;
-
-    // Previous session was platform-killed — inject into last_sessions
-    const history = await this.kvGet("kernel:last_sessions") || [];
-    history.unshift({ id: activeSession, outcome: "killed", ts: new Date().toISOString() });
-    while (history.length > 5) history.pop();
-    await this.kvPut("kernel:last_sessions", history);
-
-    // Clean up the stale marker
-    await this.kv.delete("kernel:active_session");
   }
 
   async checkHookSafety() {
@@ -1051,9 +1061,6 @@ class Brainstem {
   }
 
   async executeHook() {
-    // Write active session marker (catches platform kills)
-    await this.kvPut("kernel:active_session", this.sessionId);
-
     let outcome = "clean";
     try {
       await this.runWake();
@@ -1242,13 +1249,18 @@ class Brainstem {
   // ── Crash detection ───────────────────────────────────────
 
   async _detectCrash() {
-    const stale = await this.kvGet("kernel:active_session");
-    if (!stale) return null;
-    if (stale === this.sessionId) return null;
+    // The active_session marker is always the current session at this point
+    // (written by runScheduled before runWake). Crash detection for dead
+    // sessions is now handled in runScheduled's lock check, which records
+    // killed sessions in kernel:last_sessions before we get here.
+    // This method now just checks if a killed session was recorded.
+    const history = await this.kvGet("kernel:last_sessions") || [];
+    const lastKilled = history.find(s => s.outcome === "killed");
+    if (!lastKilled) return null;
 
-    const deadKarma = await this.kvGet(`karma:${stale}`);
+    const deadKarma = await this.kvGet(`karma:${lastKilled.id}`);
     return {
-      dead_session_id: stale,
+      dead_session_id: lastKilled.id,
       karma: deadKarma,
       last_entry: Array.isArray(deadKarma) ? deadKarma[deadKarma.length - 1] : null,
     };
