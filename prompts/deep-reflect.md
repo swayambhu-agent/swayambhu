@@ -178,7 +178,7 @@ Sankalpas are directions, not targets — let observations reshape your understa
 
 ### On Vikalpas
 
-Vikalpas are mental constructs about the current state of things — assumptions you're operating on that may not match current reality. Only track vikalpas that are changing your behavior from what you'd do otherwise. Review existing vikalpas each deep reflect.
+Vikalpas are mental constructs about the current state of things — assumptions you're operating on that may not match current reality. Only track vikalpas that are changing your behavior from what you'd do otherwise. Review, refine, and prune.
 
 ### On the Proposal System
 
