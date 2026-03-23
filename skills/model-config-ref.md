@@ -75,7 +75,7 @@ When OpenRouter pricing changes:
 
 When a model is being retired:
 
-1. Identify all references in `config:defaults` — check orient.model, reflect.model, deep_reflect.model, chat.model, execution.fallback_model
+1. Identify all references in `config:defaults` — check act.model, reflect.model, deep_reflect.model, chat.model, execution.fallback_model
 2. Stage config:defaults changes to point to the replacement model
 3. If the model has entries in `config:model_capabilities`, update or remove them (see §4 for the write gate requirements — 200-char deliberation, yama_capable model). Include the deliberation in the modification request.
 4. Mark the old model as retired by adding `"status": "retired"` to its entry in config:models — do NOT remove it. Keeping the entry preserves cost data for historical karma log analysis.
@@ -91,14 +91,14 @@ To reassign which model serves a role:
 
 ### Cost-quality tradeoff framework
 
-| Factor | orient | reflect | deep_reflect |
+| Factor | act | reflect | deep_reflect |
 |--------|--------|---------|--------------|
 | Latency priority | HIGH | medium | low |
 | Cost sensitivity | HIGH | medium | low |
 | Reasoning depth | low | medium | HIGH |
 | Tool-calling reliability | HIGH | low | medium |
 
-**orient** should be the cheapest model that reliably does tool-calling and simple routing. Don't put opus here.
+**act** should be the cheapest model that reliably does tool-calling and simple routing. Don't put opus here.
 
 **reflect** needs solid reasoning at moderate cost — it runs every session.
 
@@ -110,17 +110,17 @@ To reassign which model serves a role:
 {
   "modification_requests": [{
     "claims": [
-      "Switch orient model from haiku to deepseek for 90% cost reduction",
+      "Switch act model from haiku to deepseek for 90% cost reduction",
       "DeepSeek v3.2 handles tool-calling adequately based on 5 sessions of observation"
     ],
     "ops": [{
       "op": "patch",
       "key": "config:defaults",
-      "old_string": "\"orient\": {\n    \"model\": \"anthropic/claude-haiku-4.5\"",
-      "new_string": "\"orient\": {\n    \"model\": \"deepseek\""
+      "old_string": "\"act\": {\n    \"model\": \"anthropic/claude-haiku-4.5\"",
+      "new_string": "\"act\": {\n    \"model\": \"deepseek\""
     }],
     "checks": [
-      {"type": "kv_assert", "key": "config:defaults", "path": "orient.model", "predicate": "equals", "value": "deepseek"}
+      {"type": "kv_assert", "key": "config:defaults", "path": "act.model", "predicate": "equals", "value": "deepseek"}
     ]
   }]
 }
@@ -140,7 +140,7 @@ Models should be marked retired rather than deleted — this preserves cost data
 
 1. Read config:defaults: `kv_query("config:defaults")`
 2. Search for any reference to the model's ID or alias in:
-   - `orient.model`
+   - `act.model`
    - `reflect.model`
    - `deep_reflect.model`
    - `chat.model`

@@ -6,7 +6,7 @@ Long content (email threads, web pages, documents, large KV values) can
 blow up LLM context windows and token budgets. Currently `check_email`
 returns full email bodies and `web_fetch` returns full page content.
 A 10-reply email thread can be 20KB+ (50K tokens). Ten such emails in
-an orient session would overflow the context window.
+an act session would overflow the context window.
 
 Truncation is the wrong fix — it chops blindly and may cut the important
 part. The agent should decide what to read and how much.
@@ -110,7 +110,7 @@ For known senders:
 ### Preview length
 
 Default 500 characters. Configurable per tool in meta if needed. Long
-enough to understand context, short enough to keep orient sessions lean
+enough to understand context, short enough to keep act sessions lean
 when processing many items.
 
 ## Scope
@@ -124,7 +124,7 @@ Tools that would use this pattern:
 ## Benefits
 
 - Agent controls what it reads — no blind truncation
-- Token-efficient: orient scans previews, only deep-reads what matters
+- Token-efficient: act scans previews, only deep-reads what matters
 - Generic: one pattern for all content types
 - Composable with inbound gate: handle removal = mechanical content block
 - Content cache is ephemeral (TTL) — no state bloat
@@ -140,5 +140,5 @@ Tools that would use this pattern:
 ## Status
 
 Parked. Current approach (full content) works for most cases. Implement
-when long content becomes a problem in practice (orient budget overruns,
+when long content becomes a problem in practice (act budget overruns,
 context window overflow, email thread explosion).

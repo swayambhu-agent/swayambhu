@@ -118,7 +118,7 @@ export async function markAsRead(token, fetchFn, id) {
   }
 }
 
-// Provider pattern — returns unread count for orient context.
+// Provider pattern — returns unread count for act context.
 export async function check({ secrets, fetch: fetchFn }) {
   const token = await getAccessToken(secrets, fetchFn);
   const messages = await listUnread(token, fetchFn, 1);

@@ -36,7 +36,7 @@ source .env && bash scripts/start.sh --wake
 source .env && bash scripts/start.sh --reset-all-state --wake
 
 # Full reset with config overrides (dot-path into config:defaults)
-source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepseek --set reflect.model=deepseek
+source .env && bash scripts/start.sh --reset-all-state --set act.model=deepseek --set reflect.model=deepseek
 ```
 
 The script automatically:
@@ -100,16 +100,16 @@ models for basic dev testing, use `--set` with `--reset-all-state`:
 
 ```bash
 # Full reset with DeepSeek for all roles (~30x cheaper)
-source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepseek --set reflect.model=deepseek
+source .env && bash scripts/start.sh --reset-all-state --set act.model=deepseek --set reflect.model=deepseek
 
-# Override just orient model
-source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepseek
+# Override just act model
+source .env && bash scripts/start.sh --reset-all-state --set act.model=deepseek
 ```
 
 Model aliases (e.g. `deepseek` for `deepseek/deepseek-v3.2`) are resolved
 at runtime via `config:models` alias_map. You can also use full model IDs.
 
-**Use cheap models for:** tool wiring, orient flow, KV ops, prompt rendering,
+**Use cheap models for:** tool wiring, act flow, KV ops, prompt rendering,
 budget enforcement, basic wake cycles.
 
 **Use real models for:** reflection hierarchy, deep reflect,
@@ -126,7 +126,7 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 | File | Role | Mutable? |
 |------|------|----------|
 | `kernel.js` | Safety gates, execution engine, session infrastructure, proposals | No (governor enforces) |
-| `act.js` | Session policy — orient flow, context building, chat digest | Yes (via proposals) |
+| `act.js` | Session policy — act flow, context building, chat digest | Yes (via proposals) |
 | `reflect.js` | Reflection policy — session/deep reflect, scheduling | Yes (via proposals) |
 | `hook-chat.js` | Chat handler — inbound message processing | No |
 | `tools/*.js` | Tool implementations (10 tools) | Yes (via proposals) |

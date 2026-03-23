@@ -72,7 +72,7 @@ describe("syncToGitHub", () => {
     };
     const changedFiles = {
       "tools/kv_query.js": "export function execute() {}",
-      "act.js": "export async function orient() {}",
+      "act.js": "export async function runSession() {}",
     };
 
     const result = await syncToGitHub(env, changedFiles, "deploy: v_test");

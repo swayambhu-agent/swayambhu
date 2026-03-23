@@ -199,7 +199,7 @@ At scale, the real challenge isn't naming — it's **deduplication**. The agent 
 
 ## Contact write path
 
-Contact records are system-protected (`contact:` in `SYSTEM_KEY_PREFIXES`). This blocks casual orient-level writes.
+Contact records are system-protected (`contact:` in `SYSTEM_KEY_PREFIXES`). This blocks casual act-level writes.
 
 Contact updates go through **modification requests** in deep reflect, using the existing Modification Protocol. This provides two-session validation: one session proposes changes, a different session reviews and accepts them. This protects against single-session prompt injection corrupting contact records.
 
@@ -248,7 +248,7 @@ Patron context is **not** kernel-injected into every LLM call. Unlike dharma and
 
 ### Where it is NOT injected
 
-- Routine orient sessions (checking balances, running tools)
+- Routine act sessions (checking balances, running tools)
 - Session-level reflect (depth 0)
 - Any LLM call where patron context is irrelevant
 
@@ -426,7 +426,7 @@ Keep `upaya:comms:defaults` — general communication stance stays as upaya.
 
 ## System key protection
 
-- `contact:` in `SYSTEM_KEY_PREFIXES` — protects contacts from casual orient-level writes
+- `contact:` in `SYSTEM_KEY_PREFIXES` — protects contacts from casual act-level writes
 - `patron:contact` in `SYSTEM_KEY_EXACT` — patron pointer protected from casual writes
 - `patron:public_key` in `IMMUTABLE_KEYS` — kernel hard-rejects ALL writes, including `kvWritePrivileged`. Only re-seeding can change it.
 - `patron:identity_snapshot` in `SYSTEM_KEY_EXACT` — only kernel writes to this (not exposed via RPC)

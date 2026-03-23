@@ -43,7 +43,7 @@ These issues are addressed inline in the phases below, but listed here for visib
 
 10. **Proposals are code-only** — the proposal system only handles executable code changes (`tool:*:code`, `hook:*:code`, `provider:*:code`, `channel:*:code`). Config, prompt, wisdom, and skill changes continue through existing KV write tiers (kvPutSafe, kvWritePrivileged, applyKVOperation) and take effect on the next session without deployment. reflect.js must route these differently: code targets → createProposal(), non-code targets → direct KV write.
 
-11. **`getMaxSteps()` cross-dependency** — currently in hook-reflect.js but used by both act.js (orient max_steps) and reflect.js (reflect max_steps). Move to kernel.js as a utility method — it's a mechanical config lookup, not policy. Same for `getReflectModel()`.
+11. **`getMaxSteps()` cross-dependency** — currently in hook-reflect.js but used by both act.js (act max_steps) and reflect.js (reflect max_steps). Move to kernel.js as a utility method — it's a mechanical config lookup, not policy. Same for `getReflectModel()`.
 
 12. **Non-code changes lose multi-session review** — conscious tradeoff. Currently the modification protocol reviews all changes (code + config). In the new system, only code changes get multi-session review via proposals. Config/prompt changes go through KV write tiers directly. This is acceptable because: config changes are immediately reversible (agent or deep reflect can write a correction), KV write tiers have validation gates (deliberation for yamas/niyamas, model capability checks), and the blast radius is smaller (config doesn't crash the worker the way bad code does).
 
@@ -189,7 +189,7 @@ From hook-main.js:
 
 **Important sequencing note**: The current `wake()` calls `initTracking()`, `runCircuitBreaker()`, and `retryPendingGitSyncs()` from kernel.js (proposal methods). In Phase 2, these calls remain in the kernel's `runWake()` as imports from kernel.js (proposal methods) (which still exists until Phase 3). In Phase 3, these calls are removed when the modification protocol is replaced by proposals.
 
-The kernel's wake flow calls `this.HOOKS.act.runSession()` for orient sessions and `this.HOOKS.reflect.runReflect()` for deep reflect.
+The kernel's wake flow calls `this.HOOKS.act.runSession()` for act sessions and `this.HOOKS.reflect.runReflect()` for deep reflect.
 
 ### Create `reflect.js`
 

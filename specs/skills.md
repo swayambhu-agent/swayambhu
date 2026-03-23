@@ -22,7 +22,7 @@ skill:{name}  →  {
   description,        // what this skill does and when to use it
   instructions,       // markdown body — step-by-step procedure
   tools_used,         // which tools this skill typically involves
-  trigger_patterns,   // helps orient match tasks to skills
+  trigger_patterns,   // helps act match tasks to skills
   created_by_depth,   // which reflect level authored it
   created_at,         // ISO timestamp
   revision,           // incremented on updates
@@ -32,20 +32,20 @@ skill:{name}  →  {
 ## Discovery
 
 Skill manifest (names + descriptions + trigger_patterns) injected into
-orient's system prompt, same pattern as wisdom_manifest. No tool call
+act's system prompt, same pattern as wisdom_manifest. No tool call
 needed just to know what skills exist.
 
 ## Activation
 
-Orient loads full skill instructions via `kv_query` when it decides one
-is relevant. Two modes, chosen by orient at runtime:
+Act loads full skill instructions via `kv_query` when it decides one
+is relevant. Two modes, chosen by act at runtime:
 
-- **Inline**: simple skills (3-5 step procedures) — orient reads and
+- **Inline**: simple skills (3-5 step procedures) — act reads and
   follows the instructions directly.
 - **Subplan**: complex skills (multi-tool workflows with branching) —
-  orient spawns a subplan with the skill instructions as goal/context.
+  act spawns a subplan with the skill instructions as goal/context.
 
-No need for the skill metadata to declare which mode. Orient judges this.
+No need for the skill metadata to declare which mode. Act judges this.
 
 ## Creation
 
@@ -83,7 +83,7 @@ Don't build until needed.
 
 The real work. Three prompts need updates:
 
-1. **prompt:orient** — needs to know skills exist, how to discover them
+1. **prompt:act** — needs to know skills exist, how to discover them
    (manifest in system prompt), how to activate them (kv_query + follow
    or spawn_subplan).
 
@@ -98,6 +98,6 @@ The real work. Three prompts need updates:
 ## Open Questions
 
 - Should skills have a TTL or usage counter that triggers review/pruning?
-- Should orient be able to suggest skill improvements (fed back to reflect)?
-- Maximum number of skills before the manifest bloats the orient prompt?
+- Should act be able to suggest skill improvements (fed back to reflect)?
+- Maximum number of skills before the manifest bloats the act prompt?
 - Should skills reference other skills (composition)?

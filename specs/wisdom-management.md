@@ -10,9 +10,9 @@ Two changes:
 
 ## Design principles
 
-- **Upaya** (discernment about the world) is available during orient sessions — it informs action.
+- **Upaya** (discernment about the world) is available during act sessions — it informs action.
 - **Prajna** (self-knowledge) is available during deep reflect sessions — it informs introspection.
-- **Deep reflect knows about both** — it's the only place wisdom gets written, and upaya context may be relevant when reviewing how orient sessions went.
+- **Deep reflect knows about both** — it's the only place wisdom gets written, and upaya context may be relevant when reviewing how act sessions went.
 - **No pre-loading.** The agent has kv_query available and decides when to query wisdom. No template vars, no forced injection.
 - **One protocol, two modes.** Code modifications require `claims + checks` and enable circuit breaker + git sync. Wisdom modifications require `validation` and skip both.
 - **No code-level schema enforcement.** The wisdom JSON schema is a prompt convention. Validation criteria are evaluated by the reviewing deep reflect, not mechanically.
@@ -84,10 +84,10 @@ For system config, prompts, tools, providers — changes that could brick the ag
   "type": "code",
   "claims": ["What this modification achieves"],
   "ops": [
-    {"op": "put", "key": "config:defaults", "value": {"orient": {"effort": "medium"}}}
+    {"op": "put", "key": "config:defaults", "value": {"act": {"effort": "medium"}}}
   ],
   "checks": [
-    {"type": "kv_assert", "key": "config:defaults", "path": "orient.effort", "predicate": "equals", "expected": "medium"}
+    {"type": "kv_assert", "key": "config:defaults", "path": "act.effort", "predicate": "equals", "expected": "medium"}
   ]
 }
 ```
@@ -155,7 +155,7 @@ And in code identifiers:
 - `act.js` — imports, function calls
 - `prompts/deep-reflect.md` — terminology throughout
 - `prompts/reflect.md` — terminology
-- `prompts/orient.md` — terminology
+- `prompts/act.md` — terminology
 - `docs/doc-mutation-guide.md` → rename to `docs/doc-modification-guide.md`
 - `tests/kernel.test.js` — all references
 - `tests/wake-hook.test.js` — all references
@@ -453,9 +453,9 @@ In the deep reflect prompt's "What to produce" section, rename `mutation_request
   "modification_requests": [
     {
       "type": "code",
-      "claims": ["Update orient effort to medium"],
-      "ops": [{"op": "put", "key": "config:defaults", "value": {"orient": {"effort": "medium"}}}],
-      "checks": [{"type": "kv_assert", "key": "config:defaults", "path": "orient.effort", "predicate": "equals", "expected": "medium"}]
+      "claims": ["Update act effort to medium"],
+      "ops": [{"op": "put", "key": "config:defaults", "value": {"act": {"effort": "medium"}}}],
+      "checks": [{"type": "kv_assert", "key": "config:defaults", "path": "act.effort", "predicate": "equals", "expected": "medium"}]
     },
     {
       "type": "wisdom",
@@ -493,7 +493,7 @@ crystallizing, flag it in `note_to_future_self`.
 
 Update the protected keys reference to remove mention of wisdom.
 
-### 7. Update orient prompt (prompts/orient.md)
+### 7. Update act prompt (prompts/act.md)
 
 Add upaya awareness after the tools section:
 
@@ -609,7 +609,7 @@ Updated hierarchy:
 | `act.js` | Update imports from hook-modifications; rename function calls |
 | `hook-chat.js` | Remove `K.kvGet("wisdom")` loading; optionally add upaya awareness to chat context |
 | `prompts/deep-reflect.md` | Remove `{{wisdom}}` section; add wisdom management instructions; rename all mutation → modification terminology; update output schema |
-| `prompts/orient.md` | Add upaya awareness; rename mutation → modification; remove wisdom from protected keys |
+| `prompts/act.md` | Add upaya awareness; rename mutation → modification; remove wisdom from protected keys |
 | `prompts/reflect.md` | Add wisdom awareness; rename mutation → modification; remove wisdom from protected keys; update output schema |
 | `scripts/seed-local-kv.mjs` | Remove wisdom seed; remove from default_load_keys; update any mutation references |
 | `docs/doc-mutation-guide.md` | Rename → `docs/doc-modification-guide.md`; update all terminology |

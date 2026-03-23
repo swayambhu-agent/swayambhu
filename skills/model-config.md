@@ -9,7 +9,7 @@ This skill teaches you to manage LLM models in your own configuration — discov
 ### Where model state lives
 
 - **`config:models`** — The model registry. Contains the `models` array, `fallback_model`, and `alias_map`.
-- **`config:defaults`** — Role assignments. Fields like `orient.model`, `reflect.model`, `deep_reflect.model`, `chat.model` reference models by ID or alias.
+- **`config:defaults`** — Role assignments. Fields like `act.model`, `reflect.model`, `deep_reflect.model`, `chat.model` reference models by ID or alias.
 - **`config:model_capabilities`** — Per-model capability flags: `yama_capable`, `niyama_capable`, `comms_gate_capable`. When adding a model that should be trusted for ethical/safety modifications or comms gating, this key must be updated too.
 - **`provider:llm:code`** — The LLM provider adapter. Handles all models. Reasoning is sent via the unified `body.reasoning = { effort }` path regardless of model. The families map is an optional hook for provider-specific quirks that OpenRouter doesn't normalize — currently only `anthropic` (for `cache_control` injection). Most models need no family entry. You only modify `provider:llm:code` when adding a new family adapter.
 
@@ -32,7 +32,7 @@ Both `config:models` and `config:defaults` are **protected keys**. You cannot wr
 
 | Depth | Can do |
 |-------|--------|
-| orient (depth 0) | Research models, read config, note findings in session_summary |
+| act (depth 0) | Research models, read config, note findings in session_summary |
 | reflect (depth 0) | Stage modification_requests for config changes |
 | deep_reflect (depth 1+) | Accept/reject/modify staged changes, or issue inflight changes directly |
 
@@ -47,7 +47,7 @@ kv_query("config:models")
 
 ### Read current role assignments
 ```
-kv_query("config:defaults", ".orient.model")
+kv_query("config:defaults", ".act.model")
 kv_query("config:defaults", ".reflect.model")
 ```
 
@@ -180,7 +180,7 @@ Consider what role(s) this model could fill:
 
 | Role | Needs | Current model |
 |------|-------|--------------|
-| orient | Fast, cheap, tool-calling reliable | haiku |
+| act | Fast, cheap, tool-calling reliable | haiku |
 | reflect | Good reasoning, moderate cost | sonnet |
 | deep_reflect | Best reasoning available | opus |
 | chat | Conversational, cost-bounded | sonnet |

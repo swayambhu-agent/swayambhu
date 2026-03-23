@@ -43,7 +43,7 @@ A skill is stored as a JSON value at `skill:{name}`:
 ```json
 {
   "name": "lowercase-hyphenated-name",
-  "description": "When to use this skill — specific enough for orient to match against tasks.",
+  "description": "When to use this skill — specific enough for act to match against tasks.",
   "instructions": "Full markdown body — the procedure itself.",
   "tools_used": ["tool1", "tool2"],
   "trigger_patterns": ["pattern 1", "pattern 2"],
@@ -60,10 +60,10 @@ When creating a skill via modification_request, the `instructions` field must co
 | Field | Purpose | Tips |
 |-------|---------|------|
 | `name` | KV key suffix, lowercase with hyphens | Keep short, descriptive: `model-config`, `api-integration`, `kv-migration` |
-| `description` | Orient uses this to decide relevance | Third person, action-oriented (e.g. "Research, evaluate, add..."). Be specific about trigger conditions. |
+| `description` | Act uses this to decide relevance | Third person, action-oriented (e.g. "Research, evaluate, add..."). Be specific about trigger conditions. |
 | `instructions` | The full procedure as markdown | See §3 for writing guidance |
 | `tools_used` | Which tools the skill's procedures involve | Only list tools actually referenced in instructions |
-| `trigger_patterns` | Phrases that signal this skill is relevant | Think about what orient's session_summary or task description would say |
+| `trigger_patterns` | Phrases that signal this skill is relevant | Think about what act's session_summary or task description would say |
 | `created_by_depth` | Which reflect depth authored it | `null` for patron-seeded, `0` for reflect, `1` for deep reflect |
 | `created_at` | ISO timestamp | When first created |
 | `revision` | Integer, incremented on updates | Start at 1 |
@@ -125,7 +125,7 @@ Pointer to skill:{name}:ref with summary of what it contains.
 **Show the decision framework**, not just the steps. A skill should teach the reader to make good judgments, not just follow a script blindly.
 
 **Include the Modification Protocol path.** Every skill that touches protected keys must explain:
-- What orient can do (research, note findings)
+- What act can do (research, note findings)
 - What reflect stages (modification_requests)
 - What deep reflect decides (accept/reject/modify)
 
@@ -203,7 +203,7 @@ Deep reflect reviews staged skills with these criteria:
 1. **Is the pattern real?** Has this workflow actually been repeated, or is it a one-off being prematurely generalized?
 2. **Is the scope right?** Too narrow (just one specific case) or too broad (trying to cover everything)?
 3. **Are the instructions concrete?** Do they include actual tool calls, schemas, and decision frameworks?
-4. **Are trigger_patterns useful?** Would orient realistically match a task to these patterns?
+4. **Are trigger_patterns useful?** Would act realistically match a task to these patterns?
 5. **Does it duplicate existing knowledge?** Check `kv_manifest("skill:")` for overlap with existing skills.
 
 Deep reflect can also create skills directly via inflight modifications (no staging needed) when it identifies patterns from cross-session analysis.
@@ -218,11 +218,11 @@ To update an existing skill, use a `put` op with the full updated value. Increme
 
 ### Current: Manifest injection
 
-The skill manifest (names + descriptions + trigger_patterns) is injected into orient's system prompt. Orient sees what skills exist without a tool call and decides relevance.
+The skill manifest (names + descriptions + trigger_patterns) is injected into act's system prompt. Act sees what skills exist without a tool call and decides relevance.
 
-### How orient uses a skill
+### How act uses a skill
 
-When orient decides a skill is relevant:
+When act decides a skill is relevant:
 
 1. Load full instructions: `kv_query("skill:{name}")`
 2. If instructions reference a `:ref` companion, load it: `kv_query("skill:{name}:ref")`
@@ -250,7 +250,7 @@ kv_query("skill:{name}", ".trigger_patterns")
 - A procedure no longer works (API changed, schema changed, tool changed)
 - You discovered a better approach through experience
 - The instructions are missing a critical step you had to rediscover
-- Trigger patterns aren't matching well (orient misses relevant tasks or false-matches irrelevant ones)
+- Trigger patterns aren't matching well (act misses relevant tasks or false-matches irrelevant ones)
 
 ### When to retire a skill
 
