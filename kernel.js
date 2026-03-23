@@ -1191,6 +1191,7 @@ class Brainstem {
         event: "session_start",
         session_id: this.sessionId,
         effort,
+        scheduled_wake: wakeConfig?.next_wake_after || null,
         crash_detected: !!crashData,
         balances,
       });

@@ -224,6 +224,37 @@ export async function gatherReflectContext(K, state, depth, context) {
   // Wisdom manifest — lazy loading for all depths
   templateVars.wisdom_manifest = await loadWisdomManifest(K);
 
+  // Chat digest — conversations since last session (same logic as act.js)
+  if (depth >= 1) {
+    const lastSessionEnd = context?.lastReflect?.timestamp || null;
+    const chatKeys = await K.kvList({ prefix: "chat:" });
+    const digestMaxChars = defaults?.chat?.digest_max_chars || 200;
+    const truncate = (s) => s && s.length > digestMaxChars ? s.slice(0, digestMaxChars) + '...' : s;
+    const chatDigest = [];
+    for (const k of chatKeys.keys) {
+      const chat = await K.kvGet(k.name);
+      if (!chat?.last_activity) continue;
+      if (lastSessionEnd && chat.last_activity <= lastSessionEnd) continue;
+      const msgs = chat.messages || [];
+      const lastAgent = [...msgs].reverse().find(m => m.role === 'assistant' && m.content);
+      const lastContact = [...msgs].reverse().find(m => m.role === 'user' && m.content);
+      const uid = lastContact?.userId;
+      let name = uid || 'unknown';
+      if (uid) {
+        const platform = k.name.split(':')[1] || 'slack';
+        const contact = await K.resolveContact(platform, uid);
+        if (contact?.name) name = contact.name;
+      }
+      chatDigest.push({
+        contact: name, channel: k.name.split(':')[1] || 'unknown',
+        turn_count: chat.turn_count || 0,
+        last_exchange: { agent: truncate(lastAgent?.content || ''), contact: truncate(lastContact?.content || '') },
+        ts: chat.last_activity,
+      });
+    }
+    if (chatDigest.length > 0) templateVars.chatDigest = chatDigest;
+  }
+
   return { userMessage: "Begin.", templateVars };
 }
 
@@ -405,6 +436,22 @@ export function defaultDeepReflectPrompt(depth) {
 You have tools available for investigation \u2014 use kv_query, web_fetch, etc. to gather data before drawing conclusions.
 
 Your output is stored at reflect:1:{sessionId} and read by higher-depth reflections.
+
+## Chat system
+
+Between sessions, contacts may message you via chat (e.g. Slack DM). Chat
+is a separate real-time pipeline — conversations are stored at chat:{channel}:{id}
+and do not appear in session karma. Use kv_query to read chat history if relevant.
+
+{{chatDigest}}
+
+## Temporal awareness
+
+Session timing: each session_start event includes a scheduled_wake field
+showing when you were scheduled to wake. Actual wake time may differ due
+to chat-triggered advancement (contacts messaging you brings the next wake
+forward) or operator manual intervention. Don't assume irregular intervals
+indicate broken scheduling.
 
 ## Your prior reflections at this depth
 
