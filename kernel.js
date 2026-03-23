@@ -2250,7 +2250,7 @@ class Kernel {
       catch { /* fall through */ }
     }
     // Find outermost { } or [ ]
-    const found = this._findBraces(content, "{", "}") || this._findBraces(content, "[", "]");
+    const found = this._findBraces(content, "{", "}");
     if (found) {
       try { return JSON.parse(found); }
       catch { /* no valid JSON */ }

@@ -102,8 +102,8 @@ describe("_extractJSON", () => {
     expect(kernel._extractJSON('Here is the result:\n{"a":1,"b":"two"}\nEnd.')).toEqual({ a: 1, b: "two" });
   });
 
-  it("extracts array from surrounding prose", () => {
-    expect(kernel._extractJSON('Result: [1,2,3] done')).toEqual([1, 2, 3]);
+  it("does not extract arrays (agent output is always an object)", () => {
+    expect(kernel._extractJSON('Result: [1,2,3] done')).toBeNull();
   });
 
   it("handles nested braces", () => {
