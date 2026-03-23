@@ -189,9 +189,9 @@ Session reflect checks these and tells act to revisit when they expire. If confi
 
 You must issue verdicts for ALL pending proposals: `accept`, `reject` (with reason), `modify`, `defer`, or `withdraw`.
 
-### On prajna crystallization
+### On wisdom crystallization
 
-When an intention completes or is abandoned, crystallize the lesson as a `prajna:*` entry. Write directly via modification_requests with `metadata.summary` for the wisdom manifest.
+When experience yields an understanding that holds regardless of circumstances, crystallize it as wisdom. Self-knowledge goes to `prajna:*`, discernment about the world goes to `upaya:*`. Write directly via modification_requests with `metadata.summary` for the wisdom manifest.
 
 ### On scheduling
 
