@@ -221,6 +221,11 @@ documentation updates. Do NOT implement anything until you receive explicit
 go-ahead. The only exception is when the user gives an explicit instruction
 to implement something (e.g. "Implement the following plan:" or "add X to Y").
 
+**Think independently on design decisions.** Don't just agree with the user —
+carefully reflect and think through proposals from first principles. Push
+back if you genuinely think a different approach is better, and explain why.
+Agreeing without thinking leads to worse outcomes than honest disagreement.
+
 **Commit and push after every significant piece of work.** Don't let
 changes accumulate — commit as soon as a coherent unit of work is complete
 (a bug fix, a feature, a refactor). This protects against lost work and
