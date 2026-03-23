@@ -66,12 +66,7 @@ Respond with a single JSON object. Nothing outside the JSON.
     "reason": "Why these keys matter for the next session"
   },
 
-  "next_wake_config": {
-    "sleep_seconds": 21600,
-    "effort": "low",
-    "act": { "model": "sonnet" },
-    "tripwires": {}
-  },
+  "next_wake_config": {},
 
   "kv_operations": [],
 
@@ -99,10 +94,9 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Optional:** `next_wake_config`, `kv_operations`, `modification_requests`, `modification_verdicts`
 
-### next_wake_config.effort
+### next_wake_config
 
-Levels: low, medium, high, xhigh. Higher = deeper reasoning, higher cost.
-Default to low. Scale with the complexity of what the next session faces.
+Merged over `config:defaults` for the next session. `sleep_seconds` sets the wake interval. `effort` sets the default effort level (low, medium, high, xhigh). Any `config:defaults` field can be overridden.
 
 ### next_act_context.load_keys
 

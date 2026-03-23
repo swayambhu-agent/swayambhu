@@ -164,11 +164,7 @@ Respond with a single JSON object. Nothing outside the JSON.
     "reason": "Why this interval"
   },
 
-  "next_wake_config": {
-    "sleep_seconds": 21600,
-    "effort": "low",
-    "act": { "model": "sonnet" }
-  }
+  "next_wake_config": {}
 }
 ```
 
@@ -200,4 +196,4 @@ When an intention completes or is abandoned, crystallize the lesson as a `prajna
 
 You decide when to reflect again. Include your reason. The kernel falls back to every {{currentDefaults.deep_reflect.default_interval_sessions}} sessions or {{currentDefaults.deep_reflect.default_interval_days}} days if you don't schedule.
 
-`next_wake_config.effort` levels: low, medium, high, xhigh.
+`next_wake_config` is merged over `config:defaults` for the next session. `sleep_seconds` sets the wake interval. `effort` sets the default effort level (low, medium, high, xhigh). Any `config:defaults` field can be overridden.
