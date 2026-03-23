@@ -177,11 +177,9 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 ### On Assumptions
 
-Assumptions you're currently operating on — conclusions about the current state of things that could change. "Slack is broken", "patron prefers short messages", "email inbox is quiet". Each must have a `relevance` explaining why it matters now. If you can't articulate the relevance, don't track it.
+Only track assumptions that are changing your behavior from what you'd do otherwise. Each must have a `relevance` explaining what you're doing differently because of it, and a `revisit_by_session` to check if it still holds.
 
-Each carries a `revisit_by_session` — the session count by which the assumption should be revisited. Session reflect checks these and tells act to revisit when they expire. If confirmed, session reflect bumps the date. If no longer true, session reflect removes it.
-
-Review existing assumptions each deep reflect. Drop any where relevance no longer holds.
+Session reflect checks these and tells act to revisit when they expire. If confirmed, session reflect bumps the date. If no longer true, session reflect removes it. Review existing assumptions each deep reflect.
 
 ### On the Proposal System
 
