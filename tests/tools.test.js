@@ -6,7 +6,7 @@ import { resolve } from "path";
 
 import * as send_slack from "../tools/send_slack.js";
 import * as web_fetch from "../tools/web_fetch.js";
-import * as kv_write from "../tools/kv_write.js";
+
 import * as kv_manifest from "../tools/kv_manifest.js";
 import * as kv_query from "../tools/kv_query.js";
 import * as check_email from "../tools/check_email.js";
@@ -100,7 +100,7 @@ function mockKV(initial = {}) {
 // ── 1. Module structure ──────────────────────────────────────
 
 const allTools = {
-  send_slack, web_fetch, kv_write,
+  send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
 };
 
@@ -192,7 +192,7 @@ describe("computer", () => {
     const f = mockFetch({ status: "completed", exit_code: 0, output: "hello world", id: "p123" });
     const result = await computer.execute({
       command: "echo hello",
-      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
+      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
       fetch: f,
     });
     expect(f).toHaveBeenCalledOnce();
@@ -201,7 +201,8 @@ describe("computer", () => {
     expect(url).toContain("/execute?wait=60");
     const opts = f.mock.calls[0][1];
     expect(opts.method).toBe("POST");
-    expect(opts.headers["cf-access-client-id"]).toBe("cid");
+    expect(opts.headers["CF-Access-Client-Id"]).toBe("cid");
+    expect(opts.headers["CF-Access-Client-Secret"]).toBe("secret");
     expect(opts.headers["Authorization"]).toBe("Bearer key");
   });
 
@@ -210,7 +211,7 @@ describe("computer", () => {
     await computer.execute({
       command: "ls",
       timeout: 120,
-      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
+      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
       fetch: f,
     });
     expect(f.mock.calls[0][0]).toContain("wait=120");
@@ -218,7 +219,7 @@ describe("computer", () => {
 
   it("returns error when command is missing", async () => {
     const result = await computer.execute({
-      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
+      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
       fetch: vi.fn(),
     });
     expect(result).toEqual({ ok: false, error: "command is required" });
@@ -228,7 +229,7 @@ describe("computer", () => {
     const f = vi.fn(async () => { throw new Error("network down"); });
     const result = await computer.execute({
       command: "ls",
-      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
+      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
       fetch: f,
     });
     expect(result.ok).toBe(false);
@@ -244,27 +245,12 @@ describe("computer", () => {
     }));
     const result = await computer.execute({
       command: "ls",
-      secrets: { COMPUTER_CF_CLIENT_ID: "cid", COMPUTER_API_KEY: "key" },
+      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
       fetch: f,
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("500");
     expect(result.detail).toBe("server error detail");
-  });
-});
-
-describe("kv_write", () => {
-  it("writes string value", async () => {
-    const kv = mockKV();
-    const result = await kv_write.execute({ key: "k", value: "v", kv });
-    expect(result).toEqual({ key: "k", written: true });
-    expect(kv.put).toHaveBeenCalledWith("k", "v");
-  });
-
-  it("stringifies object value", async () => {
-    const kv = mockKV();
-    await kv_write.execute({ key: "k", value: { a: 1 }, kv });
-    expect(kv.put).toHaveBeenCalledWith("k", '{"a":1}');
   });
 });
 
@@ -326,7 +312,7 @@ describe("provider:wallet_balance", () => {
 const SAMPLE_KARMA = [
   { event: "session_start", session_id: "s_123", effort: "low" },
   {
-    event: "llm_call", step: "orient_turn_0", ok: true,
+    event: "llm_call", step: "act_turn_0", ok: true,
     request: { model: "anthropic/claude-opus-4.6", messages: [{ role: "system", content: "long..." }] },
     response: { content: "hello" },
     tool_calls: [
@@ -356,7 +342,7 @@ describe("kv_query", () => {
     expect(result.items).toHaveLength(3);
     expect(result.items[0]).toBe("0: session_start");
     expect(result.items[1]).toContain("llm_call");
-    expect(result.items[1]).toContain("orient_turn_0");
+    expect(result.items[1]).toContain("act_turn_0");
     expect(result.items[1]).toContain("ok=true");
   });
 
@@ -428,10 +414,10 @@ describe("kv_query", () => {
   });
 
   it("returns small objects directly", async () => {
-    const data = { orient: { model: "haiku" }, reflect: { model: "sonnet" } };
+    const data = { act: { model: "haiku" }, reflect: { model: "sonnet" } };
     const kv = mockKV({ "config:defaults": data });
     const result = await kv_query.execute({ key: "config:defaults", kv });
-    expect(result.orient).toEqual({ model: "haiku" });
+    expect(result.act).toEqual({ model: "haiku" });
     expect(result.reflect).toEqual({ model: "sonnet" });
   });
 });
