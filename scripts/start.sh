@@ -9,14 +9,14 @@
 #   --yes                   Skip confirmation prompt (for scripts/CI)
 #   --governor              Also start the governor worker (not needed for normal dev)
 #   --set path=value        Override a config:defaults value after seeding
-#                           (dot-path, e.g. orient.model=deepseek)
+#                           (dot-path, e.g. act.model=deepseek)
 #                           Can be specified multiple times
 #
 # Examples:
 #   bash scripts/start.sh                           # start services only
 #   bash scripts/start.sh --wake                    # start + trigger wake cycle
 #   bash scripts/start.sh --reset-all-state --wake  # full reset + wake
-#   bash scripts/start.sh --reset-all-state --set orient.model=deepseek --set reflect.model=deepseek
+#   bash scripts/start.sh --reset-all-state --set act.model=deepseek --set reflect.model=deepseek
 #   bash scripts/start.sh --reset-all-state --yes   # skip confirmation
 #
 # Starts:
@@ -34,7 +34,7 @@ DASHBOARD_PORT=8790
 RESET=false
 WAKE=false
 SKIP_CONFIRM=false
-GOVERNOR=false
+GOVERNOR=true
 OVERRIDES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,8 +42,9 @@ while [[ $# -gt 0 ]]; do
     --reset-all-state) RESET=true; shift ;;
     --yes) SKIP_CONFIRM=true; shift ;;
     --governor) GOVERNOR=true; shift ;;
+    --no-governor) GOVERNOR=false; shift ;;
     --set)
-      [[ -z "${2:-}" || "$2" != *=* ]] && { echo "ERROR: --set requires path=value (e.g. --set orient.model=deepseek)"; exit 1; }
+      [[ -z "${2:-}" || "$2" != *=* ]] && { echo "ERROR: --set requires path=value (e.g. --set act.model=deepseek)"; exit 1; }
       OVERRIDES+=("$2"); shift 2 ;;
     *) echo "Unknown option: $1"; echo "Usage: start.sh [--wake] [--reset-all-state] [--yes] [--set path=value ...]"; exit 1 ;;
   esac
@@ -227,7 +228,7 @@ PGIDS+=($!)
 if $GOVERNOR; then
   GOVERNOR_PORT=8791
   echo "=== Starting governor (port $GOVERNOR_PORT) ==="
-  setsid bash -c 'cd governor && exec npx wrangler dev --port "'"$GOVERNOR_PORT"'" --persist-to ../.wrangler/shared-state' &
+  setsid bash -c 'cd governor && exec npx wrangler dev --port "'"$GOVERNOR_PORT"'" --inspector-port 9231 --persist-to ../.wrangler/shared-state' &
   PGIDS+=($!)
 fi
 
