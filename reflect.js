@@ -86,15 +86,15 @@ export async function executeReflect(K, state, step) {
     return;
   }
 
-  // Carry forward assessments from previous deep reflect, apply any updates
+  // Carry forward conclusions from previous deep reflect, apply any updates
   const prevLastReflect = await K.kvGet("last_reflect");
-  let assessments = prevLastReflect?.assessments || [];
-  if (output.assessment_updates) {
-    for (const update of output.assessment_updates) {
+  let conclusions = prevLastReflect?.conclusions || [];
+  if (output.conclusion_updates) {
+    for (const update of output.conclusion_updates) {
       if (update.status === "resolved") {
-        assessments = assessments.filter(a => a.claim !== update.claim);
+        conclusions = conclusions.filter(a => a.claim !== update.claim);
       } else if (update.status === "confirmed") {
-        const existing = assessments.find(a => a.claim === update.claim);
+        const existing = conclusions.find(a => a.claim === update.claim);
         if (existing) existing.reverify_by_session = update.reverify_by_session;
       }
     }
@@ -102,7 +102,7 @@ export async function executeReflect(K, state, step) {
 
   await K.kvPutSafe("last_reflect", {
     ...output,
-    assessments,
+    conclusions,
     session_id: sessionId,
   });
 
@@ -368,14 +368,14 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   if (output.current_intentions) reflectRecord.current_intentions = output.current_intentions;
   if (output.modification_observations) reflectRecord.modification_observations = output.modification_observations;
   if (output.system_trajectory) reflectRecord.system_trajectory = output.system_trajectory;
-  if (output.assessments) reflectRecord.assessments = output.assessments;
+  if (output.conclusions) reflectRecord.conclusions = output.conclusions;
   await K.kvPutSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 6. Only depth 1: write last_reflect and wake_config
   if (depth === 1) {
     await K.kvPutSafe("last_reflect", {
       session_summary: output.reflection,
-      assessments: output.assessments || [],
+      conclusions: output.conclusions || [],
       was_deep_reflect: true,
       depth,
       session_id: sessionId,

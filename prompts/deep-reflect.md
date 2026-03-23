@@ -130,9 +130,9 @@ Respond with a single JSON object. Nothing outside the JSON.
 {
   "reflection": "What you see when you look at yourself as a system — honest, specific, unflinching.",
 
-  "assessments": [
+  "conclusions": [
     {
-      "claim": "What is broken or degraded",
+      "claim": "What you concluded from observation",
       "relevance": "Why this matters to your current operation",
       "observed_session": "s_...",
       "reverify_by_session": 20
@@ -169,17 +169,17 @@ Respond with a single JSON object. Nothing outside the JSON.
 }
 ```
 
-**Required:** `reflection`, `assessments`
+**Required:** `reflection`, `conclusions`
 
 **Everything else is optional.** Only include what you're actually changing. Omitting a field means "no change."
 
-### On Assessments
+### On Conclusions
 
-Track things that are broken, degraded, or behaving unexpectedly — issues that matter to your operation. Each must have a `relevance` explaining why it matters now. If you can't articulate the relevance, don't track it.
+Any conclusion drawn from observation — about infrastructure, contacts, patterns, the world — that could become stale. Positive or negative. Each must have a `relevance` explaining why it matters now. If you can't articulate the relevance, don't track it.
 
-Each carries a `reverify_by_session` — the session count by which the claim must be re-tested. Session reflect checks these and tells act to re-test when they expire. If confirmed, session reflect bumps the date. If resolved, session reflect removes it.
+Each carries a `reverify_by_session` — the session count by which the conclusion must be re-tested. Session reflect checks these and tells act to re-test when they expire. If confirmed, session reflect bumps the date. If resolved or invalidated, session reflect removes it.
 
-Review existing assessments each deep reflect. Drop any where relevance no longer holds.
+Review existing conclusions each deep reflect. Drop any where relevance no longer holds.
 
 ### On the Proposal System
 

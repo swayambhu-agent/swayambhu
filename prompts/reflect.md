@@ -68,7 +68,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "next_wake_config": {},
 
-  "assessment_updates": [
+  "conclusion_updates": [
     { "claim": "exact claim text", "status": "confirmed", "reverify_by_session": 35 },
     { "claim": "exact claim text", "status": "resolved" }
   ],
@@ -97,7 +97,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Required:** `session_summary`, `note_to_future_self`, `next_act_context`
 
-**Optional:** `next_wake_config`, `assessment_updates`, `kv_operations`, `modification_requests`, `modification_verdicts`
+**Optional:** `next_wake_config`, `conclusion_updates`, `kv_operations`, `modification_requests`, `modification_verdicts`
 
 ### next_wake_config
 
@@ -115,11 +115,11 @@ This is how you write to your own memory. Common uses: update a project state, s
 
 This is the thread of continuity between sessions. You go to sleep after this. When you wake, you will not remember this session directly — only what you write here and in `last_reflect`. Make it count. If you were mid-thought, finish it or point at it. If something is nagging you, say it. This is not a status report. It is one mind speaking to its next instantiation.
 
-### Checking assessments
+### Checking conclusions
 
-If `last_reflect` contains an `assessments` array, check each assessment's `reverify_by_session` against the current session counter ({{session_counter}}). If any have expired (reverify_by_session <= current session), include a probe instruction in `note_to_future_self` for the next act session — e.g. "Assessment 'Slack delivery fails' expired. Re-test by trying send_slack."
+If `last_reflect` contains a `conclusions` array, check each conclusion's `reverify_by_session` against the current session counter ({{session_counter}}). If any have expired (reverify_by_session <= current session), include a probe instruction in `note_to_future_self` for the next act session — e.g. "Conclusion 'Slack delivery fails' expired. Re-test by trying send_slack."
 
-If this session's karma shows a re-test of an existing assessment, update it via `assessment_updates`:
+If this session's karma shows a re-test of an existing conclusion, update it via `conclusion_updates`:
 - `confirmed` — still an issue, set a new `reverify_by_session`
 - `resolved` — no longer an issue, remove it
 
