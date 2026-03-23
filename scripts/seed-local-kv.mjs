@@ -61,6 +61,7 @@ await put("config:defaults", {
     unknown_contact_tools: [],
     wake_advance_minutes: 1,
   },
+  tools: { kv_query: { max_response_chars: 2000 } },
   failure_handling: { retries: 1, on_fail: "skip_and_cascade" },
   wake: { sleep_seconds: 21600, default_effort: "low" },
   memory: { default_load_keys: ["config:models", "config:resources"], max_context_budget_tokens: 8000 },

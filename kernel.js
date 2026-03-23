@@ -1596,7 +1596,7 @@ class Kernel {
     }
 
     // kv and fetch are handled by the ES module itself (env.KV_BRIDGE, globalThis.fetch)
-    return { ...input, secrets };
+    return { ...input, secrets, config: this.defaults };
   }
 
   // ── Scoped KV wrapper (replaces Worker Loader ScopedKV RPC) ───

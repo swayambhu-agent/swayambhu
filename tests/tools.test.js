@@ -335,34 +335,42 @@ describe("kv_query", () => {
     expect(result.error).toContain("no value found");
   });
 
-  it("returns item index with no path", async () => {
+  it("returns full array when under max_response_chars", async () => {
     const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
     const result = await kv_query.execute({ key: "karma:s_123", kv });
-    expect(result.count).toBe(3);
-    expect(result.items).toHaveLength(3);
-    expect(result.items[0]).toBe("0: session_start");
-    expect(result.items[1]).toContain("llm_call");
-    expect(result.items[1]).toContain("act_turn_0");
-    expect(result.items[1]).toContain("ok=true");
+    // Small array returned as-is
+    expect(result).toHaveLength(3);
+    expect(result[0].event).toBe("session_start");
+    expect(result[1].event).toBe("llm_call");
   });
 
-  it("returns object summary for [1]", async () => {
+  it("returns array summary when over max_response_chars", async () => {
+    const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
+    const result = await kv_query.execute({
+      key: "karma:s_123", kv,
+      config: { tools: { kv_query: { max_response_chars: 100 } } },
+    });
+    expect(result.type).toBe("array");
+    expect(result.count).toBe(3);
+    expect(result.items[0]).toContain("session_start");
+    expect(result.items[1]).toContain("llm_call");
+  });
+
+  it("returns full object for [1] (under max_response_chars)", async () => {
     const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
     const result = await kv_query.execute({ key: "karma:s_123", path: "[1]", kv });
-    expect(result.type).toBe("object");
-    expect(result.fields.event).toBe('"llm_call"');
-    expect(result.fields.cost).toBe("0.0155");
-    expect(result.fields.tool_calls).toContain("array");
-    expect(result.fields.request).toContain("object");
+    expect(result.event).toBe("llm_call");
+    expect(result.cost).toBe(0.0155);
+    expect(result.tool_calls).toHaveLength(2);
+    expect(result.request.model).toBe("anthropic/claude-opus-4.6");
   });
 
-  it("returns array summary for [1].tool_calls", async () => {
+  it("returns full array for [1].tool_calls (under limit)", async () => {
     const kv = mockKV({ "karma:s_123": SAMPLE_KARMA });
     const result = await kv_query.execute({ key: "karma:s_123", path: "[1].tool_calls", kv });
-    expect(result.type).toBe("array");
-    expect(result.count).toBe(2);
-    expect(result.items[0]).toContain("kv_manifest");
-    expect(result.items[1]).toContain("check_balance");
+    expect(result).toHaveLength(2);
+    expect(result[0].function.name).toBe("kv_manifest");
+    expect(result[1].function.name).toBe("check_balance");
   });
 
   it("returns leaf value for deep path", async () => {
@@ -410,7 +418,7 @@ describe("kv_query", () => {
   it("handles string-encoded JSON in KV", async () => {
     const kv = mockKV({ "karma:s_str": JSON.stringify(SAMPLE_KARMA) });
     const result = await kv_query.execute({ key: "karma:s_str", kv });
-    expect(result.count).toBe(3);
+    expect(result).toHaveLength(3);
   });
 
   it("returns small objects directly", async () => {
@@ -419,6 +427,41 @@ describe("kv_query", () => {
     const result = await kv_query.execute({ key: "config:defaults", kv });
     expect(result.act).toEqual({ model: "haiku" });
     expect(result.reflect).toEqual({ model: "sonnet" });
+  });
+
+  it("summarizes large objects with budget-bounded fields", async () => {
+    const data = {};
+    for (let i = 0; i < 20; i++) data[`field_${i}`] = "x".repeat(200);
+    const kv = mockKV({ "big:obj": data });
+    // Use a small maxChars to force summarization
+    const result = await kv_query.execute({
+      key: "big:obj", kv,
+      config: { tools: { kv_query: { max_response_chars: 500 } } },
+    });
+    // Some fields should be included, rest omitted
+    expect(result._omitted).toBeDefined();
+    expect(result._total_keys).toBe(20);
+    // Included fields should have real content
+    const includedKeys = Object.keys(result).filter(k => !k.startsWith("_"));
+    expect(includedKeys.length).toBeGreaterThan(0);
+    expect(includedKeys.length).toBeLessThan(20);
+  });
+
+  it("handles plain text (non-JSON) values without crashing", async () => {
+    const kv = mockKV({ "hook:act:code": "function hello() { return 42; }" });
+    const result = await kv_query.execute({ key: "hook:act:code", kv });
+    expect(result.value).toBe("function hello() { return 42; }");
+  });
+
+  it("truncates long strings with metadata", async () => {
+    const kv = mockKV({ "big:string": "x".repeat(5000) });
+    const result = await kv_query.execute({
+      key: "big:string", kv,
+      config: { tools: { kv_query: { max_response_chars: 200 } } },
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.total_chars).toBe(5000);
+    expect(result.value.length).toBeLessThanOrEqual(204); // 200 + "..."
   });
 });
 

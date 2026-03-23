@@ -1,14 +1,20 @@
 export const meta = { secrets: [], kv_access: "read_all", timeout_ms: 5000 };
 
-export async function execute({ key, path, kv }) {
+const DEFAULT_MAX_RESPONSE_CHARS = 2000;
+
+export async function execute({ key, path, kv, config }) {
   if (!key) return { error: "missing required param: key" };
 
   const raw = await kv.get(key);
   if (raw === null) return { error: `no value found for key: ${key}` };
 
-  const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+  let data;
+  try { data = typeof raw === "string" ? JSON.parse(raw) : raw; }
+  catch { data = raw; }  // plain text — use as-is
 
-  if (!path) return present(data);
+  const maxChars = config?.tools?.kv_query?.max_response_chars || DEFAULT_MAX_RESPONSE_CHARS;
+
+  if (!path) return present(data, maxChars);
 
   const segments = parsePath(path);
   if (segments.error) return { error: segments.error };
@@ -41,7 +47,7 @@ export async function execute({ key, path, kv }) {
     }
   }
 
-  return present(current);
+  return present(current, maxChars);
 }
 
 function parsePath(path) {
@@ -70,13 +76,20 @@ function parsePath(path) {
   return segments;
 }
 
-// Return the value directly for small/simple data, summarize for large structures.
-function present(value) {
+// Return the value directly if small enough, otherwise build a budget-bounded summary.
+function present(value, maxChars) {
   if (value === null || value === undefined) return { value: null };
   if (typeof value === "boolean" || typeof value === "number") return { value };
-  if (typeof value === "string") return { value };
+  if (typeof value === "string") {
+    if (value.length <= maxChars) return { value };
+    return { value: value.slice(0, maxChars) + "...", truncated: true, total_chars: value.length };
+  }
 
   if (Array.isArray(value)) {
+    // Check if the whole array fits
+    const full = JSON.stringify(value);
+    if (full.length <= maxChars) return value;
+    // Summarize with brief signatures per item
     return {
       type: "array",
       count: value.length,
@@ -85,30 +98,60 @@ function present(value) {
   }
 
   if (typeof value === "object") {
-    const keys = Object.keys(value);
-    const hasNestedArray = keys.some(k => Array.isArray(value[k]));
-    if (keys.length <= 10 && !hasNestedArray) return value;
-    // Large or complex object — summarize fields
-    const fields = {};
-    for (const [k, v] of Object.entries(value)) {
-      fields[k] = describeValue(v);
-    }
-    return { type: "object", fields };
+    const full = JSON.stringify(value);
+    if (full.length <= maxChars) return value;
+    // Budget-bounded summary: include complete fields until budget exhausted
+    return summarizeObject(value, maxChars);
   }
+
   return { value };
 }
 
-function describeValue(v) {
-  if (v === null || v === undefined) return "null";
-  if (typeof v === "boolean") return String(v);
-  if (typeof v === "number") return String(v);
-  if (typeof v === "string") {
-    if (v.length <= 120) return JSON.stringify(v);
-    return `string (${v.length} chars)`;
+// Build a summary object with as many complete fields as fit within the char budget.
+function summarizeObject(obj, maxChars) {
+  const result = {};
+  const omitted = [];
+  const keys = Object.keys(obj);
+  // Reserve space for _omitted and _total_keys metadata (~100 chars)
+  let budget = maxChars - 100;
+
+  for (const key of keys) {
+    const serialized = JSON.stringify(obj[key]);
+    const overhead = JSON.stringify(key).length + 2; // key + colon + comma
+
+    if (serialized.length + overhead <= budget) {
+      // Full field fits — include it
+      result[key] = obj[key];
+      budget -= serialized.length + overhead;
+    } else if (budget > overhead + 50) {
+      // Field doesn't fit whole — handle by type
+      const v = obj[key];
+      if (typeof v === "string") {
+        // Truncate string to remaining budget
+        const available = budget - overhead - 5; // room for "..."
+        result[key] = v.slice(0, Math.max(available, 20)) + "...";
+        budget = 0;
+      } else if (Array.isArray(v)) {
+        result[key] = `(array, ${v.length} items)`;
+        budget -= overhead + result[key].length + 2;
+      } else if (typeof v === "object" && v !== null) {
+        result[key] = `(object, ${Object.keys(v).length} keys)`;
+        budget -= overhead + result[key].length + 2;
+      } else {
+        result[key] = obj[key];
+        budget = 0;
+      }
+    } else {
+      omitted.push(key);
+    }
   }
-  if (Array.isArray(v)) return `array (${v.length} items)`;
-  if (typeof v === "object") return `object (${Object.keys(v).length} keys)`;
-  return String(v);
+
+  if (omitted.length > 0) {
+    result._omitted = omitted;
+    result._total_keys = keys.length;
+  }
+
+  return result;
 }
 
 function briefSignature(obj) {
