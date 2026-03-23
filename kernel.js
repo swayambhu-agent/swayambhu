@@ -1863,7 +1863,7 @@ class Kernel {
           type: 'object',
           properties: {
             goal: { type: 'string', description: 'What the subplan should achieve' },
-            model: { type: 'string', description: 'Model alias (default: haiku)' },
+            model: { type: 'string', description: 'Model alias from config:models (e.g. opus, sonnet, haiku)' },
             max_steps: { type: 'number', description: 'Max turns (default: 5)' },
           },
           required: ['goal'],
@@ -2086,7 +2086,12 @@ class Kernel {
     }
 
     const subplanPrompt = await this.kvGet("prompt:subplan") || this.defaultSubplanPrompt();
-    const model = this.resolveModel(args.model || await this.getFallbackModel() || 'haiku');
+    const requestedModel = args.model || await this.getFallbackModel() || 'haiku';
+    const model = this.resolveModel(requestedModel);
+    if (model === requestedModel && !requestedModel.includes('/')) {
+      const validAliases = Object.keys(this.modelsConfig?.alias_map || {});
+      return { error: `Unknown model alias: "${requestedModel}". Valid aliases: ${validAliases.join(', ')}` };
+    }
     const maxSteps = args.max_steps || 5;
 
     const builtPrompt = this.buildPrompt(subplanPrompt, {
@@ -2400,14 +2405,11 @@ class Kernel {
   }
 
   defaultSubplanPrompt() {
-    return `You are executing a subgoal. You have tools available via function calling.
-
-Goal: {{goal}}
-
-Use your tools to accomplish this goal. When done, produce a JSON object
-with a "result" field summarizing what you accomplished.
-
-Budget: max {{maxSteps}} turns, max ${{maxCost}}.`;
+    return "You are executing a subgoal. You have tools available via function calling.\n\n" +
+      "Goal: {{goal}}\n\n" +
+      "Use your tools to accomplish this goal. When done, produce a JSON object\n" +
+      "with a \"result\" field summarizing what you accomplished.\n\n" +
+      "Budget: max {{maxSteps}} turns, max ${{maxCost}}.";
   }
 
   elapsed() {

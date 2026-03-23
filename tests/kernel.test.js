@@ -671,6 +671,46 @@ describe("executeToolCall", () => {
   });
 });
 
+// ── spawnSubplan model validation ─────────────────────────
+
+describe("spawnSubplan", () => {
+  it("rejects invalid model aliases with available aliases", async () => {
+    const { kernel } = makeKernel({
+      "config:models": JSON.stringify({
+        alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5" },
+      }),
+    });
+    kernel.modelsConfig = { alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5" } };
+
+    const result = await kernel.spawnSubplan({ goal: "test", model: "deep_reflect" });
+    expect(result.error).toContain("Unknown model alias");
+    expect(result.error).toContain("deep_reflect");
+    expect(result.error).toContain("opus");
+    expect(result.error).toContain("sonnet");
+    expect(result.error).toContain("haiku");
+  });
+
+  it("accepts valid aliases", async () => {
+    const { kernel } = makeKernel();
+    kernel.modelsConfig = { alias_map: { haiku: "anthropic/claude-haiku-4.5" } };
+    kernel.runAgentLoop = vi.fn(async () => ({ result: "ok" }));
+
+    const result = await kernel.spawnSubplan({ goal: "test", model: "haiku" });
+    expect(result.error).toBeUndefined();
+    expect(kernel.runAgentLoop).toHaveBeenCalled();
+  });
+
+  it("accepts full model IDs", async () => {
+    const { kernel } = makeKernel();
+    kernel.modelsConfig = { alias_map: {} };
+    kernel.runAgentLoop = vi.fn(async () => ({ result: "ok" }));
+
+    const result = await kernel.spawnSubplan({ goal: "test", model: "anthropic/claude-haiku-4.5" });
+    expect(result.error).toBeUndefined();
+    expect(kernel.runAgentLoop).toHaveBeenCalled();
+  });
+});
+
 // ── 6. executeAction ────────────────────────────────────────
 
 describe("executeAction", () => {
