@@ -1,0 +1,478 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Brainstem } from "../kernel.js";
+import { makeKVStore } from "./helpers/mock-kv.js";
+
+// ── Test helpers ──────────────────────────────────────────────
+
+function makeBrain(kvInit = {}, opts = {}) {
+  const env = { KV: makeKVStore(kvInit) };
+  const brain = new Brainstem(env, {
+    TOOLS: opts.TOOLS || {},
+    HOOKS: opts.HOOKS || {},
+    PROVIDERS: opts.PROVIDERS || {},
+    CHANNELS: opts.CHANNELS || {},
+  });
+  brain.defaults = opts.defaults || {};
+  brain.toolRegistry = opts.toolRegistry || null;
+  brain.modelsConfig = opts.modelsConfig || null;
+  brain.modelCapabilities = opts.modelCapabilities || null;
+  brain.dharma = opts.dharma || null;
+  brain.toolGrants = opts.toolGrants || {};
+  return { brain, env };
+}
+
+// ── 1. isCodeKey ──────────────────────────────────────────────
+
+describe("isCodeKey", () => {
+  it("returns true for code keys", () => {
+    expect(Brainstem.isCodeKey("tool:kv_query:code")).toBe(true);
+    expect(Brainstem.isCodeKey("provider:llm:code")).toBe(true);
+    expect(Brainstem.isCodeKey("hook:act:code")).toBe(true);
+    expect(Brainstem.isCodeKey("channel:slack:code")).toBe(true);
+  });
+
+  it("returns false for non-code keys", () => {
+    expect(Brainstem.isCodeKey("tool:kv_query:meta")).toBe(false);
+    expect(Brainstem.isCodeKey("config:defaults")).toBe(false);
+    expect(Brainstem.isCodeKey("prompt:act")).toBe(false);
+    expect(Brainstem.isCodeKey("dharma")).toBe(false);
+  });
+});
+
+// ── 2. createProposal ─────────────────────────────────────────
+
+describe("createProposal", () => {
+  let brain, env;
+
+  beforeEach(() => {
+    ({ brain, env } = makeBrain({
+      session_counter: JSON.stringify(5),
+    }));
+  });
+
+  it("creates proposal with correct structure", async () => {
+    const request = {
+      claims: ["improve web_fetch error handling"],
+      ops: [{ key: "tool:web_fetch:code", op: "put", value: "new code" }],
+      checks: [{ type: "kv_assert", key: "tool:web_fetch:code", predicate: "exists" }],
+    };
+
+    const id = await brain.createProposal(request, "session_1", 0);
+
+    expect(id).toBeTruthy();
+    expect(id).toMatch(/^p_\d+_/);
+
+    // Read the stored proposal
+    const stored = await env.KV.get(`proposal:${id}`, "json");
+    expect(stored.id).toBe(id);
+    expect(stored.status).toBe("proposed");
+    expect(stored.claims).toEqual(["improve web_fetch error handling"]);
+    expect(stored.targets).toEqual(["tool:web_fetch:code"]);
+    expect(stored.changes["tool:web_fetch:code"]).toEqual({
+      op: "put",
+      code: "new code",
+      old_string: undefined,
+      new_string: undefined,
+    });
+    expect(stored.checks).toHaveLength(1);
+    expect(stored.proposed_by).toBe("session_1");
+    expect(stored.proposed_by_depth).toBe(0);
+    expect(stored.proposed_at_session).toBe(5);
+  });
+
+  it("rejects proposal with missing claims", async () => {
+    const id = await brain.createProposal(
+      { claims: [], ops: [{ key: "tool:kv_query:code", value: "x" }] },
+      "s1",
+    );
+    expect(id).toBeNull();
+  });
+
+  it("rejects proposal with missing ops", async () => {
+    const id = await brain.createProposal(
+      { claims: ["do something"], ops: [] },
+      "s1",
+    );
+    expect(id).toBeNull();
+  });
+
+  it("rejects proposal targeting non-code keys", async () => {
+    const id = await brain.createProposal(
+      {
+        claims: ["change config"],
+        ops: [{ key: "config:defaults", op: "put", value: "{}" }],
+      },
+      "s1",
+    );
+    expect(id).toBeNull();
+  });
+
+  it("rejects mixed code and non-code ops", async () => {
+    const id = await brain.createProposal(
+      {
+        claims: ["mixed ops"],
+        ops: [
+          { key: "tool:kv_query:code", op: "put", value: "good" },
+          { key: "config:defaults", op: "put", value: "bad" },
+        ],
+      },
+      "s1",
+    );
+    expect(id).toBeNull();
+  });
+
+  it("stores patch ops with old_string/new_string", async () => {
+    const request = {
+      claims: ["fix typo"],
+      ops: [{
+        key: "hook:act:code",
+        op: "patch",
+        old_string: "typo",
+        new_string: "fixed",
+      }],
+    };
+
+    const id = await brain.createProposal(request, "s1", 1);
+    const stored = await env.KV.get(`proposal:${id}`, "json");
+    expect(stored.changes["hook:act:code"]).toEqual({
+      op: "patch",
+      code: undefined,
+      old_string: "typo",
+      new_string: "fixed",
+    });
+  });
+});
+
+// ── 3. loadProposals ──────────────────────────────────────────
+
+describe("loadProposals", () => {
+  let brain, env;
+
+  beforeEach(() => {
+    const kvInit = {
+      session_counter: JSON.stringify(10),
+      "proposal:p_1": JSON.stringify({
+        id: "p_1",
+        status: "proposed",
+        claims: ["first"],
+        checks: [],
+        proposed_at_session: 8,
+      }),
+      "proposal:p_2": JSON.stringify({
+        id: "p_2",
+        status: "accepted",
+        claims: ["second"],
+        checks: [],
+        proposed_at_session: 9,
+      }),
+      "proposal:p_3": JSON.stringify({
+        id: "p_3",
+        status: "proposed",
+        claims: ["third"],
+        checks: [
+          { type: "kv_assert", key: "tool:web_fetch:code", predicate: "exists" },
+        ],
+        proposed_at_session: 7,
+      }),
+      // Key that the check references
+      "tool:web_fetch:code": JSON.stringify("some code"),
+    };
+    ({ brain, env } = makeBrain(kvInit));
+  });
+
+  it("loads all proposals without filter", async () => {
+    const proposals = await brain.loadProposals();
+
+    expect(Object.keys(proposals)).toHaveLength(3);
+    expect(proposals.p_1.record.status).toBe("proposed");
+    expect(proposals.p_2.record.status).toBe("accepted");
+  });
+
+  it("filters by status", async () => {
+    const proposed = await brain.loadProposals("proposed");
+    expect(Object.keys(proposed)).toHaveLength(2);
+    expect(proposed.p_1).toBeTruthy();
+    expect(proposed.p_3).toBeTruthy();
+    expect(proposed.p_2).toBeUndefined();
+  });
+
+  it("computes sessions_since correctly", async () => {
+    const proposals = await brain.loadProposals();
+    expect(proposals.p_1.sessions_since).toBe(2); // 10 - 8
+    expect(proposals.p_2.sessions_since).toBe(1); // 10 - 9
+    expect(proposals.p_3.sessions_since).toBe(3); // 10 - 7
+  });
+
+  it("evaluates checks on proposals that have them", async () => {
+    const proposals = await brain.loadProposals();
+
+    // p_1 and p_2 have no checks
+    expect(proposals.p_1.check_results).toBeNull();
+    expect(proposals.p_2.check_results).toBeNull();
+
+    // p_3 has a kv_assert check — tool:web_fetch:code should exist
+    expect(proposals.p_3.check_results).toBeTruthy();
+    expect(proposals.p_3.check_results.all_passed).toBe(true);
+    expect(proposals.p_3.check_results.results).toHaveLength(1);
+    expect(proposals.p_3.check_results.results[0].passed).toBe(true);
+  });
+
+  it("returns empty object when no proposals exist", async () => {
+    const { brain: emptyBrain } = makeBrain({});
+    const proposals = await emptyBrain.loadProposals();
+    expect(proposals).toEqual({});
+  });
+});
+
+// ── 4. updateProposalStatus ───────────────────────────────────
+
+describe("updateProposalStatus", () => {
+  let brain, env;
+
+  beforeEach(() => {
+    ({ brain, env } = makeBrain({
+      "proposal:p_1": JSON.stringify({
+        id: "p_1",
+        status: "proposed",
+        claims: ["test"],
+      }),
+    }));
+  });
+
+  it("updates status and adds timestamp", async () => {
+    await brain.updateProposalStatus("p_1", "accepted", { accepted_by_depth: 1 });
+
+    const stored = await env.KV.get("proposal:p_1", "json");
+    expect(stored.status).toBe("accepted");
+    expect(stored.accepted_by_depth).toBe(1);
+    expect(stored.accepted_at).toBeTruthy();
+  });
+
+  it("throws for nonexistent proposal", async () => {
+    await expect(brain.updateProposalStatus("p_missing", "accepted"))
+      .rejects.toThrow("No proposal: p_missing");
+  });
+});
+
+// ── 5. processProposalVerdicts ────────────────────────────────
+
+describe("processProposalVerdicts", () => {
+  let brain, env;
+
+  beforeEach(() => {
+    ({ brain, env } = makeBrain({
+      "proposal:p_1": JSON.stringify({
+        id: "p_1",
+        status: "proposed",
+        claims: ["feature A"],
+        targets: ["tool:web_fetch:code"],
+        changes: { "tool:web_fetch:code": { op: "put", code: "new" } },
+        checks: [],
+      }),
+      "proposal:p_2": JSON.stringify({
+        id: "p_2",
+        status: "proposed",
+        claims: ["feature B"],
+        targets: ["hook:act:code"],
+        changes: { "hook:act:code": { op: "patch", old_string: "a", new_string: "b" } },
+        checks: [],
+      }),
+      "proposal:p_3": JSON.stringify({
+        id: "p_3",
+        status: "proposed",
+        claims: ["feature C"],
+        targets: ["tool:kv_query:code"],
+        changes: { "tool:kv_query:code": { op: "put", code: "v2" } },
+        checks: [],
+      }),
+    }));
+    // processProposalVerdicts writes deploy:pending using this.sessionId
+    brain.sessionId = "test_session";
+  });
+
+  it("accept — updates status and writes deploy:pending", async () => {
+    await brain.processProposalVerdicts(
+      [{ proposal_id: "p_1", verdict: "accept" }],
+      1,
+    );
+
+    const stored = await env.KV.get("proposal:p_1", "json");
+    expect(stored.status).toBe("accepted");
+    expect(stored.accepted_by_depth).toBe(1);
+
+    // deploy:pending signal
+    const pending = await env.KV.get("deploy:pending", "json");
+    expect(pending).toBeTruthy();
+    expect(pending.session_id).toBe("test_session");
+  });
+
+  it("reject — updates status with reason", async () => {
+    await brain.processProposalVerdicts(
+      [{ proposal_id: "p_2", verdict: "reject", reason: "too risky" }],
+      1,
+    );
+
+    const stored = await env.KV.get("proposal:p_2", "json");
+    expect(stored.status).toBe("rejected");
+    expect(stored.reason).toBe("too risky");
+    expect(stored.rejected_by_depth).toBe(1);
+
+    // No deploy:pending when only rejections
+    const pending = await env.KV.get("deploy:pending", "json");
+    expect(pending).toBeNull();
+  });
+
+  it("withdraw — deletes proposal from KV", async () => {
+    await brain.processProposalVerdicts(
+      [{ proposal_id: "p_3", verdict: "withdraw" }],
+      1,
+    );
+
+    const stored = await env.KV.get("proposal:p_3", "json");
+    expect(stored).toBeNull();
+  });
+
+  it("modify — updates ops, changes, targets, and claims", async () => {
+    await brain.processProposalVerdicts(
+      [{
+        proposal_id: "p_1",
+        verdict: "modify",
+        updated_ops: [{ key: "tool:web_fetch:code", op: "put", value: "modified code" }],
+        updated_claims: ["revised feature A"],
+        updated_checks: [{ type: "kv_assert", key: "tool:web_fetch:code", predicate: "exists" }],
+      }],
+      1,
+    );
+
+    const stored = await env.KV.get("proposal:p_1", "json");
+    expect(stored.claims).toEqual(["revised feature A"]);
+    expect(stored.targets).toEqual(["tool:web_fetch:code"]);
+    expect(stored.changes["tool:web_fetch:code"].code).toBe("modified code");
+    expect(stored.checks).toHaveLength(1);
+    expect(stored.modified_at).toBeTruthy();
+    // Status should still be proposed (not accepted)
+    expect(stored.status).toBe("proposed");
+  });
+
+  it("defer — records karma only, no status change", async () => {
+    await brain.processProposalVerdicts(
+      [{ proposal_id: "p_2", verdict: "defer", reason: "need more data" }],
+      1,
+    );
+
+    const stored = await env.KV.get("proposal:p_2", "json");
+    expect(stored.status).toBe("proposed"); // unchanged
+  });
+
+  it("handles mixed verdicts — accept + reject", async () => {
+    await brain.processProposalVerdicts(
+      [
+        { proposal_id: "p_1", verdict: "accept" },
+        { proposal_id: "p_2", verdict: "reject", reason: "bad" },
+      ],
+      1,
+    );
+
+    const p1 = await env.KV.get("proposal:p_1", "json");
+    const p2 = await env.KV.get("proposal:p_2", "json");
+    expect(p1.status).toBe("accepted");
+    expect(p2.status).toBe("rejected");
+
+    // deploy:pending should be written because at least one was accepted
+    const pending = await env.KV.get("deploy:pending", "json");
+    expect(pending).toBeTruthy();
+  });
+
+  it("skips verdicts without proposal_id", async () => {
+    // Should not throw
+    await brain.processProposalVerdicts(
+      [{ verdict: "accept" }, { proposal_id: "p_1", verdict: "accept" }],
+      1,
+    );
+
+    const p1 = await env.KV.get("proposal:p_1", "json");
+    expect(p1.status).toBe("accepted");
+  });
+
+  it("accepts modification_id as alias for proposal_id", async () => {
+    await brain.processProposalVerdicts(
+      [{ modification_id: "p_1", verdict: "accept" }],
+      1,
+    );
+
+    const stored = await env.KV.get("proposal:p_1", "json");
+    expect(stored.status).toBe("accepted");
+  });
+
+  it("handles null/undefined verdicts gracefully", async () => {
+    await brain.processProposalVerdicts(null, 1);
+    await brain.processProposalVerdicts(undefined, 1);
+    // Should not throw
+  });
+});
+
+// ── 6. _evaluateChecks ────────────────────────────────────────
+
+describe("_evaluateChecks", () => {
+  it("kv_assert — passes when key exists", async () => {
+    const { brain } = makeBrain({
+      "tool:web_fetch:code": JSON.stringify("export function execute() {}"),
+    });
+
+    const result = await brain._evaluateChecks([
+      { type: "kv_assert", key: "tool:web_fetch:code", predicate: "exists" },
+    ]);
+
+    expect(result.all_passed).toBe(true);
+    expect(result.results[0].passed).toBe(true);
+  });
+
+  it("kv_assert — fails when key missing", async () => {
+    const { brain } = makeBrain({});
+
+    const result = await brain._evaluateChecks([
+      { type: "kv_assert", key: "tool:nonexistent:code", predicate: "exists" },
+    ]);
+
+    expect(result.all_passed).toBe(false);
+    expect(result.results[0].passed).toBe(false);
+  });
+
+  it("kv_assert with path — drills into nested value", async () => {
+    const { brain } = makeBrain({
+      "config:defaults": JSON.stringify({ wake: { interval: 3600 } }),
+    });
+
+    const result = await brain._evaluateChecks([
+      { type: "kv_assert", key: "config:defaults", path: "wake.interval", predicate: "gt", expected: 1000 },
+    ]);
+
+    expect(result.all_passed).toBe(true);
+  });
+
+  it("all_passed is false when any check fails", async () => {
+    const { brain } = makeBrain({
+      "tool:web_fetch:code": JSON.stringify("code"),
+    });
+
+    const result = await brain._evaluateChecks([
+      { type: "kv_assert", key: "tool:web_fetch:code", predicate: "exists" },
+      { type: "kv_assert", key: "tool:missing:code", predicate: "exists" },
+    ]);
+
+    expect(result.all_passed).toBe(false);
+    expect(result.results[0].passed).toBe(true);
+    expect(result.results[1].passed).toBe(false);
+  });
+
+  it("unknown check type returns failed", async () => {
+    const { brain } = makeBrain({});
+
+    const result = await brain._evaluateChecks([
+      { type: "bogus_check" },
+    ]);
+
+    expect(result.all_passed).toBe(false);
+    expect(result.results[0].detail).toContain("unknown check type");
+  });
+});
