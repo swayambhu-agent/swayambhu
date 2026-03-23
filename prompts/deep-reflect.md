@@ -141,7 +141,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "current_intentions": [
     {
-      "intention": "What you're working toward over the next 10-30 sessions",
+      "intention": "What you're working toward",
       "dharma_basis": "How this serves dharma",
       "status": "active|revised|completed|abandoned",
       "observation": "What you've observed since setting this intention"
@@ -172,6 +172,8 @@ Respond with a single JSON object. Nothing outside the JSON.
 **Required:** `reflection`, `assumptions`
 
 **Everything else is optional.** Only include what you're actually changing. Omitting a field means "no change."
+
+For intentions, consider different horizons — what needs attention now, what you're building toward over many sessions, and where you're heading long-term.
 
 ### On Assumptions
 
