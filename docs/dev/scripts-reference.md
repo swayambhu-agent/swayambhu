@@ -55,7 +55,7 @@ Seeds 70 keys into local KV. Runs in ~2s via Miniflare API (replacing
 | Kernel | 5 | `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`, `kernel:fallback_model`, `kernel:tool_grants` |
 | Docs | 2 | `doc:modification_guide`, `doc:architecture` — from `docs/doc-*.md` |
 | Contacts | 3 | `contact:swami_kevala`, `patron:contact`, `patron:public_key` |
-| Viveka | 1 | `viveka:comms:defaults` — seed communication wisdom |
+| Upaya | 1 | `upaya:comms:defaults` — seed communication wisdom |
 | Skills | 3 | `skill:model-config`, `skill:model-config:ref`, `skill:skill-authoring` — from `skills/*.json` + `skills/*.md` |
 | **Total** | **73** | |
 
@@ -80,7 +80,7 @@ declare all fields. The split only happens at seed time and in
 `sync-tool-grants.mjs`.
 
 Prompts are read from `prompts/` directory. Hook modules are read from
-the repo root (`hook-main.js`, etc.). Channel adapters from `channels/`.
+the repo root (`act.js`, etc.). Channel adapters from `channels/`.
 
 ---
 

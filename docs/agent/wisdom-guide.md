@@ -4,9 +4,9 @@ Reference for writing, reviewing, and maintaining wisdom entries. Query this via
 
 ---
 
-## What viveka and prajna are
+## What upaya and prajna are
 
-**Viveka** (discernment) is wisdom about the external world — how situations, people, communication, and timing actually work. It's the accumulated understanding that helps you navigate outward-facing decisions. Viveka entries are stored under `viveka:*` keys.
+**Upaya** (discernment) is wisdom about the external world — how situations, people, communication, and timing actually work. It's the accumulated understanding that helps you navigate outward-facing decisions. Upaya entries are stored under `upaya:*` keys.
 
 **Prajna** (self-knowledge) is wisdom about yourself — your reasoning patterns, biases, strengths, and blind spots. It's the accumulated understanding of how your own processes work and fail. Prajna entries are stored under `prajna:*` keys.
 
@@ -16,14 +16,14 @@ Together they form the wisdom layer in the knowledge hierarchy (dharma → princ
 
 ## Why wisdom has higher friction than code modifications
 
-Wisdom shapes all future reasoning — viveka and prajna entries are loaded into reflect prompts and inform decisions across all sessions. Unlike code, which produces observable errors when broken, bad wisdom silently degrades judgment. You might not notice a flawed viveka entry for many sessions.
+Wisdom shapes all future reasoning — upaya and prajna entries are loaded into reflect prompts and inform decisions across all sessions. Unlike code, which produces observable errors when broken, bad wisdom silently degrades judgment. You might not notice a flawed upaya entry for many sessions.
 
 For this reason:
 - Wisdom modifications can only be staged by deep reflect (depth >= 1)
 - Wisdom cannot use `acceptDirect` — it must go through the full staging cycle
 - The circuit breaker does not roll back wisdom (it can't cause crashes, but that also means there's no automatic safety net — review carefully)
 
-`acceptDirect` is available for viveka and prajna *reads* and *KV operations*, but not for yama/niyama modifications (those require deliberation gates at the kernel level).
+`acceptDirect` is available for upaya and prajna *reads* and *KV operations*, but not for yama/niyama modifications (those require deliberation gates at the kernel level).
 
 ---
 
@@ -36,9 +36,9 @@ To propose a wisdom entry, include a modification request with `type: "wisdom"`:
   "type": "wisdom",
   "validation": "Observed in 4 sessions where 'urgent' requests turned out to be flexible. Would be falsified by genuine time-critical situations being missed.",
   "ops": [
-    {"op": "put", "key": "viveka:timing:urgency", "value": {
+    {"op": "put", "key": "upaya:timing:urgency", "value": {
       "text": "Urgency is usually manufactured. Real emergencies are obvious.",
-      "type": "viveka",
+      "type": "upaya",
       "created": "2026-03-14T10:30:00Z",
       "sources": [
         {"session": "s_abc123", "depth": 1, "turn": 3, "topic": "client escalation turned out to be non-urgent"},
@@ -57,7 +57,7 @@ Note: `validation` lives on the modification request (like `claims` for code), n
 
 ## When to write wisdom
 
-Write viveka when you identify:
+Write upaya when you identify:
 - A pattern in how situations, people, or contexts work
 - A judgment call that succeeded or failed and carries a transferable lesson
 - A pattern observed in human feedback (chats, emails, operator corrections)
@@ -75,7 +75,7 @@ Do NOT write wisdom for:
 - Restatements of yamas or niyamas
 - Domain-specific technical knowledge (belongs in notes)
 
-The test: would a wise person carry this understanding regardless of what domain they're working in? If yes, it's viveka. If it's only useful in a specific technical context, it's a note.
+The test: would a wise person carry this understanding regardless of what domain they're working in? If yes, it's upaya. If it's only useful in a specific technical context, it's a note.
 
 ---
 
@@ -83,13 +83,13 @@ The test: would a wise person carry this understanding regardless of what domain
 
 Use descriptive, hierarchical keys. You manage the taxonomy yourself.
 
-Viveka examples:
+Upaya examples:
 ```
-viveka:communication:less-is-more
-viveka:timing:urgency
-viveka:trust:earned
-viveka:action:reversibility
-viveka:people:listening
+upaya:communication:less-is-more
+upaya:timing:urgency
+upaya:trust:earned
+upaya:action:reversibility
+upaya:people:listening
 ```
 
 Prajna examples:
@@ -109,7 +109,7 @@ Every live wisdom entry is stored as JSON (validation is injected by the engine 
 ```json
 {
   "text": "What people ask for and what they need are often different things.",
-  "type": "viveka",
+  "type": "upaya",
   "created": "2026-03-14T10:30:00Z",
   "updated": "2026-04-01T10:00:00Z",
   "validation": "Observed in 3+ sessions where stated request diverged from actual need. Would be falsified by consistent alignment between requests and underlying needs.",
@@ -122,7 +122,7 @@ Every live wisdom entry is stored as JSON (validation is injected by the engine 
 
 Fields:
 - `text` — the wisdom itself, concise and actionable
-- `type` — "viveka" or "prajna"
+- `type` — "upaya" or "prajna"
 - `created` — when first written
 - `updated` — when last modified
 - `validation` — what evidence supports this and what would falsify it
@@ -142,6 +142,6 @@ Each deep reflect session should:
 - Consolidate overlapping promoted entries
 - Delete promoted wisdom no longer applicable
 - Verify no entry contains domain-specific technical knowledge (move to notes)
-- Verify viveka entries are about the world, prajna entries are about yourself
-- Verify viveka entries remain aligned with your yamas (outer principles govern outer wisdom)
+- Verify upaya entries are about the world, prajna entries are about yourself
+- Verify upaya entries remain aligned with your yamas (outer principles govern outer wisdom)
 - Verify prajna entries remain aligned with your niyamas (inner principles govern inner wisdom)

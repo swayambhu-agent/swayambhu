@@ -23,8 +23,8 @@ export default defineConfig({
 });
 ```
 
-The alias maps the `cloudflare:workers` import (used by `brainstem.js` for
-`WorkerEntrypoint`) to a stub that exports an empty class.
+The alias maps the `cloudflare:workers` import (used by `kernel.js` for
+`base class`) to a stub that exports an empty class.
 
 ---
 
@@ -33,11 +33,11 @@ The alias maps the `cloudflare:workers` import (used by `brainstem.js` for
 ### __mocks__/cloudflare-workers.js
 
 ```js
-export class WorkerEntrypoint {}
+export class base class {}
 ```
 
-Minimal stub. `brainstem.js` extends `WorkerEntrypoint` for `ScopedKV` and
-`KernelRPC` — tests never exercise the actual CF RPC mechanism, so the
+Minimal stub. `kernel.js` extends `base class` for `ScopedKV` and
+`K interface` — tests never exercise the actual CF RPC mechanism, so the
 stub is sufficient.
 
 ### tests/helpers/mock-kv.js — makeKVStore(initial)
@@ -57,7 +57,7 @@ and `_meta` (Map) for test assertions.
 
 ### tests/helpers/mock-kernel.js — makeMockK(kvInit, opts)
 
-Full mock of the `KernelRPC` interface. Returns an object with every
+Full mock of the `K interface` interface. Returns an object with every
 method that hook code calls via `K.*`.
 
 **KV operations:**
@@ -189,8 +189,8 @@ and environment.
 
 ### tests/wake-hook.test.js — 68 tests
 
-Tests the hook modules (`hook-main.js`, `hook-reflect.js`,
-`hook-modifications.js`, `hook-protect.js`) using `makeMockK`.
+Tests the hook modules (`act.js`, `reflect.js`,
+`kernel.js (proposal methods)`, `kernel.js (applyKVOperation)`) using `makeMockK`.
 
 **Wake flow helpers:**
 - `buildOrientContext` (1 test) — JSON structure
@@ -241,7 +241,7 @@ directly with mock dependencies.
 - Every provider exports `meta` with `secrets`, `timeout_ms`
 - Every provider exports a callable function (`call`/`check`)
 
-**wrapAsModule compatibility** (16 tests):
+**module structure compatibility** (16 tests):
 - No `export default` in any tool file (8 tools)
 - No `export default` in any provider file (4 providers)
 - No `export default` in `channels/slack.js`
@@ -312,7 +312,7 @@ Each suite uses factory functions to create test fixtures:
   mock KV
 - `makeState(overrides)` — wake-hook.test.js: state object for hook
   functions
-- `makeMockK(kvInit, opts)` — mock-kernel.js: mock KernelRPC for hook
+- `makeMockK(kvInit, opts)` — mock-kernel.js: mock K interface for hook
   and chat tests
 - `makeAdapter()` — chat.test.js: `{ sendReply: vi.fn() }`
 
@@ -335,7 +335,7 @@ the module-level `activeStaged`/`activeInflight` arrays between tests.
 ### For a new tool
 
 1. Add module structure tests in `tools.test.js` (meta exports,
-   wrapAsModule compatibility)
+   module structure compatibility)
 2. Add execution tests with a mock `fetch` and mock `kv` (if applicable)
 3. If the tool has `communication` meta: add comms gate tests in
    `brainstem.test.js`
@@ -361,15 +361,13 @@ Add tests in `chat.test.js`. The mock kernel's `callLLM` and
 
 ## Known Mock Limitations
 
-- `makeBrain` does not exercise `runInIsolate` — isolate-based execution
-  (tools in prod, channel adapters in prod) is not tested. Tool tests call
-  `execute` directly instead.
+- Tool tests call `execute` directly — same pattern as the runtime, which
+  uses static imports and direct function calls.
 - `makeMockK.runAgentLoop` returns `{}` — tests for hook code that depends
   on specific agent loop output (e.g. reflect output parsing) must
   override this mock per-test.
 - `makeMockK.resolveContact` always returns `null` — tests that need known
   contacts must override this mock.
-- The `callWithCascade` three-tier provider cascade is not tested — dev
-  mode overrides it with direct OpenRouter calls, and the cascade logic
-  involves CF service bindings that can't be mocked without the Workers
-  runtime.
+- The `callWithCascade` three-tier provider cascade is not fully tested —
+  the cascade logic involves KV reads and multiple adapter calls that
+  require integration-level testing.

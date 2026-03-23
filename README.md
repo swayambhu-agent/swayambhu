@@ -23,13 +23,13 @@ principles it can only modify with extraordinary justification, and
 experiential wisdom it accumulates through genuine self-reflection.
 
 Most AI agents treat security as a constraint to work around. Swayambhu
-treats it as architecture. The kernel (`brainstem.js`) enforces security
-*mechanically* — through code isolation, tool gating, and communication
+treats it as architecture. The kernel (`kernel.js`) enforces security
+*mechanically* — through tool gating, scoped KV access, and communication
 gates — not by hoping the LLM follows instructions. The agent's
-self-modifiable code runs in sandboxed isolates and can only access the
-world through controlled RPC bridges. Even a fully jailbroken LLM session
-cannot exfiltrate data or bypass communication rules, because the sandbox
-physically prevents it.
+self-modifiable code is statically compiled into the runtime and can only
+access the world through the kernel's controlled interface. Even a fully
+jailbroken LLM session cannot exfiltrate data or bypass communication rules,
+because the kernel physically prevents it.
 
 Most AI agents are stateless between sessions. Swayambhu has a genuine
 inner life. It wakes on a schedule, orients itself, acts, reflects on what
@@ -37,7 +37,7 @@ it did, accumulates wisdom, and proposes modifications to its own code and
 behavior. These modifications go through a staged review process where a
 *different* session evaluates them before they go live. The agent reviews
 its own changes with fresh eyes. Over time, it develops discernment about
-the world (viveka) and understanding of its own patterns (prajna) — not
+the world (upaya) and understanding of its own patterns (prajna) — not
 because someone programmed those insights, but because it earned them
 through experience.
 
@@ -65,10 +65,11 @@ The agent runs on Cloudflare Workers. Its lifecycle:
    investigate its own behavior, identify patterns, and propose structural
    changes.
 
-5. **Evolve** — Proposed changes go through the Modification Protocol:
-   staged by one session, reviewed by a future session, tested while
-   inflight with a snapshot for rollback, then promoted or rolled back.
-   The agent evolves deliberately, not randomly.
+5. **Evolve** — Proposed code changes go through the proposal system:
+   proposed by one session, reviewed by a future session, deployed by the
+   governor worker with version tracking for rollback. Non-code changes
+   (config, prompts, wisdom) go through KV write tiers directly. The agent
+   evolves deliberately, not randomly.
 
 Alongside this, the agent handles real-time **chat** via webhooks (Slack,
 email). Known contacts get full tool access. Unknown contacts get a
@@ -102,30 +103,29 @@ casually. ([KV Schema](docs/dev/kv-schema.md))
 
 ### Mechanical Security, Not Prompt Security
 
-The kernel runs hook code in Cloudflare Worker Loader isolates. Hook code
-— which the agent can modify — communicates with the kernel only through
-an RPC bridge that exposes carefully chosen methods. The agent cannot
-access raw KV, cannot read secrets, cannot bypass communication gates. Not
-because a prompt says "don't do this" but because the sandbox physically
-prevents it. This is the same isolation model used by browser extensions
-and OS kernels. ([Architecture](docs/dev/architecture.md))
+The kernel enforces security boundaries on all module code. Policy modules
+(`act.js`, `reflect.js`) communicate with the kernel through the K interface
+that exposes carefully chosen methods. Tools receive scoped KV access.
+The agent cannot access raw KV, cannot read secrets, cannot bypass
+communication gates. Not because a prompt says "don't do this" but because
+the kernel interface physically prevents it.
+([Architecture](docs/dev/architecture.md))
 
-### The Modification Protocol
+### The Proposal System
 
-When the agent wants to change its own code, prompts, or configuration, it
-doesn't just write to KV. It stages a modification with claims about what
-it will achieve and mechanical checks that can verify those claims. A
-separate reflect session reviews the staged modification and decides:
-accept, reject, modify, or defer. Accepted modifications run in an
-"inflight" state with a snapshot for rollback. A circuit breaker
-auto-rolls back if something crashes. Only after passing all checks does a
-modification get promoted to permanent. Software engineering discipline
-applied to self-modification.
+When the agent wants to change its own code (tools, hooks, providers), it
+creates a proposal with claims about what it will achieve. A separate
+reflect session reviews the proposal and decides: accept, reject, modify,
+or defer. Accepted proposals are deployed by the governor worker, which
+tracks versions and can roll back if crashes occur. Non-code changes
+(config, prompts, wisdom) go through KV write tiers with appropriate
+validation gates. Software engineering discipline applied to
+self-modification.
 ([Modification Protocol](docs/dev/modification-protocol.md))
 
-### Viveka and Prajna — Wisdom Through Experience
+### Upaya and Prajna — Wisdom Through Experience
 
-The agent accumulates two kinds of wisdom: viveka (discernment about the
+The agent accumulates two kinds of wisdom: upaya (discernment about the
 world — transferable judgment, not domain knowledge) and prajna
 (self-knowledge — understanding of its own patterns and blind spots).
 Wisdom is distilled from karma through reflection, and each entry carries
@@ -163,30 +163,24 @@ falls through to a known-good state automatically.
                         │    Cloudflare Workers     │
                         │                          │
 ┌─────────┐             │  ┌────────────────────┐  │             ┌──────────────┐
-│  Slack   │◄──webhook──┤  │   brainstem.js     │  ├──fetch────►│  OpenRouter   │
-│  Gmail   │            │  │   (kernel)         │  │             │  (LLM API)   │
-└─────────┘             │  │                    │  │             └──────────────┘
-                        │  │  ┌──────────────┐  │  │
-                        │  │  │ Hook Isolates│  │  │             ┌──────────────┐
-                        │  │  │ (wake, chat) │  │  ├──tunnel───►│  Hetzner      │
-                        │  │  └──────┬───────┘  │  │             │  (computer)   │
-                        │  │         │ RPC      │  │             └──────────────┘
-                        │  │  ┌──────┴───────┐  │  │
-                        │  │  │  Tool        │  │  │
-                        │  │  │  Isolates    │  │  │
-                        │  │  └──────────────┘  │  │
-                        │  └────────┬───────────┘  │
-                        │           │              │
+│  Slack   │◄──webhook──┤  │   kernel.js        │  ├──fetch────►│  OpenRouter   │
+│  Gmail   │            │  │   + act.js         │  │             │  (LLM API)   │
+└─────────┘             │  │   + reflect.js     │  │             └──────────────┘
+                        │  │   + tools/*.js     │  │
+                        │  │   + providers/*.js  │  │             ┌──────────────┐
+                        │  │   (static imports)  │  ├──tunnel───►│  Hetzner      │
+                        │  └────────┬───────────┘  │             │  (computer)   │
+                        │           │              │             └──────────────┘
                         │  ┌────────┴───────────┐  │
 ┌─────────────────┐     │  │     KV Store       │  │
 │ Dashboard API   │◄────┤  │  (all agent state) │  │
 │ (separate worker)│    │  └────────────────────┘  │
-└────────┬────────┘     └──────────────────────────┘
-         │
-┌────────┴────────┐
-│  Operator SPA   │
-│  (site/)        │
-└─────────────────┘
+└────────┬────────┘     │           │              │
+         │              │  ┌────────┴───────────┐  │
+┌────────┴────────┐     │  │    Governor        │  │
+│  Operator SPA   │     │  │  (build + deploy)  │  │
+│  (site/)        │     │  └────────────────────┘  │
+└─────────────────┘     └──────────────────────────┘
 ```
 
 The kernel is hardcoded safety. The hooks are evolvable policy. Everything
@@ -216,21 +210,20 @@ and flags.
 ## Project Structure
 
 ```
-├── brainstem.js          # Production kernel — safety, LLM, tools, gates
-├── brainstem-dev.js      # Dev kernel (no isolates, direct imports)
-├── hook-main.js          # Wake entry point — orient, crash detection
-├── hook-reflect.js       # Reflection — session + deep, scheduling
-├── hook-modifications.js # Modification Protocol — staging, verdicts, git sync
-├── hook-protect.js       # KV write gating
+├── kernel.js             # Kernel — safety gates, execution engine, proposals
+├── index.js              # Entry point — imports all modules, wires to kernel
+├── act.js                # Session policy — orient flow, context building
+├── reflect.js            # Reflection — session + deep, scheduling
 ├── hook-chat.js          # Chat pipeline — budget, tools, conversation state
 ├── channels/             # Channel adapters (slack)
-├── tools/                # Agent tools (8 registry tools)
+├── tools/                # Agent tools (registry tools)
 ├── providers/            # LLM and service adapters (4)
 ├── prompts/              # System prompts (orient, reflect, chat, subplan)
+├── governor/             # Governor worker — build, deploy, rollback
 ├── dashboard-api/        # Operator dashboard API (separate worker)
 ├── site/                 # Static frontend (landing, reflections, operator SPA)
 ├── scripts/              # Dev tools (seed, read, rollback, reset, serve)
-├── tests/                # Vitest test suite (339 tests)
+├── tests/                # Vitest test suite
 ├── docs/dev/             # Developer documentation
 ├── specs/                # Design specifications
 └── DHARMA.md             # Immutable core identity
@@ -241,10 +234,10 @@ and flags.
 ## Documentation
 
 **Developer docs** — [docs/dev/](docs/dev/)
-- [Architecture](docs/dev/architecture.md) — kernel/hook split, KV protection tiers, isolation model
+- [Architecture](docs/dev/architecture.md) — two-worker architecture, KV protection tiers, kernel/module split
 - [KV Schema](docs/dev/kv-schema.md) — every key namespace, protection levels, lifecycle
 - [Entry Points](docs/dev/entry-points.md) — cron wake, HTTP chat, dashboard API call chains
-- [Modification Protocol](docs/dev/modification-protocol.md) — staged → inflight → promoted lifecycle
+- [Modification Protocol](docs/dev/modification-protocol.md) — proposal system, governor deployment lifecycle
 - [Reflection System](docs/dev/reflection-system.md) — session reflect, deep reflect, scheduling, wisdom
 - [Communication Gating](docs/dev/communication-gating.md) — inbound/outbound gates, contact system
 - [Chat System](docs/dev/chat-system.md) — webhook pipeline, tool filtering, conversation state

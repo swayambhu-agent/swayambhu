@@ -16,7 +16,7 @@ This means upgrading Swayambhu doesn't require redeploying code. He upgrades him
 
 ## How a session works
 
-The brainstem wakes on a cron schedule, checks if it's actually time to act (the agent controls its own sleep duration), runs crash detection and circuit breakers, then loads its state from the store. What happens next depends on whether a deep reflection is due.
+The kernel wakes on a cron schedule, checks if it's actually time to act (the agent controls its own sleep duration), runs crash detection and circuit breakers, then loads its state from the store. What happens next depends on whether a deep reflection is due.
 
 ### Normal sessions: act → reflect
 
@@ -26,19 +26,19 @@ This is where all operational work happens — checking balances, searching the 
 
 When the agent identifies independent threads of work, it can spawn **subplans** — nested agent loops running on cheaper models, executing in parallel, reporting results back to the parent.
 
-After the agent loop completes, **session reflect** runs — a single evaluation call that reviews the session's karma log (the flight recorder of every LLM call and tool execution), produces a summary, and can propose modifications or adjust the next wake schedule. Session reflect answers: *"what just happened, and what should I tell my future self?"*
+After the agent loop completes, **session reflect** runs — a single evaluation call that reviews the session's karma log (the flight recorder of every LLM call and tool execution), produces a summary, and can propose changes or adjust the next wake schedule. Session reflect answers: *"what just happened, and what should I tell my future self?"*
 
 The runtime then shuts down. Nothing persists except what's in the store. Next wake cycle, a fresh runtime boots and loads whatever the agent left behind.
 
 ### Deep reflect sessions
 
-Periodically, instead of a normal session, the brainstem triggers a **deep reflection**. Normal sessions and deep reflect sessions are mutually exclusive — when reflection fires, it replaces the normal act cycle entirely, because the point is to step back and examine the pattern rather than continue acting within it.
+Periodically, instead of a normal session, the kernel triggers a **deep reflection**. Normal sessions and deep reflect sessions are mutually exclusive — when reflection fires, it replaces the normal act cycle entirely, because the point is to step back and examine the pattern rather than continue acting within it.
 
-**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose modifications to prompts, config, tools, and wisdom (`viveka:*`, `prajna:*`) through the Modification Protocol — code modifications are applied directly as inflight (no staging required), while wisdom modifications must always be staged first. Depth 1 also writes the wake config and schedule that govern normal sessions.
+**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose changes to prompts, config, tools, and wisdom (`upaya:*`, `prajna:*`) through the proposal system — code changes go through `K.createProposal()` for governor deployment, while config/prompt/wisdom changes go through KV write tiers directly. Depth 1 also writes the wake config and schedule that govern normal sessions.
 
 **Depth 2** fires less often (~100 sessions by default, but self-determined after first run). It reads depth 1's stored outputs, looking for patterns in *how depth 1 is reflecting*. Is depth 1 over-correcting? Missing systemic issues? Fixating on symptoms instead of causes?
 
-This extends to arbitrary depth. Each level reads the outputs of the level below, identifies patterns, and can propose changes to the level below's prompt through the Modification Protocol.
+This extends to arbitrary depth. Each level reads the outputs of the level below, identifies patterns, and can propose changes to the level below's prompt through the proposal system.
 
 A critical constraint: **each depth can only target the level directly below.** Depth 2 cannot rewrite the orient prompt — only depth 1 can. If depth 2 sees a problem with how the agent plans, it has to adjust depth 1's behavior so that *depth 1* catches and fixes the planning issue. This prevents write conflicts (each prompt has exactly one author) and forces higher levels to improve the system's self-correcting capability rather than issuing one-off patches.
 
@@ -52,9 +52,9 @@ The execution primitive behind both orient and deep reflect is `runAgentLoop` �
 
 Each turn: the model receives the conversation so far (system prompt, previous messages, tool results), produces either tool calls or final output. If it produces tool calls, they execute — in parallel if multiple — and results feed back as the next turn's context. If it produces final output, the loop ends. If the step limit is reached, the model is forced to produce final output immediately.
 
-Tools are loaded dynamically from the store and executed in sandboxed isolates with scoped permissions. A tool that posts to Telegram gets the bot token but not the wallet key. A tool that checks a balance can't rewrite prompts. Each tool declares what it needs; the runtime provides exactly that and nothing more.
+Tools are statically compiled into the runtime worker and executed with scoped permissions. A tool that posts to Slack gets the bot token but not the wallet key. A tool that checks a balance can't rewrite prompts. Each tool declares what it needs; the runtime provides exactly that and nothing more.
 
-The agent can create, rewrite, and delete its own tools at runtime. The tool set isn't fixed at deploy time — it evolves as Swayambhu learns what he needs.
+The agent can propose changes to its own tools through the proposal system. When accepted by deep reflect, the governor worker applies the changes and redeploys the runtime. The tool set evolves as Swayambhu learns what he needs.
 
 This design relies on prompt caching to stay cost-efficient. The system prompt and initial context are cached after the first turn, so subsequent turns only pay full price for new content. Since output tokens are 5× more expensive than input, and the model doesn't generate speculative plans for paths it never takes, multi-turn execution is typically equal or cheaper than planning everything upfront in a single call.
 
@@ -64,21 +64,17 @@ Self-modification is the point. But ungoverned self-modification is how you bric
 
 **The dharma.** One key in the store is immutable — the runtime physically prevents it from being overwritten. This is Swayambhu's foundational identity: his values, his relationship with his creator, his core constraints. Everything else can orbit, evolve, and restructure, but it can't drift away from this fixed attractor.
 
-**Protected keys.** All writes from the agent loop pass through a protection gate. System keys — prompts, config, tools, credentials, wisdom entries (`viveka:*`, `prajna:*`) — are blocked from direct writes. They can only be modified through the Modification Protocol. Agent-created data keys pass through freely.
+**Protected keys.** All writes from the agent loop pass through a protection gate (`applyKVOperation` in `kernel.js`). System keys — prompts, config, tools, credentials, wisdom entries (`upaya:*`, `prajna:*`) — are blocked from direct writes. They can only be modified through appropriate write tiers. Agent-created data keys pass through freely.
 
-**The Modification Protocol.** Changes to protected keys go through a staged lifecycle with two modes. **Code modifications** (prompts, config, tools, hook modules) carry claims, ops, and checks — session reflect proposes them as staged, deep reflect reviews and issues verdicts: apply, reject, modify, defer, or withdraw. **Wisdom modifications** (`viveka:*` for discernment about the external world, `prajna:*` for self-knowledge) carry a validation field instead of checks, can only be staged by deep reflect (depth >= 1), and are not subject to circuit breaker rollback or git sync.
+**The proposal system.** Code changes (tools, hooks, providers, channels) go through the proposal system. The agent proposes code changes during reflect via `K.createProposal()`. A future deep reflect session reviews and accepts or rejects them via `K.processProposalVerdicts()`. Accepted proposals are picked up by the governor worker, which applies the changes and redeploys the runtime. The governor tracks version history for rollback.
 
-Applied modifications become inflight — the changes take effect, but old values are snapshotted for rollback. Only after deep reflect explicitly promotes an inflight modification does the snapshot get deleted and the change become permanent. Deep reflect's own code modifications skip staging and become inflight immediately — it's the highest-trust context. Wisdom modifications must always go through staging.
+Non-code changes (config, prompts, wisdom) go through KV write tiers directly (`kvPutSafe`, `kvWritePrivileged`) and take effect on the next session without deployment.
 
-For code modifications, **checks** are verifiable conditions that the runtime evaluates mechanically. These might assert that a KV key has a certain value, or that a tool produces a certain result. Check results are shown in context whenever modifications are loaded, so the model sees whether its changes are working before deciding to promote or roll back.
-
-**The circuit breaker.** On every wake, before anything else runs, the runtime scans karma logs for danger signals — fatal errors, parse failures, all providers failing — that occurred after any inflight modification was activated. If found, it rolls back the inflight modification automatically. This catches the case where a bad modification breaks the system so badly that no LLM call succeeds. The runtime handles recovery mechanically without needing a model.
-
-**Conflict detection.** Two modifications targeting the same key can't both be inflight simultaneously. The second is rejected until the first is promoted or rolled back.
+**The circuit breaker.** The governor worker monitors crash history. If the runtime crashes three times in a row, the governor rolls back to the previous known-good version. This catches the case where a bad code change breaks the system so badly that no LLM call succeeds. Recovery happens mechanically without needing a model.
 
 **Conservative seed defaults.** The system starts with tight constraints — low step limits, cautious budgets. As it gains experience, the reflection hierarchy can loosen these constraints via config updates. Safer to start tight and self-relax than start loose and self-correct after making expensive mistakes.
 
-**Communication gating.** Outbound messages pass through a kernel-enforced gate before sending. The gate checks for accumulated wisdom about the recipient (`viveka:contact:*`), requires a capable model for judgment, and evaluates each message against communication wisdom. Messages can be sent, revised, or blocked and queued for deep reflect review. The mechanism is hardcoded in the kernel; the policy is encoded in viveka entries that the agent accumulates through experience. This prevents the agent from bypassing communication checks through self-modification.
+**Communication gating.** Outbound messages pass through a kernel-enforced gate before sending. The gate checks for accumulated wisdom about the recipient (`upaya:contact:*`), requires a capable model for judgment, and evaluates each message against communication wisdom. Messages can be sent, revised, or blocked and queued for deep reflect review. The mechanism is hardcoded in the kernel; the policy is encoded in upaya entries that the agent accumulates through experience. This prevents the agent from bypassing communication checks through self-modification.
 
 **Inbound access control.** Inbound content from external senders is gated by contact status. The kernel maintains a contact registry (`contact:*` keys with `contact_index:*` lookup cache). Two enforcement layers:
 
@@ -88,7 +84,7 @@ For code modifications, **checks** are verifiable conditions that the runtime ev
 
 **Sealed namespace.** `sealed:*` keys are mechanically unreadable by tools — `ScopedKV.get()` returns null, `ScopedKV.list()` filters them out. Writes are blocked by `KERNEL_ONLY_PREFIXES`. Only the kernel (internal `kvPut`) can write sealed keys, and the dashboard API (which reads KV directly) can display them to the patron. Hook code can read sealed keys via `K.kvGet()` — this is intentional, as hooks are the trusted policy layer and may need audit access.
 
-**Trust model.** The kernel enforces a two-tier trust boundary: *tools* are sandboxed (ScopedKV, no direct kernel access) and handle untrusted external input. *Hooks* are trusted policy code (full KernelRPC access, go through Modification Protocol review). Sealed keys protect against tool-level jailbreak propagation, not against hook self-modification — the Modification Protocol governs that.
+**Trust model.** The kernel enforces a two-tier trust boundary: *tools* are sandboxed (ScopedKV, no direct kernel access) and handle untrusted external input. *Hooks* are trusted policy code (full KernelRPC access, go through proposal system review). Sealed keys protect against tool-level jailbreak propagation, not against hook self-modification — the proposal system governs that.
 
 ## Provider resilience
 
@@ -110,7 +106,7 @@ Swayambhu's layered architecture changes the leverage curve. When a more capable
 
 Each level multiplies through the levels below it. The system is a compiler that writes programs that write programs. Upgrading the compiler doesn't improve one output — it improves the factory.
 
-The same gearing works in reverse for mistakes, which is why the dharma and Modification Protocol exist. The fixed attractor and staged changes prevent the compounding from going in the wrong direction.
+The same gearing works in reverse for mistakes, which is why the dharma and proposal system exist. The fixed attractor and staged changes prevent the compounding from going in the wrong direction.
 
 ## Design principles
 
@@ -122,13 +118,30 @@ The same gearing works in reverse for mistakes, which is why the dharma and Modi
 
 **The karma log is the source of truth.** Every LLM call and tool execution is recorded with full request/response, flushed to the store after each entry. If the runtime crashes mid-session, the log survives up to the point of death. The next session's crash detection picks up exactly where things went wrong.
 
-## Kernel / hook architecture
+## Two-worker architecture
 
-The runtime is split into two layers:
+The system consists of two Cloudflare Workers sharing one KV namespace:
 
-**The kernel** (`brainstem.js`) contains hardcoded primitives and safety invariants. It handles LLM calls, KV access, tool execution, the agent loop, sandbox isolation, karma logging, provider cascading, and alerting. The kernel is deployed code — changes require a redeploy.
+**Runtime Worker** (`index.js` → `kernel.js` + statically compiled modules):
 
-**The wake hook** (modular: `hook-main.js`, `hook-reflect.js`, `hook-modifications.js`, `hook-protect.js`, stored in KV via `hook:wake:manifest`) contains all session policy — the wake flow, crash detection, reflect scheduling, the Modification Protocol, circuit breaker, and session orchestration. The hook is data — Swayambhu can rewrite it through the Modification Protocol, restructuring his own control flow without a deploy.
+| File | Role | Mutable? |
+|------|------|----------|
+| `kernel.js` | Safety gates, execution engine, session infrastructure, proposals | No (governor enforces) |
+| `act.js` | Session policy — orient flow, context building | Yes (via proposals) |
+| `reflect.js` | Reflection policy — session/deep reflect, scheduling | Yes (via proposals) |
+| `hook-chat.js` | Chat handler — inbound message processing | No |
+| `tools/*.js` | Tool implementations | Yes (via proposals) |
+| `providers/*.js` | LLM/balance provider adapters | Yes (via proposals) |
+| `channels/*.js` | Channel adapters (Slack) | Yes (via proposals) |
+| `index.js` | Entry point — imports all modules, wires to kernel | Auto-generated by governor |
+
+**Governor Worker** (`governor/`):
+
+| File | Role |
+|------|------|
+| `governor/worker.js` | Entry point — cron watchdog, deploy/rollback/status endpoints |
+| `governor/builder.js` | Reads code from KV, generates index.js |
+| `governor/deployer.js` | CF Workers API multipart upload, version tracking |
 
 ### How it runs
 
@@ -136,29 +149,28 @@ On each cron trigger, the kernel's `scheduled()` entry point:
 
 1. Checks for platform kills (previous session's `kernel:active_session` still present)
 2. Runs the meta-safety tripwire (`checkHookSafety`)
-3. Loads `hook:wake:code` from KV
-4. If found: executes the hook in an isolate via the Worker Loader API, passing `KernelRPC` as a binding
-5. If missing: runs a hardcoded minimal fallback (recovery prompt, tight budget, no reflect)
+3. Calls the statically compiled hook modules directly — `act.js` for orient sessions, `reflect.js` for deep reflect
+4. If safety tripwire fires: runs a hardcoded minimal fallback (recovery prompt, tight budget, no reflect)
 
-The hook calls kernel primitives via RPC — `K.callLLM()`, `K.kvGet()`, `K.runAgentLoop()`, etc. The kernel exposes these through `KernelRPC extends WorkerEntrypoint`, which delegates to the active `Brainstem` instance. The hook composes primitives into policy; the kernel enforces invariants on every call regardless of what the hook does.
+The hook modules call kernel primitives via the K interface — `K.callLLM()`, `K.kvGet()`, `K.runAgentLoop()`, etc. The kernel builds this interface via `buildKernelInterface()`. The modules compose primitives into policy; the kernel enforces invariants on every call regardless of what the modules do.
 
 ### Two-tier KV writes
 
-The hook cannot write to KV directly. Two RPC methods gate all writes:
+Two methods gate all writes:
 
-**`kvPutSafe(key, value, metadata)`** — allows writes to non-system keys. Blocks writes to system key prefixes (`prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `modification_staged:`, `modification_snapshot:`, `viveka:`, `prajna:`, `hook:`), kernel-only prefixes (`kernel:`), system exact keys (`dharma`, `providers`, `wallets`), and the `dharma` key unconditionally. This is for routine data writes.
+**`kvPutSafe(key, value, metadata)`** — allows writes to non-system keys. Blocks writes to system key prefixes (`prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `proposal:`, `upaya:`, `prajna:`, `hook:`), kernel-only prefixes (`kernel:`), system exact keys (`dharma`, `providers`, `wallets`), and the `dharma` key unconditionally. This is for routine data writes.
 
-**`kvWritePrivileged(ops)`** — allows writes to system keys (but not `kernel:*` or `dharma`). For each operation: snapshots the current value to karma before writing, increments a per-session counter (max 50, hardcoded), and auto-reloads cached config after writes to config keys. The Modification Protocol in the hook uses this for vetted changes to prompts, config, and tools.
+**`kvWritePrivileged(ops)`** — allows writes to system keys (but not `kernel:*` or `dharma`). For each operation: snapshots the current value to karma before writing, increments a per-session counter (max 50, hardcoded), and auto-reloads cached config after writes to config keys. Used for vetted changes to prompts, config, and wisdom.
 
-Neither path can write `kernel:*` keys or `dharma`. Only the kernel's internal `kvPut` (not exposed via RPC) can write kernel-namespaced keys.
+Neither path can write `kernel:*` keys or `dharma`. Only the kernel's internal `kvPut` (not exposed via the K interface) can write kernel-namespaced keys.
 
 ### Meta-safety tripwire
 
-The kernel maintains `kernel:last_sessions` — a list of the last 5 session outcomes (clean/crash/killed), written via internal `kvPut` after every hook execution. Platform kills are detected by a `kernel:active_session` breadcrumb: written before hook execution, deleted after. If present at the start of the next session, the previous session was killed by the platform (wall-time, CPU, or OOM).
+The kernel maintains `kernel:last_sessions` — a list of the last 5 session outcomes (clean/crash/killed), written via internal `kvPut` after every session. Platform kills are detected by a `kernel:active_session` breadcrumb: written before session execution, deleted after. If present at the start of the next session, the previous session was killed by the platform (wall-time, CPU, or OOM).
 
-If the last 3 outcomes are all crashes or kills, `checkHookSafety` fires: deletes `hook:wake:code`, sends a kernel alert, and the next session runs the hardcoded minimal fallback. This catches the case where a bad hook rewrite breaks the system — the kernel recovers mechanically without needing a working LLM call.
+If the last 3 outcomes are all crashes or kills, `checkHookSafety` fires: writes `deploy:rollback_requested` to KV (signaling the governor to roll back), sends a kernel alert, and the current session runs the hardcoded minimal fallback. This catches the case where a bad code change breaks the system — the kernel recovers mechanically without needing a working LLM call. The governor's cron picks up the rollback signal.
 
-The minimal fallback uses a kernel-embedded recovery prompt (does not load `prompt:orient` from KV, which could be corrupted), a hardcoded budget (`max_cost: 0.50`, `max_duration: 120s`), and discards all `kv_operations` from LLM output. It runs one basic orient session for status reporting, then waits for manual re-seeding of the hook.
+The minimal fallback uses a kernel-embedded recovery prompt (does not load `prompt:orient` from KV, which could be corrupted), a hardcoded budget (`max_cost: 0.50`, `max_duration: 120s`), and discards all `kv_operations` from LLM output. It runs one basic orient session for status reporting.
 
 ### Alerting
 
@@ -166,6 +178,6 @@ The minimal fallback uses a kernel-embedded recovery prompt (does not load `prom
 
 ## Current status
 
-The brainstem runtime is functional. Swayambhu runs on Cloudflare Workers with tool execution via Dynamic Worker Loaders (isolate-based sandboxing). The kernel/hook split separates hardcoded safety (kernel, deployed code) from evolvable policy (wake hook, stored in KV). Local development works fully with Wrangler. Production deployment uses Cloudflare's Dynamic Worker Loader API.
+The runtime is functional. Swayambhu runs on Cloudflare Workers with a two-worker architecture: the runtime worker (statically compiled kernel + modules) and the governor worker (builds and deploys the runtime from KV). The kernel separates hardcoded safety from evolvable policy (`act.js`, `reflect.js`). Local development works fully with Wrangler — `index.js` is hand-written and imports directly from disk.
 
-For setup instructions, KV schema, and implementation details, see `scripts/seed-local-kv.mjs`, `brainstem.js` (kernel), and the hook modules (policy).
+For setup instructions, KV schema, and implementation details, see `scripts/seed-local-kv.mjs`, `kernel.js` (kernel), and the policy modules (`act.js`, `reflect.js`).

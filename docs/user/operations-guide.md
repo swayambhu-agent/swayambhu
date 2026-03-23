@@ -107,7 +107,7 @@ that session.
 ### KV Browser
 
 The **KV Explorer** tab lets you browse every key in the store. Use the
-prefix filter to narrow results (e.g. `viveka:` to see all wisdom
+prefix filter to narrow results (e.g. `upaya:` to see all wisdom
 entries, `karma:` to see session logs).
 
 Click any key to view its value. JSON values are formatted for
@@ -160,7 +160,7 @@ When the agent tries to send an outbound message that gets blocked by the
 communication gate, it's stored as a `comms_blocked:{id}` key. Reasons a
 message gets blocked:
 
-- **Unknown recipient** — No contact record or viveka entry for the
+- **Unknown recipient** — No contact record or upaya entry for the
   recipient. Blocked mechanically without an LLM call.
 - **Model insufficient** — The current model doesn't have
   `comms_gate_capable` set. Message queued for deep reflect review.
@@ -324,7 +324,7 @@ agent processes corrections during its next reflection cycle:
 
 1. The correction appears in the session's karma log.
 2. Session reflect notes the correction.
-3. Deep reflect may distill the correction into wisdom (`viveka:*` or
+3. Deep reflect may distill the correction into wisdom (`upaya:*` or
    `prajna:*` entries) through the modification protocol.
 
 Corrections that become wisdom entries carry the session reference as a
@@ -532,8 +532,8 @@ In the Cloudflare dashboard, go to **Workers & Pages** > your worker >
 
 1. **Review recent reflections** in the dashboard. Deep reflections show
    the agent's self-assessment — look for patterns it has identified.
-2. **Check viveka entries.** Browse `viveka:*` keys in the KV Explorer.
-   These are the agent's accumulated wisdom — if a viveka entry is
+2. **Check upaya entries.** Browse `upaya:*` keys in the KV Explorer.
+   These are the agent's accumulated wisdom — if a upaya entry is
    misleading, it will affect future behavior.
 3. **Check the orient prompt.** Read `prompt:orient` to see what
    instructions shape the agent's behavior on each wake.

@@ -62,12 +62,9 @@ yours:
 
 ```toml
 name = "swayambhu-cns"
-main = "brainstem.js"
+main = "kernel.js"
 compatibility_date = "2025-06-01"
-compatibility_flags = ["nodejs_compat", "enable_ctx_exports"]
-
-[[worker_loaders]]
-binding = "LOADER"
+compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "KV"
@@ -499,7 +496,7 @@ From the project root:
 npx wrangler deploy
 ```
 
-This deploys `brainstem.js` as a Cloudflare Worker with the cron trigger.
+This deploys `kernel.js` as a Cloudflare Worker with the cron trigger.
 The worker starts firing every minute immediately.
 
 ### Deploy the Dashboard

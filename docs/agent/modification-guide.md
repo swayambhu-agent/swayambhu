@@ -43,7 +43,7 @@ Target tool code, hook code, prompts, config, providers. Required fields: `claim
 
 ### Wisdom modifications
 
-Target `viveka:*` and `prajna:*` keys. Required fields: `validation` (what evidence supports this, what would falsify it), `ops` (array of KV operations).
+Target `upaya:*` and `prajna:*` keys. Required fields: `validation` (what evidence supports this, what would falsify it), `ops` (array of KV operations).
 
 **Why wisdom has higher friction than code:** Wisdom shapes all future reasoning — it's loaded into reflect prompts and informs decisions. Unlike code, which can be tested and produces observable errors when broken, bad wisdom silently degrades judgment. The higher friction (staging required, no `acceptDirect`, deep reflect only) compensates for the difficulty of detecting wisdom problems.
 

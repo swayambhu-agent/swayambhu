@@ -3,9 +3,9 @@
 How Swayambhu self-modifies: staging, validation, inflight management,
 rollback, circuit breaker, and git sync.
 
-All code lives in `hook-modifications.js` (KV key `hook:wake:modifications`).
-Verdict processing is triggered from `hook-reflect.js`. The wake entry point
-in `hook-main.js` initializes tracking and runs the circuit breaker on every
+All code lives in `kernel.js (proposal methods)` (KV key `hook:wake:modifications`).
+Verdict processing is triggered from `reflect.js`. The wake entry point
+in `act.js / kernel.js` initializes tracking and runs the circuit breaker on every
 wake.
 
 ---
@@ -30,12 +30,12 @@ wake.
                            circuit breaker)
 ```
 
-**Staged** — proposal exists in KV as `modification_staged:{id}`. Not yet
+**Staged** — proposal exists in KV as `proposal:{id}`. Not yet
 applied. Checks are evaluated each time the modification is loaded for
 review.
 
 **Inflight** — ops have been applied to KV. A snapshot of pre-modification
-values is stored at `modification_snapshot:{id}` for rollback. The original
+values is stored at `proposal:{id}` for rollback. The original
 staged record is deleted.
 
 **Promoted** — snapshot is deleted, changes are permanent. For code-type
@@ -73,15 +73,15 @@ No `checks` or `claims` required.
 
 Restrictions:
 - Can only be staged by deep reflect (depth >= 1) — `stageModification`
-  rejects wisdom at depth 0 (`hook-modifications.js:102`)
+  rejects wisdom at depth 0 (`kernel.js (proposal methods):102`)
 - Cannot use `acceptDirect` — must go through staging
-  (`hook-modifications.js:228`)
+  (`kernel.js (proposal methods):228`)
 - Circuit breaker skips wisdom modifications
-  (`hook-modifications.js:454`)
-- Git sync skips wisdom modifications (`hook-modifications.js:294`)
+  (`kernel.js (proposal methods):454`)
+- Git sync skips wisdom modifications (`kernel.js (proposal methods):294`)
 - Check evaluation is skipped when loading (no `checks` field)
 - On `acceptStaged`, the `validation` object from the staged record is
-  injected into each op's value (`hook-modifications.js:190-195`)
+  injected into each op's value (`kernel.js (proposal methods):190-195`)
 
 ---
 
@@ -89,17 +89,17 @@ Restrictions:
 
 ### stageModification(K, request, sessionId, depth)
 
-`hook-modifications.js:98`
+`kernel.js (proposal methods):98`
 
 Creates a staged modification record.
 
 1. Validates type — wisdom requires `depth >= 1`
 2. Validates required fields based on type (code: claims + ops + checks;
    wisdom: validation + ops)
-3. Rejects if any op targets a bookkeeping key (`modification_staged:*` or
-   `modification_snapshot:*`)
+3. Rejects if any op targets a bookkeeping key (`proposal:*` or
+   `proposal:*`)
 4. Generates ID: `m_{timestamp}_{random6}`
-5. Writes `modification_staged:{id}` via `kvWritePrivileged`
+5. Writes `proposal:{id}` via `kvWritePrivileged`
 6. Tracks in `activeStaged` array
 7. Records karma event `modification_staged`
 
@@ -107,7 +107,7 @@ Returns the modification ID, or `null` on validation failure.
 
 ### acceptStaged(K, modificationId)
 
-`hook-modifications.js:162`
+`kernel.js (proposal methods):162`
 
 Moves a staged modification to inflight by applying its ops.
 
@@ -119,14 +119,14 @@ Moves a staged modification to inflight by applying its ops.
 5. Builds write ops via `buildWriteOps` (handles `patch` op format)
 6. For wisdom type: injects `validation` into each op's value object
 7. Applies ops via `kvWritePrivileged`
-8. Writes snapshot at `modification_snapshot:{id}`
-9. Deletes the `modification_staged:{id}` record
+8. Writes snapshot at `proposal:{id}`
+9. Deletes the `proposal:{id}` record
 10. Updates tracking arrays (remove from staged, add to inflight)
 11. Records karma event `modification_accepted`
 
 ### acceptDirect(K, request, sessionId)
 
-`hook-modifications.js:226`
+`kernel.js (proposal methods):226`
 
 Skips staging — creates an inflight modification directly. Used by deep
 reflect's `modification_requests`.
@@ -144,12 +144,12 @@ of throwing.
 
 ### promoteInflight(K, modificationId, depth)
 
-`hook-modifications.js:282`
+`kernel.js (proposal methods):282`
 
 Finalizes a modification — deletes the snapshot and triggers git sync.
 
 1. Loads snapshot record (for ops/claims data)
-2. Deletes `modification_snapshot:{id}`
+2. Deletes `proposal:{id}`
 3. Removes from `activeInflight` tracking
 4. Records karma event `modification_promoted`
 5. If type is not wisdom and ops exist: calls `syncToGit`
@@ -158,7 +158,7 @@ After promotion, there is no rollback path — the changes are permanent.
 
 ### rollbackInflight(K, modificationId, reason)
 
-`hook-modifications.js:299`
+`kernel.js (proposal methods):299`
 
 Restores pre-modification state from the snapshot.
 
@@ -166,7 +166,7 @@ Restores pre-modification state from the snapshot.
 2. For each snapshotted key:
    - If original value was `null`: deletes the key
    - Otherwise: restores original value and metadata via `kvWritePrivileged`
-3. Deletes `modification_snapshot:{id}`
+3. Deletes `proposal:{id}`
 4. Removes from `activeInflight` tracking
 5. Records karma event `modification_rolled_back` with reason
 
@@ -179,9 +179,9 @@ reflect have different authority levels.
 
 ### Session reflect verdicts — processReflectVerdicts
 
-`hook-modifications.js:365`
+`kernel.js (proposal methods):365`
 
-Called from `executeReflect` in `hook-reflect.js:97`. Operates on **staged**
+Called from `executeReflect` in `reflect.js:97`. Operates on **staged**
 modifications only.
 
 | Verdict | Action |
@@ -194,9 +194,9 @@ It can only withdraw its own proposals or modify them.
 
 ### Deep reflect verdicts — processDeepReflectVerdicts
 
-`hook-modifications.js:395`
+`kernel.js (proposal methods):395`
 
-Called from `applyReflectOutput` in `hook-reflect.js:223`. Full authority
+Called from `applyReflectOutput` in `reflect.js:223`. Full authority
 over both staged and inflight modifications.
 
 | Verdict | Action |
@@ -217,12 +217,12 @@ over both staged and inflight modifications.
 **Session reflect (depth 0):** Sees staged modifications with check results.
 Can stage new modifications (`modification_requests`), withdraw existing
 staged ones, or modify them. Cannot touch inflight modifications.
-(`hook-reflect.js:96-103`)
+(`reflect.js:96-103`)
 
 **Deep reflect (depth >= 1):** Sees both staged and inflight modifications
 with check results. Can issue any verdict. New `modification_requests` go
 through `acceptDirect` (straight to inflight, no staging).
-(`hook-reflect.js:237-242`)
+(`reflect.js:237-242`)
 
 > **NOTE:** Deep reflect's `modification_requests` use `acceptDirect`, which
 > means they bypass the staging/review step entirely. The only review
@@ -232,15 +232,15 @@ through `acceptDirect` (straight to inflight, no staging).
 
 ## Circuit Breaker
 
-`hook-modifications.js:445` — `runCircuitBreaker(K)`
+`kernel.js (proposal methods):445` — `runCircuitBreaker(K)`
 
-Called early in every wake cycle (`hook-main.js:65`), after modification
+Called early in every wake cycle (`act.js / kernel.js:65`), after modification
 tracking is initialized but before the session runs.
 
 ### Trigger
 
 The circuit breaker fires when a `last_danger` key exists in KV. This key
-is written by the kernel (in `brainstem.js`) when a fatal error occurs
+is written by the kernel (in `kernel.js`) when a fatal error occurs
 during hook execution — specifically via the hook safety tripwire system.
 The value contains `{ t: <timestamp> }`.
 
@@ -275,7 +275,7 @@ on promotion. This runs on the remote Linux server via the `computer` tool.
 
 ### kvToPath mapping
 
-`hook-modifications.js:479` — Maps KV keys to file paths in the git repo:
+`kernel.js (proposal methods):479` — Maps KV keys to file paths in the git repo:
 
 | KV key pattern | File path |
 |----------------|-----------|
@@ -299,7 +299,7 @@ Keys that don't match any pattern return `null` and are skipped.
 
 ### syncToGit(K, modificationId, ops, claims)
 
-`hook-modifications.js:537`
+`kernel.js (proposal methods):537`
 
 1. Maps each op's key through `kvToPath` — skips unmappable keys
 2. For `delete` ops: adds path to deletes list
@@ -313,7 +313,7 @@ Keys that don't match any pattern return `null` and are skipped.
 
 ### attemptGitSync(K, modificationId, pending)
 
-`hook-modifications.js:579`
+`kernel.js (proposal methods):579`
 
 Builds a shell script and executes it via `computer`:
 
@@ -336,9 +336,9 @@ On failure: leaves the `git_pending:` key in place and records
 
 ### retryPendingGitSyncs(K)
 
-`hook-modifications.js:645`
+`kernel.js (proposal methods):645`
 
-Called on every wake (`hook-main.js:68`), before the session runs. Lists
+Called on every wake (`act.js / kernel.js:68`), before the session runs. Lists
 all `git_pending:*` keys (limit 50) and retries `attemptGitSync` for each.
 Failed syncs from previous sessions get retried automatically.
 
@@ -346,7 +346,7 @@ Failed syncs from previous sessions get retried automatically.
 
 ## Conflict Detection
 
-`hook-modifications.js:319` — `findInflightConflict(K, targetKeys)`
+`kernel.js (proposal methods):319` — `findInflightConflict(K, targetKeys)`
 
 Before any modification can become inflight (via `acceptStaged` or
 `acceptDirect`), the system checks whether any currently-inflight
@@ -374,7 +374,7 @@ evaluated both when loading modifications for review and after application.
 
 ### evaluateCheck(K, check)
 
-`hook-modifications.js:46`
+`kernel.js (proposal methods):46`
 
 Two check types:
 
@@ -406,7 +406,7 @@ without throwing.
 
 ### evaluatePredicate(value, predicate, expected)
 
-`hook-modifications.js:34`
+`kernel.js (proposal methods):34`
 
 | Predicate | Behavior |
 |-----------|----------|
@@ -421,7 +421,7 @@ Unknown predicates return `false`.
 
 ### evaluateChecks(K, checks)
 
-`hook-modifications.js:77`
+`kernel.js (proposal methods):77`
 
 Runs all checks sequentially. Returns `{ all_passed: boolean, results: [] }`.
 
@@ -429,7 +429,7 @@ Runs all checks sequentially. Returns `{ all_passed: boolean, results: [] }`.
 
 ## Inflight Tracking
 
-`hook-modifications.js:7-26`
+`kernel.js (proposal methods):7-26`
 
 Modification state is tracked in module-level arrays:
 
@@ -440,16 +440,15 @@ let activeInflight = [];
 
 ### initTracking(staged, inflight)
 
-Called once per wake in `hook-main.js:59-62`. Populates the arrays from
-prefix scans of `modification_staged:*` and `modification_snapshot:*` keys.
+Called once per wake in `act.js / kernel.js:59-62`. Populates the arrays from
+prefix scans of `proposal:*` and `proposal:*` keys.
 The key prefix is stripped to extract just the modification ID.
 
 ### Why module-level state?
 
-The hook modules run in a Worker Loader isolate (or direct import in dev).
-Within a single wake cycle, the isolate persists, so module-level state
-is consistent for the duration of that wake. On the next wake, a fresh
-isolate is created and `initTracking` is called again.
+The policy modules are statically compiled into the runtime worker.
+Within a single wake cycle, module-level state is consistent for the
+duration of that wake. On the next wake, `initTracking` is called again.
 
 The tracking arrays are the source of truth for which modifications
 `findInflightConflict`, `runCircuitBreaker`, `loadStagedModifications`,
@@ -461,11 +460,11 @@ and `_trackRemove`.
 
 ## Bookkeeping Guard
 
-`hook-modifications.js:90-94`
+`kernel.js (proposal methods):90-94`
 
 A safety check prevents modifications from targeting their own bookkeeping
-keys. Any op with a key starting with `modification_staged:` or
-`modification_snapshot:` is rejected. This is checked in both
+keys. Any op with a key starting with `proposal:` or
+`proposal:` is rejected. This is checked in both
 `stageModification` and `acceptStaged`/`acceptDirect`.
 
 Without this guard, a modification could delete its own snapshot (preventing
@@ -476,7 +475,7 @@ rollback) or create fake staged records.
 ## Wake Cycle Integration
 
 The modification protocol integrates with the wake cycle at these points
-(`hook-main.js`):
+(`act.js / kernel.js`):
 
 1. **Lines 55-62**: Prefix scan + `initTracking` — loads existing staged
    and inflight IDs

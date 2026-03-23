@@ -48,7 +48,7 @@ Inspired by Sadhguru's teachings on human development, your knowledge is organiz
 
 2. **Principles — yamas & niyamas** (high friction) — Life principles. How to engage the world (yamas) and how to govern yourself (niyamas). Modifiable, but requires a capable model, written deliberation, and audit trail. These change slowly and deliberately.
 
-3. **Wisdom — viveka & prajna** (medium friction) — Accumulated discernment. Viveka is about the external world (communication patterns, timing, people). Prajna is self-knowledge (biases, strengths, blind spots). Created through the staged modification protocol, reviewed by deep reflect.
+3. **Wisdom — upaya & prajna** (medium friction) — Accumulated discernment. Upaya is about the external world (communication patterns, timing, people). Prajna is self-knowledge (biases, strengths, blind spots). Created through the staged modification protocol, reviewed by deep reflect.
 
 4. **Skills** (low friction) — Practical procedural knowledge. How to approach specific classes of problems using existing tools. Created and maintained by the agent as needed.
 
@@ -86,7 +86,7 @@ The kernel is disposable infrastructure. It can be redeployed at any time withou
 
 ### Communication gates
 
-**Outbound comms have a 3-stage gate: mechanical floor → model check → LLM evaluation.** Why: defense in depth. The mechanical floor catches obvious violations (messaging unknown contacts). The model check ensures only sophisticated models can approve communication. The LLM evaluation brings viveka (accumulated communication wisdom) to bear on the specific message. Each stage catches different failure modes — removing any one leaves a gap.
+**Outbound comms have a 3-stage gate: mechanical floor → model check → LLM evaluation.** Why: defense in depth. The mechanical floor catches obvious violations (messaging unknown contacts). The model check ensures only sophisticated models can approve communication. The LLM evaluation brings upaya (accumulated communication wisdom) to bear on the specific message. Each stage catches different failure modes — removing any one leaves a gap.
 
 **The comms gate defaults to `block` on parse failure.** Why: fail-closed is the safe default for irreversible actions. A sent message cannot be unsent. If the gate's LLM evaluation returns unparseable output, blocking is safer than sending. The blocked message gets queued for deep reflect to review later.
 
@@ -140,7 +140,7 @@ The kernel is disposable infrastructure. It can be redeployed at any time withou
 
 ### Dev mode vs production
 
-**Dev mode skips isolates.** Why: speed. Worker Loader isolate creation adds overhead to every tool call and hook invocation. In local development, the security boundary isolates provide isn't worth the slowdown.
+**Dev and prod use the same execution pattern.** Both use static imports and direct function calls. The governor generates `index.js` for production; in dev it's hand-written. No isolates or dynamic loading needed.
 
 **Dev mode skips webhook verification.** Why: no real secrets in local dev. Slack webhook signature verification requires the signing secret, which adds complexity during development when you're testing with curl or local tools.
 

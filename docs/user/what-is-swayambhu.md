@@ -25,7 +25,7 @@ file management, scripts, whatever the task requires.
 
 **Manage its own knowledge.** Everything Swayambhu knows lives in a
 key-value store. It can read, write, and organize this knowledge. It
-maintains two kinds of accumulated wisdom: *viveka* (discernment about the
+maintains two kinds of accumulated wisdom: *upaya* (discernment about the
 external world) and *prajna* (self-knowledge about its own patterns and
 tendencies).
 
@@ -202,7 +202,7 @@ code is just the substrate it runs on.
 ### Continuous Self-Improvement
 
 Swayambhu doesn't just execute tasks. It accumulates wisdom through
-experience. Its *viveka* entries capture discernment about how the world
+experience. Its *upaya* entries capture discernment about how the world
 works — timing patterns, communication lessons, operational insights. Its
 *prajna* entries capture self-knowledge — its own biases, strengths, and
 blind spots. Each deep reflection session reviews, validates, and refines

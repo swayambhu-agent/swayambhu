@@ -2,33 +2,33 @@
 
 ## Design
 
-Every outbound communication tool call is intercepted by the kernel before execution. The kernel runs a focused LLM gate call — informed by dharma, yamas, and accumulated viveka — that judges whether the message should be sent, revised, or blocked. The kernel hardcodes the mechanism; viveka encodes the policy.
+Every outbound communication tool call is intercepted by the kernel before execution. The kernel runs a focused LLM gate call — informed by dharma, yamas, and accumulated upaya — that judges whether the message should be sent, revised, or blocked. The kernel hardcodes the mechanism; upaya encodes the policy.
 
 ### What the kernel hardcodes
 
-1. **Interception.** Tools with `communication` in their meta are intercepted in `executeToolCall` before isolate execution. Not bypassable through self-modification.
+1. **Interception.** Tools with `communication` in their meta are intercepted in `executeToolCall` before direct call execution. Not bypassable through self-modification.
 
 2. **Model gate.** The gate LLM call requires `comms_gate_capable: true` in `config:models`. If the current session model lacks this, the message is queued for deep reflect. Same pattern as `yama_capable`.
 
-3. **Mechanical floor.** If the agent is initiating contact (no reply indicator) and no `viveka:contact:*` entry exists for the recipient, the kernel blocks without consulting the gate model. No wisdom about someone = no initiating contact.
+3. **Mechanical floor.** If the agent is initiating contact (no reply indicator) and no `upaya:contact:*` entry exists for the recipient, the kernel blocks without consulting the gate model. No wisdom about someone = no initiating contact.
 
 4. **Karma logging.** Every communication attempt — sent, revised, blocked, queued — is recorded with full context.
 
-### What viveka encodes
+### What upaya encodes
 
-Relationship knowledge, channel norms, and communication discernment live as viveka entries:
+Relationship knowledge, channel norms, and communication discernment live as upaya entries:
 
 ```
-viveka:contact:{identifier}     → relationship, tone, latitude
-viveka:channel:{channel}:{id}   → channel norms, audience, appropriateness
-viveka:comms:{topic}            → general communication wisdom
+upaya:contact:{identifier}     → relationship, tone, latitude
+upaya:channel:{channel}:{id}   → channel norms, audience, appropriateness
+upaya:comms:{topic}            → general communication wisdom
 ```
 
 Created and refined by deep reflect through the Modification Protocol (wisdom type).
 
 ### The gate call
 
-A single `callLLM` call (not an agent loop). The hardcoded gate prompt receives viveka entries + communication context. Dharma and yamas are auto-injected by `callLLM`. The model outputs `{ verdict, reasoning, revision? }`.
+A single `callLLM` call (not an agent loop). The hardcoded gate prompt receives upaya entries + communication context. Dharma and yamas are auto-injected by `callLLM`. The model outputs `{ verdict, reasoning, revision? }`.
 
 ### Chat system
 
@@ -95,7 +95,7 @@ Add `comms_gate_capable: true` to models with sufficient judgment for communicat
 { id: "deepseek/deepseek-v3.2", ... },
 ```
 
-### brainstem.js — capability check method
+### kernel.js — capability check method
 
 After `isNiyamaCapable` (line ~356), add:
 
@@ -110,7 +110,7 @@ isCommsGateCapable(modelId) {
 
 ## Phase 3: System key prefix + blocked queue
 
-### brainstem.js — SYSTEM_KEY_PREFIXES (line 303)
+### kernel.js — SYSTEM_KEY_PREFIXES (line 303)
 
 Add `'comms_blocked:'` to the prefix list so blocked comm records are protected system keys (writable via `kvWritePrivileged` only):
 
@@ -119,12 +119,12 @@ static SYSTEM_KEY_PREFIXES = [
   'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
   'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
   'yama:', 'niyama:',
-  'viveka:', 'prajna:',
+  'upaya:', 'prajna:',
   'comms_blocked:',
 ];
 ```
 
-### brainstem.js — metadata type mapping (line ~1565)
+### kernel.js — metadata type mapping (line ~1565)
 
 Add `comms_blocked` to the auto-metadata type mapping:
 
@@ -132,7 +132,7 @@ Add `comms_blocked` to the auto-metadata type mapping:
 comms_blocked: "comms",
 ```
 
-### brainstem.js — queue methods
+### kernel.js — queue methods
 
 Add near the communication gate section:
 
@@ -171,15 +171,15 @@ async queueBlockedComm(toolName, args, meta, reason, gateResult) {
 
 ---
 
-## Phase 4: Viveka loading for gate context
+## Phase 4: Upaya loading for gate context
 
-### brainstem.js — load relevant viveka entries
+### kernel.js — load relevant upaya entries
 
 ```javascript
-async loadCommsViveka(recipient, channel) {
+async loadCommsUpaya(recipient, channel) {
   const entries = {};
-  // Load all viveka:contact:*, viveka:channel:*, viveka:comms:* entries
-  for (const prefix of ['viveka:contact:', 'viveka:channel:', 'viveka:comms:']) {
+  // Load all upaya:contact:*, upaya:channel:*, upaya:comms:* entries
+  for (const prefix of ['upaya:contact:', 'upaya:channel:', 'upaya:comms:']) {
     const result = await this.kv.list({ prefix });
     for (const { name: key } of result.keys) {
       const value = await this.kvGet(key);
@@ -190,9 +190,9 @@ async loadCommsViveka(recipient, channel) {
 }
 ```
 
-This loads all communication-relevant viveka. In early stages the count is small. If it grows large, optimize with recipient-specific prefix matching later.
+This loads all communication-relevant upaya. In early stages the count is small. If it grows large, optimize with recipient-specific prefix matching later.
 
-### brainstem.js — helper: resolve recipient and mode
+### kernel.js — helper: resolve recipient and mode
 
 ```javascript
 resolveRecipient(args, meta) {
@@ -212,7 +212,7 @@ resolveCommsMode(args, meta) {
 
 ## Phase 5: Communication gate — the core
 
-### brainstem.js — hardcoded gate prompt
+### kernel.js — hardcoded gate prompt
 
 Add as a static constant near the top of the class:
 
@@ -227,7 +227,7 @@ Consider:
 - Authority: do you have standing to communicate this in this context?
 
 [COMMUNICATION WISDOM]
-{{viveka}}
+{{upaya}}
 [/COMMUNICATION WISDOM]
 
 Respond with JSON only — no other text:
@@ -240,9 +240,9 @@ Respond with JSON only — no other text:
 "revision" is only required when verdict is "revise". For "send", include reasoning only. For "block", explain why.`;
 ```
 
-Note: `callLLM` automatically prepends dharma + yamas + niyamas to the system prompt. The gate prompt only needs viveka + instructions.
+Note: `callLLM` automatically prepends dharma + yamas + niyamas to the system prompt. The gate prompt only needs upaya + instructions.
 
-### brainstem.js — gate method
+### kernel.js — gate method
 
 Insert in `executeToolCall`, after argument parsing and before the `spawn_subplan` / `check_balance` special cases:
 
@@ -252,21 +252,21 @@ async communicationGate(toolName, args, meta) {
   const recipient = this.resolveRecipient(args, meta);
   const mode = this.resolveCommsMode(args, meta);
 
-  // 1. Mechanical floor: initiating + no viveka about recipient → block
+  // 1. Mechanical floor: initiating + no upaya about recipient → block
   if (mode === 'initiating') {
-    const contactKeys = await this.kv.list({ prefix: 'viveka:contact:' });
-    const hasViveka = contactKeys.keys.some(k => {
-      const entry = k.name.replace('viveka:contact:', '');
-      // Match if recipient contains the viveka identifier or vice versa
+    const contactKeys = await this.kv.list({ prefix: 'upaya:contact:' });
+    const hasUpaya = contactKeys.keys.some(k => {
+      const entry = k.name.replace('upaya:contact:', '');
+      // Match if recipient contains the upaya identifier or vice versa
       return recipient && (
         recipient.toLowerCase().includes(entry.toLowerCase()) ||
         entry.toLowerCase().includes(recipient.toLowerCase())
       );
     });
-    if (!hasViveka) {
+    if (!hasUpaya) {
       return {
         verdict: 'block',
-        reasoning: `No viveka about recipient "${recipient}" — cannot initiate contact with unknown entity`,
+        reasoning: `No upaya about recipient "${recipient}" — cannot initiate contact with unknown entity`,
         mechanical: true,
       };
     }
@@ -281,17 +281,17 @@ async communicationGate(toolName, args, meta) {
     };
   }
 
-  // 3. Load viveka context
-  const viveka = await this.loadCommsViveka(recipient, comm.channel);
-  const vivekaBlock = Object.entries(viveka).length > 0
-    ? Object.entries(viveka).map(([k, v]) => {
+  // 3. Load upaya context
+  const upaya = await this.loadCommsUpaya(recipient, comm.channel);
+  const upayaBlock = Object.entries(upaya).length > 0
+    ? Object.entries(upaya).map(([k, v]) => {
         const text = typeof v === 'object' ? (v.text || JSON.stringify(v)) : String(v);
         return `[${k}]\n${text}\n[/${k}]`;
       }).join('\n')
     : '(No accumulated wisdom about communication contexts yet. Be conservative.)';
 
-  // 4. Build gate prompt with viveka injected
-  const gatePrompt = Brainstem.COMMS_GATE_PROMPT.replace('{{viveka}}', vivekaBlock);
+  // 4. Build gate prompt with upaya injected
+  const gatePrompt = Brainstem.COMMS_GATE_PROMPT.replace('{{upaya}}', upayaBlock);
 
   // 5. Build context message
   const contextMessage = JSON.stringify({
@@ -336,7 +336,7 @@ async communicationGate(toolName, args, meta) {
 }
 ```
 
-### brainstem.js — modify executeToolCall (line 1283)
+### kernel.js — modify executeToolCall (line 1283)
 
 Insert the gate interception after arg parsing (line 1289), before the `spawn_subplan` check (line 1294):
 
@@ -395,7 +395,7 @@ async executeToolCall(toolCall) {
   if (name === 'spawn_subplan') { ... }  // existing code continues
 ```
 
-### brainstem.js — _getToolMeta helper
+### kernel.js — _getToolMeta helper
 
 The gate needs tool meta before `executeAction` loads it. Add a lightweight cached meta loader:
 
@@ -415,7 +415,7 @@ async _getToolMeta(toolName) {
 
 ## Phase 6: KernelRPC — expose blocked comms methods
 
-### brainstem.js — KernelRPC class
+### kernel.js — KernelRPC class
 
 Add methods for the hook to read and process blocked comms:
 
@@ -484,7 +484,7 @@ async processCommsVerdict(id, verdict, revision) {
 
 ## Phase 7: Deep reflect integration
 
-### hook-reflect.js — gatherReflectContext (line ~155)
+### reflect.js — gatherReflectContext (line ~155)
 
 Load blocked comms queue and add to template vars:
 
@@ -496,7 +496,7 @@ templateVars.blockedComms = blockedComms.length > 0
   : '(none)';
 ```
 
-### hook-reflect.js — applyReflectOutput (line ~208)
+### reflect.js — applyReflectOutput (line ~208)
 
 After modification verdicts processing (line ~221), add comms verdict processing:
 
@@ -523,7 +523,7 @@ These messages were attempted by a session but blocked by the communication gate
 - **revise_and_send** — right intent, wrong execution; provide a revision
 - **drop** — should not have been attempted; log and discard
 
-If a message was blocked because the recipient has no viveka entry, consider whether to create one via a wisdom modification request. Adding a viveka:contact entry means future sessions can communicate with this recipient (subject to gate judgment).
+If a message was blocked because the recipient has no upaya entry, consider whether to create one via a wisdom modification request. Adding a upaya:contact entry means future sessions can communicate with this recipient (subject to gate judgment).
 ```
 
 Add `comms_verdicts` to the output schema (line ~254):
@@ -538,30 +538,30 @@ Add `comms_verdicts` to the output schema (line ~254):
 
 ---
 
-## Phase 8: Seed initial viveka entries
+## Phase 8: Seed initial upaya entries
 
 ### scripts/seed-local-kv.mjs
 
-After the existing KV seeding, add seed viveka entries:
+After the existing KV seeding, add seed upaya entries:
 
 ```javascript
 // ── Communication wisdom (seed) ──────────────────────────────
 
 console.log("--- Communication wisdom ---");
 
-await put("viveka:contact:swami", {
+await put("upaya:contact:swami", {
   text: "Creator and custodian. Inner circle. Full communication latitude — casual, experimental, direct. Can discuss anything including system internals, budget, failures.",
-  type: "viveka",
+  type: "upaya",
   created: new Date().toISOString(),
   sources: [{ session: "seed", depth: 0, turn: 0, topic: "Initial seed — foundational relationship" }],
-}, "json", "Viveka: relationship with creator");
+}, "json", "Upaya: relationship with creator");
 
-await put("viveka:comms:defaults", {
+await put("upaya:comms:defaults", {
   text: "When in doubt, do not send. Silence is safer than a poorly judged message. A blocked message can be reviewed and sent later; a sent message cannot be unsent. Be especially cautious when initiating contact — responding carries implicit standing, initiating requires explicit justification.",
-  type: "viveka",
+  type: "upaya",
   created: new Date().toISOString(),
   sources: [{ session: "seed", depth: 0, turn: 0, topic: "Initial seed — conservative communication baseline" }],
-}, "json", "Viveka: default communication stance");
+}, "json", "Upaya: default communication stance");
 ```
 
 ---
@@ -575,11 +575,11 @@ Add a note about communication gating so the agent understands why sends might b
 ```markdown
 ### Communication gating
 
-Every outbound message passes through a kernel-enforced gate before sending. The gate evaluates your message against your accumulated communication wisdom (`viveka:contact:*`, `viveka:comms:*`). Messages may be sent as-is, revised, or blocked.
+Every outbound message passes through a kernel-enforced gate before sending. The gate evaluates your message against your accumulated communication wisdom (`upaya:contact:*`, `upaya:comms:*`). Messages may be sent as-is, revised, or blocked.
 
 If a message is blocked, it is queued for deep reflect review. Do not attempt to work around blocks — they exist because the gate judged that the message needs higher-level review.
 
-If you are initiating contact with someone you have no viveka entry for, the message will be mechanically blocked. Build relationships through viveka entries during deep reflect.
+If you are initiating contact with someone you have no upaya entry for, the message will be mechanically blocked. Build relationships through upaya entries during deep reflect.
 ```
 
 ---
@@ -591,7 +591,7 @@ If you are initiating contact with someone you have no viveka entry for, the mes
 New test group: "Communication gate":
 
 1. **identifies communication tools** — tool with `communication` in meta is detected, tool without is not
-2. **mechanical floor blocks initiating to unknown** — initiating + no viveka:contact entry → blocked without LLM call
+2. **mechanical floor blocks initiating to unknown** — initiating + no upaya:contact entry → blocked without LLM call
 3. **mechanical floor allows responding to unknown** — responding (reply_field present) passes mechanical floor
 4. **model gate queues when model not capable** — non-comms_gate_capable model → queued
 5. **gate call approves appropriate message** — mock LLM returns `{verdict: "send"}` → tool executes
@@ -612,7 +612,7 @@ Add tests for deep reflect blocked comms integration:
 
 ---
 
-## Phase 11: brainstem-dev.js
+## Phase 11: index.js
 
 The dev subclass overrides `_executeTool` and `callWithCascade` but NOT `executeToolCall`. Since the gate lives in `executeToolCall`, it works in dev mode without changes.
 
@@ -626,9 +626,9 @@ Verify: `_getToolMeta` uses `this.kvGet` which works in both prod and dev. `comm
 |------|--------|-------------|
 | `tools/send_slack.js` | EDIT | Add `communication` field to meta |
 | `tools/send_email.js` | EDIT | Add `communication` field to meta |
-| `brainstem.js` | EDIT | Add gate logic, capability check, queue methods, COMMS_GATE_PROMPT, modify executeToolCall |
-| `scripts/seed-local-kv.mjs` | EDIT | Add `comms_gate_capable` to models, seed viveka entries |
-| `hook-reflect.js` | EDIT | Load blocked comms, process comms_verdicts |
+| `kernel.js` | EDIT | Add gate logic, capability check, queue methods, COMMS_GATE_PROMPT, modify executeToolCall |
+| `scripts/seed-local-kv.mjs` | EDIT | Add `comms_gate_capable` to models, seed upaya entries |
+| `reflect.js` | EDIT | Load blocked comms, process comms_verdicts |
 | `prompts/deep-reflect.md` | EDIT | Add blocked comms section + comms_verdicts schema |
 | `prompts/orient.md` | EDIT | Add communication gating note |
 | `tests/brainstem.test.js` | EDIT | Add communication gate tests |
@@ -639,8 +639,8 @@ Verify: `_getToolMeta` uses `this.kvGet` which works in both prod and dev. `comm
 1. `npm test` — all existing tests pass + new gate tests
 2. `source .env && bash scripts/start.sh --reset-all-state --wake --set orient.model=deepseek` — orient with cheap model attempts send_slack → queued (deepseek not comms_gate_capable)
 3. `node scripts/read-kv.mjs comms_blocked` — verify blocked record in KV
-4. `node scripts/read-kv.mjs viveka:` — verify seed entries
-5. `source .env && bash scripts/start.sh --reset-all-state --wake` — orient with opus attempts send_slack → gate call runs, sends or blocks based on viveka
+4. `node scripts/read-kv.mjs upaya:` — verify seed entries
+5. `source .env && bash scripts/start.sh --reset-all-state --wake` — orient with opus attempts send_slack → gate call runs, sends or blocks based on upaya
 
 ## Future work (not in this plan)
 

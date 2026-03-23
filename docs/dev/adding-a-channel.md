@@ -9,7 +9,7 @@ Step-by-step guide for integrating a new messaging platform. Uses Slack
 
 Create `channels/{name}.js`. Must export `config`, `verify`,
 `parseInbound`, and `sendReply`. **No `export default`** — required for
-`wrapChannelAdapter` compatibility (see
+`channel adapter` compatibility (see
 [tools-reference.md](tools-reference.md#scopedkv) for the same constraint
 on tools).
 
@@ -24,7 +24,7 @@ export const config = {
 
 `secrets` determines which env vars are passed to `sendReply` in prod.
 `webhook_secret_env` is passed to `verify` as part of `env_vars`
-(`brainstem.js:168-173`).
+(`kernel.js:168-173`).
 
 ### verify(headers, rawBody, env)
 
@@ -45,7 +45,7 @@ export async function verify(headers, rawBody, env) {
 - Implement replay protection (Slack uses a 5-minute timestamp window)
 - Use constant-time comparison for signature checks
 
-**Dev mode:** Verification is skipped entirely in `brainstem-dev.js:70`.
+**Dev mode:** Verification is skipped entirely in `index.js:70`.
 
 ### parseInbound(body)
 
@@ -69,7 +69,7 @@ export function parseInbound(body) {
 - Return `null` for events to ignore (bot messages, edits, reactions)
 - Return `{ _challenge: token }` for platform URL verification — the
   kernel echoes it back as `{ challenge: token }` with 200
-  (`brainstem.js:201-204`)
+  (`kernel.js:201-204`)
 - `chatId` determines conversation scope — all messages with the same
   `chatId` share one `chat:state:{channel}:{chatId}` record
 - `msgId` enables deduplication via `dedup:{msgId}` keys with 30s TTL
@@ -116,27 +116,27 @@ object as the `config` export — the kernel reads it separately to know
 which env vars to inject before loading the adapter code.
 
 > **NOTE:** The config in KV must match the `config` export. The kernel
-> reads `channel:{name}:config` from KV in prod (`brainstem.js:162`), not
+> reads `channel:{name}:config` from KV in prod (`kernel.js:162`), not
 > the adapter's `config` export. The export is only used in dev mode
 > (where the module is imported directly).
 
 ---
 
-## 3. Register in brainstem-dev.js
+## 3. Register in index.js
 
-Add the import and `CHANNEL_ADAPTERS` entry at the top of
-`brainstem-dev.js`:
+Add the import and `CHANNELS` entry at the top of
+`index.js`:
 
 ```js
 import * as myplatformAdapter from './channels/myplatform.js';
 
-const CHANNEL_ADAPTERS = {
+const CHANNELS = {
   slack: slackAdapter,
   myplatform: myplatformAdapter,   // ← add here
 };
 ```
 
-The dev fetch handler (`brainstem-dev.js:64`) looks up adapters from this
+The dev fetch handler (`index.js:64`) looks up adapters from this
 map. Without this entry, `POST /channel/myplatform` returns 404 in dev.
 
 ---
@@ -150,7 +150,7 @@ contact slug. These entries are created by:
    platform in the contact's `platforms` object
 2. **Kernel cache-on-miss** — `resolveContact()` scans all `contact:*`
    records on cache miss, writes the index entry when found
-   (`brainstem.js:402`)
+   (`kernel.js:402`)
 
 For existing contacts, add the new platform to their `platforms` field:
 
@@ -207,23 +207,23 @@ The kernel handles `POST /channel/{name}` automatically — no routing
 changes needed. The `{name}` in the URL maps directly to the KV key
 `channel:{name}:code`.
 
-**Prod** (`brainstem.js:147-245`):
+**Prod** (`kernel.js:147-245`):
 
 ```
 POST /channel/{name}
   → load channel:{name}:code from KV
-  → runInIsolate(verify) with env vars from config
-  → runInIsolate(parseInbound)
+  → direct call(verify) with env vars from config
+  → direct call(parseInbound)
   → deduplication check
   → return 200
   → background: loadEagerConfig → handleChat()
 ```
 
-**Dev** (`brainstem-dev.js:53-105`):
+**Dev** (`index.js:53-105`):
 
 ```
 POST /channel/{name}
-  → CHANNEL_ADAPTERS[name] (direct import)
+  → CHANNELS[name] (direct import)
   → skip verification
   → parseInbound() (direct call)
   → deduplication check
@@ -237,19 +237,19 @@ The webhook URL to configure on the platform: `https://{worker-domain}/channel/{
 
 ## 7. Webhook Signature Verification
 
-In prod, verification runs in a Worker Loader isolate
-(`brainstem.js:175-183`). The kernel:
+In prod, verification runs in a direct call
+(`kernel.js:175-183`). The kernel:
 
 1. Reads `channel:{name}:config` to find `secrets` and
    `webhook_secret_env`
 2. Collects matching env vars into `envVars`
-3. Wraps adapter code with `Brainstem.wrapChannelAdapter()` — appends an
+3. Wraps adapter code with `Brainstem.channel adapter()` — appends an
    `export default { fetch() }` handler that dispatches by `ctx.action`
-4. Calls `runInIsolate` with `action: "verify"`, passing headers (as plain
+4. Calls `direct call` with `action: "verify"`, passing headers (as plain
    object), raw body, and env vars
 5. Returns 401 if `!verified.ok`
 
-The `wrapChannelAdapter` wrapper (`brainstem.js:1334-1361`) handles three
+The `channel adapter` wrapper (`kernel.js:1334-1361`) handles three
 actions:
 
 | Action | Calls | Timeout |
@@ -336,7 +336,7 @@ Add the import at the top of `tools.test.js`:
 import * as myplatform from "../channels/myplatform.js";
 ```
 
-Also add `wrapAsModule` compatibility tests (no `export default`):
+Also add `module structure` compatibility tests (no `export default`):
 
 ```js
 it("channels/myplatform.js has no export default", () => {
@@ -394,11 +394,11 @@ Prod KV is seeded separately from local dev. Ensure the channel's
 
 1. `channels/{name}.js` — exports `config`, `verify`, `parseInbound`, `sendReply`
 2. `scripts/seed-local-kv.mjs` — seeds `channel:{name}:code` and `channel:{name}:config`
-3. `brainstem-dev.js` — adapter added to `CHANNEL_ADAPTERS`
+3. `index.js` — adapter added to `CHANNELS`
 4. Contact records — `platforms.{name}` added for known users
 5. Secrets — set via `wrangler secret put` for prod
 6. `wrangler.toml` — secrets documented in comments
-7. Tests — adapter tests in `tools.test.js`, `wrapAsModule` check
+7. Tests — adapter tests in `tools.test.js`, `module structure` check
 8. (Optional) Send tool — with `communication` metadata for outbound gating
 9. (Optional) Read tool — with `inbound` metadata for content gating
 10. Webhook URL configured on the platform

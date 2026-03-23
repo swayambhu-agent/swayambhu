@@ -11,13 +11,13 @@ There are two distinct provider paths in the system:
 1. **LLM provider cascade** — used by `callLLM()` for all LLM inference. Three-tier failover in production, direct fetch in dev.
 2. **Non-LLM providers** — used by `executeAdapter()` for balance checks and by tools via `meta.provider` for service integrations (Gmail). No cascade. Single adapter per call.
 
-Both paths share the same execution primitive: load code + meta from KV, build a secrets context, run in a Worker Loader isolate (prod) or call directly (dev).
+Both paths share the same execution primitive: load code + meta from KV, build a secrets context, run in a direct call (prod) or call directly (dev).
 
 ---
 
 ## LLM provider cascade (production)
 
-`callWithCascade()` at `brainstem.js:1506`. Called by `callLLM()` for every LLM inference request.
+`callWithCascade()` at `kernel.js:1506`. Called by `callLLM()` for every LLM inference request.
 
 ```
 callLLM()
@@ -32,7 +32,7 @@ callWithCascade(request, step)
 ├─► Tier 1: Dynamic adapter
 │   callViaAdapter("llm", request)
 │   │ Load provider:llm:code + provider:llm:meta from KV
-│   │ runAdapter() → runInIsolate() with 60s timeout
+│   │ runAdapter() → direct execution() with 60s timeout
 │   │
 │   ├── Success:
 │   │   Auto-snapshot (once per session):
@@ -48,7 +48,7 @@ callWithCascade(request, step)
 ├─► Tier 2: Last working adapter
 │   callViaAdapter("llm:last_working", request)
 │   │ Load provider:llm:last_working:code + meta from KV
-│   │ runAdapter() → runInIsolate()
+│   │ runAdapter() → direct execution()
 │   │
 │   ├── Success: Return { ...result, tier: "last_working" }
 │   │
@@ -59,7 +59,7 @@ callWithCascade(request, step)
 ├─► Tier 3: Kernel fallback
 │   callViaKernelFallback(request)
 │   │ Load kernel:llm_fallback + kernel:llm_fallback:meta from KV
-│   │ runAdapter() → runInIsolate()
+│   │ runAdapter() → direct execution()
 │   │
 │   ├── Success: Return { ...result, tier: "kernel_fallback" }
 │   │
@@ -119,7 +119,7 @@ The agent cannot modify Tier 3. It requires direct human intervention (re-seedin
 Separate from the provider cascade. If all three provider tiers fail (cascade returns `{ ok: false }`), `callLLM()` attempts a **model-level fallback**:
 
 ```
-getFallbackModel()                                brainstem.js:2029
+getFallbackModel()                                kernel.js:2029
 │ Check config:models.fallback_model
 │ If not found: check kernel:fallback_model
 │ Return model ID or null
@@ -142,7 +142,7 @@ The agent can modify `config:models.fallback_model` via the Modification Protoco
 
 ## Model alias resolution
 
-`resolveModel()` at `brainstem.js:2025`:
+`resolveModel()` at `kernel.js:2025`:
 
 ```js
 resolveModel(modelOrAlias) {
@@ -165,7 +165,7 @@ Resolution happens at the call site — hooks and chat code pass aliases (e.g., 
 
 ### Cost estimation
 
-`estimateCost()` at `brainstem.js:2035`:
+`estimateCost()` at `kernel.js:2035`:
 
 ```js
 estimateCost(model, usage) {
@@ -230,7 +230,7 @@ The provider adapter receives this plus `{ secrets }`. It applies `family`-speci
 
 ### Balance checks via `executeAdapter()`
 
-`checkBalance()` at `brainstem.js:1179` iterates the `providers` and `wallets` KV records. Each entry has an `adapter` field pointing to a provider key.
+`checkBalance()` at `kernel.js:1179` iterates the `providers` and `wallets` KV records. Each entry has an `adapter` field pointing to a provider key.
 
 ```
 checkBalance({ scope? })
@@ -248,17 +248,17 @@ checkBalance({ scope? })
 └─► Return { providers: { name: { balance, scope } }, wallets: { name: { balance, scope } } }
 ```
 
-`executeAdapter()` at `brainstem.js:1167`:
+`executeAdapter()` at `kernel.js:1167`:
 1. Loads `{adapterKey}:code` and `{adapterKey}:meta` from KV
 2. Builds tool context (secrets from env + KV)
 3. Applies secret overrides (e.g., project-scoped API keys)
-4. Calls `_executeTool()` — runs in isolate (prod) or directly (dev)
+4. Calls `_executeTool()` — direct function call
 
 **No cascade.** If the adapter fails, the error is caught by `checkBalance()` and recorded as `{ balance: null, error }`.
 
 #### Secret overrides
 
-`_resolveSecretOverrides()` at `brainstem.js:1217` supports `"kv:secret:key_name"` values in the provider/wallet config:
+`_resolveSecretOverrides()` at `kernel.js:1217` supports `"kv:secret:key_name"` values in the provider/wallet config:
 
 ```js
 // In "providers" KV record:
@@ -285,28 +285,28 @@ controlled by the kernel — the agent cannot modify it.
 > The runtime reads provider bindings exclusively from
 > `kernel:tool_grants`.
 
-**In production** (`_executeTool` at `brainstem.js:1245`):
+**In production** (`_executeTool` at `kernel.js:1245`):
 ```js
 const grant = this.toolGrants?.[toolName];
 if (grant?.provider) {
   providerCode = await this.kvGet(`provider:${grant.provider}:code`);
 }
-return this.runInIsolate({
+return this.direct execution({
   moduleCode,          // tool source
   providerCode,        // provider source (if granted)
   ...
 });
 ```
 
-The isolate gets the tool wrapped via `wrapAsModuleWithProvider()`, which adds `import * as provider from "./provider.js"` to the tool module. The tool accesses provider functions via `ctx.provider`.
+The kernel injects the provider module as `ctx.provider` when building the tool context. The tool accesses provider functions via `ctx.provider`.
 
-**In dev** (`_executeTool` override at `brainstem-dev.js:170`):
+**In dev** (`_executeTool` override at `index.js:170`):
 ```js
 const grant = this.toolGrants?.[toolName];
 if (grant?.provider) {
-  ctx.provider = PROVIDER_MODULES[`provider:${grant.provider}`];
+  ctx.provider = PROVIDERS[`provider:${grant.provider}`];
 }
-return TOOL_MODULES[toolName].execute(ctx);
+return TOOLS[toolName].execute(ctx);
 ```
 
 The tool gets the provider module object directly on `ctx.provider`.
@@ -326,9 +326,9 @@ The Gmail provider (`providers/gmail.js`) also exports a `check()` function — 
 
 ---
 
-## Dev mode override
+## Fallback tier (direct OpenRouter fetch)
 
-`DevBrainstem` at `brainstem-dev.js:249` replaces `callWithCascade()` entirely:
+The kernel's `callWithCascade()` includes a fallback tier with a direct OpenRouter fetch:
 
 ```js
 async callWithCascade(request, step) {
@@ -355,20 +355,16 @@ async callWithCascade(request, step) {
 }
 ```
 
-Key differences from production:
-- **No cascade** — single fetch, no fallback tiers
-- **No isolate** — runs in the same process
-- **No auto-snapshot** — `provider:llm:last_working:*` keys are never written
-- **No adapter code from KV** — family adapters are inlined (same logic as `providers/llm.js`)
-- **60s timeout** via `AbortController`
-- **API key from env** — `this.env.OPENROUTER_API_KEY` directly, no secrets resolution
-- **Tier is always `"direct"`**
+This is the kernel fallback tier — used when the statically compiled provider
+and last-working snapshot both fail. It makes a direct `fetch()` to OpenRouter
+with family adapters inlined (same logic as `providers/llm.js`), 60s timeout
+via `AbortController`, and API key from `this.env.OPENROUTER_API_KEY`.
 
-For non-LLM providers, `executeAdapter()` is also overridden (`brainstem-dev.js:156`):
+For non-LLM providers, `executeAdapter()` calls the provider directly:
 
 ```js
 async executeAdapter(adapterKey, input, secretOverrides) {
-  const mod = PROVIDER_MODULES[adapterKey];  // imported at top of file
+  const mod = PROVIDERS[adapterKey];  // imported at top of file
   const ctx = await this.buildToolContext(adapterKey, mod.meta || {}, input);
   if (secretOverrides) Object.assign(ctx.secrets, secretOverrides);
   ctx.fetch = (...args) => fetch(...args);
@@ -377,13 +373,13 @@ async executeAdapter(adapterKey, input, secretOverrides) {
 }
 ```
 
-Direct call to the imported provider module — no KV read, no isolate. The function resolution order is `execute` → `call` → `check`.
+Direct call to the imported provider module. The function resolution order is `execute` → `call` → `check`.
 
 ---
 
 ## Adapter module contract
 
-All provider adapters follow the same pattern. No `export default` (required for `wrapAsModule` compatibility).
+All provider adapters follow the same pattern. No `export default` (required for `module resolution` compatibility).
 
 ### LLM adapter
 
@@ -437,12 +433,12 @@ export async function listUnread(token, fetchFn, maxResults) { ... }
 
 Exports whatever functions the dependent tools need. The tool accesses them via `ctx.provider.functionName()` (dev) or `provider.functionName()` (prod, via `import * as provider`).
 
-### How `wrapAsModule` works
+### How `module resolution` works
 
 In production, tool/provider source code is raw — it has named exports but no `export default`. The kernel wraps it:
 
 ```js
-// wrapAsModule (brainstem.js:1282):
+// module resolution (kernel.js:1282):
 `${rawCode}
 
 const _fn = typeof execute === "function" ? execute
@@ -461,6 +457,6 @@ export default {
 };`
 ```
 
-The wrapper finds the first available function (`execute` > `call` > `check`), adds a `fetch()` handler that accepts JSON context and returns JSON result. If the module has a `provider` dependency, `wrapAsModuleWithProvider` adds `import * as provider from "./provider.js"` and puts `provider` on `ctx`.
+The wrapper finds the first available function (`execute` > `call` > `check`), adds a `fetch()` handler that accepts JSON context and returns JSON result. If the module has a `provider` dependency, `module resolutionWithProvider` adds `import * as provider from "./provider.js"` and puts `provider` on `ctx`.
 
-**NOTE:** Because `_fn` resolution is `execute` → `call` → `check`, a provider that exports both `call` and `check` (like `providers/llm.js` doesn't, but hypothetically) would only use `call` when invoked via `runInIsolate`. The balance-check path works because `checkBalance()` calls `executeAdapter()` which routes through `_executeTool()` → `runInIsolate()`, and `llm_balance.js` only exports `check`.
+**NOTE:** Because `_fn` resolution is `execute` → `call` → `check`, a provider that exports both `call` and `check` (like `providers/llm.js` doesn't, but hypothetically) would only use `call` when invoked via `direct execution`. The balance-check path works because `checkBalance()` calls `executeAdapter()` which routes through `_executeTool()` → `direct execution()`, and `llm_balance.js` only exports `check`.

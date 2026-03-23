@@ -4,7 +4,7 @@ Kernel-enforced gates on all inbound and outbound communication. Contact
 resolution, content redaction, sealed quarantine, LLM-based outbound
 review, and deep reflect verdict processing.
 
-All gate logic is hardcoded in `brainstem.js` (kernel level). The chat
+All gate logic is hardcoded in `kernel.js` (kernel level). The chat
 handler lives in `hook-chat.js` (also kernel level — imported directly,
 not KV-loaded). Tool metas in `tools/*.js` declare which tools are
 communication or inbound tools.
@@ -38,7 +38,7 @@ must be approved before the agent can send to them, receive unredacted
 content from them, or give them tool access in chat.
 
 **Agent contact rules** (enforced by `kvWritePrivileged` in
-`brainstem.js`):
+`kernel.js`):
 
 | Action | Allowed? | Constraints |
 |--------|----------|-------------|
@@ -51,7 +51,7 @@ content from them, or give them tool access in chat.
 | Patch `approved` field | No | Blocked explicitly to prevent string-level bypass |
 
 **Write path:** Agent `kv_operations` → `applyKVOperation` in
-`hook-protect.js` → routes `contact:*` keys to `kvWritePrivileged` →
+`kernel.js:applyKVOperation` → routes `contact:*` keys to `kvWritePrivileged` →
 kernel-enforced rules above. `contact_index:*` keys remain
 kernel-managed (rejected by `kvWritePrivileged`).
 
@@ -65,7 +65,7 @@ by the kernel on first `resolveContact` miss.
 
 ### resolveContact(platform, platformUserId)
 
-`brainstem.js:387`
+`kernel.js:387`
 
 1. Checks `contact_index:{platform}:{userId}` for a cached slug
 2. If found: loads `contact:{slug}`, returns with patron snapshot applied
@@ -81,7 +81,7 @@ enforce the three-tier access model: unknown → unapproved → approved.
 
 ### _applyPatronSnapshot(id, contact)
 
-`brainstem.js:409`
+`kernel.js:409`
 
 When `patronIdentityDisputed` is true and the contact is the patron,
 overrides the contact's `name` and `platforms` fields with the last-known-good
@@ -118,7 +118,7 @@ patron identity monitor detects anomalous behavior.
 
 System-level key (`SYSTEM_KEY_EXACT`). Created on first boot if absent —
 snapshots the patron contact's `name` and `platforms` fields with a
-`verified_at` timestamp (`brainstem.js:351-356`).
+`verified_at` timestamp (`kernel.js:351-356`).
 
 On subsequent boots, `loadPatronContext()` compares the current patron
 contact against the snapshot. If `name` or `platforms` differ:
@@ -128,7 +128,7 @@ contact against the snapshot. If `name` or `platforms` differ:
 
 This is exposed to hooks via `K.isPatronIdentityDisputed()` and made
 available to deep reflect context in `gatherReflectContext`
-(`hook-reflect.js:180`).
+(`reflect.js:180`).
 
 ---
 
@@ -167,7 +167,7 @@ get tool access.
 
 ### Inbound content gate: redaction and quarantine
 
-`brainstem.js:1718-1752`
+`kernel.js:1718-1752`
 
 Runs **after** tool execution for tools whose `kernel:tool_grants` entry
 includes an `inbound` field. Currently only `check_email` has this grant.
@@ -211,11 +211,11 @@ accessible via the dashboard (patron-only).
 Keys under `sealed:quarantine:*` are in the `sealed:` prefix, which is
 kernel-only (`KERNEL_ONLY_PREFIXES`). This means:
 
-- `KernelRPC.kvGet` returns `null` for any `sealed:` key
-  (`brainstem.js:69`)
+- `K interface.kvGet` returns `null` for any `sealed:` key
+  (`kernel.js:69`)
 - `ScopedKV.get` returns `null` for any `sealed:` key
-  (`brainstem.js:23`)
-- `ScopedKV.list` filters out `sealed:` keys (`brainstem.js:47`)
+  (`kernel.js:23`)
+- `ScopedKV.list` filters out `sealed:` keys (`kernel.js:47`)
 - Hook code, tool code, and the agent cannot read quarantined content
 
 **Dashboard access:**
@@ -242,11 +242,11 @@ Quarantine record format:
 
 ## Outbound Communication Gate
 
-`brainstem.js:515` — `communicationGate(toolName, args, meta)`
+`kernel.js:515` — `communicationGate(toolName, args, meta)`
 
 Runs **before** tool execution for tools whose `kernel:tool_grants` entry
 includes a `communication` field. The gate is invoked from
-`executeToolCall` (`brainstem.js:1663`) — it intercepts the tool call
+`executeToolCall` (`kernel.js:1663`) — it intercepts the tool call
 before any side effects occur.
 
 > **NOTE:** Tool source files still declare `communication` in
@@ -273,7 +273,7 @@ Key meta fields:
 
 ### Gate flow (5 steps)
 
-**Step 1 — Mechanical floor** (`brainstem.js:538-561`)
+**Step 1 — Mechanical floor** (`kernel.js:538-561`)
 
 Only blocks `person`-type tools. Two checks:
 
@@ -288,32 +288,32 @@ This means `send_email` to an unknown or unapproved recipient is
 mechanically blocked, but `send_slack` (destination type) always
 proceeds to the LLM gate.
 
-**Step 2 — Model capability check** (`brainstem.js:532-539`)
+**Step 2 — Model capability check** (`kernel.js:532-539`)
 
 The current model (last model used in `callLLM`) must have
 `comms_gate_capable: true` in `config:model_capabilities`. If not:
 returns `{ verdict: 'queue' }` — the message is queued for deep reflect
 review instead of being evaluated inline.
 
-**Step 3 — Load viveka context** (`brainstem.js:541-551`)
+**Step 3 — Load upaya context** (`kernel.js:541-551`)
 
-Loads all keys under `viveka:channel:*` and `viveka:comms:*` — these are
+Loads all keys under `upaya:channel:*` and `upaya:comms:*` — these are
 accumulated communication wisdom entries. If the recipient has a contact
 record, adds their `communication` field (or full record) to the context.
 
-If no viveka entries exist, injects: `"(No accumulated communication wisdom
+If no upaya entries exist, injects: `"(No accumulated communication wisdom
 yet. Be conservative.)"`
 
-**Step 4 — Gate LLM call** (`brainstem.js:553-575`)
+**Step 4 — Gate LLM call** (`kernel.js:553-575`)
 
 Calls `callLLM` with:
-- System prompt: `COMMS_GATE_PROMPT` with `{{viveka}}` replaced
+- System prompt: `COMMS_GATE_PROMPT` with `{{upaya}}` replaced
 - User message: JSON with tool name, channel, recipient_type, mode,
   recipient, message_content, subject, is_reply, reply_to
 - Step label: `comms_gate:{toolName}`
 - Effort: `low`, max tokens: 500
 
-**Step 5 — Parse verdict** (`brainstem.js:577-593`)
+**Step 5 — Parse verdict** (`kernel.js:577-593`)
 
 Parses the LLM response as JSON. Three possible verdicts:
 
@@ -329,12 +329,12 @@ Additionally, `queue` (from step 2) also routes to `queueBlockedComm`.
 
 ### COMMS_GATE_PROMPT
 
-`brainstem.js:434`
+`kernel.js:434`
 
 The static prompt instructs the LLM to evaluate:
 - Standing (responding vs initiating)
 - Recipient type (person vs destination)
-- Recipient context from viveka
+- Recipient context from upaya
 - Content appropriateness
 - Tone
 - Authority
@@ -344,7 +344,7 @@ Output format: `{ "verdict": "send"|"revise"|"block", "reasoning": "...",
 
 ### executeAction gate check
 
-`brainstem.js:1126`
+`kernel.js:1126`
 
 A second enforcement point exists in `executeAction` itself. If a tool has
 `meta.communication` and `this._commsGateApproved` is not `true`, the call
@@ -356,9 +356,9 @@ of going through `executeToolCall`.
 
 The `_commsGateApproved` flag is a transient boolean:
 - Set to `true` before `executeAction` in `executeToolCall` (after gate
-  passes) (`brainstem.js:1703`)
+  passes) (`kernel.js:1703`)
 - Set to `true` before `executeAction` in `processCommsVerdict` (deep
-  reflect approval) (`brainstem.js:624`)
+  reflect approval) (`kernel.js:624`)
 - Always reset to `false` in `finally` blocks
 
 ---
@@ -367,7 +367,7 @@ The `_commsGateApproved` flag is a transient boolean:
 
 ### queueBlockedComm(toolName, args, meta, reason, gateResult)
 
-`brainstem.js:486`
+`kernel.js:486`
 
 Creates a `comms_blocked:{id}` record. ID format: `cb_{timestamp}_{random6}`.
 
@@ -382,17 +382,17 @@ The write uses `this.kvPut` (kernel-internal), not `kvPutSafe` or
 
 ### listBlockedComms()
 
-`brainstem.js:596`
+`kernel.js:596`
 
 Lists all `comms_blocked:*` keys and returns their values. Exposed to
-hooks via `KernelRPC.listBlockedComms()`. Used by deep reflect to see
-pending communications (`hook-reflect.js:173`).
+hooks via `K interface.listBlockedComms()`. Used by deep reflect to see
+pending communications (`reflect.js:173`).
 
 ### processCommsVerdict(id, verdict, revision)
 
-`brainstem.js:609`
+`kernel.js:609`
 
-Called by deep reflect via `applyReflectOutput` (`hook-reflect.js:227-235`).
+Called by deep reflect via `applyReflectOutput` (`reflect.js:227-235`).
 
 Three verdicts:
 
@@ -404,13 +404,13 @@ Three verdicts:
 
 ### Deep reflect integration
 
-In `gatherReflectContext` (`hook-reflect.js:173`), blocked comms are loaded
+In `gatherReflectContext` (`reflect.js:173`), blocked comms are loaded
 and passed as `blockedComms` template variable. If none exist, the value is
 `"(none)"`. Deep reflect sees the pending messages and their block reasons,
 and can issue `comms_verdicts` in its output.
 
 `applyReflectOutput` processes `comms_verdicts` at step 2b
-(`hook-reflect.js:227-235`):
+(`reflect.js:227-235`):
 
 ```js
 for (const cv of output.comms_verdicts) {
@@ -420,18 +420,18 @@ for (const cv of output.comms_verdicts) {
 
 ---
 
-## Viveka: Communication Wisdom
+## Upaya: Communication Wisdom
 
-`viveka:comms:*` and `viveka:channel:*` are agent-writable KV keys that
-accumulate communication wisdom over time. They are in the `viveka:` system
+`upaya:comms:*` and `upaya:channel:*` are agent-writable KV keys that
+accumulate communication wisdom over time. They are in the `upaya:` system
 prefix — writes require `kvWritePrivileged`.
 
-These keys are loaded by `loadCommsViveka()` (`brainstem.js:469`) and
+These keys are loaded by `loadCommsUpaya()` (`kernel.js:469`) and
 injected into the `COMMS_GATE_PROMPT` as the `[COMMUNICATION WISDOM]`
 block. Each entry is formatted as `[key]\n{value}\n[/key]`.
 
 If a recipient has a contact record, the contact's `communication` field
-(or full record if no `communication` field) is also added to the viveka
+(or full record if no `communication` field) is also added to the upaya
 block under the key `contact:{id}`.
 
 This means the comms gate's decisions evolve as the agent accumulates
@@ -463,7 +463,7 @@ approved │  unknown                        │   = block ALL            │
 full tools                                           │
   │                                                  ▼
   │                                        ┌─ LLM gate ────────┐
-  │                                        │ viveka context     │
+  │                                        │ upaya context     │
   │                                        │ → send/revise/block│
   │                                        └─────────┬──────────┘
   │                                                  │

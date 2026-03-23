@@ -487,8 +487,8 @@ sent. This is kernel-enforced — the agent cannot bypass it.
 
 **Layer 1 — Mechanical floor.** If the tool is initiating contact (not
 replying to someone who messaged first) and the recipient has no
-`viveka:contact:*` entry, the message is blocked immediately. No LLM call
-is made. Unknown recipients require viveka entries before the agent can
+`upaya:contact:*` entry, the message is blocked immediately. No LLM call
+is made. Unknown recipients require upaya entries before the agent can
 reach out.
 
 **Layer 2 — Model gate.** The current model must have
@@ -497,13 +497,13 @@ using Haiku or DeepSeek), the message is queued for review during deep
 reflect rather than evaluated by the gate.
 
 **Layer 3 — LLM judgment.** A gate LLM call evaluates the message against
-accumulated communication wisdom (`viveka:contact:*`, `viveka:channel:*`,
-`viveka:comms:*`). The gate can:
+accumulated communication wisdom (`upaya:contact:*`, `upaya:channel:*`,
+`upaya:comms:*`). The gate can:
 - **Send** — message goes through as-is
 - **Revise** — message is rewritten and then sent
 - **Block** — message is stored for review
 
-### Default Communication Stance — `viveka:comms:defaults`
+### Default Communication Stance — `upaya:comms:defaults`
 
 The seed value establishes a conservative baseline:
 
@@ -611,9 +611,9 @@ numbers, everything else is a string.
 | `wake_config` | Next wake time, sleep duration, effort | Agent (after each session) |
 | `reflect:schedule:{depth}` | When next deep reflect is due | Agent (after deep reflect) |
 | `contact:{slug}` | Contact records | Operator (dashboard API or seed) |
-| `viveka:comms:defaults` | Default communication stance | Agent (via wisdom modification) |
-| `viveka:comms:*` | Communication wisdom entries | Agent (via wisdom modification) |
-| `viveka:contact:*` | Per-contact communication wisdom | Agent (via wisdom modification) |
+| `upaya:comms:defaults` | Default communication stance | Agent (via wisdom modification) |
+| `upaya:comms:*` | Communication wisdom entries | Agent (via wisdom modification) |
+| `upaya:contact:*` | Per-contact communication wisdom | Agent (via wisdom modification) |
 | `prompt:orient` | Orient session system prompt | Agent (via modification protocol) |
 | `prompt:reflect` | Session reflect prompt | Agent (via modification protocol) |
 | `prompt:reflect:1` | Deep reflect prompt | Agent (via modification protocol) |

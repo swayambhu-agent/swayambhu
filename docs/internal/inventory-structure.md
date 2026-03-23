@@ -10,51 +10,51 @@ Generated 2026-03-17. Covers every file in the project.
 
 | File | Purpose | Exports | Imports | Imported by |
 |------|---------|---------|---------|-------------|
-| `brainstem.js` | Production kernel — all hardcoded primitives, safety, alerting, hook dispatch, LLM cascade, agent loop, tool execution, communication gate, inbound gate, KV write tiers, patron verification | `class ScopedKV` (WorkerEntrypoint), `class KernelRPC` (WorkerEntrypoint), `class Brainstem`, `default` (fetch+scheduled handlers) | `cloudflare:workers` (WorkerEntrypoint), `./hook-chat.js` (handleChat) | `brainstem-dev.js` |
-| `brainstem-dev.js` | Dev-mode kernel subclass — direct imports instead of CF isolates, direct OpenRouter fetch instead of adapter cascade | `default` (fetch+scheduled handlers), `class DevBrainstem` (implicit) | `./brainstem.js` (Brainstem), `./hook-main.js` (wake), `./hook-chat.js` (handleChat), `./channels/slack.js`, all `./tools/*.js`, all `./providers/*.js` | None (entry point via `wrangler.dev.toml`) |
+| `kernel.js` | Production kernel — all hardcoded primitives, safety, alerting, hook dispatch, LLM cascade, agent loop, tool execution, communication gate, inbound gate, KV write tiers, patron verification | `class ScopedKV` (WorkerEntrypoint), `class KernelRPC` (WorkerEntrypoint), `class Brainstem`, `default` (fetch+scheduled handlers) | `cloudflare:workers` (WorkerEntrypoint), `./hook-chat.js` (handleChat) | `index.js` |
+| `index.js` | Dev-mode kernel subclass — direct imports instead of CF static imports, direct OpenRouter fetch instead of adapter cascade | `default` (fetch+scheduled handlers), `class Brainstem` (implicit) | `./kernel.js` (Brainstem), `./act.js` (wake), `./hook-chat.js` (handleChat), `./channels/slack.js`, all `./tools/*.js`, all `./providers/*.js` | None (entry point via `wrangler.dev.toml`) |
 
 ### Hook Modules (Wake Cycle Policy Layer)
 
 | File | Purpose | KV Key | Exports | Imports | Imported by |
 |------|---------|--------|---------|---------|-------------|
-| `hook-main.js` | Wake flow entry point — session control, crash detection, orient session, balance checking, tripwire evaluation | `hook:wake:code` | `wake`, `detectCrash`, `runSession`, `buildOrientContext`, `writeSessionResults`, `getBalances`, `evaluateTripwires`, `default` (Worker Loader export) | `./hook-protect.js` (applyKVOperation), `./hook-modifications.js` (initTracking, runCircuitBreaker, retryPendingGitSyncs), `./hook-reflect.js` (executeReflect, runReflect, highestReflectDepthDue, getMaxSteps) | `brainstem-dev.js` |
-| `hook-reflect.js` | Reflection system — session reflect (depth 0), deep reflect (recursive depth 1+), scheduling, default prompts | `hook:wake:reflect` | `executeReflect`, `runReflect`, `gatherReflectContext`, `applyReflectOutput`, `loadReflectPrompt`, `loadBelowPrompt`, `loadReflectHistory`, `getReflectModel`, `getMaxSteps`, `isReflectDue`, `highestReflectDepthDue`, `defaultReflectPrompt`, `defaultDeepReflectPrompt` | `./hook-protect.js` (applyKVOperation), `./hook-modifications.js` (loadStagedModifications, loadInflightModifications, stageModification, acceptDirect, processReflectVerdicts, processDeepReflectVerdicts) | `hook-main.js` |
-| `hook-modifications.js` | Modification Protocol — staging, inflight management, conflict detection, circuit breaker, verdict processing, git sync | `hook:wake:modifications` | `initTracking`, `evaluatePredicate`, `evaluateCheck`, `evaluateChecks`, `stageModification`, `acceptStaged`, `acceptDirect`, `promoteInflight`, `rollbackInflight`, `findInflightConflict`, `loadStagedModifications`, `loadInflightModifications`, `processReflectVerdicts`, `processDeepReflectVerdicts`, `runCircuitBreaker`, `kvToPath`, `syncToGit`, `attemptGitSync`, `retryPendingGitSyncs` | None (standalone) | `hook-main.js`, `hook-reflect.js` |
-| `hook-protect.js` | KV operation protection gate — blocks writes to system/protected keys | `hook:wake:protect` | `applyKVOperation` | None (standalone, leaf module) | `hook-main.js`, `hook-reflect.js` |
+| `act.js` | Wake flow entry point — session control, crash detection, orient session, balance checking, tripwire evaluation | `hook:wake:code` | `wake`, `detectCrash`, `runSession`, `buildOrientContext`, `writeSessionResults`, `getBalances`, `evaluateTripwires`, `default` (static import export) | `./kernel.js (applyKVOperation)` (applyKVOperation), `./kernel.js (proposal methods)` (initTracking, runCircuitBreaker, retryPendingGitSyncs), `./reflect.js` (executeReflect, runReflect, highestReflectDepthDue, getMaxSteps) | `index.js` |
+| `reflect.js` | Reflection system — session reflect (depth 0), deep reflect (recursive depth 1+), scheduling, default prompts | `hook:wake:reflect` | `executeReflect`, `runReflect`, `gatherReflectContext`, `applyReflectOutput`, `loadReflectPrompt`, `loadBelowPrompt`, `loadReflectHistory`, `getReflectModel`, `getMaxSteps`, `isReflectDue`, `highestReflectDepthDue`, `defaultReflectPrompt`, `defaultDeepReflectPrompt` | `./kernel.js (applyKVOperation)` (applyKVOperation), `./kernel.js (proposal methods)` (loadStagedModifications, loadInflightModifications, stageModification, acceptDirect, processReflectVerdicts, processDeepReflectVerdicts) | `act.js` |
+| `kernel.js (proposal methods)` | Modification Protocol — staging, inflight management, conflict detection, circuit breaker, verdict processing, git sync | `hook:wake:modifications` | `initTracking`, `evaluatePredicate`, `evaluateCheck`, `evaluateChecks`, `stageModification`, `acceptStaged`, `acceptDirect`, `promoteInflight`, `rollbackInflight`, `findInflightConflict`, `loadStagedModifications`, `loadInflightModifications`, `processReflectVerdicts`, `processDeepReflectVerdicts`, `runCircuitBreaker`, `kvToPath`, `syncToGit`, `attemptGitSync`, `retryPendingGitSyncs` | None (standalone) | `act.js`, `reflect.js` |
+| `kernel.js (applyKVOperation)` | KV operation protection gate — blocks writes to system/protected keys | `hook:wake:protect` | `applyKVOperation` | None (standalone, leaf module) | `act.js`, `reflect.js` |
 
 ### Chat System
 
 | File | Purpose | Exports | Imports | Imported by |
 |------|---------|---------|---------|-------------|
-| `hook-chat.js` | Platform-agnostic chat session pipeline — conversation state, budget tracking, tool-calling loop, contact resolution | `handleChat` | None | `brainstem.js`, `brainstem-dev.js` |
+| `hook-chat.js` | Platform-agnostic chat session pipeline — conversation state, budget tracking, tool-calling loop, contact resolution | `handleChat` | None | `kernel.js`, `index.js` |
 
 ### Channel Adapters
 
 | File | Purpose | Exports | Imports | Imported by |
 |------|---------|---------|---------|-------------|
-| `channels/slack.js` | Slack channel adapter — webhook verification (HMAC-SHA256), inbound parsing, reply sending | `config`, `verify`, `parseInbound`, `sendReply` | None | `brainstem-dev.js` |
+| `channels/slack.js` | Slack channel adapter — webhook verification (HMAC-SHA256), inbound parsing, reply sending | `config`, `verify`, `parseInbound`, `sendReply` | None | `index.js` |
 
 ### Tools
 
 | File | Purpose | Exports | Imports | Imported by |
 |------|---------|---------|---------|-------------|
-| `tools/kv_query.js` | Read a KV value with optional dot-bracket path navigation | `meta` (kv_access: "read_all"), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `tools/kv_write.js` | Write to tool's own scoped KV namespace | `meta` (kv_access: "own"), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `tools/kv_manifest.js` | List KV keys with optional prefix filter | `meta` (kv_access: "read_all"), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `tools/send_slack.js` | Post a message to Slack via API | `meta` (secrets: SLACK_BOT_TOKEN/CHANNEL_ID, communication gate), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `tools/web_fetch.js` | Fetch URL contents | `meta`, `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `tools/computer.js` | Run shell command on your Linux server | `meta` (secrets: COMPUTER_CF_CLIENT_ID/API_KEY), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `tools/check_email.js` | Fetch unread emails from Gmail | `meta` (secrets: GMAIL_*, provider: "gmail", inbound gate), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `tools/send_email.js` | Send email or reply via Gmail | `meta` (secrets: GMAIL_*, provider: "gmail", communication gate), `execute` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
+| `tools/kv_query.js` | Read a KV value with optional dot-bracket path navigation | `meta` (kv_access: "read_all"), `execute` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `tools/kv_write.js` | Write to tool's own scoped KV namespace | `meta` (kv_access: "own"), `execute` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `tools/kv_manifest.js` | List KV keys with optional prefix filter | `meta` (kv_access: "read_all"), `execute` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `tools/send_slack.js` | Post a message to Slack via API | `meta` (secrets: SLACK_BOT_TOKEN/CHANNEL_ID, communication gate), `execute` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `tools/web_fetch.js` | Fetch URL contents | `meta`, `execute` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `tools/computer.js` | Run shell command on your Linux server | `meta` (secrets: COMPUTER_CF_CLIENT_ID/API_KEY), `execute` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `tools/check_email.js` | Fetch unread emails from Gmail | `meta` (secrets: GMAIL_*, provider: "gmail", inbound gate), `execute` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `tools/send_email.js` | Send email or reply via Gmail | `meta` (secrets: GMAIL_*, provider: "gmail", communication gate), `execute` | None | `index.js`, `scripts/seed-local-kv.mjs` |
 
 ### Provider Adapters
 
 | File | Purpose | Exports | Imports | Imported by |
 |------|---------|---------|---------|-------------|
-| `providers/llm.js` | OpenRouter LLM adapter — chat completions API call | `meta` (secrets: OPENROUTER_API_KEY), `call` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `providers/llm_balance.js` | OpenRouter balance check | `meta` (secrets: OPENROUTER_API_KEY), `check` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `providers/wallet_balance.js` | Base chain USDC balance check via RPC | `meta` (secrets: WALLET_ADDRESS), `check` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
-| `providers/gmail.js` | Gmail API adapter — token refresh, list/get/send/modify messages | `meta`, `getAccessToken`, `listUnread`, `getMessage`, `sendMessage`, `markAsRead`, `check` | None | `brainstem-dev.js`, `scripts/seed-local-kv.mjs` |
+| `providers/llm.js` | OpenRouter LLM adapter — chat completions API call | `meta` (secrets: OPENROUTER_API_KEY), `call` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `providers/llm_balance.js` | OpenRouter balance check | `meta` (secrets: OPENROUTER_API_KEY), `check` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `providers/wallet_balance.js` | Base chain USDC balance check via RPC | `meta` (secrets: WALLET_ADDRESS), `check` | None | `index.js`, `scripts/seed-local-kv.mjs` |
+| `providers/gmail.js` | Gmail API adapter — token refresh, list/get/send/modify messages | `meta`, `getAccessToken`, `listUnread`, `getMessage`, `sendMessage`, `markAsRead`, `check` | None | `index.js`, `scripts/seed-local-kv.mjs` |
 
 ### Dashboard
 
@@ -86,18 +86,18 @@ Generated 2026-03-17. Covers every file in the project.
 
 | File | Purpose | KV Key | Used by |
 |------|---------|--------|---------|
-| `prompts/orient.md` | Orient session system prompt — shapes waking behavior | `prompt:orient` | `hook-main.js` → `runSession()` |
-| `prompts/reflect.md` | Session-level reflection prompt (depth 0) | `prompt:reflect` | `hook-reflect.js` → `executeReflect()` |
-| `prompts/deep-reflect.md` | Deep reflection prompt (depth 1) — alignment, patterns, structures | `prompt:reflect:1` | `hook-reflect.js` → `runReflect()` |
-| `prompts/subplan.md` | Subplan agent system prompt template | `prompt:subplan` | `brainstem.js` → `spawnSubplan()` |
-| `DHARMA.md` | Core identity and purpose — immutable | `dharma` | `brainstem.js` → kernel-injected into every LLM call |
+| `prompts/orient.md` | Orient session system prompt — shapes waking behavior | `prompt:orient` | `act.js` → `runSession()` |
+| `prompts/reflect.md` | Session-level reflection prompt (depth 0) | `prompt:reflect` | `reflect.js` → `executeReflect()` |
+| `prompts/deep-reflect.md` | Deep reflection prompt (depth 1) — alignment, patterns, structures | `prompt:reflect:1` | `reflect.js` → `runReflect()` |
+| `prompts/subplan.md` | Subplan agent system prompt template | `prompt:subplan` | `kernel.js` → `spawnSubplan()` |
+| `DHARMA.md` | Core identity and purpose — immutable | `dharma` | `kernel.js` → kernel-injected into every LLM call |
 
 ### Tests
 
 | File | Purpose | Test count | Imports |
 |------|---------|------------|---------|
-| `tests/brainstem.test.js` | Kernel logic — KV tiers, tool execution, LLM calls, agent loop, communication gate, inbound gate, patron verification, hook safety | ~104 | `brainstem.js`, `tests/helpers/mock-kv.js` |
-| `tests/wake-hook.test.js` | Wake flow, reflect, modifications, circuit breaker, git sync | ~62 | `hook-main.js`, `hook-reflect.js`, `hook-modifications.js`, `hook-protect.js`, `tests/helpers/mock-kernel.js` |
+| `tests/brainstem.test.js` | Kernel logic — KV tiers, tool execution, LLM calls, agent loop, communication gate, inbound gate, patron verification, hook safety | ~104 | `kernel.js`, `tests/helpers/mock-kv.js` |
+| `tests/wake-hook.test.js` | Wake flow, reflect, modifications, circuit breaker, git sync | ~62 | `act.js`, `reflect.js`, `kernel.js (proposal methods)`, `kernel.js (applyKVOperation)`, `tests/helpers/mock-kernel.js` |
 | `tests/tools.test.js` | Tool/provider execute(), module structure, meta field validation | ~100 | All `tools/*.js`, all `providers/*.js` |
 | `tests/chat.test.js` | Chat system — conversation flow, budgets, commands, unknown contacts | ~12 | `hook-chat.js`, `tests/helpers/mock-kernel.js` |
 | `tests/helpers/mock-kv.js` | In-memory KV store mock (Map-backed) | N/A | `vitest` |
@@ -107,8 +107,8 @@ Generated 2026-03-17. Covers every file in the project.
 
 | File | Purpose |
 |------|---------|
-| `wrangler.toml` | Production CF Worker config — brainstem.js entry, KV binding, cron trigger (* * * * *), Worker Loader binding |
-| `wrangler.dev.toml` | Dev CF Worker config — brainstem-dev.js entry, KV binding, cron trigger |
+| `wrangler.toml` | Production CF Worker config — kernel.js entry, KV binding, cron trigger (* * * * *), static import binding |
+| `wrangler.dev.toml` | Dev CF Worker config — index.js entry, KV binding, cron trigger |
 | `dashboard-api/wrangler.toml` | Dashboard API Worker config — OPERATOR_KEY var, KV binding |
 | `package.json` | ES module project — vitest + ethers devDeps, wrangler dep |
 | `vitest.config.js` | Vitest config — aliases `cloudflare:workers` to `__mocks__/cloudflare-workers.js` |
@@ -144,15 +144,15 @@ Generated 2026-03-17. Covers every file in the project.
 ```mermaid
 graph TD
     subgraph Kernel
-        BS[brainstem.js]
-        BSD[brainstem-dev.js]
+        BS[kernel.js]
+        BSD[index.js]
     end
 
     subgraph Hooks
-        HM[hook-main.js]
-        HR[hook-reflect.js]
-        HMod[hook-modifications.js]
-        HP[hook-protect.js]
+        HM[act.js]
+        HR[reflect.js]
+        HMod[kernel.js (proposal methods)]
+        HP[kernel.js (applyKVOperation)]
         HC[hook-chat.js]
     end
 
@@ -246,7 +246,7 @@ graph TD
 
 The cron fires every minute. The hook checks `wake_config.next_wake_after` and returns early if it's not time yet.
 
-#### Production call chain (`brainstem.js`)
+#### Production call chain (`kernel.js`)
 
 ```
 CF Cron trigger
@@ -259,8 +259,8 @@ CF Cron trigger
       → brain.executeHook(modules, mainModule)
         → brain.kvPut("kernel:active_session", sessionId)
         → brain._invokeHookModules(modules, mainModule)
-          → [CF Worker Loader isolate]
-            → hook-main.js default.fetch()
+          → [CF static import static import]
+            → act.js default.fetch()
               → wake(K, input)               // K = env.KERNEL (KernelRPC binding)
                 → K.kvGet("wake_config")     // check if time to wake
                 → detectCrash(K)             // check stale active_session
@@ -287,40 +287,40 @@ CF Cron trigger
         → brain.kv.delete("kernel:active_session")
 ```
 
-#### Dev call chain (`brainstem-dev.js`)
+#### Dev call chain (`index.js`)
 
 ```
 CF Cron trigger (or curl /__scheduled)
   → export default.scheduled(event, env, ctx)
-    → new DevBrainstem(env, {ctx})
+    → new Brainstem(env, {ctx})
     → brain.runScheduled()                  // inherited from Brainstem
       → brain.executeHook(modules, mainModule)
-        → brain._invokeHookModules()        // OVERRIDDEN in DevBrainstem
+        → brain._invokeHookModules()        // OVERRIDDEN in Brainstem
           → brain.loadEagerConfig()
-          → DevBrainstem._buildToolGrants()
-          → wake(brain, {sessionId})        // direct call, no isolate
+          → Brainstem._buildToolGrants()
+          → wake(brain, {sessionId})        // direct call, no static import
             → (same wake flow as above, but K = brain directly)
-            → K methods resolve to DevBrainstem.getSessionId(), etc.
+            → K methods resolve to Brainstem.getSessionId(), etc.
 ```
 
 #### Key differences prod vs dev:
-- **Prod:** Hook runs in CF Worker Loader isolate, K = KernelRPC (RPC bridge)
-- **Dev:** Hook called directly, K = DevBrainstem instance (has same methods)
-- **Prod:** Tools/providers run in isolates via `runInIsolate()`
+- **Prod:** Hook runs in CF static import static import, K = KernelRPC (RPC bridge)
+- **Dev:** Hook called directly, K = Brainstem instance (has same methods)
+- **Prod:** Tools/providers run in static imports via `runInIsolate()`
 - **Dev:** Tools/providers called directly from imported modules
 
 ### 3.2 Fetch Handler (HTTP) — Chat Path
 
 **Route:** `POST /channel/:channel`
 
-#### Production call chain (`brainstem.js`)
+#### Production call chain (`kernel.js`)
 
 ```
 HTTP POST /channel/slack
   → export default.fetch(request, env, ctx)
     → new Brainstem(env, {ctx})
     → brain.kvGet("channel:slack:code")       // load adapter from KV
-    → brain.runInIsolate({action: "verify"})   // HMAC verification in isolate
+    → brain.runInIsolate({action: "verify"})   // HMAC verification in static import
     → brain.runInIsolate({action: "parse"})    // parse inbound message
     → [challenge response if _challenge]
     → [dedup check via dedup:{msgId}]
@@ -340,28 +340,28 @@ HTTP POST /channel/slack
             → [communication gate check]
             → brain.executeAction({tool, input})
               → brain._loadTool(name)          // from KV
-              → brain._executeTool(...)        // in isolate
+              → brain._executeTool(...)        // in static import
             → [inbound content gate]
           → adapter.sendReply(chatId, reply)
           → brain.kvPutSafe(convKey, conv)     // save state
       })
 ```
 
-#### Dev call chain (`brainstem-dev.js`)
+#### Dev call chain (`index.js`)
 
 ```
 HTTP POST /channel/slack
   → export default.fetch(request, env, ctx)
-    → new DevBrainstem(env, {ctx})
-    → CHANNEL_ADAPTERS[channel]               // direct import, not KV
-    → slackAdapter.parseInbound(body)         // direct call, no isolate
+    → new Brainstem(env, {ctx})
+    → CHANNELS[channel]                       // direct import via index.js
+    → slackAdapter.parseInbound(body)         // direct call, no static import
     → [skip verification in dev]
     → Response("OK", 200)
     → ctx.waitUntil(async () => {
         → brain.loadEagerConfig()
-        → DevBrainstem._buildToolGrants()
+        → Brainstem._buildToolGrants()
         → handleChat(brain, channel, inbound, adapter)
-          → (same flow, but tool execution is direct, not isolate)
+          → (same flow, but tool execution is direct, not static import)
       })
 ```
 
@@ -405,8 +405,8 @@ Triggers the `scheduled()` handler manually — same as a cron trigger. This is 
 
 | Trigger | Route/Mechanism | Handler | Code Path |
 |---------|----------------|---------|-----------|
-| Cron (every minute) | CF `scheduled` event | `brainstem.js` or `brainstem-dev.js` `scheduled()` | Wake cycle |
-| HTTP webhook | `POST /channel/:channel` | `brainstem.js` or `brainstem-dev.js` `fetch()` | Chat path |
+| Cron (every minute) | CF `scheduled` event | `kernel.js` or `index.js` `scheduled()` | Wake cycle |
+| HTTP webhook | `POST /channel/:channel` | `kernel.js` or `index.js` `fetch()` | Chat path |
 | Manual wake | `GET /__scheduled` (dev) | Same as cron | Wake cycle |
 | Dashboard API | Various HTTP routes | `dashboard-api/worker.js` `fetch()` | KV reads, contact management |
 | Dashboard SPA | Static + `/wake` proxy | `scripts/dev-serve.mjs` | Static files, wake proxy |

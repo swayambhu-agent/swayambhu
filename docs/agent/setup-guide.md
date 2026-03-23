@@ -50,12 +50,9 @@ Edit `wrangler.toml` in the project root. Replace the KV namespace ID:
 
 ```toml
 name = "swayambhu-cns"
-main = "brainstem.js"
+main = "kernel.js"
 compatibility_date = "2025-06-01"
-compatibility_flags = ["nodejs_compat", "enable_ctx_exports"]
-
-[[worker_loaders]]
-binding = "LOADER"
+compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "KV"

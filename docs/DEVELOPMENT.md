@@ -1,39 +1,30 @@
 # Development Guide
 
-## Architecture: prod vs dev
+## Architecture: two-worker system
 
-Production (`brainstem.js` + `wrangler.toml`) uses Cloudflare Worker Loader
-isolates to run tool code, provider adapters, and the wake hook from KV.
-This requires `[[worker_loaders]]` and `enable_ctx_exports`, which are only
-available in deployed Workers.
+The system consists of two Cloudflare Workers sharing one KV namespace:
 
-Dev (`brainstem-dev.js` + `wrangler.dev.toml`) subclasses the production
-`Brainstem` class and overrides only the 4 methods that depend on isolates.
-Everything else — the entire kernel, wake flow, Modification Protocol, reflection
-hierarchy, budget enforcement, karma — is inherited unchanged.
+**Runtime Worker** (`index.js` → `kernel.js` + statically compiled modules):
+All tools, providers, channels, and hook modules (`act.js`, `reflect.js`) are
+statically imported in `index.js` and passed to the kernel via dependency
+injection.
 
-```
-brainstem-dev.js
-  ├── import { Brainstem } from './brainstem.js'   ← kernel
-  ├── import { wake } from './hook-main.js'         ← policy layer
-  ├── import * as ... from './tools/*.js'           ← tool modules
-  └── class DevBrainstem extends Brainstem
-        ├── _invokeHookModules()  → calls wake() directly
-        ├── _loadTool()           → returns imported module meta
-        ├── _executeTool()        → calls module.execute() directly
-        ├── callWithCascade()     → direct OpenRouter fetch
-        └── callHook()            → returns null
-```
+**Governor Worker** (`governor/`): Reads approved code from KV, generates
+`index.js`, and deploys the runtime via the CF Workers API. Optional for
+local dev — `index.js` is hand-written and imports directly from disk.
 
 ## What lives where
 
-| Code | Location | How prod uses it | How dev uses it |
-|------|----------|------------------|-----------------|
-| Kernel (KV, karma, agent loop, budget) | `brainstem.js` | Direct | Inherited via `extends` |
-| Wake flow, reflection, modifications | `hook-main.js` + modules | Loaded from KV via isolate | `import { wake }` |
-| Tool implementations | `tools/*.js` | Seeded to KV, loaded via isolate | `import * as ...` |
-| Provider adapters | `providers/*.js` | Seeded to KV, loaded via isolate | Direct `fetch()` in override |
-| Prompts, config, dharma | `scripts/seed-local-kv.mjs` | KV | KV (same seed script) |
+| Code | Location | How it runs |
+|------|----------|-------------|
+| Kernel (KV, karma, agent loop, budget) | `kernel.js` | Statically compiled into runtime worker |
+| Wake flow, session policy | `act.js` | Statically imported by `index.js` |
+| Reflection hierarchy, scheduling | `reflect.js` | Statically imported by `index.js` |
+| Chat handler | `hook-chat.js` | Statically imported by `kernel.js` |
+| Tool implementations | `tools/*.js` | Statically imported by `index.js` |
+| Provider adapters | `providers/*.js` | Statically imported by `index.js` |
+| Channel adapters | `channels/*.js` | Statically imported by `index.js` |
+| Prompts, config, dharma | `scripts/seed-local-kv.mjs` | KV (same seed script) |
 
 Tools and providers live in `tools/` and `providers/` respectively. **Single
 source of truth.** The seed script reads these files directly into KV.
@@ -74,79 +65,83 @@ at runtime via `config:models` alias_map.
 **When to use cheap models:** tool execution, orient sessions, basic wake
 cycles, KV read/write, prompt template rendering, budget enforcement.
 
-**When to use real models:** reflection hierarchy, modification
+**When to use real models:** reflection hierarchy, proposal
 staging/promotion/rollback, deep reflect, anything where output quality
 and structured JSON adherence matter.
 
 ## Making changes: what to edit and where changes propagate
 
-### 1. Kernel logic (brainstem.js)
+### 1. Kernel logic (kernel.js)
 
 Examples: budget enforcement, karma recording, agent loop, KV helpers,
-session outcome tracking, hook safety checks.
+session outcome tracking, safety checks, proposal methods.
 
-**Edit:** `brainstem.js`
-**Propagation:** Automatic. Dev inherits via `extends Brainstem`.
+**Edit:** `kernel.js`
+**Propagation:** Automatic. All modules use the K interface provided by the kernel.
 **Nothing else to do.**
 
-### 2. Wake flow / reflection / Modification Protocol (hook modules)
+### 2. Session policy (act.js)
 
-Examples: orient session, reflect hierarchy, modification staging/promotion/rollback,
-circuit breaker, tripwire evaluation, session results.
+Examples: orient session, context building, session results.
 
-**Edit:** `hook-main.js`, `hook-reflect.js`, `hook-modifications.js`, or `hook-protect.js`
-**Propagation:** Automatic. Dev imports `wake` from `hook-main.js` directly.
-**For prod deploy:** Re-seed KV so hook modules pick up the new version:
+**Edit:** `act.js`
+**Propagation:** Automatic — statically imported by `index.js`.
+**For prod deploy:** Re-seed KV so the governor picks up the new version:
 ```bash
 node scripts/seed-local-kv.mjs
 ```
 
-### 3. Tool implementations
+### 3. Reflection / proposal system (reflect.js)
 
-Examples: changing how `send_telegram` works, adding a new tool.
+Examples: reflect hierarchy, proposal staging/promotion/rollback,
+circuit breaker, tripwire evaluation, session results.
+
+**Edit:** `reflect.js`
+**Propagation:** Automatic — statically imported by `index.js`.
+**For prod deploy:** Re-seed KV.
+
+### 4. Tool implementations
+
+Examples: changing how `send_slack` works, adding a new tool.
 
 #### Modifying an existing tool
 
 1. Edit `tools/{name}.js`
-2. Dev picks it up automatically (imported directly)
+2. Dev picks it up automatically (imported in `index.js`)
 3. Re-seed for KV: `node scripts/seed-local-kv.mjs`
 
 #### Adding a new tool
 
 1. Create `tools/{name}.js` with `export const meta` and `export async function execute`
-2. Add `import * as {name} from './tools/{name}.js'` to `brainstem-dev.js`
-3. Add `{name}` to the `TOOL_MODULES` object in `brainstem-dev.js`
+2. Add `import * as {name} from './tools/{name}.js'` to `index.js`
+3. Add `{name}` to the `TOOLS` object in `index.js`
 4. Add the tool to the `config:tool_registry` JSON in the seed script
-5. Add the tool name to the `for tool in ...` loop in the seed script
+5. Add the tool name to the tool loop in the seed script
 6. Re-seed: `node scripts/seed-local-kv.mjs`
 
 #### Removing a tool
 
 1. Remove `tools/{name}.js`
-2. Remove import and `TOOL_MODULES` entry from `brainstem-dev.js`
+2. Remove import and `TOOLS` entry from `index.js`
 3. Remove from `config:tool_registry` and the tool loop in the seed script
 4. Re-seed
 
-### 4. Prompts and config
+### 5. Prompts and config
 
 Examples: changing `prompt:orient`, `config:defaults`, `config:models`.
 
 **Edit:** `scripts/seed-local-kv.mjs` (or the referenced file, e.g. `prompts/reflect.md`)
-**Propagation:** Re-seed. Both prod and dev read these from KV.
-**Nothing to change in brainstem-dev.js.**
+**Propagation:** Re-seed. Both tools read these from KV.
+**Nothing to change in index.js.**
 
-### 5. Provider adapters
+### 6. Provider adapters
 
-Provider code lives in `providers/*.js`. Dev bypasses providers entirely
-with a direct `fetch()` to OpenRouter in `callWithCascade()`.
+Provider code lives in `providers/*.js`. The kernel uses statically imported
+provider modules for the LLM cascade and balance checks.
 
 If you change the request/response format (e.g. adding a new field to the
-OpenRouter call), update both:
-1. `providers/llm.js`
-2. `callWithCascade()` in `brainstem-dev.js`
-
-If you only change cascade/fallback behavior (tier 2, tier 3), that's in
-`brainstem.js` and dev skips it by design.
+OpenRouter call), update `providers/llm.js`. The kernel's fallback tier
+uses a direct fetch to OpenRouter as the last resort.
 
 ## The tool module contract
 
@@ -169,9 +164,7 @@ The `ctx` object passed to `execute` contains:
 - `ctx.kv` — scoped KV accessor (only if `kv_access !== "none"`)
 - `ctx.provider` — provider module (only if `meta.provider` is set)
 
-**No `export default`.** This is critical. The prod isolate loader uses
-`wrapAsModule()` which detects `export default` to decide whether to wrap.
-Tool files must use only named exports so the wrapper appends correctly.
+**No `export default`.** Tool files must use only named exports.
 
 ## Provider adapters and `meta.provider`
 
@@ -209,7 +202,7 @@ export const meta = {
   secrets: ["GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN"],
   kv_access: "none",
   timeout_ms: 15000,
-  provider: "gmail",    // ← kernel loads providers/gmail.js into the isolate
+  provider: "gmail",    // ← kernel injects the provider module into ctx
 };
 
 export async function execute({ mark_read, max_results, secrets, fetch, provider }) {
@@ -219,38 +212,26 @@ export async function execute({ mark_read, max_results, secrets, fetch, provider
 }
 ```
 
-**In prod:** The kernel reads `provider:gmail:code` from KV and loads it
-as a second ES module (`provider.js`) in the Worker Loader isolate. The
-wrapper generates `import * as provider from "./provider.js"` and injects
-`ctx.provider` automatically. The tool calls provider functions directly —
-they share the same isolate sandbox.
-
-**In dev:** `brainstem-dev.js` looks up the provider in `PROVIDER_MODULES`
-and injects it as `ctx.provider`. Same interface, no isolate.
+The kernel looks up the provider in the statically imported `PROVIDERS` map
+and injects it as `ctx.provider`. The tool calls provider functions
+directly.
 
 ### Adding a provider-backed tool
 
 1. Create `providers/{name}.js` with exported functions (no `export default`)
 2. Create `tools/{tool_name}.js` with `meta.provider: "{name}"`
 3. The tool's `meta.secrets` should declare secrets the provider needs
-   (the tool passes `secrets` to provider functions)
-4. In `brainstem-dev.js`: import the provider and add to `PROVIDER_MODULES`
-5. In `brainstem-dev.js`: import the tool and add to `TOOL_MODULES`
+4. In `index.js`: import the provider and add to `PROVIDERS`
+5. In `index.js`: import the tool and add to `TOOLS`
 6. Add the tool to `config:tool_registry` in the seed script
 7. Re-seed: `node scripts/seed-local-kv.mjs`
 
 ### Why secrets stay on the tool meta
 
 The tool declares `meta.secrets` (not the provider) because secret
-resolution happens in `buildToolContext` before the isolate runs. The
-kernel reads the tool's `meta.secrets`, resolves them from env/KV, and
-passes them as `ctx.secrets`. The tool then threads `secrets` into
-provider function calls.
-
-Providers also declare `meta.secrets` on their own — this is used when
-the provider is called independently via `executeAdapter` (e.g. for
-balance checks in the orient context). The two declarations serve
-different call paths.
+resolution happens in `buildToolContext` before execution. The kernel reads
+the tool's `meta.secrets`, resolves them from env/KV, and passes them as
+`ctx.secrets`. The tool then threads `secrets` into provider function calls.
 
 ## ScopedKV behavior
 
@@ -264,20 +245,19 @@ Tools with `kv_access: "read_all"` get:
 - **Writes** are still prefixed (scoped)
 - **List** is unscoped
 
-This matches the `ScopedKV` WorkerEntrypoint in `brainstem.js`.
+This matches the `_buildScopedKV()` implementation in `kernel.js`.
 
 ## Deploying to production
 
 ```bash
-# Deploy brainstem (uses wrangler.toml, which has worker_loaders)
+# Deploy runtime worker (uses wrangler.toml)
 npx wrangler deploy
 
-# Seed remote KV (if config/tools/hooks changed)
+# Seed remote KV (if config/tools/prompts changed)
 # Change LOCAL="" in seed script, or use wrangler kv commands directly
 ```
 
-Dev-only files (`brainstem-dev.js`, `wrangler.dev.toml`) are never deployed.
-Production uses `brainstem.js` directly as its main module.
+Production uses `kernel.js` via `index.js` as its main module.
 
 ## Inspecting local KV
 

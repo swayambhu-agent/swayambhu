@@ -6,13 +6,13 @@ Two changes:
 
 1. **Unify mutation protocol into the Modification Protocol.** Rename `mutation_*` → `modification_*` across the codebase. Add a `type` field (`"code"` or `"wisdom"`) so one engine handles both code changes and wisdom entries with appropriate validation for each.
 
-2. **Add wisdom management** using two new KV prefixes (`viveka:` and `prajna:`). Replaces the existing single `wisdom` key. Wisdom entries go through the same Modification Protocol lifecycle as code changes, but with `validation` instead of `claims + checks`.
+2. **Add wisdom management** using two new KV prefixes (`upaya:` and `prajna:`). Replaces the existing single `wisdom` key. Wisdom entries go through the same Modification Protocol lifecycle as code changes, but with `validation` instead of `claims + checks`.
 
 ## Design principles
 
-- **Viveka** (discernment about the world) is available during orient sessions — it informs action.
+- **Upaya** (discernment about the world) is available during orient sessions — it informs action.
 - **Prajna** (self-knowledge) is available during deep reflect sessions — it informs introspection.
-- **Deep reflect knows about both** — it's the only place wisdom gets written, and viveka context may be relevant when reviewing how orient sessions went.
+- **Deep reflect knows about both** — it's the only place wisdom gets written, and upaya context may be relevant when reviewing how orient sessions went.
 - **No pre-loading.** The agent has kv_query available and decides when to query wisdom. No template vars, no forced injection.
 - **One protocol, two modes.** Code modifications require `claims + checks` and enable circuit breaker + git sync. Wisdom modifications require `validation` and skip both.
 - **No code-level schema enforcement.** The wisdom JSON schema is a prompt convention. Validation criteria are evaluated by the reviewing deep reflect, not mechanically.
@@ -99,16 +99,16 @@ For system config, prompts, tools, providers — changes that could brick the ag
 
 #### Wisdom modifications (`type: "wisdom"`)
 
-For viveka and prajna entries — accumulated understanding that should be earned.
+For upaya and prajna entries — accumulated understanding that should be earned.
 
 ```json
 {
   "type": "wisdom",
   "validation": "Observed in 4 sessions where 'urgent' requests turned out to be flexible. Would be falsified by genuine time-critical situations being missed.",
   "ops": [
-    {"op": "put", "key": "viveka:timing:urgency", "value": {
+    {"op": "put", "key": "upaya:timing:urgency", "value": {
       "text": "Urgency is usually manufactured. Real emergencies are obvious.",
-      "type": "viveka",
+      "type": "upaya",
       "created": "2026-03-14T10:30:00Z",
       "sources": [
         {"session": "s_abc123", "depth": 1, "turn": 3, "topic": "client escalation turned out to be non-urgent"},
@@ -148,11 +148,11 @@ And in code identifiers:
 - `BOOKKEEPING_PREFIXES` updated to `['modification_staged:', 'modification_snapshot:']`
 
 **Files affected:**
-- `brainstem.js` — `SYSTEM_KEY_PREFIXES`, `kvWritePrivileged`, karma event names
-- `hook-protect.js` — `SYSTEM_KEY_PREFIXES`
-- `hook-mutations.js` → rename file to `hook-modifications.js` — all function names, KV key references, karma event names
-- `hook-reflect.js` — imports, function calls
-- `hook-main.js` — imports, function calls
+- `kernel.js` — `SYSTEM_KEY_PREFIXES`, `kvWritePrivileged`, karma event names
+- `kernel.js (applyKVOperation)` — `SYSTEM_KEY_PREFIXES`
+- `kernel.js (proposal methods)` → rename file to `kernel.js (proposal methods)` — all function names, KV key references, karma event names
+- `reflect.js` — imports, function calls
+- `act.js` — imports, function calls
 - `prompts/deep-reflect.md` — terminology throughout
 - `prompts/reflect.md` — terminology
 - `prompts/orient.md` — terminology
@@ -177,7 +177,7 @@ Karma event names update:
 
 ### 2. Add `type` field to modification protocol
 
-In `hook-modifications.js` (formerly hook-mutations.js):
+In `kernel.js (proposal methods)` (formerly kernel.js (proposal methods)):
 
 **`stageModification()`** — updated signature to accept `depth`:
 ```js
@@ -283,25 +283,25 @@ if (record?.type !== 'wisdom' && record?.ops) {
 
 ### 3. Update protected keys
 
-**brainstem.js:**
+**kernel.js:**
 ```js
 // Remove 'wisdom' from exact keys
 static SYSTEM_KEY_EXACT = ['providers', 'wallets'];
 
-// Add viveka: and prajna: to prefix list (forces all writes through kvWritePrivileged / Modification Protocol)
+// Add upaya: and prajna: to prefix list (forces all writes through kvWritePrivileged / Modification Protocol)
 static SYSTEM_KEY_PREFIXES = [
   'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
   'modification_staged:', 'modification_snapshot:', 'hook:', 'git_pending:',
   'yama:', 'niyama:',
-  'viveka:', 'prajna:',
+  'upaya:', 'prajna:',
 ];
 ```
 
-**hook-protect.js** — Same changes to both `SYSTEM_KEY_EXACT` and `SYSTEM_KEY_PREFIXES`.
+**kernel.js (applyKVOperation)** — Same changes to both `SYSTEM_KEY_EXACT` and `SYSTEM_KEY_PREFIXES`.
 
-This ensures viveka/prajna entries can only be written through the Modification Protocol — `kv_operations` from reflect output will be blocked by the protection gate, just like attempts to write prompts or config directly.
+This ensures upaya/prajna entries can only be written through the Modification Protocol — `kv_operations` from reflect output will be blocked by the protection gate, just like attempts to write prompts or config directly.
 
-**Do NOT add `viveka:` or `prajna:` to `PRINCIPLE_PREFIXES`.** That array (`['yama:', 'niyama:']`) gates the deliberation + model capability checks in `kvWritePrivileged`. Wisdom entries should not require deliberation — the Modification Protocol's staging lifecycle provides the signal mechanism instead.
+**Do NOT add `upaya:` or `prajna:` to `PRINCIPLE_PREFIXES`.** That array (`['yama:', 'niyama:']`) gates the deliberation + model capability checks in `kvWritePrivileged`. Wisdom entries should not require deliberation — the Modification Protocol's staging lifecycle provides the signal mechanism instead.
 
 ### 4. Update deep reflect prompt (prompts/deep-reflect.md)
 
@@ -324,9 +324,9 @@ Add the following section after the "What to do" heading:
 You maintain two kinds of wisdom in KV, accumulated through experience and reflection:
 
 - **Prajna** (`prajna:*`) — self-knowledge. Understanding of your own patterns, tendencies, strengths, and blind spots.
-- **Viveka** (`viveka:*`) — discernment about the world. Transferable judgment about how situations work, how people behave, when to act and when to wait.
+- **Upaya** (`upaya:*`) — discernment about the world. Transferable judgment about how situations work, how people behave, when to act and when to wait.
 
-**Before you begin reflecting, query your `prajna:*` entries to ground your reflection in accumulated self-knowledge. Also query `viveka:*` entries relevant to the sessions you're reviewing.**
+**Before you begin reflecting, query your `prajna:*` entries to ground your reflection in accumulated self-knowledge. Also query `upaya:*` entries relevant to the sessions you're reviewing.**
 
 Wisdom goes through the same Modification Protocol as code changes, but with `type: "wisdom"`. You propose wisdom in one session; a different session validates it. You don't grade your own homework.
 
@@ -337,9 +337,9 @@ To stage a new wisdom entry, include a modification request with `type: "wisdom"
   "type": "wisdom",
   "validation": "Observed in 4 sessions where 'urgent' requests turned out to be flexible. Would be falsified by genuine time-critical situations being missed.",
   "ops": [
-    {"op": "put", "key": "viveka:timing:urgency", "value": {
+    {"op": "put", "key": "upaya:timing:urgency", "value": {
       "text": "Urgency is usually manufactured. Real emergencies are obvious.",
-      "type": "viveka",
+      "type": "upaya",
       "created": "2026-03-14T10:30:00Z",
       "sources": [
         {"session": "s_abc123", "depth": 1, "turn": 3, "topic": "client escalation turned out to be non-urgent"},
@@ -356,7 +356,7 @@ Note: `validation` lives on the modification request (like `claims` for code), n
 
 ### When to write wisdom
 
-Write viveka when you identify:
+Write upaya when you identify:
 - A pattern in how situations, people, or contexts work
 - A judgment call that succeeded or failed and carries a transferable lesson
 - A pattern observed in human feedback (chats, emails, operator corrections)
@@ -374,19 +374,19 @@ Do NOT write wisdom for:
 - Restatements of yamas or niyamas
 - Domain-specific technical knowledge (belongs in notes)
 
-The test: would a wise person carry this understanding regardless of what domain they're working in? If yes, it's viveka. If it's only useful in a specific technical context, it's a note.
+The test: would a wise person carry this understanding regardless of what domain they're working in? If yes, it's upaya. If it's only useful in a specific technical context, it's a note.
 
 ### Wisdom key naming
 
 Use descriptive, hierarchical keys. You manage the taxonomy yourself.
 
-Viveka examples:
+Upaya examples:
 ```
-viveka:communication:less-is-more
-viveka:timing:urgency
-viveka:trust:earned
-viveka:action:reversibility
-viveka:people:listening
+upaya:communication:less-is-more
+upaya:timing:urgency
+upaya:trust:earned
+upaya:action:reversibility
+upaya:people:listening
 ```
 
 Prajna examples:
@@ -404,7 +404,7 @@ Every live wisdom entry is stored as JSON (validation is injected by the engine 
 ```json
 {
   "text": "What people ask for and what they need are often different things.",
-  "type": "viveka",
+  "type": "upaya",
   "created": "2026-03-14T10:30:00Z",
   "updated": "2026-04-01T10:00:00Z",
   "validation": "Observed in 3+ sessions where stated request diverged from actual need. Would be falsified by consistent alignment between requests and underlying needs.",
@@ -417,7 +417,7 @@ Every live wisdom entry is stored as JSON (validation is injected by the engine 
 
 Fields:
 - `text` — the wisdom itself, concise and actionable
-- `type` — "viveka" or "prajna"
+- `type` — "upaya" or "prajna"
 - `created` — when first written
 - `updated` — when last modified
 - `validation` — what evidence supports this and what would falsify it
@@ -435,8 +435,8 @@ Each deep reflect session should:
 - Consolidate overlapping promoted entries
 - Delete promoted wisdom no longer applicable
 - Verify no entry contains domain-specific technical knowledge (move to notes)
-- Verify viveka entries are about the world, prajna entries are about yourself
-- Verify viveka entries remain aligned with your yamas (outer principles govern outer wisdom)
+- Verify upaya entries are about the world, prajna entries are about yourself
+- Verify upaya entries remain aligned with your yamas (outer principles govern outer wisdom)
 - Verify prajna entries remain aligned with your niyamas (inner principles govern inner wisdom)
 ```
 
@@ -460,7 +460,7 @@ In the deep reflect prompt's "What to produce" section, rename `mutation_request
     {
       "type": "wisdom",
       "validation": "...",
-      "ops": [{"op": "put", "key": "viveka:timing:urgency", "value": {"text": "...", "type": "viveka", "created": "...", "sources": [{"session": "...", "depth": 1, "turn": 3, "topic": "..."}]}}]
+      "ops": [{"op": "put", "key": "upaya:timing:urgency", "value": {"text": "...", "type": "upaya", "created": "...", "sources": [{"session": "...", "depth": 1, "turn": 3, "topic": "..."}]}}]
     }
   ],
 
@@ -485,7 +485,7 @@ Rename `mutation_requests` → `modification_requests` and `mutation_verdicts` �
 Add wisdom awareness:
 
 ```markdown
-Your wisdom is stored across two KV prefixes: `viveka:*` (discernment about
+Your wisdom is stored across two KV prefixes: `upaya:*` (discernment about
 the world) and `prajna:*` (self-knowledge). You don't write wisdom here —
 that happens in deep reflect. But if this session revealed a pattern worth
 crystallizing, flag it in `note_to_future_self`.
@@ -495,12 +495,12 @@ Update the protected keys reference to remove mention of wisdom.
 
 ### 7. Update orient prompt (prompts/orient.md)
 
-Add viveka awareness after the tools section:
+Add upaya awareness after the tools section:
 
 ```markdown
-Your `viveka:*` keys contain accumulated wisdom about the external world —
+Your `upaya:*` keys contain accumulated wisdom about the external world —
 discernment about situations, people, timing, and action. Begin by querying
-your viveka entries relevant to your current task via `kv_query`.
+your upaya entries relevant to your current task via `kv_query`.
 ```
 
 Rename any `mutation_requests` references to `modification_requests`.
@@ -510,9 +510,9 @@ Update the protected keys line to remove mention of wisdom:
 Protected keys (prompts, config) require modification_requests via reflect.
 ```
 
-### 8. Remove `{{wisdom}}` template var from hook-reflect.js
+### 8. Remove `{{wisdom}}` template var from reflect.js
 
-In `gatherReflectContext` (hook-reflect.js), remove the wisdom loading:
+In `gatherReflectContext` (reflect.js), remove the wisdom loading:
 ```js
 // DELETE this line
 const wisdom = await K.kvGet("wisdom");
@@ -522,7 +522,7 @@ And remove `wisdom` from the `templateVars` object.
 
 ### 9. Add staged/inflight context to deep reflect template vars
 
-In `gatherReflectContext` (hook-reflect.js), the existing code already loads staged and inflight modifications (formerly mutations). These now include both code and wisdom types automatically — no separate wisdom loading needed.
+In `gatherReflectContext` (reflect.js), the existing code already loads staged and inflight modifications (formerly mutations). These now include both code and wisdom types automatically — no separate wisdom loading needed.
 
 Rename the template vars:
 - `stagedMutations` → `stagedModifications`
@@ -560,7 +560,7 @@ memory: { default_load_keys: ["config:models", "config:resources"], ... }
 
 ### 11. Update git sync mapping
 
-In `hook-modifications.js`, remove the old wisdom mapping from `kvToPath`:
+In `kernel.js (proposal methods)`, remove the old wisdom mapping from `kvToPath`:
 ```js
 // DELETE this line
 if (key === 'wisdom') return 'wisdom.md';
@@ -569,17 +569,17 @@ if (key === 'wisdom') return 'wisdom.md';
 ### 12. Update hook manifest
 
 The wake hook manifest (`hook:wake:manifest`) maps filenames to KV keys. Update:
-- `hook-mutations.js` → `hook-modifications.js`
+- `kernel.js (proposal methods)` → `kernel.js (proposal methods)`
 - KV key: `hook:wake:mutations` → `hook:wake:modifications`
 
-Update imports in `hook-main.js` and `hook-reflect.js` accordingly.
+Update imports in `act.js` and `reflect.js` accordingly.
 
 ## What NOT to change
 
 - **No new tools.** kv_query already supports arbitrary keys.
 - **No schema enforcement in code.** Prompt convention only.
 - **No kernel-level validation of wisdom.** The reviewing deep reflect evaluates validation criteria, not the kernel.
-- **Viveka and prajna are system-protected prefixes.** All writes go through the Modification Protocol — no direct `kv_operations` bypass.
+- **Upaya and prajna are system-protected prefixes.** All writes go through the Modification Protocol — no direct `kv_operations` bypass.
 
 ## Architecture context
 
@@ -588,7 +588,7 @@ Updated hierarchy:
 | Layer | Outer | Inner | Protection |
 |---|---|---|---|
 | Principles | Yama (conduct) | Niyama (discipline) | Kernel-enforced friction |
-| Wisdom | Viveka (discernment) | Prajna (self-knowledge) | Modification Protocol (wisdom mode) |
+| Wisdom | Upaya (discernment) | Prajna (self-knowledge) | Modification Protocol (wisdom mode) |
 | Record | Karma | | Append-only |
 
 - Dharma is immutable (kernel-blocked)
@@ -602,17 +602,17 @@ Updated hierarchy:
 
 | File | Change |
 |---|---|
-| `brainstem.js` | Remove `wisdom` from `SYSTEM_KEY_EXACT`; add `viveka:`, `prajna:` to `SYSTEM_KEY_PREFIXES`; do NOT add them to `PRINCIPLE_PREFIXES` (no deliberation gate); rename all `mutation_*` → `modification_*` in prefixes, method names, karma events |
-| `hook-protect.js` | Remove `wisdom` from `SYSTEM_KEY_EXACT`; add `viveka:`, `prajna:` to `SYSTEM_KEY_PREFIXES`; rename `mutation_*` → `modification_*` in prefixes |
-| `hook-mutations.js` | Rename file → `hook-modifications.js`; rename all functions, KV keys, karma events; add `type` field handling; skip circuit breaker + git sync for wisdom type |
-| `hook-reflect.js` | Update imports from hook-modifications; rename function calls; remove `wisdom` loading from `gatherReflectContext`; rename template vars; pass `depth` to `stageModification`, `processDeepReflectVerdicts`, and callers of `promoteInflight` |
-| `hook-main.js` | Update imports from hook-modifications; rename function calls |
-| `hook-chat.js` | Remove `K.kvGet("wisdom")` loading; optionally add viveka awareness to chat context |
+| `kernel.js` | Remove `wisdom` from `SYSTEM_KEY_EXACT`; add `upaya:`, `prajna:` to `SYSTEM_KEY_PREFIXES`; do NOT add them to `PRINCIPLE_PREFIXES` (no deliberation gate); rename all `mutation_*` → `modification_*` in prefixes, method names, karma events |
+| `kernel.js (applyKVOperation)` | Remove `wisdom` from `SYSTEM_KEY_EXACT`; add `upaya:`, `prajna:` to `SYSTEM_KEY_PREFIXES`; rename `mutation_*` → `modification_*` in prefixes |
+| `kernel.js (proposal methods)` | Rename file → `kernel.js (proposal methods)`; rename all functions, KV keys, karma events; add `type` field handling; skip circuit breaker + git sync for wisdom type |
+| `reflect.js` | Update imports from hook-modifications; rename function calls; remove `wisdom` loading from `gatherReflectContext`; rename template vars; pass `depth` to `stageModification`, `processDeepReflectVerdicts`, and callers of `promoteInflight` |
+| `act.js` | Update imports from hook-modifications; rename function calls |
+| `hook-chat.js` | Remove `K.kvGet("wisdom")` loading; optionally add upaya awareness to chat context |
 | `prompts/deep-reflect.md` | Remove `{{wisdom}}` section; add wisdom management instructions; rename all mutation → modification terminology; update output schema |
-| `prompts/orient.md` | Add viveka awareness; rename mutation → modification; remove wisdom from protected keys |
+| `prompts/orient.md` | Add upaya awareness; rename mutation → modification; remove wisdom from protected keys |
 | `prompts/reflect.md` | Add wisdom awareness; rename mutation → modification; remove wisdom from protected keys; update output schema |
 | `scripts/seed-local-kv.mjs` | Remove wisdom seed; remove from default_load_keys; update any mutation references |
 | `docs/doc-mutation-guide.md` | Rename → `docs/doc-modification-guide.md`; update all terminology |
 | `tests/brainstem.test.js` | Rename all `mutation_*` references |
 | `tests/wake-hook.test.js` | Rename all `mutation_*` references |
-| Hook manifest | Update `hook-mutations.js` → `hook-modifications.js` mapping |
+| Hook manifest | Update `kernel.js (proposal methods)` → `kernel.js (proposal methods)` mapping |

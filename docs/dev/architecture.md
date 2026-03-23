@@ -34,7 +34,7 @@ Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a
 
 | Worker | Source | Port (dev) | Entry points |
 |--------|--------|------------|-------------|
-| Brainstem (main) | `brainstem.js` | 8787 | `scheduled()` (cron), `fetch()` (HTTP) |
+| Brainstem (main) | `kernel.js` | 8787 | `scheduled()` (cron), `fetch()` (HTTP) |
 | Dashboard API | `dashboard-api/worker.js` | 8790 | `fetch()` only |
 
 The brainstem handles all agent logic — wake cycles, chat, tool execution, LLM calls. The dashboard API is a stateless KV reader that serves the operator UI. It authenticates via `X-Operator-Key` header against an `OPERATOR_KEY` env var.
@@ -43,15 +43,15 @@ The brainstem handles all agent logic — wake cycles, chat, tool execution, LLM
 
 ## The kernel: `Brainstem` class
 
-`brainstem.js:248` defines `class Brainstem` — the hardcoded kernel. It enforces safety invariants that the agent cannot modify.
+`kernel.js:248` defines `class Brainstem` — the hardcoded kernel. It enforces safety invariants that the agent cannot modify.
 
 ### Static safety properties
 
 ```js
 static SYSTEM_KEY_PREFIXES = [
   'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-  'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
-  'yama:', 'niyama:', 'viveka:', 'prajna:',
+  'proposal:', 'proposal:', 'hook:', 'doc:', 'git_pending:',
+  'yama:', 'niyama:', 'upaya:', 'prajna:',
   'comms_blocked:', 'contact:', 'contact_index:', 'sealed:',
 ];
 static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:'];
@@ -68,24 +68,24 @@ static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 
 1. **Dharma immutability** — `kvPut()`, `kvPutSafe()`, and `kvWritePrivileged()` all reject writes to `"dharma"` and keys in `IMMUTABLE_KEYS`.
 
-2. **Dharma + principles injection** — `callLLM()` prepends dharma, yamas, and niyamas to every system prompt before the hook-provided content. No hook or prompt modification can bypass this (`brainstem.js:1416-1440`).
+2. **Dharma + principles injection** — `callLLM()` prepends dharma, yamas, and niyamas to every system prompt before the hook-provided content. No hook or prompt modification can bypass this (`kernel.js:1416-1440`).
 
 3. **Three-tier KV write gates:**
    - `kvPutSafe(key, value, metadata)` — blocks `dharma`, kernel-only keys, and system keys. Used for agent-created data.
    - `kvDeleteSafe(key)` — same blocks as `kvPutSafe`.
    - `kvWritePrivileged(ops)` — for system keys. Pre-validates the entire batch before any writes execute. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact:*`/`contact_index:*` keys (operator-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on hook writes. Auto-reloads cached config after writing config keys.
 
-4. **Communication gate** — `communicationGate()` (`brainstem.js:515`) intercepts every tool call to a tool with a `communication` grant in `kernel:tool_grants`. Three checks in sequence:
+4. **Communication gate** — `communicationGate()` (`kernel.js:515`) intercepts every tool call to a tool with a `communication` grant in `kernel:tool_grants`. Three checks in sequence:
    - Mechanical floor: blocks initiating contact with unknown persons (no contact record).
    - Model gate: current model must have `comms_gate_capable` flag.
-   - LLM gate: calls an LLM with viveka context to get a send/revise/block/queue verdict.
+   - LLM gate: calls an LLM with upaya context to get a send/revise/block/queue verdict.
    Blocked messages are stored as `comms_blocked:{id}` for deep reflect to review later.
 
-5. **Inbound content gate** — tools with an `inbound` grant in `kernel:tool_grants` return external content. The kernel redacts content from unknown senders (no matching contact) and quarantines it under `sealed:*` keys (`brainstem.js:1722-1751`). Sealed keys are unreadable by tools and hooks.
+5. **Inbound content gate** — tools with an `inbound` grant in `kernel:tool_grants` return external content. The kernel redacts content from unknown senders (no matching contact) and quarantines it under `sealed:*` keys (`kernel.js:1722-1751`). Sealed keys are unreadable by tools and hooks.
 
-6. **Tool security grants** — `kernel:tool_grants` (`brainstem.js:318`) is loaded at boot and controls which env secrets each tool can access, which tools pass through the communication/inbound gates, and which provider adapter each tool receives. Because it's a `kernel:*` key, the agent cannot modify it. Tool source files declare all fields in `export const meta`, but the seed script splits them: grant fields go to `kernel:tool_grants`, operational fields go to `tool:{name}:meta`.
+6. **Tool security grants** — `kernel:tool_grants` (`kernel.js:318`) is loaded at boot and controls which env secrets each tool can access, which tools pass through the communication/inbound gates, and which provider adapter each tool receives. Because it's a `kernel:*` key, the agent cannot modify it. Tool source files declare all fields in `export const meta`, but the seed script splits them: grant fields go to `kernel:tool_grants`, operational fields go to `tool:{name}:meta`.
 
-7. **Hook safety tripwire** — `checkHookSafety()` (`brainstem.js:934`) checks `kernel:last_sessions`. If the last 3 outcomes are all `"crash"` or `"killed"`, the kernel deletes the current hook modules and attempts to restore from `kernel:last_good_hook`. If no good version exists, it runs a hardcoded minimal fallback.
+7. **Hook safety tripwire** — `checkHookSafety()` (`kernel.js:934`) checks `kernel:last_sessions`. If the last 3 outcomes are all `"crash"` or `"killed"`, the kernel deletes the current hook modules and attempts to restore from `kernel:last_good_hook`. If no good version exists, it runs a hardcoded minimal fallback.
 
 8. **Karma log** — `karmaRecord()` appends to an in-memory array and persists to `karma:{sessionId}` on every write. If the event is a danger signal, it also writes `last_danger`.
 
@@ -114,11 +114,11 @@ static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 
 ---
 
-## The RPC bridge: `ScopedKV` and `KernelRPC`
+## The K interface and ScopedKV
 
-Both are `WorkerEntrypoint` subclasses (Cloudflare's cross-isolate RPC mechanism), exported from `brainstem.js`. They create the security boundary between the kernel and code running in Worker Loader isolates.
+The kernel builds the K interface via `buildKernelInterface()` and provides scoped KV access via `_buildScopedKV()`. These create the security boundary between the kernel and policy/tool code.
 
-### `ScopedKV` (`brainstem.js:19`)
+### `ScopedKV` (`kernel.js:19`)
 
 Gives tools scoped KV access. Receives `toolName` and `kvAccess` via `this.ctx.props`.
 
@@ -126,9 +126,9 @@ Gives tools scoped KV access. Receives `toolName` and `kvAccess` via `this.ctx.p
 - **`put(key, value)`** — always scopes writes to `tooldata:{toolName}:{key}` regardless of `kvAccess`. Tools cannot write outside their namespace.
 - **`list(opts)`** — if `kvAccess === "own"`, prefixes and strips the scope. Otherwise returns all keys except `sealed:*`.
 
-### `KernelRPC` (`brainstem.js:58`)
+### `K interface` (`kernel.js:58`)
 
-The RPC bridge between the wake hook (running in a Worker Loader isolate) and the kernel. Uses a module-level `_activeBrain` reference (safe because Workers process one request per isolate).
+The K interface between policy modules and the kernel. Built by `buildKernelInterface()` which returns an object with all kernel methods that modules can call.
 
 Exposes these categories of methods:
 
@@ -150,58 +150,39 @@ Exposes these categories of methods:
 
 `loadKeys(keys)` filters out `sealed:*` keys before loading — hooks cannot read sealed data even by passing keys explicitly.
 
-### How isolates work
+### How tool execution works
 
-The kernel uses Cloudflare's `[[worker_loaders]]` binding (`env.LOADER`) to run code in sandboxed isolates. `runInIsolate()` (`brainstem.js:1365`):
+Tools are statically imported and executed directly:
 
-1. Wraps raw function code as an ES module if it doesn't already have `export default` (via `wrapAsModule()` or `wrapAsModuleWithProvider()`).
-2. Creates a Worker Loader instance with the module code, optional provider module, and environment bindings (e.g., `KV_BRIDGE` → `ScopedKV`, `KERNEL` → `KernelRPC`).
-3. Sends a POST request to the isolate's `fetch()` handler with context as JSON.
-4. Races against a timeout (default 15s for tools, 60s for LLM adapters).
+1. The kernel looks up the tool in the `TOOLS` map (passed via constructor from `index.js`).
+2. Builds a sandboxed context via `buildToolContext()` with scoped KV, resolved secrets, and optional provider module.
+3. Calls `tool.execute(ctx)` directly.
+4. Races against a timeout (from `meta.timeout_ms`, default 15s).
 
 ---
 
-## The hook system
+## The module system
 
-Five modules compose the wake hook policy layer. Four are stored in KV and loaded via Worker Loader isolate in production. One (`hook-chat.js`) is kernel-level code imported directly.
+Three modules compose the policy layer, all statically compiled into the runtime worker:
 
-### Hook modules
+| Module | Role | Mutable? |
+|--------|------|----------|
+| `act.js` | Session policy — orient flow, context building | Yes (via proposals) |
+| `reflect.js` | Reflection — session + deep, scheduling, proposal verdicts | Yes (via proposals) |
+| `hook-chat.js` | Chat handler — kernel-level | No |
 
-| Module | KV key | Imports from | Purpose |
-|--------|--------|-------------|---------|
-| `hook-protect.js` | `hook:wake:protect` | (none) | KV operation gating |
-| `hook-modifications.js` | `hook:wake:modifications` | (none) | Modification Protocol lifecycle |
-| `hook-reflect.js` | `hook:wake:reflect` | `hook-protect.js`, `hook-modifications.js` | Session + deep reflection |
-| `hook-main.js` | `hook:wake:code` | `hook-protect.js`, `hook-modifications.js`, `hook-reflect.js` | Wake entry point |
-| `hook-chat.js` | (not in KV) | (none) | Chat handler — kernel-level |
+The kernel calls `act.js` for orient sessions and `reflect.js` for deep reflect. Both receive the K interface (built by `buildKernelInterface()`) which provides access to kernel primitives.
 
-Dependency graph (no cycles): **protect ← modifications ← reflect ← main**.
+KV operation gating (`applyKVOperation`) is now a kernel method in `kernel.js`. Proposal methods (`createProposal`, `loadProposals`, `processProposalVerdicts`) are also kernel methods.
 
-### How hooks are loaded
-
-`runScheduled()` (`brainstem.js:881`) loads the hook manifest from `hook:wake:manifest`. The manifest maps filenames to KV keys:
-
-```json
-{
-  "main": "hook:wake:code",
-  "hook-protect.js": "hook:wake:protect",
-  "hook-reflect.js": "hook:wake:reflect",
-  "hook-modifications.js": "hook:wake:modifications"
-}
-```
-
-All module source code is read from KV, then passed to `_invokeHookModules()` which creates a Worker Loader isolate with `KERNEL` bound to `KernelRPC`. The isolate's `main` module receives a POST request with `{ sessionId }` and calls `wake(K, input)`.
-
-If no manifest and no `hook:wake:code` exist, the kernel falls through to `this.wake()` — the hardcoded minimal fallback (`brainstem.js:1112`).
-
-### `hook-main.js` — wake flow
+### `act.js` — wake flow
 
 `wake(K, input)` is the top-level session controller:
 
 1. **Sleep check** — reads `wake_config.next_wake_after`. Returns early if it's not time yet.
 2. **Crash detection** — `detectCrash(K)` checks `kernel:active_session`. If a stale session ID exists that doesn't match the current session, the previous session crashed. Returns the dead session's karma.
-3. **Modification tracking** — scans `modification_staged:*` and `modification_snapshot:*` prefixes, initializes the in-memory tracking arrays.
-4. **Circuit breaker** — `runCircuitBreaker(K)` (from `hook-modifications.js`) auto-rolls back inflight code modifications if `last_danger` timestamp is after their `activated_at`. Clears `last_danger` after processing.
+3. **Modification tracking** — scans `proposal:*` and `proposal:*` prefixes, initializes the in-memory tracking arrays.
+4. **Circuit breaker** — `runCircuitBreaker(K)` (from `kernel.js (proposal methods)`) auto-rolls back inflight code modifications if `last_danger` timestamp is after their `activated_at`. Clears `last_danger` after processing.
 5. **Retry pending git syncs** — retries any `git_pending:*` records from previous sessions.
 6. **Load ground truth** — fetches balances via `checkBalance()`.
 7. **Reflection check** — `highestReflectDepthDue(K, state)` scans from `max_reflect_depth` down to 1, checking if any depth is due based on session count or elapsed days.
@@ -210,7 +191,7 @@ If no manifest and no `hook:wake:code` exist, the kernel falls through to `this.
    - If `reflectDepth > 0`: runs `runReflect(K, state, depth, context)` — deep reflection that cascades downward.
    - Otherwise: runs `runSession(K, state, context, config)` — normal orient session followed by session-level reflect.
 
-### `hook-reflect.js` — reflection hierarchy
+### `reflect.js` — reflection hierarchy
 
 **Session reflect** (`executeReflect`, depth 0): Runs after every normal orient session. Gets karma (with request payloads stripped) and session cost. Uses no tools (`tools: []`), `maxSteps: 1`. Processes `kv_operations`, `modification_verdicts` (withdraw, modify only), and `modification_requests` (stages them).
 
@@ -227,16 +208,16 @@ Deep reflect output processing (`applyReflectOutput`):
 
 **Reflect scheduling**: `isReflectDue(K, state, depth)` checks `reflect:schedule:{depth}`. If a schedule exists, it fires when `sessionsSince >= after_sessions` or `daysSince >= after_days`. Cold-start fallback uses exponential intervals: `baseInterval * multiplier^(depth-1)` sessions.
 
-### `hook-modifications.js` — Modification Protocol
+### `kernel.js (proposal methods)` — Modification Protocol
 
 Two types of modifications:
 
 - **Code** (prompts, config, tools, hooks): requires `claims` (array), `ops` (array), `checks` (array). Goes through staged → inflight → promoted lifecycle.
-- **Wisdom** (`viveka:*`, `prajna:*`): requires `validation` and `ops`. Can only be staged by deep reflect (depth >= 1). Cannot use `acceptDirect()`. No circuit breaker rollback.
+- **Wisdom** (`upaya:*`, `prajna:*`): requires `validation` and `ops`. Can only be staged by deep reflect (depth >= 1). Cannot use `acceptDirect()`. No circuit breaker rollback.
 
 Lifecycle:
-1. **`stageModification(K, request, sessionId, depth)`** — validates fields, writes to `modification_staged:{id}` via `kvWritePrivileged`.
-2. **`acceptStaged(K, modificationId)`** — checks for inflight conflicts (same target keys), snapshots current values, applies ops via `kvWritePrivileged`, moves from staged to `modification_snapshot:{id}`. Called by deep reflect verdicts.
+1. **`stageModification(K, request, sessionId, depth)`** — validates fields, writes to `proposal:{id}` via `kvWritePrivileged`.
+2. **`acceptStaged(K, modificationId)`** — checks for inflight conflicts (same target keys), snapshots current values, applies ops via `kvWritePrivileged`, moves from staged to `proposal:{id}`. Called by deep reflect verdicts.
 3. **`acceptDirect(K, request, sessionId)`** — skips staging, goes straight to inflight. Only for code type (wisdom rejected). Used by deep reflect `modification_requests`.
 4. **`promoteInflight(K, modificationId, depth)`** — deletes snapshot, triggers git sync (except wisdom type).
 5. **`rollbackInflight(K, modificationId, reason)`** — restores snapshotted values via `kvWritePrivileged`, deletes snapshot.
@@ -245,7 +226,7 @@ Lifecycle:
 
 **Git sync**: on promotion, `syncToGit()` maps KV keys to file paths via `kvToPath()`, builds a shell script that base64-decodes files, runs a secret scan (rejects known patterns like `sk-*`, `AKIA*`, PEM keys, `ghp_*`, `xoxb-*`), then commits and pushes. Executed via `computer` tool on the Hetzner server. Failed syncs are stored as `git_pending:*` and retried on subsequent wakes.
 
-### `hook-protect.js` — KV operation gate
+### `kernel.js (applyKVOperation)` — KV operation gate
 
 `applyKVOperation(K, op)` gates all KV writes from the agent loop's output:
 
@@ -269,32 +250,22 @@ Kernel-level code (imported directly, not stored in KV). `handleChat(K, channel,
 
 ---
 
-## Dev mode: `brainstem-dev.js`
+## Dev vs prod
 
-`DevBrainstem` extends `Brainstem` and overrides platform-specific methods to run without Worker Loader isolates:
+In the two-worker architecture, dev and prod use the same `kernel.js` and module code. The key differences:
 
-| Override | Production behavior | Dev behavior |
-|----------|-------------------|-------------|
-| `_invokeHookModules()` | Creates Worker Loader isolate, sends POST | Calls `wake(this, ...)` directly from imported `hook-main.js` |
-| `_loadTool(toolName)` | Reads `tool:{name}:code` and `tool:{name}:meta` from KV | Returns `meta` from inline `TOOL_MODULES` map, `moduleCode: null` |
-| `_executeTool(...)` | Runs in Worker Loader isolate | Calls `TOOL_MODULES[toolName].execute(ctx)` directly |
-| `executeAdapter(...)` | Loads adapter code from KV, runs in isolate | Calls imported provider module directly |
-| `callWithCascade(...)` | Three-tier provider cascade via isolates | Direct `fetch()` to OpenRouter with 60s timeout, family adapters inlined |
-| `callHook(hookName, ctx)` | Loads hook code from KV, runs in isolate | Returns `null` (no hooks in dev) |
+- **Dev:** `index.js` is hand-written, imports modules directly from disk. No governor worker needed.
+- **Prod:** `index.js` is generated by the governor from KV-stored code, deployed via CF Workers API.
 
-Dev mode also:
-- Skips webhook signature verification for inbound chat
-- Adds `KernelRPC` getter bridge methods (e.g. `getSessionId()`, `getDharma()`) directly on `DevBrainstem` so the hooks can call `K.getSessionId()` where `K = this`
-- Emulates `ScopedKV` via `_buildScopedKV()` with the same scoping logic
-- Adds console logging to `karmaRecord()`
+Both modes use the same execution pattern: static imports, direct function calls, `buildKernelInterface()` for the K interface, `_buildScopedKV()` for tool KV access.
 
-**NOTE:** `callHook()` returns `null` in dev, so the `validate` and `validate_result` pre/post-hooks on tool execution never run in dev mode.
+The `callWithCascade()` method uses the statically compiled LLM provider as tier 1, with a direct OpenRouter fetch as the kernel fallback tier.
 
 ---
 
 ## The agent loop: `runAgentLoop()`
 
-`brainstem.js:1819` — the core LLM + tool execution cycle.
+`kernel.js:1819` — the core LLM + tool execution cycle.
 
 ```
 runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
@@ -317,7 +288,7 @@ runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
 
 ### Model resolution
 
-`resolveModel(modelOrAlias)` (`brainstem.js:2025`) looks up `config:models.alias_map`:
+`resolveModel(modelOrAlias)` (`kernel.js:2025`) looks up `config:models.alias_map`:
 
 ```json
 {
@@ -374,7 +345,7 @@ Only Opus and Sonnet have capability flags. Haiku and DeepSeek have none — the
 
 ### LLM provider cascade (production only)
 
-`callWithCascade()` (`brainstem.js:1506`) tries three tiers:
+`callWithCascade()` (`kernel.js:1506`) tries three tiers:
 
 1. **Tier 1: Dynamic adapter** — `provider:llm:code` from KV. On first success, snapshots to `provider:llm:last_working:code` (once per session).
 2. **Tier 2: Last working** — `provider:llm:last_working:code`. Falls back here if Tier 1 throws.
@@ -386,7 +357,7 @@ If all three fail, returns `{ ok: false, tier: "all_failed" }`. The caller (`cal
 
 ### Cost estimation
 
-`estimateCost(model, usage)` (`brainstem.js:2035`) looks up the model in `config:models.models` by ID or alias, then calculates: `(input_tokens * input_cost_per_mtok + output_tokens * output_cost_per_mtok) / 1,000,000`. Returns `null` if the model isn't in the config.
+`estimateCost(model, usage)` (`kernel.js:2035`) looks up the model in `config:models.models` by ID or alias, then calculates: `(input_tokens * input_cost_per_mtok + output_tokens * output_cost_per_mtok) / 1,000,000`. Returns `null` if the model isn't in the config.
 
 ---
 
@@ -406,7 +377,7 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 | **Protected agent** | Agent-created keys with no `unprotected` metadata flag — `applyKVOperation` blocks modification | Any existing key without `{ unprotected: true }` metadata |
 | **Unprotected agent** | Freely writable via `kvPutSafe` or `applyKVOperation` | New keys, keys with `{ unprotected: true }` metadata |
 
-**NOTE:** The protection-gate logic in `hook-protect.js:applyKVOperation` means that agent-created keys become read-only once written unless they were created with `{ unprotected: true }` metadata. The `applyKVOperationDirect` function adds `{ unprotected: true }` to its puts, so keys created through the orient loop's `kv_operations` remain writable in future sessions.
+**NOTE:** The protection-gate logic in `kernel.js (applyKVOperation):applyKVOperation` means that agent-created keys become read-only once written unless they were created with `{ unprotected: true }` metadata. The `applyKVOperationDirect` function adds `{ unprotected: true }` to its puts, so keys created through the orient loop's `kv_operations` remain writable in future sessions.
 
 ### Key namespace layout
 
@@ -421,10 +392,10 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 | `karma:*` | Session karma logs (flight recorder) |
 | `reflect:*:*` | Reflection outputs by depth and session |
 | `reflect:schedule:*` | Reflection scheduling state |
-| `modification_staged:*` | Staged modification proposals |
-| `modification_snapshot:*` | Inflight modification snapshots (for rollback) |
+| `proposal:*` | Staged modification proposals |
+| `proposal:*` | Inflight modification snapshots (for rollback) |
 | `yama:*`, `niyama:*` | Operating principles (outer world / inner practice) |
-| `viveka:*` | Accumulated wisdom (communication, channels) |
+| `upaya:*` | Accumulated wisdom (communication, channels) |
 | `prajna:*` | Accumulated self-knowledge |
 | `contact:*` | Contact records |
 | `contact_index:*` | Platform-to-contact lookup cache |
@@ -447,4 +418,4 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 
 ### Auto-tagging
 
-`kvPut()` (`brainstem.js:1969`) auto-tags every write with metadata based on the key prefix. For example, `tool:*` keys get `{ type: "tool", runtime: "worker", format: "text" }`. Caller metadata can override defaults. `updated_at` is always set. System keys have `unprotected` stripped from metadata.
+`kvPut()` (`kernel.js:1969`) auto-tags every write with metadata based on the key prefix. For example, `tool:*` keys get `{ type: "tool", runtime: "worker", format: "text" }`. Caller metadata can override defaults. `updated_at` is always set. System keys have `unprotected` stripped from metadata.

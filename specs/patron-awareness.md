@@ -2,7 +2,7 @@
 
 ## Overview
 
-Replace `person:{userId}` and `viveka:contact:*` with a unified `contact:{id}` system. Each contact is a single KV key containing everything the agent knows about that person — identity, platform mappings, chat config, communication stance, and the agent's evolving understanding.
+Replace `person:{userId}` and `upaya:contact:*` with a unified `contact:{id}` system. Each contact is a single KV key containing everything the agent knows about that person — identity, platform mappings, chat config, communication stance, and the agent's evolving understanding.
 
 The patron is identified via `patron:contact` (pointer to a contact slug). The patron relationship is patron/artist — the agent is autonomous but understands that maintaining the relationship serves its own interests.
 
@@ -68,7 +68,7 @@ Fields:
 | `key_type` | Key format: `"ssh-ed25519"`, `"ethereum"`, etc. | yes | no | no |
 | `platforms` | Maps platform → user ID for reverse lookup | yes | yes | **yes** |
 | `chat` | Per-contact chat config overrides | yes | yes | no |
-| `communication` | Communication stance (replaces `viveka:contact:*`) | yes | yes | no |
+| `communication` | Communication stance (replaces `upaya:contact:*`) | yes | yes | no |
 | `understanding` | Agent's accumulated observations | no | yes | no |
 
 ### `patron:contact`
@@ -115,7 +115,7 @@ Prompt injection through chat, email, or web fetch content gets into session kar
 
 ### The defense: kernel-enforced identity monitor
 
-The kernel (brainstem.js) monitors the patron's `name` and `platforms` fields mechanically. This runs at the kernel level — hooks cannot bypass it, prompt injection cannot disable it.
+The kernel (kernel.js) monitors the patron's `name` and `platforms` fields mechanically. This runs at the kernel level — hooks cannot bypass it, prompt injection cannot disable it.
 
 **On init (`loadPatronContext`):**
 1. Load `patron:contact` → slug, `patron:public_key`, and `contact:{slug}`
@@ -316,15 +316,15 @@ const contactContext = contact
 
 ## Communication gating changes
 
-Replace `viveka:contact:*` loading with contact lookup:
+Replace `upaya:contact:*` loading with contact lookup:
 
 ```javascript
-// Old — loadCommsViveka loads viveka:contact:*, viveka:channel:*, viveka:comms:*
-// New — loadCommsViveka loads viveka:channel:*, viveka:comms:* (general only)
+// Old — loadCommsUpaya loads upaya:contact:*, upaya:channel:*, upaya:comms:*
+// New — loadCommsUpaya loads upaya:channel:*, upaya:comms:* (general only)
 //        recipient contact loaded separately via resolveContact()
 ```
 
-Contact-specific communication context comes from the contact record's `communication` field. General communication wisdom (`viveka:comms:defaults`, `viveka:channel:*`) stays as viveka.
+Contact-specific communication context comes from the contact record's `communication` field. General communication wisdom (`upaya:comms:defaults`, `upaya:channel:*`) stays as upaya.
 
 ## Deep reflect integration
 
@@ -393,7 +393,7 @@ For the patron, even accepted modifications that change `name` or `platforms` tr
 
 ## Seed script changes
 
-Remove `viveka:contact:swami`. Add:
+Remove `upaya:contact:swami`. Add:
 
 ```javascript
 // ── Contacts ─────────────────────────────────────────────────
@@ -422,7 +422,7 @@ await put("patron:public_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...", "text"
 
 No initial `understanding` — the agent builds this from scratch through observation.
 
-Keep `viveka:comms:defaults` — general communication stance stays as viveka.
+Keep `upaya:comms:defaults` — general communication stance stays as upaya.
 
 ## System key protection
 
@@ -435,7 +435,7 @@ Keep `viveka:comms:defaults` — general communication stance stays as viveka.
 
 v0.1 — no migration. Re-seed wipes everything.
 
-- Remove `viveka:contact:swami` from seed
+- Remove `upaya:contact:swami` from seed
 - Remove any `person:*` references
 - Add `contact:swami`, `patron:contact`, and `patron:public_key` to seed
 - Update `hook-chat.js` to use contact resolution
@@ -453,22 +453,22 @@ All phases implemented, all gaps closed.
 | Step | File(s) | Status |
 |------|---------|--------|
 | Seed: contact:swami, patron:contact, patron:public_key | `scripts/seed-local-kv.mjs` | DONE |
-| System key protection + IMMUTABLE_KEYS | `hook-protect.js`, `brainstem.js` | DONE |
-| loadPatronContext + identity monitor | `brainstem.js` | DONE |
-| resolveContact (basic) | `brainstem.js` | DONE |
-| KernelRPC: getPatronId, getPatronContact, isPatronIdentityDisputed, resolveContact | `brainstem.js` | DONE |
+| System key protection + IMMUTABLE_KEYS | `kernel.js (applyKVOperation)`, `kernel.js` | DONE |
+| loadPatronContext + identity monitor | `kernel.js` | DONE |
+| resolveContact (basic) | `kernel.js` | DONE |
+| KernelRPC: getPatronId, getPatronContact, isPatronIdentityDisputed, resolveContact | `kernel.js` | DONE |
 | Mock kernel updates | `tests/helpers/mock-kernel.js` | DONE |
 | Chat: person → contact migration | `hook-chat.js` | DONE |
 | Chat tests | `tests/chat.test.js` | DONE |
-| Comms gate: viveka:contact → contact migration | `brainstem.js` | DONE |
-| Comms gate: loadCommsViveka without viveka:contact | `brainstem.js` | DONE |
+| Comms gate: upaya:contact → contact migration | `kernel.js` | DONE |
+| Comms gate: loadCommsUpaya without upaya:contact | `kernel.js` | DONE |
 | Comms gate tests | `tests/brainstem.test.js` | DONE |
-| Deep reflect: patron context + dispute in gatherReflectContext | `hook-reflect.js` | DONE |
+| Deep reflect: patron context + dispute in gatherReflectContext | `reflect.js` | DONE |
 | Deep reflect prompt: patron awareness + dispute | `prompts/deep-reflect.md` | DONE |
 | Deep reflect prompt: blocked comms reference update | `prompts/deep-reflect.md` | DONE |
 | Reflect tests: patron context loading | `tests/wake-hook.test.js` | DONE |
 | Immutable key test (patron:public_key) | `tests/brainstem.test.js` | DONE |
-| resolveContact snapshot fallback when disputed | `brainstem.js` | DONE |
+| resolveContact snapshot fallback when disputed | `kernel.js` | DONE |
 | key_type + public_key in contact seed | `scripts/seed-local-kv.mjs` | DONE |
 | Identity monitor tests (4 cases) | `tests/brainstem.test.js` | DONE |
 | Snapshot-based resolution test | `tests/brainstem.test.js` | DONE |
@@ -489,10 +489,10 @@ When the verification utility is built:
 | File | Status |
 |------|--------|
 | `scripts/seed-local-kv.mjs` | Done |
-| `hook-protect.js` | Done |
-| `brainstem.js` | Done |
+| `kernel.js (applyKVOperation)` | Done |
+| `kernel.js` | Done |
 | `hook-chat.js` | Done |
-| `hook-reflect.js` | Done |
+| `reflect.js` | Done |
 | `prompts/deep-reflect.md` | Done |
 | `tests/helpers/mock-kernel.js` | Done |
 | `tests/chat.test.js` | Done |

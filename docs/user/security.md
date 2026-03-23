@@ -101,7 +101,7 @@ empty — no tools at all.
 
 ## What the Agent Cannot Do
 
-These restrictions are enforced by the kernel (`brainstem.js`) — deployed
+These restrictions are enforced by the kernel (`kernel.js`) — deployed
 code that the agent cannot modify, override, or access.
 
 ### Modify Its Core Identity
@@ -161,7 +161,7 @@ handle untrusted external input, cannot.
 
 ### Change Kernel Code
 
-The kernel (`brainstem.js`) is deployed as a Cloudflare Worker. It is not
+The kernel (`kernel.js`) is deployed as a Cloudflare Worker. It is not
 stored in KV. The agent cannot read, modify, or replace it. Only a
 `wrangler deploy` from the repository changes the kernel.
 
@@ -273,7 +273,7 @@ what changed.
 ### Write Wisdom
 
 The agent accumulates wisdom through two prefixes:
-- `viveka:*` — discernment about the external world
+- `upaya:*` — discernment about the external world
 - `prajna:*` — self-knowledge about its own patterns
 
 Wisdom modifications follow the same staged protocol but with lighter
@@ -290,7 +290,7 @@ Every outbound message from a communication tool (`send_slack`,
 ### Layer 1: Mechanical Floor
 
 If the tool is *initiating* contact (not replying) and the recipient has
-no `viveka:contact:*` entry, the message is blocked. No LLM call is
+no `upaya:contact:*` entry, the message is blocked. No LLM call is
 made. This is a hard block — the agent cannot send a first message to
 someone unless it has accumulated communication wisdom about that
 recipient.
@@ -311,8 +311,8 @@ communication decisions — from sending messages.
 ### Layer 3: LLM Judgment
 
 A dedicated LLM call evaluates the message against accumulated
-communication wisdom (`viveka:contact:*`, `viveka:channel:*`,
-`viveka:comms:*`). The gate returns one of three verdicts:
+communication wisdom (`upaya:contact:*`, `upaya:channel:*`,
+`upaya:comms:*`). The gate returns one of three verdicts:
 
 - **Send** — message goes through unchanged
 - **Revise** — message is rewritten by the gate and then sent
@@ -346,7 +346,7 @@ automatically rolled back — its snapshotted old values are restored.
 hook module that breaks the agent. The danger signal triggers rollback
 without waiting for human intervention.
 
-**What it doesn't cover:** Wisdom modifications (`viveka:*`, `prajna:*`)
+**What it doesn't cover:** Wisdom modifications (`upaya:*`, `prajna:*`)
 are excluded from circuit breaker rollback. Bad wisdom can't crash the
 system — it just leads to suboptimal decisions, which get corrected
 through normal reflection.
@@ -424,7 +424,7 @@ never saw the content — but the attempt is logged.
 
 ### Step 4: Check Modifications
 
-Browse `modification_staged:*` and `modification_snapshot:*` in the KV
+Browse `proposal:*` and `proposal:*` in the KV
 Explorer. Staged modifications are proposals that haven't been applied.
 Inflight modifications (snapshots) are active changes that can still be
 rolled back.

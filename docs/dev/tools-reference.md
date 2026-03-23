@@ -214,7 +214,7 @@ executed in isolates.
 
 ### spawn_subplan
 
-`brainstem.js:1617` (definition), `brainstem.js:1787` (implementation)
+`kernel.js:1617` (definition), `kernel.js:1787` (implementation)
 
 Spawns a nested agent loop for independent sub-tasks.
 
@@ -238,7 +238,7 @@ the agent loop's `Promise.all` on tool calls).
 
 ### check_balance
 
-`brainstem.js:1179`
+`kernel.js:1179`
 
 Checks balances for all configured providers and wallets.
 
@@ -256,7 +256,7 @@ Checks balances for all configured providers and wallets.
 
 ### verify_patron
 
-`brainstem.js` (definition in `buildToolDefinitions`, dispatch in
+`kernel.js` (definition in `buildToolDefinitions`, dispatch in
 `executeToolCall`, implementation in `verifyPatron`)
 
 Verifies the patron's identity by checking an Ed25519 signature against
@@ -306,10 +306,10 @@ directly to KV, bypassing the immutability guard.
 | check_balance | yes | no | yes | yes | allowlist | yes |
 | verify_patron | yes | no | yes | yes | allowlist | yes |
 
-**Session reflect:** `tools: []` — no tools at all (`hook-reflect.js:52`).
+**Session reflect:** `tools: []` — no tools at all (`reflect.js:52`).
 
 **Deep reflect:** All tools except `spawn_subplan`
-(`hook-reflect.js:134-135`).
+(`reflect.js:134-135`).
 
 **Chat (unknown):** Only tools in `config:defaults.chat.unknown_contact_tools`
 allowlist. Empty by default = no tools.
@@ -321,7 +321,7 @@ and `verify_patron`.
 
 ## ScopedKV
 
-`brainstem.js:19` (prod — `ScopedKV` WorkerEntrypoint), `brainstem-dev.js:185` (dev — `_buildScopedKV`)
+`kernel.js:19` (prod — `ScopedKV` kernel method), `index.js:185` (dev — `_buildScopedKV`)
 
 Tools with `kv_access` other than `"none"` receive a scoped KV object in
 their execution context. Two access levels:
@@ -379,7 +379,7 @@ Sends to `https://openrouter.ai/api/v1/chat/completions`. Adds
 ephemeral` for Anthropic models. Returns `{ content, usage, toolCalls }`.
 
 Used by the kernel's provider cascade (`callWithCascade`) in prod. In dev,
-`DevBrainstem.callWithCascade` makes the OpenRouter call directly instead
+`Brainstem.callWithCascade` makes the OpenRouter call directly instead
 of going through this adapter.
 
 ### llm_balance.js — OpenRouter Balance
@@ -466,9 +466,8 @@ provider binding is controlled by the kernel — the agent cannot modify it.
 | `test_model` | `llm` | `call` |
 
 In prod, the provider code is loaded from `provider:{name}:code` KV and
-injected into the isolate. In dev, `PROVIDER_MODULES` maps
-`provider:{name}` to the imported module and passes it directly
-(`brainstem-dev.js:177`).
+injected as `ctx.provider`. The kernel looks up the provider in the
+`PROVIDERS` map (passed via `index.js`) and injects it directly.
 
 > **NOTE:** Tool source files still declare `provider` in `export const
 > meta`, but this field is stripped from KV-stored `tool:{name}:meta` at

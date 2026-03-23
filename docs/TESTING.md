@@ -9,10 +9,10 @@ Fast, no network, no Workers runtime. Uses vitest with mock KV and mock fetch.
 **What's tested:**
 - Kernel logic (brainstem.test.js): parseAgentOutput, buildPrompt, budget
   enforcement, karma recording, tool definitions, session management
-- Wake hook (wake-hook.test.js): orient context, reflect scheduling, Modification
-  Protocol, circuit breaker, tripwire evaluation
+- Wake hook (wake-hook.test.js): orient context, reflect scheduling, proposal
+  system, circuit breaker, tripwire evaluation
 - Tools (tools.test.js): each tool's execute() with mock context, module
-  structure validation, wrapAsModule compatibility
+  structure validation
 
 **What it catches:** Logic bugs, regressions, contract violations between
 kernel and hook, broken tool modules.
@@ -21,7 +21,7 @@ kernel and hook, broken tool modules.
 
 ### Layer 1: Dev integration (`wrangler dev -c wrangler.dev.toml`)
 
-Real LLM calls via OpenRouter, inline tool execution (no isolates), real KV.
+Real LLM calls via OpenRouter, direct tool execution (statically imported), real KV.
 
 **What's tested:**
 - Full wake cycle: orient → tool calls → reflect → session results
@@ -38,17 +38,17 @@ source .env && bash scripts/start.sh --reset-all-state --wake
 
 ### Layer 2: Prod integration (`wrangler dev` with `wrangler.toml`)
 
-Full isolates via Worker Loader, provider cascade, hook dispatch through
-KernelRPC. Closest to production.
+Full runtime with statically compiled modules, provider cascade. Closest
+to production.
 
 **What's tested:**
-- Worker Loader isolate creation and module wrapping
-- ScopedKV via WorkerEntrypoint RPC
+- Static import wiring of all modules
+- ScopedKV scoping behavior
 - Provider cascade (tier 1 → tier 2 → tier 3 fallback)
-- KernelRPC bridge between hook isolate and kernel
+- K interface between kernel and hook modules
 
-**What it catches:** Isolate-specific bugs, module wrapping issues, RPC
-serialization problems, provider cascade failures.
+**What it catches:** Import wiring issues, provider cascade failures,
+module integration problems.
 
 **Run:**
 ```bash
@@ -69,6 +69,6 @@ Shared mocks live in `tests/helpers/`:
 ## Adding tests
 
 - Tool tests go in `tests/tools.test.js`
-- Kernel tests go in `tests/brainstem.test.js`
-- Wake hook tests go in `tests/wake-hook.test.js`
+- Kernel tests go in `tests/brainstem.test.js` (imports from `kernel.js`)
+- Wake hook tests go in `tests/wake-hook.test.js` (imports from `act.js`, `reflect.js`)
 - Use shared helpers from `tests/helpers/` for mocks

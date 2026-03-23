@@ -8,7 +8,7 @@ Five entry points into the system. This document traces each from the external t
 
 **Trigger:** Cloudflare cron `* * * * *` (every minute) fires `scheduled()`.
 
-**Source:** `brainstem.js:141` (prod), `brainstem-dev.js:48` (dev).
+**Source:** `kernel.js:141` (prod), `index.js:48` (dev).
 
 ### Production call chain
 
@@ -16,19 +16,19 @@ Five entry points into the system. This document traces each from the external t
 Cloudflare cron trigger
 │
 ▼
-scheduled(event, env, ctx)                          brainstem.js:142
+scheduled(event, env, ctx)                          kernel.js:142
 │ new Brainstem(env, { ctx })
 │
 ▼
-brain.runScheduled()                                brainstem.js:881
+brain.runScheduled()                                kernel.js:881
 │
-├─► detectPlatformKill()                            brainstem.js:920
+├─► detectPlatformKill()                            kernel.js:920
 │   │ Read kernel:active_session
 │   │ If stale → prepend { outcome: "killed" } to kernel:last_sessions
 │   │ Delete kernel:active_session
 │   │
 │
-├─► checkHookSafety()                               brainstem.js:934
+├─► checkHookSafety()                               kernel.js:934
 │   │ Read kernel:last_sessions
 │   │ If last 3 are crash/killed:
 │   │   Delete all hook:wake:* keys
@@ -38,7 +38,7 @@ brain.runScheduled()                                brainstem.js:881
 │   │ Else return true
 │   │
 │
-├─► Load hook modules                               brainstem.js:893
+├─► Load hook modules                               kernel.js:893
 │   │ Read hook:wake:manifest
 │   │ If manifest:
 │   │   Read each KV key in manifest → modules map
@@ -49,55 +49,55 @@ brain.runScheduled()                                brainstem.js:881
 │
 ▼
 [modules loaded?]
-├─ YES → brain.executeHook(modules, mainModule)     brainstem.js:979
+├─ YES → brain.executeHook(modules, mainModule)     kernel.js:979
 │         │
 │         ├─► Write kernel:active_session = sessionId
 │         │
-│         ├─► _invokeHookModules(modules, mainModule) brainstem.js:1007
+│         ├─► _invokeHookModules(modules, mainModule) kernel.js:1007
 │         │   │ Set _activeBrain = this
-│         │   │ env.LOADER.get() → create Worker Loader isolate
+│         │   │ env.LOADER.get() → create static import
 │         │   │   modules: hook source code from KV
-│         │   │   env.KERNEL: this.ctx.exports.KernelRPC({})
+│         │   │   env.KERNEL: this.ctx.exports.K interface({})
 │         │   │ POST https://internal/wake { sessionId }
 │         │   │
-│         │   ▼ (inside isolate)
-│         │   hook-main.js default export fetch()   hook-main.js:278
-│         │   │ K = env.KERNEL (KernelRPC binding)
+│         │   ▼ (inside module)
+│         │   act.js default export fetch()   act.js:278
+│         │   │ K = env.KERNEL (K interface binding)
 │         │   │
 │         │   ▼
-│         │   wake(K, input)                        hook-main.js:18
+│         │   wake(K, input)                        act.js:18
 │         │   │
-│         │   ├─► Sleep check                       hook-main.js:44
+│         │   ├─► Sleep check                       act.js:44
 │         │   │   Read wake_config → check next_wake_after
 │         │   │   Return { skipped: true } if not time
 │         │   │
-│         │   ├─► detectCrash(K)                    hook-main.js:136
+│         │   ├─► detectCrash(K)                    act.js:136
 │         │   │   Read kernel:active_session
 │         │   │   If stale and ≠ current → read karma:{staleId}, return crash data
 │         │   │
-│         │   ├─► initTracking()                    hook-modifications.js:10
-│         │   │   Scan modification_staged:* and modification_snapshot:* prefixes
+│         │   ├─► initTracking()                    kernel.js (proposal methods):10
+│         │   │   Scan proposal:* and proposal:* prefixes
 │         │   │   Populate in-memory tracking arrays
 │         │   │
-│         │   ├─► runCircuitBreaker(K)              hook-modifications.js:445
+│         │   ├─► runCircuitBreaker(K)              kernel.js (proposal methods):445
 │         │   │   Read last_danger
 │         │   │   For each inflight code modification activated before danger:
-│         │   │     rollbackInflight() → restore snapshot, delete modification_snapshot:*
+│         │   │     rollbackInflight() → restore snapshot, delete proposal:*
 │         │   │   Delete last_danger via kvDeleteSafe
 │         │   │
-│         │   ├─► retryPendingGitSyncs(K)           hook-modifications.js:645
+│         │   ├─► retryPendingGitSyncs(K)           kernel.js (proposal methods):645
 │         │   │   Scan git_pending:* → retry each via computer
 │         │   │
-│         │   ├─► getBalances(K, state)              hook-main.js:249
+│         │   ├─► getBalances(K, state)              act.js:249
 │         │   │   K.checkBalance({}) → iterate providers + wallets → executeAdapter for each
 │         │   │
 │         │   ├─► Reload config:defaults, config:models, config:tool_registry
 │         │   │
-│         │   ├─► highestReflectDepthDue(K, state)  hook-reflect.js:364
+│         │   ├─► highestReflectDepthDue(K, state)  reflect.js:364
 │         │   │   Check reflect:schedule:{depth} for each depth from max down to 1
 │         │   │   Return highest due depth, or 0
 │         │   │
-│         │   ├─► evaluateTripwires(config, { balances }) hook-main.js:253
+│         │   ├─► evaluateTripwires(config, { balances }) act.js:253
 │         │   │   Evaluate alert conditions → possibly escalate effort level
 │         │   │
 │         │   ├─► Record session_start karma
@@ -106,7 +106,7 @@ brain.runScheduled()                                brainstem.js:881
 │         │   [reflectDepth > 0?]
 │         │   │
 │         │   ├── YES ──► DEEP REFLECT PATH
-│         │   │           runReflect(K, state, depth, context) hook-reflect.js:119
+│         │   │           runReflect(K, state, depth, context) reflect.js:119
 │         │   │           │ Load prompt:reflect:{depth} or default
 │         │   │           │ Gather context (orient prompt, staged/inflight mods, blocked comms, patron info)
 │         │   │           │ Build tools (all except spawn_subplan)
@@ -123,7 +123,7 @@ brain.runScheduled()                                brainstem.js:881
 │         │   │           │ [depth > 1?] → cascade: runReflect(K, state, depth-1, context)
 │         │   │
 │         │   └── NO ───► ORIENT PATH
-│         │               runSession(K, state, context, config) hook-main.js:155
+│         │               runSession(K, state, context, config) act.js:155
 │         │               │ Read prompt:orient, config:resources
 │         │               │ Build system prompt from template
 │         │               │ Build orient context (balances, last_reflect, effort, crash data, time)
@@ -137,7 +137,7 @@ brain.runScheduled()                                brainstem.js:881
 │         │               │ Apply kv_operations via applyKVOperation (protection gate)
 │         │               │
 │         │               │ [budget not fully exhausted?]
-│         │               │   executeReflect(K, state, step)    hook-reflect.js:14
+│         │               │   executeReflect(K, state, step)    reflect.js:14
 │         │               │   │ Read prompt:reflect
 │         │               │   │ Get karma (strip request payloads) + session cost
 │         │               │   │ K.runAgentLoop({ tools: [], maxSteps: 1, model: reflect model })
@@ -153,14 +153,14 @@ brain.runScheduled()                                brainstem.js:881
 │         ├─► [catch] If hook crashed:
 │         │   outcome = "crash"
 │         │   Record hook_execution_error karma
-│         │   runMinimalFallback()                   brainstem.js:1066
+│         │   runMinimalFallback()                   kernel.js:1066
 │         │   │ Alert, load eager config
 │         │   │ Override defaults to { max_cost: 0.50, max_duration_seconds: 120 }
 │         │   │ runAgentLoop({ hardcoded recovery prompt, maxSteps: 3 })
 │         │   │ Discard kv_operations
 │         │   │ Increment session_counter
 │         │
-│         ├─► updateSessionOutcome(outcome)          brainstem.js:1037
+│         ├─► updateSessionOutcome(outcome)          kernel.js:1037
 │         │   Prepend to kernel:last_sessions (keep 5)
 │         │   If "clean":
 │         │     If kernel:hook_dirty or no kernel:last_good_hook:
@@ -169,40 +169,20 @@ brain.runScheduled()                                brainstem.js:881
 │         │
 │         └─► Delete kernel:active_session
 │
-└─ NO → brain.wake()                                 brainstem.js:1112
+└─ NO → brain.wake()                                 kernel.js:1112
           runMinimalFallback() + updateSessionOutcome("clean")
 ```
 
-### Dev call chain differences
+### Dev vs prod differences
 
-```
-DevBrainstem.scheduled()                            brainstem-dev.js:48
-│ new DevBrainstem(env, { ctx })
-│ brain.runScheduled()                              (inherited from Brainstem)
-│   ...same flow through detectPlatformKill, checkHookSafety, load modules...
-│
-│ _invokeHookModules() override                     brainstem-dev.js:136
-│   this.loadEagerConfig()
-│   wake(this, { sessionId })                       ← direct call, no isolate
-│     K = this (DevBrainstem instance)
-│     K.getSessionId() → this.sessionId             ← getter bridge, not RPC
-│     K.callLLM() → base class callLLM()
-│       callWithCascade() override                  brainstem-dev.js:222
-│         Direct fetch to OpenRouter (no cascade, no isolate)
-│     K.executeToolCall() → base class executeToolCall()
-│       executeAction() → _executeTool() override   brainstem-dev.js:170
-│         Direct call to TOOL_MODULES[name].execute(ctx) (no isolate)
-│       callHook() override → returns null          brainstem-dev.js:274
-│         (validate/validate_result hooks never run in dev)
-```
+In the two-worker architecture, dev and prod use the same `kernel.js` with
+the same execution pattern (static imports, direct function calls). The only
+differences:
 
-**Key dev differences:**
-- No Worker Loader isolates — all code runs in same process
-- `callWithCascade()` → direct OpenRouter fetch, 60s timeout, no provider cascade
-- `callHook()` → returns null (no pre/post-validation hooks)
-- `_executeTool()` → calls imported module directly
-- `executeAdapter()` → calls imported provider directly
-- Webhook signature verification skipped for inbound chat
+- **Dev:** `index.js` is hand-written, imports from disk. No governor needed.
+- **Prod:** `index.js` is generated by the governor from KV code.
+- Both modes call tool/provider/hook modules directly (no modules).
+- Webhook signature verification may be skipped in dev for convenience.
 
 ---
 
@@ -210,7 +190,7 @@ DevBrainstem.scheduled()                            brainstem-dev.js:48
 
 **Trigger:** HTTP POST to `/channel/:channel` (e.g., Slack sends webhook to `/channel/slack`).
 
-**Source:** `brainstem.js:147` (prod), `brainstem-dev.js:53` (dev).
+**Source:** `kernel.js:147` (prod), `index.js:53` (dev).
 
 ### Production call chain
 
@@ -218,21 +198,21 @@ DevBrainstem.scheduled()                            brainstem-dev.js:48
 POST /channel/slack
 │
 ▼
-fetch(request, env, ctx)                            brainstem.js:147
+fetch(request, env, ctx)                            kernel.js:147
 │ Match /channel/(\w+) — if no match or not POST → 404
 │ new Brainstem(env, { ctx })
 │
-├─► Load adapter from KV                            brainstem.js:158
+├─► Load adapter from KV                            kernel.js:158
 │   Read channel:slack:code → adapterCode
 │   Read channel:slack:config → adapterConfig
 │   If no code → 404
 │
-├─► Read raw body (text, for HMAC)                  brainstem.js:164
+├─► Read raw body (text, for HMAC)                  kernel.js:164
 │
-├─► Verify webhook signature (in isolate)           brainstem.js:175
+├─► Verify webhook signature (in module)           kernel.js:175
 │   Collect env vars from adapterConfig.secrets + webhook_secret_env
-│   runInIsolate({ action: "verify", headers, rawBody, env_vars })
-│   │ wrapChannelAdapter(adapterCode) → adds default export with verify/parse/send dispatch
+│   direct call({ action: "verify", headers, rawBody, env_vars })
+│   │ adapter module called directly (verify/parse/send)
 │   │ verify(headers, rawBody, env_vars)            channels/slack.js:10
 │   │   Check X-Slack-Request-Timestamp (reject > 5 min → replay protection)
 │   │   HMAC-SHA256: v0:timestamp:rawBody with SLACK_SIGNING_SECRET
@@ -240,11 +220,11 @@ fetch(request, env, ctx)                            brainstem.js:147
 │   │   Return { ok: true/false }
 │   If !ok → 401 Unauthorized
 │
-├─► Parse JSON body                                  brainstem.js:186
+├─► Parse JSON body                                  kernel.js:186
 │   If invalid JSON → 400
 │
-├─► Parse inbound message (in isolate)               brainstem.js:191
-│   runInIsolate({ action: "parse", body })
+├─► Parse inbound message (in module)               kernel.js:191
+│   direct call({ action: "parse", body })
 │   │ parseInbound(body)                             channels/slack.js:42
 │   │   url_verification → return { _challenge }
 │   │   event.type !== "message" → return null
@@ -252,26 +232,26 @@ fetch(request, env, ctx)                            brainstem.js:147
 │   │   Return { chatId, text, userId, command, msgId }
 │   If no inbound → 200 OK (ignored event type)
 │
-├─► Challenge response                               brainstem.js:201
+├─► Challenge response                               kernel.js:201
 │   If _challenge → respond with { challenge } JSON
 │
-├─► Deduplication                                    brainstem.js:209
+├─► Deduplication                                    kernel.js:209
 │   If msgId: check dedup:{msgId} in KV
 │   If seen → 200 OK (duplicate)
 │   Write dedup:{msgId} = "1" with 30s TTL
 │
-├─► Build adapter secrets                            brainstem.js:217
+├─► Build adapter secrets                            kernel.js:217
 │
-├─► Return 200 OK immediately                       brainstem.js:244
+├─► Return 200 OK immediately                       kernel.js:244
 │
-└─► ctx.waitUntil(background work)                   brainstem.js:223
+└─► ctx.waitUntil(background work)                   kernel.js:223
     │
-    ├─► brain.loadEagerConfig()                      brainstem.js:312
+    ├─► brain.loadEagerConfig()                      kernel.js:312
     │   Load config:defaults, config:models, config:model_capabilities,
     │   dharma, config:tool_registry, yamas/niyamas, patron context
     │
-    ├─► Build adapter.sendReply()                    brainstem.js:228
-    │   Wraps runInIsolate({ action: "send", chatId, text, secrets })
+    ├─► Build adapter.sendReply()                    kernel.js:228
+    │   Wraps direct call({ action: "send", chatId, text, secrets })
     │   │ sendReply(chatId, text, secrets, fetch)    channels/slack.js:68
     │   │   POST https://slack.com/api/chat.postMessage
     │
@@ -314,7 +294,7 @@ fetch(request, env, ctx)                            brainstem.js:147
     │       Execute all in parallel: K.executeToolCall(tc)
     │         ├─► Communication gate (if tool has meta.communication)
     │         ├─► callHook('validate', ...) — pre-validation
-    │         ├─► executeAction → _executeTool (in isolate)
+    │         ├─► executeAction → _executeTool (in module)
     │         ├─► callHook('validate_result', ...) — post-validation
     │         └─► Inbound content gate (if tool has meta.inbound)
     │       Add tool result messages
@@ -326,7 +306,7 @@ fetch(request, env, ctx)                            brainstem.js:147
     │
     ├─► Send reply                                   hook-chat.js:119
     │   adapter.sendReply(chatId, reply)
-    │   │ → runInIsolate → sendReply → POST to Slack API
+    │   │ → direct call → sendReply → POST to Slack API
     │
     ├─► Trim + save state                            hook-chat.js:122
     │   Increment turn_count
@@ -336,36 +316,13 @@ fetch(request, env, ctx)                            brainstem.js:147
     └─► Record chat_turn karma                       hook-chat.js:130
 ```
 
-### Dev call chain differences
+### Dev vs prod chat differences
 
-```
-POST /channel/slack
-│
-▼
-DevBrainstem fetch(request, env, ctx)                brainstem-dev.js:53
-│ Match /channel/(\w+)
-│ new DevBrainstem(env, { ctx })
-│ Load adapter from CHANNEL_ADAPTERS (inline import, not KV)
-│
-├─► Skip webhook verification entirely               brainstem-dev.js:69
-│   (no verify call in dev)
-│
-├─► Parse: slackAdapter.parseInbound(body)           (direct call, no isolate)
-│
-├─► Challenge, dedup same as prod
-│
-├─► Return 200 immediately
-│
-└─► ctx.waitUntil(background)
-    │ brain.loadEagerConfig()
-    │ adapter.sendReply = slackAdapter.sendReply()   (direct call, no isolate)
-    │ handleChat(brain, channel, inbound, adapter)   (same flow)
-    │   K.executeToolCall → _executeTool override    (direct call, no isolate)
-    │   K.callLLM → callWithCascade override         (direct OpenRouter fetch)
-    │   K.callHook → returns null                    (hooks disabled)
-```
+In both dev and prod, the chat path uses the same `index.js` entry point with
+statically imported channel adapters. The adapter's `verify()`, `parseInbound()`,
+and `sendReply()` functions are called directly (no modules in either mode).
 
-**NOTE:** In dev mode, the entire verification step is skipped. Any POST to `/channel/slack` with valid JSON is processed. This means malformed or forged webhook payloads won't be rejected.
+Dev mode may skip webhook signature verification for convenience during testing.
 
 ---
 
@@ -435,7 +392,7 @@ DELETE /quarantine/:key                  → auth required
 │ Return { ok: true }
 ```
 
-**NOTE:** The dashboard reads `kernel:active_session` and `sealed:quarantine:*` directly from KV. The brainstem's `KernelRPC.kvGet()` blocks `sealed:*` reads, but the dashboard doesn't go through RPC — it uses `env.KV` directly. This is by design: the dashboard is operator-only, and quarantine content is intended for patron review.
+**NOTE:** The dashboard reads `kernel:active_session` and `sealed:quarantine:*` directly from KV. The brainstem's `K interface.kvGet()` blocks `sealed:*` reads, but the dashboard doesn't go through RPC — it uses `env.KV` directly. This is by design: the dashboard is operator-only, and quarantine content is intended for patron review.
 
 **NOTE:** `GET /health` reads a key called `session` (plain text). This key is never written by any code in the codebase. The result is `null` and falls through to `activeSession` via the `||` operator, so it's harmless but dead.
 
@@ -556,7 +513,7 @@ Generates a DID keypair via ethers. Used once during initial setup. Not part of 
 
 ## Agent loop detail
 
-Referenced by both the wake cycle and chat call chains. `runAgentLoop()` at `brainstem.js:1819`.
+Referenced by both the wake cycle and chat call chains. `runAgentLoop()` at `kernel.js:1819`.
 
 ```
 runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
@@ -592,7 +549,7 @@ runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
 │   │         │   Send → proceed
 │   │         │ callHook('validate', { tool, args, schema })
 │   │         │ executeAction({ tool, input, id })
-│   │         │   _loadTool → _executeTool (isolate in prod, direct in dev)
+│   │         │   _loadTool → _executeTool (module in prod, direct in dev)
 │   │         │ callHook('validate_result', { tool, args, result })
 │   │         │ Inbound content gate (if meta.inbound)
 │   │         │   Resolve sender contact

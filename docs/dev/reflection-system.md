@@ -3,9 +3,9 @@
 How Swayambhu examines its own behavior, schedules recursive
 self-examination, and accumulates operating principles.
 
-All reflection code lives in `hook-reflect.js` (KV key
-`hook:wake:reflect`). Wake flow integration is in `hook-main.js`.
-Principle enforcement (yamas, niyamas) is kernel-level in `brainstem.js`.
+All reflection code lives in `reflect.js` (KV key
+`hook:wake:reflect`). Wake flow integration is in `act.js`.
+Principle enforcement (yamas, niyamas) is kernel-level in `kernel.js`.
 
 ---
 
@@ -31,16 +31,16 @@ wake()
 ```
 
 The wake flow chooses between deep reflect and a normal session at
-`hook-main.js:116`. They are **mutually exclusive** — a deep reflect
+`act.js:116`. They are **mutually exclusive** — a deep reflect
 wake does not run orient, and a normal session does not run deep reflect.
 
 ---
 
 ## Session Reflect (Depth 0)
 
-`hook-reflect.js:14` — `executeReflect(K, state, step)`
+`reflect.js:14` — `executeReflect(K, state, step)`
 
-Runs after every orient session (`hook-main.js:205`), unless the budget
+Runs after every orient session (`act.js:205`), unless the budget
 was fully exhausted and no reflect reserve was configured.
 
 ### Characteristics
@@ -97,20 +97,20 @@ On success, processes in order:
 
 ## Deep Reflect (Depth 1+)
 
-`hook-reflect.js:119` — `runReflect(K, state, depth, context)`
+`reflect.js:119` — `runReflect(K, state, depth, context)`
 
 Runs instead of orient when `highestReflectDepthDue` returns > 0.
 
 ### Characteristics
 
 - **Has tools** — full tool definitions minus `spawn_subplan`
-  (`hook-reflect.js:134-135`)
+  (`reflect.js:134-135`)
 - **Multi-step agent loop** — configurable `maxSteps` per depth
 - **Full authority** — can apply, reject, promote, rollback, defer, modify,
   withdraw modifications; can process comms verdicts; can create direct
   inflight modifications
 - **Recursive** — after processing, cascades to `depth - 1` if depth > 1
-  (`hook-reflect.js:162-164`)
+  (`reflect.js:162-164`)
 
 ### Flow
 
@@ -147,7 +147,7 @@ prompt-level convention, not a kernel-enforced constraint.
 
 ### isReflectDue(K, state, depth)
 
-`hook-reflect.js:338`
+`reflect.js:338`
 
 Checks whether a given depth should run this wake. Two paths:
 
@@ -168,16 +168,16 @@ Checks whether a given depth should run this wake. Two paths:
 
 ### highestReflectDepthDue(K, state)
 
-`hook-reflect.js:364`
+`reflect.js:364`
 
 Scans from `max_reflect_depth` (default 1) down to 1. Returns the highest
 depth that is due, or 0 if none. The wake flow uses this to decide whether
-to run deep reflect or orient (`hook-main.js:88, 116`).
+to run deep reflect or orient (`act.js:88, 116`).
 
 ### Schedule updates
 
 Deep reflect writes its own schedule in `applyReflectOutput`
-(`hook-reflect.js:244-253`). The output field `next_reflect` (or
+(`reflect.js:244-253`). The output field `next_reflect` (or
 `next_deep_reflect`) specifies `after_sessions` and `after_days`.
 The system appends `last_reflect` (timestamp) and `last_reflect_session`
 (count) before writing to `reflect:schedule:{depth}`.
@@ -191,19 +191,19 @@ accelerate or decelerate based on what it observes.
 
 ### loadReflectPrompt(K, state, depth)
 
-`hook-reflect.js:299`
+`reflect.js:299`
 
 1. Tries `prompt:reflect:{depth}` in KV
 2. Falls back to `defaultDeepReflectPrompt(depth)`
 
 > **NOTE:** Session reflect (depth 0) does NOT use `loadReflectPrompt`.
-> It loads `prompt:reflect` directly (`hook-reflect.js:18`) and falls back
+> It loads `prompt:reflect` directly (`reflect.js:18`) and falls back
 > to `defaultReflectPrompt()`. The naming is different: `prompt:reflect`
 > (session) vs `prompt:reflect:{depth}` (deep).
 
 ### loadBelowPrompt(K, depth)
 
-`hook-reflect.js:305`
+`reflect.js:305`
 
 - Depth 1: returns `prompt:orient`
 - Depth 2+: returns `prompt:reflect:{depth-1}`
@@ -212,7 +212,7 @@ Injected as `{{belowPrompt}}` in the deep reflect prompt template.
 
 ### defaultReflectPrompt()
 
-`hook-reflect.js:374`
+`reflect.js:374`
 
 Session reflect fallback. Minimal prompt asking for JSON with:
 `session_summary`, `note_to_future_self`, `next_orient_context`,
@@ -221,7 +221,7 @@ and optionally `next_wake_config`, `kv_operations`,
 
 ### defaultDeepReflectPrompt(depth)
 
-`hook-reflect.js:384`
+`reflect.js:384`
 
 **Depth 1:** Instructs the LLM to examine karma, orient prompt, and
 patterns. Lists the full output schema. Notes that `modification_requests`
@@ -238,7 +238,7 @@ discipline. Shows `{{belowPrompt}}` template variable.
 
 ### Session reflect context
 
-Built inline in `executeReflect` (`hook-reflect.js:28-43`). The user
+Built inline in `executeReflect` (`reflect.js:28-43`). The user
 message is a JSON string containing:
 
 | Field | Source |
@@ -255,7 +255,7 @@ System prompt template variables:
 
 ### Deep reflect context — gatherReflectContext()
 
-`hook-reflect.js:167`
+`reflect.js:167`
 
 Returns `{ userMessage: "Begin.", templateVars }`. The user message is
 just `"Begin."` — all context goes into template variables for the system
@@ -282,7 +282,7 @@ Template variables:
 | `context.crashData` | `context.crashData` | Crash data from `detectCrash` (or `"none"`) |
 | `belowOutputs` | `loadReflectHistory(K, depth-1, 10)` | Last 10 outputs from one level below (depth >= 1 only) |
 | `priorReflections` | `loadReflectHistory(K, depth, count)` | Own prior outputs at same depth (depth >= 1 only, configurable count, default 3) |
-| `wisdom_manifest` | `loadWisdomManifest(K)` | Manifest of prajna/viveka key names + metadata summaries (all depths) |
+| `wisdom_manifest` | `loadWisdomManifest(K)` | Manifest of prajna/upaya key names + metadata summaries (all depths) |
 | `depth` | depth parameter | Current reflection depth |
 | `belowPrompt` | `loadBelowPrompt(K, depth)` | Prompt text for one level below |
 
@@ -312,11 +312,11 @@ present in the output, omitted (not null) when absent. Deep reflect
 `modification_observations` only.
 
 Session reflect (depth 0) also writes `last_reflect` — which is read by
-the next orient session as context (`hook-main.js:76, 94`).
+the next orient session as context (`act.js:76, 94`).
 
 ### loadReflectHistory(K, depth, count)
 
-`hook-reflect.js:310`
+`reflect.js:310`
 
 Lists `reflect:{depth}:*` keys, sorts by name descending (newest first),
 takes the top `count` (default 10), and loads all values via `K.loadKeys`.
@@ -334,7 +334,7 @@ outputs) and `priorReflections` (same-depth history).
 
 ### getReflectModel(state, depth)
 
-`hook-reflect.js:319`
+`reflect.js:319`
 
 Resolution order:
 1. `defaults.reflect_levels[depth].model` — per-depth override
@@ -342,7 +342,7 @@ Resolution order:
 3. `defaults.orient.model` — global fallback
 
 Session reflect uses a separate path: `step.model || defaults.reflect.model`
-(`hook-reflect.js:45-47`).
+(`reflect.js:45-47`).
 
 This allows different models at different depths — e.g. a cheaper model
 for depth 1, a more capable model for depth 2+.
@@ -353,7 +353,7 @@ for depth 1, a more capable model for depth 2+.
 
 ### getMaxSteps(state, role, depth)
 
-`hook-reflect.js:326`
+`reflect.js:326`
 
 | Role | Resolution | Default |
 |------|-----------|---------|
@@ -372,7 +372,7 @@ Session reflect does not use `getMaxSteps` — it always runs with
 
 Uses whatever budget remains after orient. If orient exhausted the full
 budget and no `reflect_reserve_pct` was configured, session reflect is
-skipped entirely (`hook-main.js:203`).
+skipped entirely (`act.js:203`).
 
 If `session_budget.reflect_reserve_pct` is set, orient's budget is capped
 at `max_cost * (1 - reflect_reserve_pct)`, reserving the remainder for
@@ -381,7 +381,7 @@ reflect.
 ### Deep reflect
 
 Gets its own budget: `session_budget.max_cost * deep_reflect.budget_multiplier`
-(`hook-reflect.js:141-145`). Only applied if `multiplier > 1`. If the
+(`reflect.js:141-145`). Only applied if `multiplier > 1`. If the
 multiplier is 1 or unset, no budget cap is passed — deep reflect runs
 uncapped.
 
@@ -398,7 +398,7 @@ Processes: `kv_operations`, `modification_verdicts` (via
 
 ### Deep reflect — applyReflectOutput(K, state, depth, output, context)
 
-`hook-reflect.js:211`
+`reflect.js:211`
 
 Processes in this order (order matters for conflict resolution):
 
@@ -423,7 +423,7 @@ Processes in this order (order matters for conflict resolution):
 
 > **NOTE:** At depth 1, `wake_config` is written even if `next_wake_config`
 > is absent in the output — it writes `{}` as the default
-> (`hook-reflect.js:274`). This effectively clears any previous wake
+> (`reflect.js:274`). This effectively clears any previous wake
 > config, including sleep timers.
 
 ---
@@ -432,24 +432,24 @@ Processes in this order (order matters for conflict resolution):
 
 Two KV prefix families store accumulated wisdom:
 
-### viveka:* — Discernment
+### upaya:* — Discernment
 
-`viveka:comms:*` and `viveka:channel:*` store communication wisdom.
-Loaded by `loadCommsViveka()` in `brainstem.js:469` and injected into
+`upaya:comms:*` and `upaya:channel:*` store communication wisdom.
+Loaded by `loadCommsUpaya()` in `kernel.js:469` and injected into
 the `COMMS_GATE_PROMPT`. Format: JSON, type `"wisdom"`.
 
 These keys are in `SYSTEM_KEY_PREFIXES` — writes require
 `kvWritePrivileged`. They can be written via the Modification Protocol
 or via `kv_operations` in reflect output (which routes through
-`applyKVOperation` in `hook-protect.js`).
+`applyKVOperation` in `kernel.js (applyKVOperation)`).
 
 ### prajna:* — Self-knowledge
 
 `prajna:*` keys are in `SYSTEM_KEY_PREFIXES` with format JSON, type
-`"wisdom"`. They follow the same write rules as viveka keys.
+`"wisdom"`. They follow the same write rules as upaya keys.
 
 > **NOTE:** No code in the codebase currently reads `prajna:*` keys.
-> They exist in the type system (`brainstem.js:1999`) and are protected
+> They exist in the type system (`kernel.js:1999`) and are protected
 > as system keys, but are not loaded into any prompt or context. They are
 > available for the agent to write to and read via tools (e.g. `kv_query`),
 > but have no kernel-level consumer.
@@ -467,15 +467,15 @@ See `docs/dev/modification-protocol.md` for full details.
 
 ### Yamas and Niyamas — Operating Principles
 
-`yama:*` and `niyama:*` keys are a higher tier than viveka/prajna. They
+`yama:*` and `niyama:*` keys are a higher tier than upaya/prajna. They
 are kernel-enforced operating principles:
 
-**Loading:** `loadYamasNiyamas()` runs at boot (`brainstem.js:322`).
+**Loading:** `loadYamasNiyamas()` runs at boot (`kernel.js:322`).
 Scans both prefixes and caches all values in `this.yamas` and
 `this.niyamas`.
 
 **Injection:** Every `callLLM` call prepends dharma, then yamas, then
-niyamas to the system prompt (`brainstem.js:1416-1440`):
+niyamas to the system prompt (`kernel.js:1416-1440`):
 
 ```
 [DHARMA]
@@ -501,7 +501,7 @@ niyamas to the system prompt (`brainstem.js:1416-1440`):
 
 This is kernel-enforced — no hook or prompt modification can bypass it.
 
-**Write gates** (`brainstem.js:746-760`):
+**Write gates** (`kernel.js:746-760`):
 - Yamas: require `deliberation` (min 200 chars) + `yama_capable` model
 - Niyamas: require `deliberation` (min 100 chars) + `niyama_capable` model
 - Model capability is checked against `config:model_capabilities` via
@@ -529,9 +529,9 @@ Session reflect does not load same-depth history — its continuity is via
 
 ## Wisdom Manifest
 
-Both session reflect and deep reflect receive a manifest of prajna/viveka
+Both session reflect and deep reflect receive a manifest of prajna/upaya
 key names + metadata summaries, built by `loadWisdomManifest(K)` in
-hook-reflect.js. Deep reflect uses `kv_query` to load specific entries on
+reflect.js. Deep reflect uses `kv_query` to load specific entries on
 demand. Session reflect (no tools, single-shot call) sees the manifest as
 informational only — it references entries by name in
 `modification_observations` and `note_to_future_self` for deep reflect to
@@ -542,7 +542,7 @@ judgment. Falls back to key name when summary is absent. Key naming
 convention is prompt-enforced: names must be descriptive enough for
 relevance judgment from the manifest alone.
 
-The comms gate's full `viveka:comms:*` loading via `loadCommsViveka()`
+The comms gate's full `upaya:comms:*` loading via `loadCommsUpaya()`
 remains unchanged — safety-critical paths get full loading, reflective
 paths get manifest + on-demand.
 
@@ -568,10 +568,10 @@ paths get manifest + on-demand.
 
 ## Wisdom Trust Tiers
 
-Prajna/viveka are a softer trust tier than yamas/niyamas. The direct path
-(`acceptDirect`) is available for prajna/viveka but not yamas/niyamas —
+Prajna/upaya are a softer trust tier than yamas/niyamas. The direct path
+(`acceptDirect`) is available for prajna/upaya but not yamas/niyamas —
 the `acceptDirect` gate checks ops for `yama:*` / `niyama:*` prefixes and
-rejects those, while allowing `viveka:*` / `prajna:*` through.
+rejects those, while allowing `upaya:*` / `prajna:*` through.
 
 Safeguards against accumulated drift through prajna:
 
@@ -580,7 +580,7 @@ Safeguards against accumulated drift through prajna:
    suggests
 2. **Depth hierarchy** — depth-2+ reviews depth-1's prajna entries and can
    rollback/delete drifted entries
-3. **Manifest visibility** — all prajna/viveka key names and summaries are
+3. **Manifest visibility** — all prajna/upaya key names and summaries are
    visible in the manifest; suspiciously named entries draw scrutiny
 
 The risk is not a single malicious entry but gradual drift through many

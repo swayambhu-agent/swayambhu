@@ -9,7 +9,7 @@ This skill teaches you to create, update, and maintain skills — reusable proce
 A skill is **procedural knowledge** — a step-by-step workflow for a recurring task. It is not:
 
 - **Code** (that's tools/providers) — skills don't execute, they instruct
-- **Wisdom** (that's viveka/prajna) — wisdom is principled judgment ("when in doubt, don't send"), skills are concrete procedures ("fetch this URL, parse this field, construct this patch")
+- **Wisdom** (that's upaya/prajna) — wisdom is principled judgment ("when in doubt, don't send"), skills are concrete procedures ("fetch this URL, parse this field, construct this patch")
 - **A one-off plan** — skills capture patterns you expect to repeat
 
 ### Responsive skills — crystallizing from experience
@@ -30,7 +30,7 @@ A good preparatory skill answers: "What do I need to understand about this domai
 ### When NOT to create a skill
 
 - The procedure is a one-off (wait for repetition)
-- The knowledge is purely principled, not procedural (use viveka/prajna instead)
+- The knowledge is purely principled, not procedural (use upaya/prajna instead)
 - The workflow is trivial (1-2 obvious tool calls)
 - The information is already documented in a `doc:*` key
 

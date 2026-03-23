@@ -13,7 +13,7 @@ Key design decisions (from conversation):
 - `hook-protect.js` logic moves into kernel (immutable safety)
 - `hook-main.js` splits: orchestration → kernel, session policy → `act.js`
 - `hook-reflect.js` → `reflect.js` (nearly unchanged)
-- `hook-modifications.js` (694 lines) → proposal methods in kernel.js (~150 lines)
+- `kernel.js (proposal methods)` (694 lines) → proposal methods in kernel.js (~150 lines)
 - Config/prompts/wisdom stay in KV (no deployment needed for changes)
 - Governor is the single authority for code rollback (version-based)
 
@@ -54,7 +54,7 @@ These issues are addressed inline in the phases below, but listed here for visib
 - `brainstem-dev.js` (317 lines) — already implements target pattern as subclass
 - `hook-main.js` (362 lines) — wake flow + session policy
 - `hook-reflect.js` (485 lines) — reflection hierarchy
-- `hook-modifications.js` (694 lines) — modification protocol (to simplify)
+- `kernel.js (proposal methods)` (694 lines) — modification protocol (to simplify)
 - `hook-protect.js` (87 lines) — KV gating (to move into kernel)
 
 **Unchanged (tools/providers/channels):**
@@ -187,7 +187,7 @@ From hook-main.js:
 - `evaluateTripwires(config, liveData)` (lines 329-350) → kernel static method
 - `getMaxSteps(state, role, depth)` and `getReflectModel(state, depth)` from hook-reflect.js → kernel utility methods (mechanical config lookups used by both act.js and reflect.js — avoids cross-dependency between the two)
 
-**Important sequencing note**: The current `wake()` calls `initTracking()`, `runCircuitBreaker()`, and `retryPendingGitSyncs()` from hook-modifications.js. In Phase 2, these calls remain in the kernel's `runWake()` as imports from hook-modifications.js (which still exists until Phase 3). In Phase 3, these calls are removed when the modification protocol is replaced by proposals.
+**Important sequencing note**: The current `wake()` calls `initTracking()`, `runCircuitBreaker()`, and `retryPendingGitSyncs()` from kernel.js (proposal methods). In Phase 2, these calls remain in the kernel's `runWake()` as imports from kernel.js (proposal methods) (which still exists until Phase 3). In Phase 3, these calls are removed when the modification protocol is replaced by proposals.
 
 The kernel's wake flow calls `this.HOOKS.act.runSession()` for orient sessions and `this.HOOKS.reflect.runReflect()` for deep reflect.
 
@@ -195,7 +195,7 @@ The kernel's wake flow calls `this.HOOKS.act.runSession()` for orient sessions a
 
 Copy hook-reflect.js with these changes:
 - Remove `import { applyKVOperation } from './hook-protect.js'` → use `K.applyKVOperation(op)` instead
-- Keep `import { ... } from './hook-modifications.js'` temporarily (updated in Phase 3)
+- Keep `import { ... } from './kernel.js (proposal methods)'` temporarily (updated in Phase 3)
 - Remove Worker Loader default export (lines 354-361 of hook-main.js — but this is in hook-main, not hook-reflect. hook-reflect has no default export, so no change needed)
 
 ### Update index.js
@@ -218,7 +218,7 @@ Change imports from `hook-main.js` / `hook-reflect.js` to `act.js` / `reflect.js
 
 ## Phase 3: Simplify modification protocol to proposal system
 
-**Goal**: Replace hook-modifications.js (694 lines) with proposal methods in kernel.js (~150 lines).
+**Goal**: Replace kernel.js (proposal methods) (694 lines) with proposal methods in kernel.js (~150 lines).
 
 ### Add proposal methods to kernel.js
 
@@ -246,7 +246,7 @@ These are exposed through the K interface as `K.createProposal()`, `K.loadPropos
 
 Statuses: `proposed` → `accepted` → `deploying` → `deployed` → `stable` (or `failed`)
 
-**What's eliminated vs hook-modifications.js:**
+**What's eliminated vs kernel.js (proposal methods):**
 - `initTracking()` / module-level mutable state (proposals read from KV each time)
 - `acceptStaged()` / `acceptDirect()` (governor applies accepted proposals)
 - `promoteInflight()` / `rollbackInflight()` / `findInflightConflict()` (governor handles)
@@ -259,7 +259,7 @@ Statuses: `proposed` → `accepted` → `deploying` → `deployed` → `stable` 
 
 ### Update reflect.js
 
-- Remove `import { ... } from './hook-modifications.js'` — proposal methods are now on K (kernel)
+- Remove `import { ... } from './kernel.js (proposal methods)'` — proposal methods are now on K (kernel)
 - `executeReflect()` (session reflect): calls `K.loadProposals('proposed')` instead of `loadStagedModifications(K)`. Verdicts use `K.processProposalVerdicts()`.
 - `runReflect()` (deep reflect): same pattern. Verdicts are simpler — "accept" means set status to accepted (governor deploys later), not "execute KV writes immediately"
 - `applyReflectOutput()`: replace `processDeepReflectVerdicts()` with new `processProposalVerdicts()`. Remove snapshot/inflight terminology.
@@ -290,7 +290,7 @@ Statuses: `proposed` → `accepted` → `deploying` → `deployed` → `stable` 
 
 ### Delete
 
-- `hook-modifications.js`
+- `kernel.js (proposal methods)`
 
 **Verify**: `npm test` passes. `start.sh --reset-all-state --wake` works.
 
@@ -374,7 +374,7 @@ No service binding or HTTP needed. Both workers communicate solely through the s
 - `hook-main.js` (deleted in Phase 2)
 - `hook-protect.js` (deleted in Phase 2)
 - `hook-reflect.js` (deleted in Phase 2)
-- `hook-modifications.js` (deleted in Phase 3)
+- `kernel.js (proposal methods)` (deleted in Phase 3)
 
 ### Update CLAUDE.md
 
@@ -429,7 +429,7 @@ Phase 4 (governor) can start after Phase 1 since it's new code, but needs Phase 
 | brainstem-dev.js | 317 | Merged into kernel.js |
 | hook-main.js | 362 | kernel.js (orchestration) + act.js (session) |
 | hook-protect.js | 87 | kernel.js (applyKVOperation method) |
-| hook-modifications.js | 694 | kernel.js (proposal methods) |
+| kernel.js (proposal methods) | 694 | kernel.js (proposal methods) |
 | hook-reflect.js | 485 | reflect.js |
 | **Total removed** | **4219** | |
 | **Total new** | **~3010** | |
