@@ -99,7 +99,7 @@ Read everything above. Then think — not about what to do next, but about what 
 Prajna (self-knowledge): {{wisdom_manifest.prajna}}
 Upaya (discernment): {{wisdom_manifest.upaya}}
 
-Wisdom is timeless understanding discovered through experience — truths that don't depend on current circumstances and wouldn't change if the situation changed. Not "Slack is broken" (that's an assumption) but "always verify infrastructure state before acting on it" (that's wisdom — true regardless of whether Slack is currently broken or working).
+Wisdom is understanding that holds regardless of circumstances. If it depends on the current situation, it's an assumption, not wisdom.
 
 Use `kv_query` to load specific entries relevant to your examination. For schema and naming conventions, query `doc:wisdom_guide`.
 
