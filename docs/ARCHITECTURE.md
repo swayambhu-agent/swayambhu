@@ -76,7 +76,7 @@ Non-code changes (config, prompts, wisdom) go through KV write tiers directly (`
 
 **Communication gating.** Outbound messages pass through a kernel-enforced gate before sending. The gate checks for accumulated wisdom about the recipient (`upaya:contact:*`), requires a capable model for judgment, and evaluates each message against communication wisdom. Messages can be sent, revised, or blocked and queued for deep reflect review. The mechanism is hardcoded in the kernel; the policy is encoded in upaya entries that the agent accumulates through experience. This prevents the agent from bypassing communication checks through self-modification.
 
-**Inbound access control.** Inbound content from external senders is gated by contact status. The kernel maintains a contact registry (`contact:*` keys with `contact_index:*` lookup cache). Two enforcement layers:
+**Inbound access control.** Inbound content from external senders is gated by contact status. The kernel maintains a contact registry (`contact:*` keys with `contact_platform:*` bindings for index and approval). Two enforcement layers:
 
 *Chat path:* Unknown senders (no contact record) get a toolless chat session — conversational only, no tools available. Even if a jailbreak manipulates the LLM, there are no tools to exploit. Known senders get full tool access, gated by the communication gate as usual. The tool allowlist for unknown contacts is configurable via `config:defaults.chat.unknown_contact_tools`.
 

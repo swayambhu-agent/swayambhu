@@ -92,7 +92,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'proposal:', 'hook:', 'doc:',
         'yama:', 'niyama:', 'upaya:', 'prajna:', 'comms_blocked:',
-        'contact:', 'contact_index:', 'sealed:',
+        'contact:', 'contact_platform:', 'sealed:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
       if (exact.includes(key)) return true;
@@ -103,7 +103,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'proposal:', 'hook:', 'doc:',
         'yama:', 'niyama:', 'upaya:', 'prajna:', 'comms_blocked:',
-        'contact:', 'contact_index:', 'sealed:',
+        'contact:', 'contact_platform:', 'sealed:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
     })),
@@ -157,7 +157,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'proposal:', 'hook:', 'doc:',
     'yama:', 'niyama:', 'upaya:', 'prajna:', 'skill:', 'comms_blocked:',
-    'contact:', 'contact_index:', 'sealed:',
+    'contact:', 'contact_platform:', 'sealed:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   function _isSystemKey(key) {
@@ -173,7 +173,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
           : JSON.stringify(op.value).slice(0, 500))
       : undefined;
 
-    if (key.startsWith("contact:")) {
+    if (key.startsWith("contact:") || key.startsWith("contact_platform:")) {
       try { await mock.kvWritePrivileged([op]); }
       catch (err) {
         await mock.karmaRecord({ event: "modification_blocked", key, op: op.op, reason: err.message, attempted_value: valueSummary });

@@ -141,33 +141,29 @@ map. Without this entry, `POST /channel/myplatform` returns 404 in dev.
 
 ---
 
-## 4. Set Up Contact Index Entries
+## 4. Set Up Platform Bindings
 
-The kernel resolves senders via `contact_index:{platform}:{userId}` →
-contact slug. These entries are created by:
+The kernel resolves senders via `contact_platform:{platform}:{userId}` →
+`{ slug, approved }`. These entries are created by:
 
-1. **Dashboard API** — `POST /contacts` writes index entries for each
-   platform in the contact's `platforms` object
+1. **Dashboard API** — `POST /contacts` writes platform bindings for each
+   platform provided
 2. **Kernel cache-on-miss** — `resolveContact()` scans all `contact:*`
-   records on cache miss, writes the index entry when found
+   records on cache miss, writes the platform binding when found
    (`kernel.js:402`)
 
-For existing contacts, add the new platform to their `platforms` field:
+For existing contacts, add the new platform binding in the seed script:
 
 ```js
-// In seed-local-kv.mjs, update the contact record
-await put("contact:swami_kevala", {
-  // ...existing fields...
-  platforms: {
-    slack: "U084ASKBXB7",
-    myplatform: "user_12345",   // ← add platform mapping
-  },
-  // ...
-});
+// In seed-local-kv.mjs, add a platform binding
+await put("contact_platform:myplatform:user_12345", {
+  slug: "swami_kevala",
+  approved: true,
+}, "json", "Platform binding: myplatform → swami_kevala");
 ```
 
 The first message from that user triggers a `resolveContact()` call,
-which scans contacts and caches the index entry automatically.
+which scans contacts and caches the platform binding automatically.
 
 For new contacts, create them via the dashboard API (`POST /contacts`) or
 seed them directly. See

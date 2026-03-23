@@ -37,6 +37,7 @@ class Kernel {
     this.patronId = null;      // Contact slug of patron (loaded at boot)
     this.patronContact = null; // Full patron contact record (loaded at boot)
     this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
+    this.patronPlatforms = null; // Patron's platform bindings (loaded at boot from contact_platform: keys)
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
     this.lastCallModel = null; // Last model used in callLLM (for yama/niyama capability checks)
     this._commsGateApproved = false; // Transient flag: set by executeToolCall/processCommsVerdict around executeAction
@@ -50,7 +51,7 @@ class Kernel {
     'skill:',
     'comms_blocked:',
     'contact:',
-    'contact_index:',
+    'contact_platform:',
     'sealed:',
   ];
   static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'operator:'];
@@ -135,13 +136,28 @@ class Kernel {
     this.patronContact = await this.kvGet(`contact:${patronSlug}`);
     if (!this.patronContact) return;
 
+    // Build platforms map from contact_platform: keys for this patron
+    const platformKeys = await this.kvListAll({ prefix: "contact_platform:" });
+    this.patronPlatforms = {};
+    const patronPlatforms = this.patronPlatforms;
+    for (const { name: key } of platformKeys) {
+      const binding = await this.kvGet(key);
+      if (binding?.slug === patronSlug) {
+        // key format: contact_platform:{platform}:{userId}
+        const parts = key.replace("contact_platform:", "").split(":");
+        const platform = parts[0];
+        const userId = parts.slice(1).join(":");
+        patronPlatforms[platform] = userId;
+      }
+    }
+
     // Identity monitor — compare monitored fields against last verified snapshot
     const snapshot = await this.kvGet("patron:identity_snapshot");
     if (!snapshot) {
       // First boot — create snapshot from seed
       const initial = {
         name: this.patronContact.name,
-        platforms: this.patronContact.platforms,
+        platforms: patronPlatforms,
         verified_at: new Date().toISOString(),
       };
       await this.kvPut("patron:identity_snapshot", initial);
@@ -150,13 +166,13 @@ class Kernel {
     } else {
       this.patronSnapshot = snapshot;
       const nameChanged = this.patronContact.name !== snapshot.name;
-      const platformsChanged = JSON.stringify(this.patronContact.platforms) !== JSON.stringify(snapshot.platforms);
+      const platformsChanged = JSON.stringify(patronPlatforms) !== JSON.stringify(snapshot.platforms);
       this.patronIdentityDisputed = nameChanged || platformsChanged;
       if (this.patronIdentityDisputed) {
         await this.karmaRecord({
           event: "patron_identity_disputed",
           old: { name: snapshot.name, platforms: snapshot.platforms },
-          new: { name: this.patronContact.name, platforms: this.patronContact.platforms },
+          new: { name: this.patronContact.name, platforms: patronPlatforms },
         });
       }
     }
@@ -176,31 +192,22 @@ class Kernel {
   }
 
   async resolveContact(platform, platformUserId) {
-    // Check index cache first
-    const cached = await this.kvGet(`contact_index:${platform}:${platformUserId}`);
-    if (cached) {
-      const contact = await this.kvGet(`contact:${cached}`);
-      if (!contact) return null;
-      return this._applyPatronSnapshot(cached, contact);
-    }
+    // Look up platform binding — single source of truth for platform→contact mapping
+    const binding = await this.kvGet(`contact_platform:${platform}:${platformUserId}`);
+    if (!binding?.slug) return null;
 
-    // Scan contacts on miss (small set for v0.1)
-    const contactKeys = await this.kvListAll({ prefix: "contact:" });
-    for (const { name: key } of contactKeys) {
-      const contact = await this.kvGet(key);
-      if (contact?.platforms?.[platform] === platformUserId) {
-        const id = key.replace("contact:", "");
-        await this.kvPut(`contact_index:${platform}:${platformUserId}`, id);
-        return this._applyPatronSnapshot(id, contact);
-      }
-    }
-    return null;
+    const contact = await this.kvGet(`contact:${binding.slug}`);
+    if (!contact) return null;
+
+    // Attach approval from platform binding (not from contact record)
+    const resolved = { ...contact, approved: binding.approved === true };
+    return this._applyPatronSnapshot(binding.slug, resolved);
   }
 
   _applyPatronSnapshot(id, contact) {
     // When patron identity is disputed, override monitored fields with last-known-good values
     if (this.patronIdentityDisputed && id === this.patronId && this.patronSnapshot) {
-      return { id, ...contact, name: this.patronSnapshot.name, platforms: this.patronSnapshot.platforms };
+      return { id, ...contact, name: this.patronSnapshot.name };
     }
     return { id, ...contact };
   }
@@ -444,46 +451,36 @@ class Kernel {
       }
       if (Kernel.isKernelOnly(op.key)) throw new Error(`Blocked: kernel-only key "${op.key}"`);
 
-      // Contact index is kernel-managed (auto-built by resolveContact)
-      if (op.key.startsWith("contact_index:")) {
-        throw new Error(`Contact index keys are kernel-managed`);
-      }
-
-      // Contacts: agent can create (unapproved, no platforms), edit, delete unapproved
-      if (op.key.startsWith("contact:")) {
-        // Patch ops on contacts could bypass approved/platforms checks — block if touching approved
+      // Contact platform bindings: agent can create (always unapproved), cannot set approved: true
+      if (op.key.startsWith("contact_platform:")) {
         if (op.op === "patch" && op.new_string?.includes('"approved"')) {
-          throw new Error(`Cannot patch "approved" field on contacts — use the dashboard`);
+          throw new Error(`Cannot patch "approved" field on platform bindings — use the dashboard`);
         }
-        const existing = await this.kvGet(op.key);
         if (op.op === "delete") {
-          if (existing && existing.approved) {
-            throw new Error(`Deletion of approved contacts is operator-only`);
+          const existing = await this.kvGet(op.key);
+          if (existing?.approved) {
+            throw new Error(`Deletion of approved platform bindings is operator-only`);
           }
           // Unapproved or non-existent — allow delete, fall through
-        } else if (existing === null) {
-          // Creation: must be unapproved with empty platforms
-          if (op.value?.approved === true) {
-            throw new Error(`Setting approved: true is operator-only`);
-          }
-          if (op.value?.platforms && Object.keys(op.value.platforms).length > 0) {
-            throw new Error(`Agent-created contacts must have empty platforms — platform IDs are operator-only`);
-          }
-          op.value = { ...op.value, approved: false, platforms: op.value?.platforms || {} };
-          // Fall through to normal processing
         } else {
-          // Update: block setting approved: true, auto-flip if platforms changed
           if (op.value?.approved === true) {
-            throw new Error(`Setting approved: true is operator-only`);
+            throw new Error(`Setting approved: true on platform bindings is operator-only`);
           }
-          if (op.value?.platforms && JSON.stringify(op.value.platforms) !== JSON.stringify(existing.platforms)) {
-            op.value = { ...op.value, approved: false };
-          } else if (!('approved' in (op.value || {}))) {
-            // Preserve existing approved status when agent doesn't explicitly set it
-            op.value = { ...op.value, approved: existing.approved };
+          if (!op.value?.slug) {
+            throw new Error(`Platform binding must include a slug`);
           }
+          op.value = { ...op.value, approved: false };
           // Fall through to normal processing
         }
+      }
+
+      // Contacts: agent can create and edit freely (identity metadata only, no approval field)
+      if (op.key.startsWith("contact:")) {
+        if (op.op === "delete") {
+          // Allow delete of any contact — platform bindings control approval now
+          // Fall through to normal processing
+        }
+        // No approval or platforms gating needed — those live in contact_platform: keys
       }
 
       // Model capabilities require deliberation + yama_capable model
@@ -734,8 +731,8 @@ class Kernel {
           : JSON.stringify(op.value).slice(0, 500))
       : undefined;
 
-    // Contact keys route through kvWritePrivileged (kernel-enforced approval rules)
-    if (key.startsWith("contact:")) {
+    // Contact and platform binding keys route through kvWritePrivileged (kernel-enforced rules)
+    if (key.startsWith("contact:") || key.startsWith("contact_platform:")) {
       try {
         await this.kvWritePrivileged([op]);
       } catch (err) {
@@ -1207,7 +1204,7 @@ class Kernel {
           ? (typeof directMsg === "string" ? directMsg : directMsg.message)
           : null,
         reflectSchedule: Object.keys(reflectSchedule).length > 0 ? reflectSchedule : null,
-        patronPlatforms: this.patronContact?.platforms || null,
+        patronPlatforms: this.patronPlatforms || null,
       };
 
       // 9. Record session start

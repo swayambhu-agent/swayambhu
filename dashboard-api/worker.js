@@ -118,8 +118,8 @@ export default {
       const participants = {};
       await Promise.all(userIds.map(async (uid) => {
         try {
-          const raw = await env.KV.get(`contact_index:slack:${uid}`, "text");
-          const slug = raw ? raw.replace(/^"|"$/g, '') : null;
+          const binding = await env.KV.get(`contact_platform:slack:${uid}`, "json");
+          const slug = binding?.slug || null;
           if (slug) {
             const contact = await env.KV.get(`contact:${slug}`, "json");
             if (contact?.name) { participants[uid] = contact.name; return; }
@@ -236,13 +236,14 @@ export default {
     // POST /contacts — create a new contact record
     if (path === "/contacts" && request.method === "POST") {
       const body = await request.json().catch(() => null);
-      if (!body?.slug || !body?.name || !body?.platforms) {
-        return json({ error: "missing required fields: slug, name, platforms" }, 400);
+      if (!body?.slug || !body?.name) {
+        return json({ error: "missing required fields: slug, name" }, 400);
       }
-      if (typeof body.platforms !== "object" || Array.isArray(body.platforms)) {
+      if (body.platforms && (typeof body.platforms !== "object" || Array.isArray(body.platforms))) {
         return json({ error: "platforms must be an object (e.g. { email: 'user@example.com' })" }, 400);
       }
-      const invalidPlatforms = Object.entries(body.platforms).filter(([k, v]) => !k || !v || typeof v !== "string");
+      const platforms = body.platforms || {};
+      const invalidPlatforms = Object.entries(platforms).filter(([k, v]) => !k || !v || typeof v !== "string");
       if (invalidPlatforms.length) {
         return json({ error: `invalid platform entries: ${invalidPlatforms.map(([k]) => k || "(empty)").join(", ")}` }, 400);
       }
@@ -252,10 +253,8 @@ export default {
 
       const contact = {
         name: body.name,
-        platforms: body.platforms,
         relationship: body.relationship || "",
         notes: body.notes || "",
-        approved: body.approved !== false,
         created_at: new Date().toISOString(),
         created_by: "patron",
       };
@@ -263,11 +262,12 @@ export default {
         metadata: { type: "contact", format: "json", updated_at: new Date().toISOString() },
       });
 
-      // Write contact index entries for each platform
-      for (const [platform, userId] of Object.entries(body.platforms)) {
-        const indexKey = `contact_index:${platform}:${userId}`;
-        await env.KV.put(indexKey, JSON.stringify(body.slug), {
-          metadata: { type: "contact_index", format: "json", updated_at: new Date().toISOString() },
+      // Write contact_platform entries for each platform binding
+      const approved = body.approved !== false;
+      for (const [platform, userId] of Object.entries(platforms)) {
+        const platformKey = `contact_platform:${platform}:${userId}`;
+        await env.KV.put(platformKey, JSON.stringify({ slug: body.slug, approved }), {
+          metadata: { type: "contact_platform", format: "json", updated_at: new Date().toISOString() },
         });
       }
 
@@ -285,13 +285,14 @@ export default {
       return json({ ok: true });
     }
 
-    // PATCH /contacts/:slug/approve — set approval status on a contact
-    const approveMatch = path.match(/^\/contacts\/([^/]+)\/approve$/);
-    if (approveMatch && request.method === "PATCH") {
-      const slug = decodeURIComponent(approveMatch[1]);
-      const contactKey = `contact:${slug}`;
-      const existing = await env.KV.get(contactKey, "json");
-      if (!existing) return json({ error: `contact "${slug}" not found` }, 404);
+    // PATCH /contact-platform/:platform/:id/approve — set approval on a platform binding
+    const platformApproveMatch = path.match(/^\/contact-platform\/([^/]+)\/([^/]+)\/approve$/);
+    if (platformApproveMatch && request.method === "PATCH") {
+      const platform = decodeURIComponent(platformApproveMatch[1]);
+      const platformId = decodeURIComponent(platformApproveMatch[2]);
+      const platformKey = `contact_platform:${platform}:${platformId}`;
+      const existing = await env.KV.get(platformKey, "json");
+      if (!existing) return json({ error: `platform binding "${platform}:${platformId}" not found` }, 404);
 
       const body = await request.json().catch(() => null);
       if (body?.approved === undefined || typeof body.approved !== "boolean") {
@@ -301,21 +302,11 @@ export default {
       existing.approved = body.approved;
       existing.approved_at = new Date().toISOString();
       existing.approved_by = "patron";
-      await env.KV.put(contactKey, JSON.stringify(existing), {
-        metadata: { type: "contact", format: "json", updated_at: new Date().toISOString() },
+      await env.KV.put(platformKey, JSON.stringify(existing), {
+        metadata: { type: "contact_platform", format: "json", updated_at: new Date().toISOString() },
       });
 
-      // Rebuild contact_index entries for current platforms
-      if (existing.platforms && typeof existing.platforms === "object") {
-        for (const [platform, userId] of Object.entries(existing.platforms)) {
-          const indexKey = `contact_index:${platform}:${userId}`;
-          await env.KV.put(indexKey, JSON.stringify(slug), {
-            metadata: { type: "contact_index", format: "json", updated_at: new Date().toISOString() },
-          });
-        }
-      }
-
-      return json({ ok: true, slug, approved: body.approved });
+      return json({ ok: true, platform, platformId, slug: existing.slug, approved: body.approved });
     }
 
     // GET /kv/:key — single key read

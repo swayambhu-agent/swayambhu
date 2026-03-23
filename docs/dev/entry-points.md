@@ -383,7 +383,7 @@ POST /contacts                          → auth required
 │ Validate: requires slug, name, platforms (object)
 │ Check for existing contact (409 if exists)
 │ Write contact:{slug} directly to KV
-│ Write contact_index:{platform}:{userId} for each platform
+│ Write contact_platform:{platform}:{userId} for each platform
 │ Return { ok, slug, contact }
 
 DELETE /quarantine/:key                  → auth required

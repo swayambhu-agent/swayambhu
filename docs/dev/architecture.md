@@ -52,7 +52,7 @@ static SYSTEM_KEY_PREFIXES = [
   'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
   'proposal:', 'proposal:', 'hook:', 'doc:', 'git_pending:',
   'yama:', 'niyama:', 'upaya:', 'prajna:',
-  'comms_blocked:', 'contact:', 'contact_index:', 'sealed:',
+  'comms_blocked:', 'contact:', 'contact_platform:', 'sealed:',
 ];
 static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:'];
 static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -73,7 +73,7 @@ static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 3. **Three-tier KV write gates:**
    - `kvPutSafe(key, value, metadata)` — blocks `dharma`, kernel-only keys, and system keys. Used for agent-created data.
    - `kvDeleteSafe(key)` — same blocks as `kvPutSafe`.
-   - `kvWritePrivileged(ops)` — for system keys. Pre-validates the entire batch before any writes execute. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact:*`/`contact_index:*` keys (operator-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on hook writes. Auto-reloads cached config after writing config keys.
+   - `kvWritePrivileged(ops)` — for system keys. Pre-validates the entire batch before any writes execute. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact_platform:*` keys (operator-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on hook writes. Auto-reloads cached config after writing config keys.
 
 4. **Communication gate** — `communicationGate()` (`kernel.js:515`) intercepts every tool call to a tool with a `communication` grant in `kernel:tool_grants`. Three checks in sequence:
    - Mechanical floor: blocks initiating contact with unknown persons (no contact record).
@@ -371,7 +371,7 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 |------|--------|---------|
 | **Immutable** | Cannot be written by anyone (except `rotatePatronKey` for `patron:public_key`) | `dharma`, `patron:public_key` |
 | **Kernel-only** | Only kernel internal code can read/write | `kernel:*`, `sealed:*` |
-| **Operator-only** | Blocked from agent writes in `kvWritePrivileged` | `contact:*`, `contact_index:*` |
+| **Operator-only** | Blocked from agent writes in `kvWritePrivileged` | `contact_platform:*` |
 | **System (privileged)** | Writable via `kvWritePrivileged` only — snapshots to karma, rate-limited, audited | All `SYSTEM_KEY_PREFIXES` keys |
 | **Principle keys** | System-privileged + deliberation requirement + model capability gate | `yama:*` (200 char, yama_capable), `niyama:*` (100 char, niyama_capable) |
 | **Protected agent** | Agent-created keys with no `unprotected` metadata flag — `applyKVOperation` blocks modification | Any existing key without `{ unprotected: true }` metadata |
@@ -398,7 +398,7 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 | `upaya:*` | Accumulated wisdom (communication, channels) |
 | `prajna:*` | Accumulated self-knowledge |
 | `contact:*` | Contact records |
-| `contact_index:*` | Platform-to-contact lookup cache |
+| `contact_platform:*` | Platform-to-contact binding and approval store |
 | `sealed:*` | Quarantined content from unknown senders (kernel-only read) |
 | `comms_blocked:*` | Queued outbound messages pending review |
 | `chat:state:*` | Conversation state per channel/chat |

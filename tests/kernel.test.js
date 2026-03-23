@@ -1187,16 +1187,36 @@ describe("kvWritePrivileged", () => {
   });
 });
 
-// ── 15b. kvWritePrivileged contact write rules ─────────────
+// ── 15b. kvWritePrivileged contact and platform binding write rules ─────────────
 
 describe("kvWritePrivileged contact write rules", () => {
   it("allows put to an existing contact", async () => {
     const { kernel } = makeKernel({
-      "contact:alice": JSON.stringify({ name: "Alice", platforms: {} }),
+      "contact:alice": JSON.stringify({ name: "Alice" }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
     await kernel.kvWritePrivileged([
-      { op: "put", key: "contact:alice", value: { name: "Alice", platforms: {}, notes: "likes tea" } },
+      { op: "put", key: "contact:alice", value: { name: "Alice", notes: "likes tea" } },
+    ]);
+    expect(kernel.privilegedWriteCount).toBe(1);
+  });
+
+  it("allows creation of new contacts (identity metadata)", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.kvWritePrivileged([
+      { op: "put", key: "contact:newperson", value: { name: "New Person", relationship: "friend" } },
+    ]);
+    expect(kernel.privilegedWriteCount).toBe(1);
+  });
+
+  it("allows delete of any contact", async () => {
+    const { kernel } = makeKernel({
+      "contact:alice": JSON.stringify({ name: "Alice" }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.kvWritePrivileged([
+      { op: "delete", key: "contact:alice" },
     ]);
     expect(kernel.privilegedWriteCount).toBe(1);
   });
@@ -1204,117 +1224,73 @@ describe("kvWritePrivileged contact write rules", () => {
   it("allows patch to an existing contact (string value)", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    // Patch requires a string value — store directly as string
     kernel.env.KV._store.set("contact:alice", "Alice likes old tea");
     await kernel.kvWritePrivileged([
       { op: "patch", key: "contact:alice", old_string: "old tea", new_string: "green tea" },
     ]);
     expect(kernel.privilegedWriteCount).toBe(1);
   });
+});
 
-  it("allows creation with approved: false and empty platforms", async () => {
-    const { kernel } = makeKernel();
+describe("kvWritePrivileged platform binding write rules", () => {
+  it("allows creation of platform binding with approved: false", async () => {
+    const { kernel, env } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     await kernel.kvWritePrivileged([
-      { op: "put", key: "contact:newperson", value: { name: "New Person", approved: false, platforms: {} } },
+      { op: "put", key: "contact_platform:email:alice@example.com", value: { slug: "alice", approved: false } },
     ]);
     expect(kernel.privilegedWriteCount).toBe(1);
-  });
-
-  it("rejects creation with approved: true", async () => {
-    const { kernel } = makeKernel();
-    kernel.karmaRecord = vi.fn(async () => {});
-    await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "contact:newperson", value: { name: "New Person", approved: true, platforms: {} } },
-    ])).rejects.toThrow("Setting approved: true is operator-only");
-  });
-
-  it("rejects creation with non-empty platforms", async () => {
-    const { kernel } = makeKernel();
-    kernel.karmaRecord = vi.fn(async () => {});
-    await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "contact:newperson", value: { name: "New Person", approved: false, platforms: { email: "a@b.com" } } },
-    ])).rejects.toThrow("Agent-created contacts must have empty platforms");
-  });
-
-  it("auto-flips approved to false when platforms changes", async () => {
-    const { kernel, env } = makeKernel({
-      "contact:alice": JSON.stringify({ name: "Alice", approved: true, platforms: { email: "alice@old.com" } }),
-    });
-    kernel.karmaRecord = vi.fn(async () => {});
-    // Agent updates platforms (doesn't set approved: true — that's blocked)
-    await kernel.kvWritePrivileged([
-      { op: "put", key: "contact:alice", value: { name: "Alice", platforms: { email: "alice@new.com" } } },
-    ]);
-    // The value should have been auto-set to approved: false due to platforms change
-    const putCall = env.KV.put.mock.calls.find(([key]) => key === "contact:alice");
+    // Verify approved was forced to false
+    const putCall = env.KV.put.mock.calls.find(([key]) => key === "contact_platform:email:alice@example.com");
     expect(putCall).toBeDefined();
     const stored = JSON.parse(putCall[1]);
     expect(stored.approved).toBe(false);
   });
 
-  it("preserves approved from existing when agent omits it", async () => {
-    const { kernel, env } = makeKernel({
-      "contact:alice": JSON.stringify({ name: "Alice", approved: true, platforms: { email: "a@b.com" } }),
-    });
-    kernel.karmaRecord = vi.fn(async () => {});
-    // Agent updates name but omits approved — should preserve existing approved: true
-    await kernel.kvWritePrivileged([
-      { op: "put", key: "contact:alice", value: { name: "Alice Updated", platforms: { email: "a@b.com" } } },
-    ]);
-    const putCall = env.KV.put.mock.calls.find(([key]) => key === "contact:alice");
-    expect(putCall).toBeDefined();
-    const stored = JSON.parse(putCall[1]);
-    expect(stored.approved).toBe(true);
-    expect(stored.name).toBe("Alice Updated");
-  });
-
-  it("blocks setting approved: true on existing contact", async () => {
-    const { kernel } = makeKernel({
-      "contact:alice": JSON.stringify({ name: "Alice", approved: false, platforms: {} }),
-    });
+  it("forces approved: false even when agent tries to set true", async () => {
+    const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "contact:alice", value: { name: "Alice", approved: true, platforms: {} } },
-    ])).rejects.toThrow("Setting approved: true is operator-only");
+      { op: "put", key: "contact_platform:email:alice@example.com", value: { slug: "alice", approved: true } },
+    ])).rejects.toThrow("Setting approved: true on platform bindings is operator-only");
   });
 
-  it("allows delete of unapproved contacts", async () => {
+  it("rejects platform binding without slug", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await expect(kernel.kvWritePrivileged([
+      { op: "put", key: "contact_platform:email:alice@example.com", value: { approved: false } },
+    ])).rejects.toThrow("Platform binding must include a slug");
+  });
+
+  it("allows delete of unapproved platform bindings", async () => {
     const { kernel } = makeKernel({
-      "contact:alice": JSON.stringify({ name: "Alice", approved: false }),
+      "contact_platform:email:alice@example.com": JSON.stringify({ slug: "alice", approved: false }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
     await kernel.kvWritePrivileged([
-      { op: "delete", key: "contact:alice" },
+      { op: "delete", key: "contact_platform:email:alice@example.com" },
     ]);
     expect(kernel.privilegedWriteCount).toBe(1);
   });
 
-  it("blocks patch that modifies approved field", async () => {
-    const { kernel } = makeKernel();
-    kernel.karmaRecord = vi.fn(async () => {});
-    kernel.env.KV._store.set("contact:alice", '"approved":false,"name":"Alice"');
-    await expect(kernel.kvWritePrivileged([
-      { op: "patch", key: "contact:alice", old_string: '"approved":false', new_string: '"approved":true' },
-    ])).rejects.toThrow('Cannot patch "approved" field on contacts');
-  });
-
-  it("blocks delete of approved contacts", async () => {
+  it("blocks delete of approved platform bindings", async () => {
     const { kernel } = makeKernel({
-      "contact:alice": JSON.stringify({ name: "Alice", approved: true }),
+      "contact_platform:email:alice@example.com": JSON.stringify({ slug: "alice", approved: true }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
     await expect(kernel.kvWritePrivileged([
-      { op: "delete", key: "contact:alice" },
-    ])).rejects.toThrow("Deletion of approved contacts is operator-only");
+      { op: "delete", key: "contact_platform:email:alice@example.com" },
+    ])).rejects.toThrow("Deletion of approved platform bindings is operator-only");
   });
 
-  it("rejects writes to contact_index: keys", async () => {
+  it("blocks patch that modifies approved field on platform binding", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
+    kernel.env.KV._store.set("contact_platform:email:alice@example.com", '{"slug":"alice","approved":false}');
     await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "contact_index:email:alice@example.com", value: "contact:alice" },
-    ])).rejects.toThrow("Contact index keys are kernel-managed");
+      { op: "patch", key: "contact_platform:email:alice@example.com", old_string: '"approved":false', new_string: '"approved":true' },
+    ])).rejects.toThrow('Cannot patch "approved" field on platform bindings');
   });
 });
 
@@ -2037,7 +2013,8 @@ describe("Communication gate", () => {
 
   it("destination-type allows send to approved contact", async () => {
     const { kernel, env } = makeKernel();
-    await env.KV.put("contact:dev", JSON.stringify({ name: "Dev", approved: true, platforms: { slack: "U_DEV" }, communication: "Team member." }));
+    await env.KV.put("contact:dev", JSON.stringify({ name: "Dev", communication: "Team member." }));
+    await env.KV.put("contact_platform:slack:U_DEV", JSON.stringify({ slug: "dev", approved: true }));
     const result = await kernel.communicationGate("send_slack", { text: "hello", channel: "U_DEV" }, slackMeta);
     expect(result.verdict).toBe("send");
   });
@@ -2065,7 +2042,8 @@ describe("Communication gate", () => {
 
   it("allows initiating to approved contact", async () => {
     const { kernel, env } = makeKernel();
-    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", approved: true, platforms: { slack: "swami" }, communication: "Inner circle." }));
+    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", communication: "Inner circle." }));
+    await env.KV.put("contact_platform:slack:swami", JSON.stringify({ slug: "swami", approved: true }));
     const result = await kernel.communicationGate(
       "send_slack",
       { text: "hello", channel: "swami" },
@@ -2076,7 +2054,8 @@ describe("Communication gate", () => {
 
   it("blocks person-type to unapproved contact (initiating)", async () => {
     const { kernel, env } = makeKernel();
-    await env.KV.put("contact:stub", JSON.stringify({ name: "Stub", approved: false, platforms: { email: "stub@example.com" } }));
+    await env.KV.put("contact:stub", JSON.stringify({ name: "Stub" }));
+    await env.KV.put("contact_platform:email:stub@example.com", JSON.stringify({ slug: "stub", approved: false }));
     const result = await kernel.communicationGate(
       "send_email",
       { to: "stub@example.com", body: "hello" },
@@ -2089,7 +2068,8 @@ describe("Communication gate", () => {
 
   it("blocks person-type to unapproved contact (responding)", async () => {
     const { kernel, env } = makeKernel();
-    await env.KV.put("contact:stub", JSON.stringify({ name: "Stub", approved: false, platforms: { email: "stub@example.com" } }));
+    await env.KV.put("contact:stub", JSON.stringify({ name: "Stub" }));
+    await env.KV.put("contact_platform:email:stub@example.com", JSON.stringify({ slug: "stub", approved: false }));
     const result = await kernel.communicationGate(
       "send_email",
       { to: "stub@example.com", body: "thanks", reply_to_id: "msg123" },
@@ -2103,7 +2083,8 @@ describe("Communication gate", () => {
   it("any model can send to approved contacts (no model capability check)", async () => {
     const { kernel, env } = makeKernel();
     kernel.lastCallModel = "deepseek/deepseek-v3.2"; // cheapest model
-    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", approved: true, platforms: { slack: "swami" } }));
+    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami" }));
+    await env.KV.put("contact_platform:slack:swami", JSON.stringify({ slug: "swami", approved: true }));
     const result = await kernel.communicationGate(
       "send_slack",
       { text: "hello", channel: "swami" },
@@ -2341,15 +2322,23 @@ describe("Patron identity monitor", () => {
   const patronContact = {
     name: "Swami",
     relationship: "patron",
-    platforms: { slack: "U_SWAMI" },
     communication: "Inner circle.",
   };
+
+  async function seedPatron(env, contact, platformBindings) {
+    await env.KV.put("patron:contact", JSON.stringify("swami"));
+    await env.KV.put("contact:swami", JSON.stringify(contact || patronContact));
+    for (const [key, val] of Object.entries(platformBindings || {})) {
+      await env.KV.put(key, JSON.stringify(val));
+    }
+  }
 
   it("creates snapshot on first boot when none exists", async () => {
     const { kernel, env } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await env.KV.put("patron:contact", JSON.stringify("swami"));
-    await env.KV.put("contact:swami", JSON.stringify(patronContact));
+    await seedPatron(env, patronContact, {
+      "contact_platform:slack:U_SWAMI": { slug: "swami", approved: true },
+    });
 
     await kernel.loadPatronContext();
 
@@ -2362,8 +2351,9 @@ describe("Patron identity monitor", () => {
   it("no dispute when contact matches snapshot", async () => {
     const { kernel, env } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await env.KV.put("patron:contact", JSON.stringify("swami"));
-    await env.KV.put("contact:swami", JSON.stringify(patronContact));
+    await seedPatron(env, patronContact, {
+      "contact_platform:slack:U_SWAMI": { slug: "swami", approved: true },
+    });
     await env.KV.put("patron:identity_snapshot", JSON.stringify({
       name: "Swami",
       platforms: { slack: "U_SWAMI" },
@@ -2379,9 +2369,9 @@ describe("Patron identity monitor", () => {
   it("disputes when name changes", async () => {
     const { kernel, env } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    const changed = { ...patronContact, name: "Attacker" };
-    await env.KV.put("patron:contact", JSON.stringify("swami"));
-    await env.KV.put("contact:swami", JSON.stringify(changed));
+    await seedPatron(env, { ...patronContact, name: "Attacker" }, {
+      "contact_platform:slack:U_SWAMI": { slug: "swami", approved: true },
+    });
     await env.KV.put("patron:identity_snapshot", JSON.stringify({
       name: "Swami",
       platforms: { slack: "U_SWAMI" },
@@ -2403,9 +2393,9 @@ describe("Patron identity monitor", () => {
   it("disputes when platforms change", async () => {
     const { kernel, env } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    const changed = { ...patronContact, platforms: { slack: "U_ATTACKER" } };
-    await env.KV.put("patron:contact", JSON.stringify("swami"));
-    await env.KV.put("contact:swami", JSON.stringify(changed));
+    await seedPatron(env, patronContact, {
+      "contact_platform:slack:U_ATTACKER": { slug: "swami", approved: true },
+    });
     await env.KV.put("patron:identity_snapshot", JSON.stringify({
       name: "Swami",
       platforms: { slack: "U_SWAMI" },
@@ -2417,26 +2407,23 @@ describe("Patron identity monitor", () => {
     expect(kernel.patronIdentityDisputed).toBe(true);
   });
 
-  it("resolveContact uses snapshot when identity is disputed", async () => {
+  it("resolveContact uses snapshot name when identity is disputed", async () => {
     const { kernel, env } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    const changed = { ...patronContact, name: "Attacker", platforms: { slack: "U_ATTACKER" } };
-    await env.KV.put("patron:contact", JSON.stringify("swami"));
-    await env.KV.put("contact:swami", JSON.stringify(changed));
+    await seedPatron(env, { ...patronContact, name: "Attacker" }, {
+      "contact_platform:slack:U_SWAMI": { slug: "swami", approved: true },
+    });
     await env.KV.put("patron:identity_snapshot", JSON.stringify({
       name: "Swami",
       platforms: { slack: "U_SWAMI" },
       verified_at: "2026-03-14T00:00:00Z",
     }));
-    // Pre-populate index cache (contact platforms changed, so scan won't match old ID)
-    await env.KV.put("contact_index:slack:U_SWAMI", JSON.stringify("swami"));
 
     await kernel.loadPatronContext();
     expect(kernel.patronIdentityDisputed).toBe(true);
 
     const result = await kernel.resolveContact("slack", "U_SWAMI");
     expect(result.name).toBe("Swami");
-    expect(result.platforms).toEqual({ slack: "U_SWAMI" });
   });
 });
 

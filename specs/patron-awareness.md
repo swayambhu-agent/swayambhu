@@ -28,10 +28,6 @@ Single key per contact. The slug is a stable, agent-chosen identifier — not th
   "relationship": "patron",
   "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...",
   "key_type": "ssh-ed25519",
-  "platforms": {
-    "slack": "U12345",
-    "email": "swami@example.com"
-  },
   "chat": {
     "model": "sonnet",
     "effort": "high",
@@ -66,10 +62,11 @@ Fields:
 | `relationship` | `"patron"`, `"collaborator"`, `"acquaintance"`, etc. | yes | yes | no |
 | `public_key` | Public key for identity verification (optional) | yes | no | no |
 | `key_type` | Key format: `"ssh-ed25519"`, `"ethereum"`, etc. | yes | no | no |
-| `platforms` | Maps platform → user ID for reverse lookup | yes | yes | **yes** |
 | `chat` | Per-contact chat config overrides | yes | yes | no |
 | `communication` | Communication stance (replaces `upaya:contact:*`) | yes | yes | no |
 | `understanding` | Agent's accumulated observations | no | yes | no |
+
+Platform bindings (including approval) live in `contact_platform:{platform}:{userId}` keys, not in the contact record.
 
 ### `patron:contact`
 
@@ -103,9 +100,9 @@ Kernel-managed snapshot of the patron's monitored fields (`name`, `platforms`) a
 }
 ```
 
-### `contact_index:{platform}:{platformUserId}`
+### `contact_platform:{platform}:{platformUserId}`
 
-Cache key for reverse lookups. Value is the contact slug. Rebuilt on miss.
+Platform binding and approval store. Value is `{ slug, approved }`. Serves as both the index (replacing `contact_index:`) and the per-platform approval store. Rebuilt on miss.
 
 ## Patron identity protection
 
@@ -212,20 +209,19 @@ Replace `person:{userId}` lookup in chat with contact resolution:
 ```javascript
 async resolveContact(platform, platformUserId) {
   // Check index cache first
-  const cached = await this.kvGet(`contact_index:${platform}:${platformUserId}`);
-  if (cached) {
-    const contact = await this.kvGet(`contact:${cached}`);
-    return contact ? { id: cached, ...contact } : null;
+  const binding = await this.kvGet(`contact_platform:${platform}:${platformUserId}`);
+  if (binding) {
+    const contact = await this.kvGet(`contact:${binding.slug}`);
+    return contact ? { id: binding.slug, approved: binding.approved, ...contact } : null;
   }
 
-  // Scan contacts on miss (small set for v0.1)
-  const result = await this.kv.list({ prefix: "contact:" });
+  // Scan platform bindings on miss (small set for v0.1)
+  const result = await this.kv.list({ prefix: `contact_platform:${platform}:` });
   for (const { name: key } of result.keys) {
-    const contact = await this.kvGet(key);
-    if (contact?.platforms?.[platform] === platformUserId) {
-      const id = key.replace("contact:", "");
-      await this.kvPutSafe(`contact_index:${platform}:${platformUserId}`, id);
-      return { id, ...contact };
+    const b = await this.kvGet(key);
+    if (b && key === `contact_platform:${platform}:${platformUserId}`) {
+      const contact = await this.kvGet(`contact:${b.slug}`);
+      return contact ? { id: b.slug, approved: b.approved, ...contact } : null;
     }
   }
   return null;
@@ -375,7 +371,6 @@ Deep reflect proposes contact changes as modification requests (type: `"wisdom"`
       "value": {
         "name": "Swami",
         "relationship": "patron",
-        "platforms": { "slack": "U_SWAMI" },
         "chat": { "model": "sonnet", "effort": "high" },
         "communication": "Inner circle. Full latitude.",
         "understanding": {
@@ -389,7 +384,7 @@ Deep reflect proposes contact changes as modification requests (type: `"wisdom"`
 }
 ```
 
-For the patron, even accepted modifications that change `name` or `platforms` trigger the kernel identity monitor, requiring cryptographic verification.
+For the patron, even accepted modifications that change `name` trigger the kernel identity monitor, requiring cryptographic verification. Platform binding changes go through `contact_platform:` keys.
 
 ## Seed script changes
 
@@ -404,9 +399,6 @@ await put("contact:swami", {
   relationship: "patron",
   public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...",
   key_type: "ssh-ed25519",
-  platforms: {
-    slack: "U_SWAMI",  // replaced with real ID in prod
-  },
   chat: {
     model: "sonnet",
     effort: "high",
@@ -415,6 +407,11 @@ await put("contact:swami", {
   },
   communication: "Inner circle. Full communication latitude — casual, experimental, direct. Can discuss anything including system internals, budget, failures.",
 }, "json", "Contact: Swami (patron)");
+
+await put("contact_platform:slack:U_SWAMI", {
+  slug: "swami",
+  approved: true,
+}, "json", "Platform binding: slack → swami");
 
 await put("patron:contact", "swami", "text", "Pointer to patron contact slug");
 await put("patron:public_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...", "text", "Patron public key — immutable, kernel-enforced");
@@ -427,6 +424,7 @@ Keep `upaya:comms:defaults` — general communication stance stays as upaya.
 ## System key protection
 
 - `contact:` in `SYSTEM_KEY_PREFIXES` — protects contacts from casual act-level writes
+- `contact_platform:` in `SYSTEM_KEY_PREFIXES` — platform bindings are kernel-managed
 - `patron:contact` in `SYSTEM_KEY_EXACT` — patron pointer protected from casual writes
 - `patron:public_key` in `IMMUTABLE_KEYS` — kernel hard-rejects ALL writes, including `kvWritePrivileged`. Only re-seeding can change it.
 - `patron:identity_snapshot` in `SYSTEM_KEY_EXACT` — only kernel writes to this (not exposed via RPC)

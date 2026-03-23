@@ -267,10 +267,6 @@ await put("contact:swami_kevala", {
   about: "Bramhachari at Isha.",
   timezone: "Asia/Kolkata",
   location: "Isha Yoga Center, Coimbatore",
-  approved: true,
-  platforms: {
-    slack: "U084ASKBXB7",
-  },
   chat: {
     model: "sonnet",
     effort: "high",
@@ -279,6 +275,11 @@ await put("contact:swami_kevala", {
   },
   communication: "Feel free to discuss absolutely anything. Nothing is off limits.",
 }, "json", "Contact: Swami (patron)");
+
+await put("contact_platform:slack:U084ASKBXB7", {
+  slug: "swami_kevala",
+  approved: true,
+}, "json", "Platform binding: Swami on Slack");
 
 await put("patron:contact", "swami_kevala", "text", "Pointer to patron contact slug");
 await put("patron:public_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPRTP/9Jr6J1uoDSmN/SvmcoORMhHXHxgS0c4zehDNIW swayambhu patron key", "text", "Patron public key — immutable, kernel-enforced");

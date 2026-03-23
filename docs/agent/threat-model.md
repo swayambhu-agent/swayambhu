@@ -37,10 +37,10 @@ What attacks each protection prevents, what would happen if the defense were rem
 **Attack:** An attacker modifies a contact record to redirect communication — e.g., changing the patron's Slack user ID to the attacker's ID, so messages intended for the patron go to the attacker.
 
 **Defense:** Multiple layers:
-- Contact records (`contact:*`, `contact_index:*`) are operator-only — the agent cannot write them via `kvWritePrivileged`
+- Platform bindings (`contact_platform:*`) are operator-only — the agent cannot approve them via `kvWritePrivileged`
 - The patron's identity is anchored to an immutable Ed25519 public key at `patron:public_key`
 - The kernel monitors the patron's name and platform IDs — changes without cryptographic verification trigger `patron_identity_disputed`
-- Contact `approved` auto-flips to false on platform change, forcing re-verification
+- Platform bindings are always created unapproved, requiring operator approval
 
 **What to watch for:** `patron_identity_disputed` flags. If this appears, do NOT trust the new contact values. Ask the patron to sign a message with their key before proceeding.
 

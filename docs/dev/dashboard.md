@@ -155,30 +155,25 @@ Response: `{ items: [{ key, sender, content, tool, timestamp, ... }] }`
 #### POST /contacts
 
 Creates a new contact record. Validates:
-- Required fields: `slug`, `name`, `platforms`
-- `platforms` must be a non-array object with non-empty string values
+- Required fields: `slug`, `name`
 - No duplicate slugs (checks for existing `contact:{slug}`)
 
 Writes:
-- `contact:{slug}` — the contact record with `created_by: "patron"` and
-  `approved: true` by default (operator-created contacts are auto-approved;
-  pass `"approved": false` to create an unapproved contact)
-- `contact_index:{platform}:{userId}` — one index entry per platform
+- `contact:{slug}` — the contact record (identity metadata only, no
+  `approved` or `platforms` fields)
+- `contact_platform:{platform}:{userId}` — one platform binding per
+  platform (if platforms provided), each with `{ slug, approved: true }`
 
 Response: `{ ok: true, slug, contact }` or error (400/409)
 
-#### PATCH /contacts/:slug/approve
+#### PATCH /contact-platform/:platform/:id/approve
 
-Sets approval status on a contact. Body: `{ "approved": true|false }`.
+Sets approval status on a platform binding. Body: `{ "approved": true|false }`.
 
-Updates the contact record with:
+Updates the `contact_platform:{platform}:{id}` record with:
 - `approved` — the new status
-- `approved_at` — timestamp of the change
-- `approved_by` — `"patron"`
 
-Rebuilds `contact_index:*` entries for the contact's current platforms.
-
-Response: `{ ok: true, slug, approved }` or error (400/404)
+Response: `{ ok: true, platform, id, approved }` or error (400/404)
 
 #### DELETE /quarantine/:key
 

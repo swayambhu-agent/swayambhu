@@ -22,8 +22,6 @@ Fields:
 ```json
 {
   "name": "Alice",
-  "approved": true,
-  "platforms": { "email": "alice@example.com", "slack": "U12345" },
   "relationship": "collaborator",
   "notes": "",
   "chat": { "max_cost_per_conversation": 1.0, "model": "sonnet" },
@@ -33,51 +31,51 @@ Fields:
 }
 ```
 
-The `approved` field is the primary gate for all communication. Contacts
-must be approved before the agent can send to them, receive unredacted
-content from them, or give them tool access in chat.
+Approval and platform bindings live in `contact_platform:` keys (see
+below). A contact must have an approved platform binding before the agent
+can send to them, receive unredacted content from them, or give them tool
+access in chat.
 
 **Agent contact rules** (enforced by `kvWritePrivileged` in
 `kernel.js`):
 
 | Action | Allowed? | Constraints |
 |--------|----------|-------------|
-| Create contact | Yes | Must have `approved: false` and empty `platforms: {}` |
-| Edit contact fields | Yes | Cannot set `approved: true` |
-| Change `platforms` | Yes | Auto-flips `approved` to `false` (requires re-approval) |
-| Delete unapproved contact | Yes | Agent can clean up its own stubs |
-| Delete approved contact | No | Operator-only |
-| Set `approved: true` | No | Operator-only (via dashboard PATCH endpoint) |
-| Patch `approved` field | No | Blocked explicitly to prevent string-level bypass |
+| Create contact | Yes | Identity metadata only (no `approved` or `platforms` fields) |
+| Edit contact fields | Yes | Can update name, relationship, chat config, etc. |
+| Propose platform binding | Yes | Creates `contact_platform:` key with `approved: false` |
+| Approve platform binding | No | Operator-only (via dashboard `PATCH /contact-platform/:platform/:id/approve`) |
+| Delete contact | Yes | Agent can clean up contacts it created |
 
 **Write path:** Agent `kv_operations` → `applyKVOperation` in
 `kernel.js:applyKVOperation` → routes `contact:*` keys to `kvWritePrivileged` →
-kernel-enforced rules above. `contact_index:*` keys remain
+kernel-enforced rules above. `contact_platform:*` keys remain
 kernel-managed (rejected by `kvWritePrivileged`).
 
-### Contact index (reverse lookup)
+### Platform bindings (index + approval)
 
-`contact_index:{platform}:{userId}` → slug string. Example:
-`contact_index:email:alice@example.com` → `"alice"`.
+`contact_platform:{platform}:{userId}` → `{ slug, approved }`. Example:
+`contact_platform:email:alice@example.com` → `{ slug: "alice", approved: true }`.
 
 Created by the dashboard API when a contact is added, and lazily cached
-by the kernel on first `resolveContact` miss.
+by the kernel on first `resolveContact` miss. Serves as both the
+platform-to-contact index and the per-platform approval store.
 
 ### resolveContact(platform, platformUserId)
 
 `kernel.js:387`
 
-1. Checks `contact_index:{platform}:{userId}` for a cached slug
-2. If found: loads `contact:{slug}`, returns with patron snapshot applied
-3. If not found: scans all `contact:*` keys, checks
-   `contact.platforms[platform] === platformUserId`
-4. On match: writes the index cache, returns contact with patron snapshot
+1. Checks `contact_platform:{platform}:{userId}` for a binding
+2. If found: loads `contact:{slug}`, merges `approved` from binding, returns with patron snapshot applied
+3. If not found: scans all `contact_platform:*` keys for the platform, checks for matching userId
+4. On match: returns contact with approval status from binding, with patron snapshot
 5. On no match: returns `null` (unknown contact)
 
 Returns `null` for unknown contacts. Returns the full contact object
-(including `approved` field) for known contacts. Both values are used by
-the chat handler, communication gate, and inbound content gate to
-enforce the three-tier access model: unknown → unapproved → approved.
+(with `approved` merged from the `contact_platform:` binding) for known
+contacts. Both values are used by the chat handler, communication gate,
+and inbound content gate to enforce the three-tier access model:
+unknown → unapproved → approved.
 
 ### _applyPatronSnapshot(id, contact)
 
@@ -143,7 +141,7 @@ the sender's contact:
 
 ```
 resolveContact(channel, inbound.userId)
-  → contact_index:{channel}:{userId}
+  → contact_platform:{channel}:{userId}
     → contact:{slug}
 ```
 

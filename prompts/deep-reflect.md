@@ -67,7 +67,7 @@ For each blocked message, decide:
 - **revise_and_send** — right intent, needs better execution; provide revised text
 - **drop** — should not have been sent; discard with reason
 
-Contact creation is operator-only. If a message was blocked due to missing contact, flag it in your reflection.
+You can create contacts (name, relationship, notes) and propose platform bindings (`contact_platform:{platform}:{id}`) — bindings are always created unapproved. The patron approves individual platform bindings via the dashboard. If a message was blocked due to missing contact or unapproved platform binding, flag it in your reflection.
 
 ## Patron
 
@@ -75,7 +75,7 @@ Contact creation is operator-only. If a message was blocked due to missing conta
 
 Patron identity disputed: **{{patron_identity_disputed}}**
 
-If disputed, the patron must verify their identity via Ed25519 signature before you trust changed values. You can update existing contact records via modification requests. New contacts require the operator.
+If disputed, the patron must verify their identity via Ed25519 signature before you trust changed values. You can update existing contact records via modification requests. You can create new contacts and propose platform bindings (always unapproved until patron approves).
 
 ## System key patterns
 

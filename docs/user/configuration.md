@@ -329,7 +329,9 @@ it can see from inbound messages, and how it behaves in chat.
 ### Contact Record Structure
 
 Contacts are stored at `contact:{slug}` in KV. The slug is a permanent
-identifier — pick something stable like a name or handle.
+identifier — pick something stable like a name or handle. Contact records
+contain identity metadata only — platform bindings and approval status
+live in separate `contact_platform:` keys.
 
 ```json
 {
@@ -338,9 +340,6 @@ identifier — pick something stable like a name or handle.
   "about": "Bramhachari at Isha.",
   "timezone": "Asia/Kolkata",
   "location": "Isha Yoga Center, Coimbatore",
-  "platforms": {
-    "slack": "U084ASKBXB7"
-  },
   "chat": {
     "model": "sonnet",
     "effort": "high",
@@ -353,7 +352,6 @@ identifier — pick something stable like a name or handle.
 
 **Required fields:**
 - `name` — Display name
-- `platforms` — Map of platform to user ID (e.g. `{ "slack": "U...", "email": "user@example.com" }`)
 
 **Optional fields:**
 - `relationship` — Describes the relationship (freeform, used for context)
@@ -383,23 +381,24 @@ curl -X POST http://localhost:8790/contacts \
 **Via the seed script:** Add an entry to `scripts/seed-local-kv.mjs` in
 the Contacts section and re-seed.
 
-Contact records are operator-managed. The agent cannot create or modify
-contacts during normal orient sessions. During deep reflect, the agent
-can *propose* contact changes through the modification protocol, but they
-go through the same staged review as any other modification.
+The agent can create contacts freely (identity metadata only) and propose
+platform bindings (always unapproved). Platform approval is operator-only
+via the dashboard.
 
-### Contact Index
+### Platform Bindings
 
 When a message arrives, the kernel needs to look up the contact by
-platform and user ID. The contact index at `contact_index:{platform}:{userId}`
-maps each platform identity to its contact slug:
+platform and user ID. Platform bindings at
+`contact_platform:{platform}:{userId}` map each platform identity to its
+contact slug and approval status:
 
 ```
-contact_index:slack:U084ASKBXB7 → "swami_kevala"
+contact_platform:slack:U084ASKBXB7 → { slug: "swami_kevala", approved: true }
 ```
 
 These are created automatically when you add a contact via the dashboard
-API. If you add contacts via the seed script, add the index entries too.
+API. If you add contacts via the seed script, add the platform binding
+entries too. Approval is managed via `PATCH /contact-platform/:platform/:id/approve`.
 
 ### Per-Contact Chat Config
 

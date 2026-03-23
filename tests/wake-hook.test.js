@@ -691,28 +691,36 @@ describe("applyKVOperation blocks yama/niyama", () => {
   });
 });
 
-// ── 19b. applyKVOperation routes contact: to kvWritePrivileged ───
+// ── 19b. applyKVOperation routes contact: and contact_platform: to kvWritePrivileged ───
 
-describe("applyKVOperation routes contact: to kvWritePrivileged", () => {
+describe("applyKVOperation routes contact: and contact_platform: to kvWritePrivileged", () => {
   it("routes contact: put to kvWritePrivileged", async () => {
     const K = makeMockK();
-    await applyKVOperation(K, { op: "put", key: "contact:alice", value: { name: "Alice", approved: false, platforms: {} } });
+    await applyKVOperation(K, { op: "put", key: "contact:alice", value: { name: "Alice" } });
     expect(K.kvWritePrivileged).toHaveBeenCalledWith([
-      { op: "put", key: "contact:alice", value: { name: "Alice", approved: false, platforms: {} } },
+      { op: "put", key: "contact:alice", value: { name: "Alice" } },
     ]);
-    // Should NOT go through kvPutSafe (system key path)
     expect(K.kvPutSafe).not.toHaveBeenCalled();
   });
 
-  it("records modification_blocked when kvWritePrivileged rejects", async () => {
+  it("routes contact_platform: put to kvWritePrivileged", async () => {
     const K = makeMockK();
-    K.kvWritePrivileged = vi.fn(async () => { throw new Error("Setting approved: true is operator-only"); });
-    await applyKVOperation(K, { op: "put", key: "contact:evil", value: { name: "Evil", approved: true, platforms: {} } });
+    await applyKVOperation(K, { op: "put", key: "contact_platform:slack:U123", value: { slug: "alice", approved: false } });
+    expect(K.kvWritePrivileged).toHaveBeenCalledWith([
+      { op: "put", key: "contact_platform:slack:U123", value: { slug: "alice", approved: false } },
+    ]);
+    expect(K.kvPutSafe).not.toHaveBeenCalled();
+  });
+
+  it("records modification_blocked when kvWritePrivileged rejects platform binding", async () => {
+    const K = makeMockK();
+    K.kvWritePrivileged = vi.fn(async () => { throw new Error("Setting approved: true on platform bindings is operator-only"); });
+    await applyKVOperation(K, { op: "put", key: "contact_platform:email:evil@example.com", value: { slug: "evil", approved: true } });
     expect(K.karmaRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "modification_blocked",
-        key: "contact:evil",
-        reason: "Setting approved: true is operator-only",
+        key: "contact_platform:email:evil@example.com",
+        reason: "Setting approved: true on platform bindings is operator-only",
       })
     );
   });
@@ -722,6 +730,14 @@ describe("applyKVOperation routes contact: to kvWritePrivileged", () => {
     await applyKVOperation(K, { op: "delete", key: "contact:alice" });
     expect(K.kvWritePrivileged).toHaveBeenCalledWith([
       { op: "delete", key: "contact:alice" },
+    ]);
+  });
+
+  it("routes contact_platform: delete to kvWritePrivileged", async () => {
+    const K = makeMockK();
+    await applyKVOperation(K, { op: "delete", key: "contact_platform:slack:U123" });
+    expect(K.kvWritePrivileged).toHaveBeenCalledWith([
+      { op: "delete", key: "contact_platform:slack:U123" },
     ]);
   });
 });

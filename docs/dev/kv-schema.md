@@ -12,7 +12,7 @@ The kernel enforces a hierarchy of write access. From most restrictive to least:
 |-------|-------------|--------|
 | **Immutable** | `kvPut()`, `kvPutSafe()`, `kvWritePrivileged()` all reject | Cannot be written by anyone after initial seed |
 | **Kernel-only** | `kvPutSafe()` and `kvWritePrivileged()` reject; `KernelRPC.kvGet()` blocks reads | Only kernel internal code (`this.kvPut()`, `this.kv.delete()`) can read/write |
-| **Contact (agent-gated)** | `kvWritePrivileged()` enforces approval rules for `contact:*`; `contact_index:*` is kernel-managed | Agent can create (unapproved, no platforms), edit, delete unapproved. Cannot set `approved: true` or delete approved contacts. |
+| **Contact (agent-gated)** | `kvWritePrivileged()` enforces rules for `contact:*` (identity only); `contact_platform:*` is kernel-managed | Agent can create contacts freely (identity metadata only), propose platform bindings (always unapproved). Cannot approve platform bindings. |
 | **System (privileged)** | `kvPutSafe()` rejects; must use `kvWritePrivileged()` | Snapshots old value to karma, rate-limited (50/session), alerts on hook writes |
 | **System (privileged + principle)** | Same as system, plus deliberation length and model capability gates | `yama:*` needs 200 chars + `yama_capable`; `niyama:*` needs 100 chars + `niyama_capable` |
 | **Protected agent** | `applyKVOperation()` in kernel.js (applyKVOperation) blocks writes to existing keys without `unprotected` metadata | Agent can create new keys freely but cannot overwrite existing protected keys |
@@ -220,16 +220,16 @@ System prefix. Writable via `kvWritePrivileged()` (Modification Protocol). Skill
 
 System-prefix keys. Writable via `kvWritePrivileged()`. The Modification Protocol treats these as "wisdom" type — must be staged by deep reflect (depth >= 1) or can use `acceptDirect()` for upaya/prajna (but not yama/niyama). No circuit breaker rollback, no git sync.
 
-### Contacts (`contact:*`, `contact_index:*`)
+### Contacts (`contact:*`, `contact_platform:*`)
 
 | Key pattern | Format | Value | Read by | Written by | Seeded |
 |-------------|--------|-------|---------|------------|--------|
-| `contact:{slug}` | JSON | `{ name, approved, platforms: { slack, email, ... }, relationship, about, timezone, location, chat: {...}, communication }` | `resolveContact()`, `loadPatronContext()`, `handleChat()` | Seed, Dashboard API (`POST /contacts`, `PATCH /contacts/:slug/approve`), agent via `kv_operations` → `kvWritePrivileged` | Yes (1: `contact:swami_kevala`) |
-| `contact_index:{platform}:{userId}` | JSON | Contact slug string, e.g. `"swami_kevala"` | `resolveContact()` — checked before scanning all contacts | `resolveContact()` (kernel cache-on-miss via `this.kvPut()`), Dashboard API | No — created at runtime |
+| `contact:{slug}` | JSON | `{ name, relationship, about, timezone, location, chat: {...}, communication }` — identity metadata only, no `approved` or `platforms` | `resolveContact()`, `loadPatronContext()`, `handleChat()` | Seed, Dashboard API (`POST /contacts`), agent via `kv_operations` → `kvWritePrivileged` | Yes (1: `contact:swami_kevala`) |
+| `contact_platform:{platform}:{userId}` | JSON | `{ slug, approved: true/false }` — serves as both index and approval store | `resolveContact()` — checked before scanning all contacts | Dashboard API (`PATCH /contact-platform/:platform/:id/approve`), kernel (cache-on-miss via `this.kvPut()`) | No — created at runtime or via dashboard |
 
-**Agent-gated contacts:** `kvWritePrivileged()` enforces approval rules for `contact:*` keys. The agent can create contacts (must be `approved: false` with empty `platforms: {}`), edit any field except `approved: true`, and delete unapproved contacts. Setting `approved: true` and deleting approved contacts is operator-only (dashboard). Patching the `approved` field is explicitly blocked. When the agent changes `platforms`, `approved` auto-flips to `false` (requires re-approval). `contact_index:*` keys are kernel-managed — `kvWritePrivileged` rejects all agent writes.
+**Agent-gated contacts:** `kvWritePrivileged()` enforces rules for `contact:*` keys. The agent can create contacts freely (identity metadata only — no `approved` or `platforms` fields). Platform bindings live in `contact_platform:*` keys, which the agent can propose (always unapproved). Approval is operator-only via the dashboard (`PATCH /contact-platform/:platform/:id/approve`). `contact_platform:*` keys are kernel-managed — `kvWritePrivileged` rejects direct agent writes.
 
-**Write path for agent:** `kv_operations` output → `applyKVOperation()` in `kernel.js (applyKVOperation)` routes `contact:*` keys to `kvWritePrivileged()` (bypassing the normal system key block). All other system key prefixes remain blocked.
+**Write path for agent:** `kv_operations` output → `applyKVOperation()` in `kernel.js (applyKVOperation)` routes `contact:*` keys to `kvWritePrivileged()` (bypassing the normal system key block). `contact_platform:*` keys remain kernel-managed. All other system key prefixes remain blocked.
 
 ### Communications (`comms_blocked:*`, `sealed:*`)
 
@@ -532,7 +532,7 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **73 keys** total:
 | Key | Created by | When |
 |-----|-----------|------|
 | `patron:identity_snapshot` | `loadPatronContext()` | First boot |
-| `contact_index:*` | `resolveContact()`, Dashboard API | First contact resolution / contact creation |
+| `contact_platform:*` | `resolveContact()`, Dashboard API | First contact resolution / platform approval |
 | `kernel:active_session` | `executeHook()` | Every session start |
 | `kernel:last_sessions` | `updateSessionOutcome()` | Every session end |
 | `kernel:hook_dirty` | `kvWritePrivileged()` | When hook keys are written |
