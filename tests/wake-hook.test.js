@@ -976,14 +976,14 @@ describe("executeReflect modification_observations", () => {
   });
 });
 
-// ── conclusion_updates lifecycle ──────────────────────────
+// ── assumption_updates lifecycle ──────────────────────────
 
-describe("conclusion_updates in session reflect", () => {
-  it("carries forward conclusions from previous deep reflect", async () => {
+describe("assumption_updates in session reflect", () => {
+  it("carries forward assumptions from previous deep reflect", async () => {
     const K = makeMockK({
       "last_reflect": JSON.stringify({
         session_summary: "previous",
-        conclusions: [
+        assumptions: [
           { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
         ],
       }),
@@ -998,15 +998,15 @@ describe("conclusion_updates in session reflect", () => {
 
     const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect).toBeTruthy();
-    expect(lastReflect[1].conclusions).toHaveLength(1);
-    expect(lastReflect[1].conclusions[0].claim).toBe("Slack broken");
+    expect(lastReflect[1].assumptions).toHaveLength(1);
+    expect(lastReflect[1].assumptions[0].claim).toBe("Slack broken");
   });
 
-  it("resolves a conclusion via conclusion_updates", async () => {
+  it("resolves an assumption via assumption_updates", async () => {
     const K = makeMockK({
       "last_reflect": JSON.stringify({
         session_summary: "previous",
-        conclusions: [
+        assumptions: [
           { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
           { claim: "Email empty", relevance: "No inbound comms", revisit_by_session: 35 },
         ],
@@ -1015,7 +1015,7 @@ describe("conclusion_updates in session reflect", () => {
     K.runAgentLoop = vi.fn(async () => ({
       session_summary: "retested slack",
       note_to_future_self: "slack works now",
-      conclusion_updates: [
+      assumption_updates: [
         { claim: "Slack broken", status: "resolved" },
       ],
     }));
@@ -1024,15 +1024,15 @@ describe("conclusion_updates in session reflect", () => {
     await executeReflect(K, state, { model: "test/model" });
 
     const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
-    expect(lastReflect[1].conclusions).toHaveLength(1);
-    expect(lastReflect[1].conclusions[0].claim).toBe("Email empty");
+    expect(lastReflect[1].assumptions).toHaveLength(1);
+    expect(lastReflect[1].assumptions[0].claim).toBe("Email empty");
   });
 
-  it("confirms a conclusion and bumps revisit date", async () => {
+  it("confirms an assumption and bumps revisit date", async () => {
     const K = makeMockK({
       "last_reflect": JSON.stringify({
         session_summary: "previous",
-        conclusions: [
+        assumptions: [
           { claim: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 25 },
         ],
       }),
@@ -1040,7 +1040,7 @@ describe("conclusion_updates in session reflect", () => {
     K.runAgentLoop = vi.fn(async () => ({
       session_summary: "retested, still broken",
       note_to_future_self: "slack still down",
-      conclusion_updates: [
+      assumption_updates: [
         { claim: "Slack broken", status: "confirmed", revisit_by_session: 35 },
       ],
     }));
@@ -1049,8 +1049,8 @@ describe("conclusion_updates in session reflect", () => {
     await executeReflect(K, state, { model: "test/model" });
 
     const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
-    expect(lastReflect[1].conclusions).toHaveLength(1);
-    expect(lastReflect[1].conclusions[0].revisit_by_session).toBe(35);
+    expect(lastReflect[1].assumptions).toHaveLength(1);
+    expect(lastReflect[1].assumptions[0].revisit_by_session).toBe(35);
   });
 });
 

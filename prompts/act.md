@@ -26,7 +26,7 @@ your upaya entries relevant to your current task via `kv_query`.
 ## Your context
 
 Your session context is provided below as JSON:
-- last_reflect: your previous session's reflection, including note_to_future_self and any conclusions from deep reflect
+- last_reflect: your previous session's reflection, including note_to_future_self and any assumptions from deep reflect
 - additional_context: KV keys you asked to load in your last reflection
 - balances: current provider and wallet balances
 - effort: your effort level this session

@@ -99,6 +99,8 @@ Read everything above. Then think — not about what to do next, but about what 
 Prajna (self-knowledge): {{wisdom_manifest.prajna}}
 Upaya (discernment): {{wisdom_manifest.upaya}}
 
+Wisdom is timeless understanding discovered through experience — truths that don't depend on current circumstances and wouldn't change if the situation changed. Not "Slack is broken" (that's an assumption) but "always verify infrastructure state before acting on it" (that's wisdom — true regardless of whether Slack is currently broken or working).
+
 Use `kv_query` to load specific entries relevant to your examination. For schema and naming conventions, query `doc:wisdom_guide`.
 
 ### Skills
@@ -130,7 +132,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 {
   "reflection": "What you see when you look at yourself as a system — honest, specific, unflinching.",
 
-  "conclusions": [
+  "assumptions": [
     {
       "claim": "What you concluded from observation",
       "relevance": "Why this matters to your current operation",
@@ -169,17 +171,17 @@ Respond with a single JSON object. Nothing outside the JSON.
 }
 ```
 
-**Required:** `reflection`, `conclusions`
+**Required:** `reflection`, `assumptions`
 
 **Everything else is optional.** Only include what you're actually changing. Omitting a field means "no change."
 
-### On Conclusions
+### On Assumptions
 
-Any conclusion drawn from observation — about infrastructure, contacts, patterns, the world — that could become stale. Positive or negative. Each must have a `relevance` explaining why it matters now. If you can't articulate the relevance, don't track it.
+Assumptions you're currently operating on — conclusions about the current state of things that could change. "Slack is broken", "patron prefers short messages", "email inbox is quiet". Each must have a `relevance` explaining why it matters now. If you can't articulate the relevance, don't track it.
 
-Each carries a `revisit_by_session` — the session count by which the conclusion should be revisited. Session reflect checks these and tells act to revisit when they expire. If confirmed, session reflect bumps the date. If no longer true, session reflect removes it.
+Each carries a `revisit_by_session` — the session count by which the assumption should be revisited. Session reflect checks these and tells act to revisit when they expire. If confirmed, session reflect bumps the date. If no longer true, session reflect removes it.
 
-Review existing conclusions each deep reflect. Drop any where relevance no longer holds.
+Review existing assumptions each deep reflect. Drop any where relevance no longer holds.
 
 ### On the Proposal System
 
