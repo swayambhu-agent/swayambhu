@@ -1110,24 +1110,31 @@ class Kernel {
     };
 
     try {
-      // 0. Check if it's actually time to wake up
-      const wakeConfig = await this.kvGet("wake_config");
-      if (wakeConfig?.next_wake_after) {
-        if (Date.now() < new Date(wakeConfig.next_wake_after).getTime()) {
-          return { skipped: true, reason: "not_time_yet" };
-        }
-      }
-
-      // 1. Crash detection
-      const crashData = await this._detectCrash();
-
-      // 2. Load ground truth
-      const balances = await this.checkBalance({});
-
-      // 3. Reload core state from KV
+      // 0. Load defaults early — needed for wake check fallback
       defaults = await this.kvGet("config:defaults");
       this.defaults = defaults;
       state.defaults = defaults;
+
+      // 1. Check if it's actually time to wake up
+      const wakeConfig = await this.kvGet("wake_config");
+      const nextWake = wakeConfig?.next_wake_after;
+      if (!nextWake) {
+        // No valid wake time — policy code wrote bad data or first boot.
+        // Fall back to default sleep_seconds so we don't run every cron tick.
+        const fallbackSleep = defaults?.wake?.sleep_seconds || 21600;
+        const fallbackWake = new Date(Date.now() + fallbackSleep * 1000).toISOString();
+        await this.kvPutSafe("wake_config", { ...wakeConfig, next_wake_after: fallbackWake, sleep_seconds: fallbackSleep });
+        return { skipped: true, reason: "not_time_yet", healed: true };
+      }
+      if (Date.now() < new Date(nextWake).getTime()) {
+        return { skipped: true, reason: "not_time_yet" };
+      }
+
+      // 2. Crash detection
+      const crashData = await this._detectCrash();
+
+      // 3. Load ground truth
+      const balances = await this.checkBalance({});
       const lastReflect = await this.kvGet("last_reflect");
 
       // 4. Merge with defaults
