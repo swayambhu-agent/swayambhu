@@ -12,10 +12,10 @@
 
 async function loadWisdomManifest(K) {
   const prajnaList = await K.kvList({ prefix: "prajna:", limit: 100 });
-  const vivekaList = await K.kvList({ prefix: "viveka:", limit: 100 });
+  const upayaList = await K.kvList({ prefix: "upaya:", limit: 100 });
   return {
     prajna: prajnaList.keys.map(k => ({ key: k.name, summary: k.metadata?.summary || k.name })),
-    viveka: vivekaList.keys.map(k => ({ key: k.name, summary: k.metadata?.summary || k.name })),
+    upaya: upayaList.keys.map(k => ({ key: k.name, summary: k.metadata?.summary || k.name })),
   };
 }
 
@@ -31,9 +31,10 @@ export async function executeReflect(K, state, step) {
   const systemKeyPatterns = await K.getSystemKeyPatterns();
   const wisdom_manifest = await loadWisdomManifest(K);
 
+  const sessionCounter = await K.getSessionCount();
   const systemPrompt = await K.buildPrompt(
     reflectPrompt || defaultReflectPrompt(),
-    { systemKeyPatterns, wisdom_manifest }
+    { systemKeyPatterns, wisdom_manifest, session_counter: sessionCounter }
   );
 
   const rawKarma = await K.getKarma();
@@ -180,7 +181,7 @@ export async function runReflect(K, state, depth, context) {
 export async function gatherReflectContext(K, state, depth, context) {
   const { defaults, modelsConfig } = state;
 
-  const orientPrompt = await K.kvGet("prompt:orient");
+  const actPrompt = await K.kvGet("prompt:act");
   const proposals = await K.loadProposals();
   const blockedComms = await K.listBlockedComms();
   const systemKeyPatterns = await K.getSystemKeyPatterns();
@@ -192,7 +193,7 @@ export async function gatherReflectContext(K, state, depth, context) {
   const patronIdentityDisputed = patronId ? await K.isPatronIdentityDisputed() : false;
 
   const templateVars = {
-    orientPrompt,
+    actPrompt,
     currentDefaults: defaults,
     models: modelsConfig,
     proposals,
@@ -300,13 +301,14 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   if (output.current_intentions) reflectRecord.current_intentions = output.current_intentions;
   if (output.modification_observations) reflectRecord.modification_observations = output.modification_observations;
   if (output.system_trajectory) reflectRecord.system_trajectory = output.system_trajectory;
+  if (output.assessments) reflectRecord.assessments = output.assessments;
   await K.kvPutSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 6. Only depth 1: write last_reflect and wake_config
   if (depth === 1) {
     await K.kvPutSafe("last_reflect", {
       session_summary: output.reflection,
-      note_to_future_self: output.note_to_future_self,
+      assessments: output.assessments || [],
       was_deep_reflect: true,
       depth,
       session_id: sessionId,
@@ -324,15 +326,6 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   // 7. Refresh defaults after every depth (cascade visibility)
   await state.refreshDefaults();
 
-  // 8. Karma (includes refreshed balances for dashboard)
-  let endBalances;
-  try { endBalances = await K.checkBalance({}); } catch {}
-  await K.karmaRecord({
-    event: "reflect_complete",
-    depth,
-    session_id: sessionId,
-    ...(endBalances ? { balances: endBalances } : {}),
-  });
 }
 
 // ── Reflect hierarchy helpers ──────────────────────────────
@@ -344,7 +337,7 @@ export async function loadReflectPrompt(K, state, depth) {
 }
 
 export async function loadBelowPrompt(K, depth) {
-  if (depth === 1) return K.kvGet("prompt:orient");
+  if (depth === 1) return K.kvGet("prompt:act");
   return K.kvGet(`prompt:reflect:${depth - 1}`);
 }
 
@@ -401,7 +394,7 @@ export function defaultReflectPrompt() {
 Review the session karma log and cost provided in the user message.
 
 Produce a JSON object with: session_summary, note_to_future_self,
-next_orient_context (with load_keys array), and optionally
+next_act_context (with load_keys array), and optionally
 next_wake_config, kv_operations, modification_verdicts, and modification_requests.`;
 }
 
@@ -425,7 +418,7 @@ Read these for continuity. If you set intentions, honor or explicitly revise the
 
 Use kv_query to load specific entries relevant to your examination.
 
-Examine your karma, your orient prompt, your patterns. Produce a JSON object:
+Examine your karma, your act prompt, your patterns. Produce a JSON object:
 {
   "reflection": "What you see when you look at yourself as a system",
   "note_to_future_self": "Orientation, not action items",
