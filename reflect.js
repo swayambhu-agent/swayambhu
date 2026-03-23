@@ -255,6 +255,27 @@ export async function gatherReflectContext(K, state, depth, context) {
     if (chatDigest.length > 0) templateVars.chatDigest = chatDigest;
   }
 
+  // Reflect schedule — so deep reflect knows when it last ran and when next is due
+  if (depth >= 1) {
+    const maxReflectDepth = defaults?.execution?.max_reflect_depth || 1;
+    const sessionCount = await K.getSessionCount();
+    const scheduleInfo = {};
+    for (let d = 1; d <= maxReflectDepth; d++) {
+      const sched = await K.kvGet(`reflect:schedule:${d}`);
+      if (sched) {
+        const interval = sched.after_sessions
+          || defaults?.deep_reflect?.default_interval_sessions || 20;
+        scheduleInfo[d] = {
+          last_ran: sched.last_reflect_session || 0,
+          next_due: (sched.last_reflect_session || 0) + interval,
+        };
+      }
+    }
+    if (Object.keys(scheduleInfo).length > 0) {
+      templateVars.reflectSchedule = scheduleInfo;
+    }
+  }
+
   return { userMessage: "Begin.", templateVars };
 }
 
