@@ -365,7 +365,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     session_id: sessionId,
     timestamp: new Date().toISOString(),
   };
-  if (output.current_intentions) reflectRecord.current_intentions = output.current_intentions;
+  if (output.sankalpas) reflectRecord.sankalpas = output.sankalpas;
   if (output.modification_observations) reflectRecord.modification_observations = output.modification_observations;
   if (output.system_trajectory) reflectRecord.system_trajectory = output.system_trajectory;
   if (output.assumptions) reflectRecord.assumptions = output.assumptions;
@@ -493,7 +493,7 @@ indicate broken scheduling.
 
 {{priorReflections}}
 
-Read these for continuity. If you set intentions, honor or explicitly revise them.
+Read these for continuity. If you set sankalpas, honor or explicitly revise them.
 
 ## Available wisdom
 
@@ -505,7 +505,7 @@ Examine your karma, your act prompt, your patterns. Produce a JSON object:
 {
   "reflection": "What you see when you look at yourself as a system",
   "note_to_future_self": "Orientation, not action items",
-  "current_intentions": [{"intention": "...", "dharma_basis": "...", "status": "active", "observation": "..."}],
+  "sankalpas": [{"sankalpa": "...", "status": "active", "observation": "..."}],
   "modification_observations": {"m_123": "What you observe about this modification"},
   "system_trajectory": "Brief assessment of overall direction",
   "kv_operations": [],
@@ -530,7 +530,7 @@ Your output is stored at reflect:${depth}:{sessionId}.
 
 {{priorReflections}}
 
-Read these for continuity. If you set intentions, honor or explicitly revise them.
+Read these for continuity. If you set sankalpas, honor or explicitly revise them.
 
 ## Available wisdom
 
@@ -547,7 +547,7 @@ Examine the depth-${depth - 1} outputs for patterns, drift, and alignment. Produ
 {
   "reflection": "What you see in the level-below patterns",
   "note_to_future_self": "Orientation for next depth-${depth} reflection",
-  "current_intentions": [{"intention": "...", "dharma_basis": "...", "status": "active", "observation": "..."}],
+  "sankalpas": [{"sankalpa": "...", "status": "active", "observation": "..."}],
   "modification_observations": {"m_123": "What you observe about this modification"},
   "system_trajectory": "Brief assessment of overall direction",
   "kv_operations": [],

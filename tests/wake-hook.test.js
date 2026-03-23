@@ -1063,7 +1063,7 @@ describe("applyReflectOutput conditional fields", () => {
     const output = {
       reflection: "deep thoughts",
       note_to_future_self: "remember",
-      current_intentions: [{ intention: "test", status: "active" }],
+      sankalpas: [{ sankalpa: "test", status: "active" }],
       modification_observations: { "m_123": "looks good" },
       system_trajectory: "on track",
     };
@@ -1073,7 +1073,7 @@ describe("applyReflectOutput conditional fields", () => {
     const stored = K.kvPutSafe.mock.calls.find(([key]) => key === "reflect:1:s_new");
     expect(stored).toBeTruthy();
     const record = stored[1];
-    expect(record.current_intentions).toEqual([{ intention: "test", status: "active" }]);
+    expect(record.sankalpas).toEqual([{ sankalpa: "test", status: "active" }]);
     expect(record.modification_observations).toEqual({ "m_123": "looks good" });
     expect(record.system_trajectory).toBe("on track");
   });
@@ -1091,7 +1091,7 @@ describe("applyReflectOutput conditional fields", () => {
     const stored = K.kvPutSafe.mock.calls.find(([key]) => key === "reflect:2:s_minimal");
     expect(stored).toBeTruthy();
     const record = stored[1];
-    expect(record).not.toHaveProperty("current_intentions");
+    expect(record).not.toHaveProperty("sankalpas");
     expect(record).not.toHaveProperty("modification_observations");
     expect(record).not.toHaveProperty("system_trajectory");
   });
