@@ -65,6 +65,13 @@ export function parseInbound(body) {
   };
 }
 
+// Canonical chat key: DMs keyed by userId (matches send_slack targets),
+// channels/groups keyed by channelId. Default for other adapters: chatId.
+export function resolveChatKey(inbound) {
+  if (inbound.chatId?.startsWith("D") && inbound.userId) return inbound.userId;
+  return inbound.chatId;
+}
+
 export async function sendReply(chatId, text, secrets, fetchFn) {
   await fetchFn("https://slack.com/api/chat.postMessage", {
     method: "POST",

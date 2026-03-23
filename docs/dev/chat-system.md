@@ -79,22 +79,20 @@ Plus a `config` export with `secrets` array and optional
 
 ### Prod: KV-loaded isolates
 
-In prod, the kernel loads `channel:{name}:code` and
-`channel:{name}:config` from KV. The adapter code is wrapped via
-`Brainstem.wrapChannelAdapter()` (`brainstem.js:1334`) which appends a
-`default export` with a `fetch` handler that dispatches to `verify`,
-`parseInbound`, or `sendReply` based on a `ctx.action` field.
+The kernel uses channel adapters that are statically imported via `index.js`.
+Each adapter exports `verify`, `parseInbound`, and `sendReply` functions
+that are called directly by the kernel.
 
-Each adapter operation runs in a separate Worker Loader isolate call:
+Each adapter operation runs in a separate direct call call:
 1. `verify` — `runInIsolate` with `action: "verify"`, 5s timeout
 2. `parseInbound` — `runInIsolate` with `action: "parse"`, 5s timeout
 3. `sendReply` — `runInIsolate` with `action: "send"`, 10s timeout
 
 ### Dev: direct imports
 
-In `brainstem-dev.js`, channel adapters are imported directly and called
-without isolate sandboxing. Verification is skipped entirely in dev mode
-(`brainstem-dev.js:70`).
+In `index.js`, channel adapters are imported directly and called
+directly. Verification is skipped entirely in dev mode
+(`index.js:70`).
 
 ### Current adapters
 
@@ -110,14 +108,14 @@ Only **Slack** exists (`channels/slack.js`):
 
 ## Deduplication
 
-`brainstem.js:208-214` (prod), `brainstem-dev.js:79-84` (dev)
+`kernel.js:208-214` (prod), `index.js:79-84` (dev)
 
 Slack retries webhook delivery if no 200 response within 3 seconds. The
 kernel deduplicates using `dedup:{msgId}` keys with a 30-second TTL.
 
 1. If `inbound.msgId` exists: check `dedup:{msgId}` in KV
 2. If found: return 200 immediately (already processing)
-3. If not found: write `"1"` with `expirationTtl: 30`, continue
+3. If not found: write `"1"` with `expirationTtl: 60`, continue
 
 The dedup check happens before `handleChat` is called, so duplicate
 deliveries never reach the chat pipeline.
@@ -261,7 +259,7 @@ Key details:
 ### Step 8: Send reply
 
 Calls `adapter.sendReply(chatId, reply)`. In prod this runs the adapter's
-`sendReply` function in an isolate. In dev it calls the function directly.
+`sendReply` function directly (same in both dev and prod).
 
 ### Step 9: Save state
 
@@ -313,9 +311,9 @@ cumulative cost.
 Both prod and dev return HTTP 200 immediately and process the chat in the
 background:
 
-**Prod** (`brainstem.js:223`): `ctx.waitUntil(async () => { ... })`
+**Prod** (`kernel.js:223`): `ctx.waitUntil(async () => { ... })`
 
-**Dev** (`brainstem-dev.js:87`): Same pattern — the async IIFE runs after
+**Dev** (`index.js:87`): Same pattern — the async IIFE runs after
 the response is sent.
 
 This prevents Slack's 3-second retry from firing while the LLM processes.

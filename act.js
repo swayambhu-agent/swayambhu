@@ -1,5 +1,5 @@
 // Swayambhu — Session Policy (act)
-// How a normal orient session works: context building, agent loop, output processing.
+// How a normal act session works: context building, agent loop, output processing.
 // Mutable — the agent can propose changes to this file via the proposal system.
 //
 // Receives K (kernel interface) for all kernel interactions.
@@ -11,10 +11,10 @@ import { executeReflect } from './reflect.js';
 export async function runSession(K, state, context, config) {
   const { defaults, modelsConfig } = state;
 
-  const orientPrompt = await K.kvGet("prompt:orient");
+  const actPrompt = await K.kvGet("prompt:act");
   const resources = await K.kvGet("config:resources");
 
-  // Build skill manifest for orient prompt injection
+  // Build skill manifest for act prompt injection
   const skillList = await K.kvList({ prefix: "skill:", limit: 100 });
   const skill_manifest = [];
   for (const k of skillList.keys) {
@@ -34,17 +34,22 @@ export async function runSession(K, state, context, config) {
     }
   }
 
-  const systemPrompt = await K.buildPrompt(orientPrompt, {
+  const systemPrompt = await K.buildPrompt(actPrompt, {
     models: modelsConfig,
     resources,
     config,
     skill_manifest: skill_manifest.length ? skill_manifest : null,
   });
 
-  const initialContext = buildOrientContext(context);
+  // Build chat digest — conversations since last session
+  const chatDigest = await buildChatDigest(K, context);
+  const initialContext = buildActContext({ ...context, chatDigest });
 
-  const orientModel = await K.resolveModel(
-    config.orient?.model || defaults?.orient?.model
+  // Use act_after_dm config when a direct message is present
+  const dmConfig = context.directMessage ? defaults?.act_after_dm : null;
+
+  const actModel = await K.resolveModel(
+    dmConfig?.model || config.act?.model || defaults?.act?.model
   );
 
   const tools = await K.buildToolDefinitions();
@@ -52,22 +57,22 @@ export async function runSession(K, state, context, config) {
   // Reserve budget for reflect if configured
   const budget = defaults?.session_budget;
   const reservePct = budget?.reflect_reserve_pct || 0;
-  const orientBudgetCap = (budget?.max_cost && reservePct > 0)
+  const actBudgetCap = (budget?.max_cost && reservePct > 0)
     ? budget.max_cost * (1 - reservePct)
     : undefined;
 
-  const maxSteps = await K.getMaxSteps(state, 'orient');
+  const maxSteps = await K.getMaxSteps(state, 'act');
 
   const output = await K.runAgentLoop({
     systemPrompt,
     initialContext,
     tools,
-    model: orientModel,
-    effort: context.effort || config.orient?.effort || defaults?.orient?.effort,
-    maxTokens: config.orient?.max_output_tokens || defaults?.orient?.max_output_tokens,
+    model: actModel,
+    effort: dmConfig?.effort || context.effort || config.act?.effort || defaults?.act?.effort,
+    maxTokens: dmConfig?.max_output_tokens || config.act?.max_output_tokens || defaults?.act?.max_output_tokens,
     maxSteps,
-    step: 'orient',
-    budgetCap: orientBudgetCap,
+    step: 'act',
+    budgetCap: actBudgetCap,
   });
 
   // Apply KV operations (gated by kernel protection)
@@ -78,7 +83,7 @@ export async function runSession(K, state, context, config) {
   }
 
   // Session reflect — skip if budget fully exhausted (but not if
-  // orient was soft-capped by reflect_reserve_pct)
+  // act was soft-capped by reflect_reserve_pct)
   const skipReflect = output.budget_exceeded && !reservePct;
   if (!skipReflect) {
     await executeReflect(K, state, { model: defaults?.reflect?.model });
@@ -87,13 +92,18 @@ export async function runSession(K, state, context, config) {
   await writeSessionResults(K, config, { reflectRan: !skipReflect });
 }
 
-// ── Orient context builder ──────────────────────────────────
+// ── Act context builder ──────────────────────────────────
 
-export function buildOrientContext(context) {
+export function buildActContext(context) {
   // Static/stable fields first for prompt caching (prefix match),
   // volatile fields last so cache hits on the stable prefix.
   // current_time is always different — must be last.
   return JSON.stringify({
+    // Operator direct message — first so the agent reads it immediately
+    ...(context.directMessage ? { direct_message: context.directMessage } : {}),
+    // Chat digest — conversations active since last session
+    ...(context.chatDigest?.length ? { chat_since_last_session: context.chatDigest } : {}),
+    ...(context.patronPlatforms ? { patron_platforms: context.patronPlatforms } : {}),
     additional_context: context.additionalContext,
     last_reflect: context.lastReflect,
     effort: context.effort,
@@ -101,6 +111,50 @@ export function buildOrientContext(context) {
     balances: context.balances,
     current_time: new Date().toISOString(),
   });
+}
+
+// ── Chat digest builder ──────────────────────────────────────
+
+export async function buildChatDigest(K, context) {
+  const lastSessionEnd = context.lastReflect?.timestamp || null;
+  const defaults = await K.getDefaults();
+  const digestMaxChars = defaults?.chat?.digest_max_chars || 200;
+  const truncate = (s) => s && s.length > digestMaxChars ? s.slice(0, digestMaxChars) + '...' : s;
+
+  const chatKeys = await K.kvList({ prefix: "chat:" });
+  const entries = [];
+
+  for (const k of chatKeys.keys) {
+    const chat = await K.kvGet(k.name);
+    if (!chat?.last_activity) continue;
+    if (lastSessionEnd && chat.last_activity <= lastSessionEnd) continue;
+
+    const msgs = chat.messages || [];
+    const lastAgentMsg = [...msgs].reverse().find(m => m.role === 'assistant' && m.content);
+    const lastContactMsg = [...msgs].reverse().find(m => m.role === 'user' && m.content);
+
+    // Resolve contact name from userId
+    const userId = lastContactMsg?.userId;
+    let contactName = userId || 'unknown';
+    if (userId) {
+      const platform = k.name.split(':')[1] || 'slack';
+      const contact = await K.resolveContact(platform, userId);
+      if (contact?.name) contactName = contact.name;
+    }
+
+    entries.push({
+      contact: contactName,
+      channel: k.name.split(':')[1] || 'unknown',
+      turn_count: chat.turn_count || 0,
+      last_exchange: {
+        agent: truncate(lastAgentMsg?.content || ''),
+        contact: truncate(lastContactMsg?.content || ''),
+      },
+      ts: chat.last_activity,
+    });
+  }
+
+  return entries;
 }
 
 // ── Session results ─────────────────────────────────────────
@@ -115,21 +169,8 @@ export async function writeSessionResults(K, config, { reflectRan = true } = {})
       next_wake_after: new Date(Date.now() + sleepSeconds * 1000).toISOString(),
     });
   }
-
-  const count = await K.getSessionCount();
-  await K.kvPutSafe("session_counter", count + 1);
-
-  // Cache session ID list for dashboard
-  const sessionIds = await K.kvGet("cache:session_ids") || [];
-  const sessionId = await K.getSessionId();
-  sessionIds.push(sessionId);
-  await K.kvPutSafe("cache:session_ids", sessionIds);
-
-  // Write karma summary for efficient investigation by reflect
-  const karma = await K.getKarma();
-  if (karma.length > 0) {
-    await K.kvPutSafe(`karma_summary:${sessionId}`, summarizeKarma(karma));
-  }
+  // Note: session_counter, cache:session_ids, and karma_summary are now
+  // written by kernel.js runWake() — runs for both act and deep reflect.
 }
 
 // ── Karma summarization ─────────────────────────────────────

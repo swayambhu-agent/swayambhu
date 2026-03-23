@@ -151,13 +151,14 @@ export function generateIndexJS(metadata) {
   lines.push("    }");
   lines.push("");
   lines.push("    const channel = match[1];");
-  lines.push("    const brain = new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS });");
+  lines.push("    const brain = new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, mode: 'chat' });");
   lines.push("    const adapterMod = CHANNELS[channel];");
   lines.push('    if (!adapterMod) return new Response(`Unknown channel: ${channel}`, { status: 404 });');
   lines.push("");
   lines.push("    const body = await request.json();");
   lines.push("    const inbound = adapterMod.parseInbound(body);");
   lines.push('    if (!inbound) return new Response("OK", { status: 200 });');
+  lines.push("    if (adapterMod.resolveChatKey) inbound.resolvedChatKey = adapterMod.resolveChatKey(inbound);");
   lines.push("    if (inbound._challenge) {");
   lines.push('      return new Response(JSON.stringify({ challenge: inbound._challenge }),');
   lines.push('        { headers: { "Content-Type": "application/json" } });');
@@ -167,7 +168,7 @@ export function generateIndexJS(metadata) {
   lines.push("      const dedupKey = `dedup:${inbound.msgId}`;");
   lines.push("      const seen = await brain.kv.get(dedupKey);");
   lines.push('      if (seen) return new Response("OK", { status: 200 });');
-  lines.push('      await brain.kv.put(dedupKey, "1", { expirationTtl: 30 });');
+  lines.push('      await brain.kv.put(dedupKey, "1", { expirationTtl: 60 });');
   lines.push("    }");
   lines.push("");
   lines.push("    const work = (async () => {");
@@ -182,7 +183,8 @@ export function generateIndexJS(metadata) {
   lines.push("            await adapterMod.sendReply(chatId, text, secrets, fetch);");
   lines.push("          },");
   lines.push("        };");
-  lines.push("        await handleChat(brain, channel, inbound, adapter);");
+  lines.push("        const K = brain.buildKernelInterface();");
+  lines.push("        await handleChat(K, channel, inbound, adapter);");
   lines.push("      } catch (err) {");
   lines.push('        brain.karmaRecord({ event: "chat_error", channel, error: err.message });');
   lines.push("      }");

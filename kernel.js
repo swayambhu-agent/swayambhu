@@ -23,6 +23,7 @@ class Brainstem {
     this.sessionCost = 0;
     this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
+    this.mode = opts.mode || 'session'; // 'session' (wake/reflect) or 'chat'
     this.modelsConfig = null;
     this.modelCapabilities = null;
     this.defaults = null;
@@ -37,7 +38,7 @@ class Brainstem {
     this.patronContact = null; // Full patron contact record (loaded at boot)
     this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
-    this.lastCallModel = null; // Last model used in callLLM (for capability gates)
+    this.lastCallModel = null; // Last model used in callLLM (for yama/niyama capability checks)
     this._commsGateApproved = false; // Transient flag: set by executeToolCall/processCommsVerdict around executeAction
   }
 
@@ -45,17 +46,17 @@ class Brainstem {
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'proposal:', 'hook:', 'doc:',
     'yama:', 'niyama:',
-    'viveka:', 'prajna:',
+    'upaya:', 'prajna:',
     'skill:',
     'comms_blocked:',
     'contact:',
     'contact_index:',
     'sealed:',
   ];
-  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:'];
+  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'operator:'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   static IMMUTABLE_KEYS = ['patron:public_key'];
-  static DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
+  static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
   static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 
@@ -214,35 +215,8 @@ class Brainstem {
     return !!this.modelCapabilities?.[resolved]?.niyama_capable;
   }
 
-  isCommsGateCapable(modelId) {
-    const resolved = this.resolveModel(modelId);
-    return !!this.modelCapabilities?.[resolved]?.comms_gate_capable;
-  }
 
-  // ── Communication gate (kernel-enforced) ────────────────────
-
-  static COMMS_GATE_PROMPT = `You are evaluating an outbound communication attempt. Based on your principles and the wisdom context provided, determine whether this message should be sent.
-
-Consider:
-- Standing: is this a response to someone who contacted you, or are you initiating contact?
-- Recipient type: is this going to a specific person ("person") or a destination like a channel ("destination")? For destinations, focus on whether the content suits that venue.
-- Recipient: what does your accumulated wisdom say about them and your relationship?
-- Content: is the message appropriate for this recipient and context?
-- Tone: does it match what this context requires?
-- Authority: do you have standing to communicate this in this context?
-
-[COMMUNICATION WISDOM]
-{{viveka}}
-[/COMMUNICATION WISDOM]
-
-Respond with JSON only:
-{
-  "verdict": "send" | "revise" | "block",
-  "reasoning": "brief explanation",
-  "revision": { "text": "revised message" }
-}
-
-"revision" required only when verdict is "revise".`;
+  // ── Communication gate (kernel-enforced contact boundary) ───
 
   resolveRecipient(args, meta) {
     const comm = meta.communication;
@@ -254,19 +228,6 @@ Respond with JSON only:
     const comm = meta.communication;
     if (!comm?.reply_field) return 'initiating';
     return args[comm.reply_field] ? 'responding' : 'initiating';
-  }
-
-  async loadCommsViveka() {
-    const entries = {};
-    // General communication wisdom (not contact-specific)
-    for (const prefix of ['viveka:channel:', 'viveka:comms:']) {
-      const wisdomKeys = await this.kvListAll({ prefix });
-      for (const { name: key } of wisdomKeys) {
-        const value = await this.kvGet(key);
-        if (value !== null) entries[key] = value;
-      }
-    }
-    return entries;
   }
 
   generateCommsBlockedId() {
@@ -306,14 +267,13 @@ Respond with JSON only:
     const recipient = this.resolveRecipient(args, meta);
     const mode = this.resolveCommsMode(args, meta);
 
-    // 1. Mechanical floor — blocks person-targeted comms to unknown/unapproved contacts
-    //    Destination-targeted tools (Slack) proceed to LLM gate regardless
+    // Mechanical floor — blocks person-targeted comms to unknown/unapproved contacts
+    // Destination-targeted tools (e.g. Slack channel) pass through
     const channel = meta.communication?.channel;
     const recipientType = meta.communication?.recipient_type || 'destination';
     const recipientContact = recipient ? await this.resolveContact(channel, recipient) : null;
     if (recipientType === 'person' && recipient) {
       if (!recipientContact) {
-        // No contact at all — block initiating, allow responding to reach LLM gate
         if (mode === 'initiating') {
           return {
             verdict: 'block',
@@ -322,7 +282,6 @@ Respond with JSON only:
           };
         }
       } else if (!recipientContact.approved) {
-        // Contact exists but unapproved — block ALL engagement
         return {
           verdict: 'block',
           reasoning: `Contact "${recipient}" is not approved — all communication blocked until operator approves`,
@@ -331,68 +290,9 @@ Respond with JSON only:
       }
     }
 
-    // 2. Model gate: current model must be comms_gate_capable
-    const currentModel = this.lastCallModel || this.defaults?.orient?.model;
-    if (!this.isCommsGateCapable(currentModel)) {
-      return {
-        verdict: 'queue',
-        reasoning: `Model ${currentModel} not comms_gate_capable — queuing for deep reflect`,
-      };
-    }
-
-    // 3. Load viveka context + recipient contact
-    const viveka = await this.loadCommsViveka();
-    if (recipientContact) {
-      viveka[`contact:${recipientContact.id}`] = recipientContact.communication || recipientContact;
-    }
-    const vivekaBlock = Object.entries(viveka).length > 0
-      ? Object.entries(viveka).map(([k, v]) => {
-          const text = typeof v === 'object' ? (v.text || JSON.stringify(v)) : String(v);
-          return `[${k}]\n${text}\n[/${k}]`;
-        }).join('\n')
-      : '(No accumulated communication wisdom yet. Be conservative.)';
-
-    // 4. Gate LLM call
-    const gatePrompt = Brainstem.COMMS_GATE_PROMPT.replace('{{viveka}}', vivekaBlock);
-    const contentField = meta.communication?.content_field || 'text';
-    const contextMessage = JSON.stringify({
-      tool: toolName,
-      channel: meta.communication.channel,
-      recipient_type: recipientType,
-      mode,
-      recipient: recipient || '(default channel)',
-      message_content: args[contentField] || '',
-      subject: args.subject || null,
-      is_reply: mode === 'responding',
-      reply_to: meta.communication.reply_field ? args[meta.communication.reply_field] : null,
-    });
-
-    const gateResult = await this.callLLM({
-      model: currentModel,
-      effort: 'low',
-      maxTokens: 500,
-      systemPrompt: gatePrompt,
-      messages: [{ role: 'user', content: contextMessage }],
-      step: `comms_gate:${toolName}`,
-    });
-
-    // 5. Parse verdict
-    try {
-      const parsed = JSON.parse(gateResult.content);
-      return {
-        verdict: parsed.verdict || 'block',
-        reasoning: parsed.reasoning || '',
-        revision: parsed.revision || null,
-        gate_model: currentModel,
-        gate_cost: gateResult.cost,
-      };
-    } catch {
-      return {
-        verdict: 'block',
-        reasoning: 'Gate response not valid JSON — blocking as safety default',
-        raw: gateResult.content,
-      };
-    }
+    // Approved contact or destination — allow through
+    // Message quality and comms policy are the agent's responsibility (see skill:comms)
+    return { verdict: 'send' };
   }
 
   async listBlockedComms() {
@@ -434,6 +334,15 @@ Respond with JSON only:
       } finally {
         this._commsGateApproved = false;
       }
+      // Check if delivery actually succeeded before deleting the record
+      if (result?.ok === false || result?.error) {
+        await this.karmaRecord({
+          event: 'comms_verdict_failed', id, tool: record.tool,
+          recipient: record.recipient, verdict,
+          error: result?.error || 'delivery failed',
+        });
+        return { ok: false, error: result?.error || 'delivery failed', result };
+      }
       await this.karmaRecord({
         event: 'comms_verdict_sent', id, tool: record.tool,
         recipient: record.recipient, verdict,
@@ -465,7 +374,12 @@ Respond with JSON only:
       ...entry,
     };
     this.karma.push(record);
-    await this.kvPut(`karma:${this.sessionId}`, this.karma);
+
+    // In chat mode, karma stays in-memory only — handleChat embeds it in the chat object.
+    // In session mode, persist to KV after every event for crash recovery.
+    if (this.mode !== 'chat') {
+      await this.kvPut(`karma:${this.sessionId}`, this.karma);
+    }
 
     if (Brainstem.DANGER_SIGNALS.includes(entry.event)) {
       await this.kvPut("last_danger", {
@@ -791,6 +705,7 @@ Respond with JSON only:
       getSessionId: async () => brain.sessionId,
       getSessionCost: async () => brain.sessionCost,
       getKarma: async () => brain.karma,
+      getChatKarma: async () => brain.mode === 'chat' ? [...brain.karma] : [],
       getDefaults: async () => brain.defaults,
       getModelsConfig: async () => brain.modelsConfig,
       getModelCapabilities: async () => brain.modelCapabilities,
@@ -1229,18 +1144,39 @@ Respond with JSON only:
       const effort = Brainstem.evaluateTripwires(config, { balances });
 
       // 7. Load context keys
-      const loadKeys = lastReflect?.next_orient_context?.load_keys
+      const loadKeys = lastReflect?.next_act_context?.load_keys
         || defaults?.memory?.default_load_keys
         || [];
       const additionalContext = await this.loadKeys(
         loadKeys.filter(k => !k.startsWith("sealed:"))
       );
 
+      // 7a. Check operator direct message (out-of-band console)
+      const directMsg = await this.kvGet("operator:direct");
+      if (directMsg) {
+        await this.karmaRecord({
+          event: "direct_message",
+          from: "operator",
+          message: typeof directMsg === "string" ? directMsg : directMsg.message,
+          sent_at: directMsg.sent_at || null,
+        });
+        await this.kvDelete("operator:direct");
+      }
+
+      // 7b. Override effort for direct message sessions
+      const effectiveEffort = directMsg
+        ? (defaults?.act_after_dm?.effort || "high")
+        : effort;
+
       // 8. Build context
       const context = {
         balances, lastReflect, additionalContext,
-        effort, reflectDepth,
+        effort: effectiveEffort, reflectDepth,
         crashData,
+        directMessage: directMsg
+          ? (typeof directMsg === "string" ? directMsg : directMsg.message)
+          : null,
+        patronPlatforms: this.patronContact?.platforms || null,
       };
 
       // 9. Record session start
@@ -1262,6 +1198,34 @@ Respond with JSON only:
         if (!runSession) throw new Error("No runSession in HOOKS.act");
         await runSession(K, state, context, config);
       }
+
+      // 11. Session bookkeeping — always runs regardless of act vs deep reflect
+      const count = await this.getSessionCount();
+      await this.kvPutSafe(`session_counter`, count + 1);
+
+      const sessionIds = await this.kvGet("cache:session_ids") || [];
+      sessionIds.push(this.sessionId);
+      await this.kvPutSafe("cache:session_ids", sessionIds);
+
+      const karma = this.karma;
+      if (karma.length > 0) {
+        const { summarizeKarma } = this.HOOKS.act || {};
+        if (summarizeKarma) {
+          await this.kvPutSafe(`karma_summary:${this.sessionId}`, summarizeKarma(karma));
+        }
+      }
+
+      // 12. Session end — clean bookend with final balances
+      let endBalances;
+      try { endBalances = await this.checkBalance({}); } catch {}
+      await this.karmaRecord({
+        event: "session_end",
+        session_id: this.sessionId,
+        session_cost: this.sessionCost,
+        llm_calls: this.sessionLLMCalls,
+        elapsed_ms: this.elapsed(),
+        ...(endBalances ? { balances: endBalances } : {}),
+      });
 
       return { ok: true };
 
@@ -1319,7 +1283,7 @@ Respond with JSON only:
 
   static getMaxSteps(state, role, depth) {
     const { defaults } = state;
-    if (role === 'orient') return defaults?.execution?.max_steps?.orient || 12;
+    if (role === 'act') return defaults?.execution?.max_steps?.act || 12;
     const perLevel = defaults?.reflect_levels?.[depth];
     if (perLevel?.max_steps) return perLevel.max_steps;
     return depth === 1
@@ -1331,7 +1295,7 @@ Respond with JSON only:
     const { defaults } = state;
     const perLevel = defaults?.reflect_levels?.[depth];
     if (perLevel?.model) return perLevel.model;
-    return defaults?.deep_reflect?.model || defaults?.orient?.model;
+    return defaults?.deep_reflect?.model || defaults?.act?.model;
   }
 
   async updateSessionOutcome(outcome) {
@@ -1384,7 +1348,7 @@ Respond with JSON only:
 
   // ── Minimal fallback (no hook:wake:code in KV) ─────────────
   // Used when no hook is loaded, or after the hook safety tripwire fires.
-  // Runs a hardcoded recovery session — does NOT load prompt:orient
+  // Runs a hardcoded recovery session — does NOT load prompt:act
   // (could be corrupted). Does NOT process kv_operations from output.
 
   async wake() {
@@ -2044,6 +2008,42 @@ Respond with JSON only:
       }
       // ── End inbound content gate ────────────────────────────────
 
+      // ── Chat seeding (outbound Slack DMs seed conversation state) ──
+      // When send_slack targets a DM channel, seed the chat object so
+      // the agent's outbound message appears in conversation history
+      // and the recipient's reply has full context.
+      if (name === 'send_slack' && result && !result.error && result.ok) {
+        const targetChannel = args.channel || this.env.SLACK_CHANNEL_ID;
+        // Only seed chat for DMs (user ID starts with U)
+        if (targetChannel && targetChannel.startsWith('U')) {
+          try {
+            const chatKey = `chat:slack:${targetChannel}`;
+            const conv = await this.kvGet(chatKey) || {
+              messages: [],
+              karma: [],
+              total_cost: 0,
+              created_at: new Date().toISOString(),
+              turn_count: 0,
+            };
+            conv.messages.push({
+              role: "assistant",
+              content: args.text,
+              source_session: this.sessionId,
+              ts: new Date().toISOString(),
+            });
+            if (!conv.source_session) {
+              conv.source_session = this.sessionId;
+            }
+            conv.last_activity = new Date().toISOString();
+            await this.kvPutSafe(chatKey, conv);
+          } catch (err) {
+            // Non-fatal — chat seeding failure shouldn't break the tool call
+            await this.karmaRecord({ event: "chat_seed_error", tool: name, error: err.message });
+          }
+        }
+      }
+      // ── End chat seeding ──────────────────────────────────────────
+
       return result;
     } finally {
       if (isCommsTool) this._commsGateApproved = false;
@@ -2109,9 +2109,42 @@ Respond with JSON only:
     }
 
     let parseRetried = false;
+    let softWarned = false;
+
+    // Budget limit config — resolve role from step name
+    const role = step.startsWith('reflect_depth_') ? 'deep_reflect'
+      : step === 'act' ? 'act'
+      : null;
+    const roleConfig = role ? this.defaults?.[role] : null;
+    const softPct = roleConfig?.budget_soft_limit_pct ?? 0.75;
+    const hardPct = roleConfig?.budget_hard_limit_pct ?? 0.90;
+    const costLimit = budgetCap ?? this.defaults?.session_budget?.max_cost;
 
     try {
       for (let i = 0; i < maxSteps; i++) {
+        // ── Budget soft/hard limits ──────────────────────────────
+        if (costLimit && role) {
+          const usedPct = this.sessionCost / costLimit;
+
+          // Hard limit — strip tools, force final output
+          if (usedPct >= hardPct) {
+            messages.push({ role: 'user', content:
+              'Budget hard limit reached. Produce your final JSON output NOW. No more tool calls.' });
+            const finalResp = await this.callLLM({
+              model, effort, maxTokens, systemPrompt, messages,
+              step: `${step}_budget_final`, budgetCap,
+            });
+            return await this.parseAgentOutput(finalResp.content);
+          }
+
+          // Soft limit — warn once, tools still available
+          if (!softWarned && usedPct >= softPct) {
+            messages.push({ role: 'user', content:
+              'Budget is running low. Finish your exploration and produce your final output soon.' });
+            softWarned = true;
+          }
+        }
+
         const response = await this.callLLM({
           model, effort, maxTokens,
           systemPrompt, messages, tools,
@@ -2276,7 +2309,7 @@ Respond with JSON only:
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
       proposal:   { type: "proposal", format: "json" },
-      viveka:     { type: "wisdom", format: "json" },
+      upaya:     { type: "wisdom", format: "json" },
       prajna:     { type: "wisdom", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },

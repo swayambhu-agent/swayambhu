@@ -80,7 +80,7 @@ export default {
       return json({ sessionCounter, wakeConfig, lastReflect, session: activeSession || session });
     }
 
-    // GET /sessions — discover all sessions (orient + deep reflect)
+    // GET /sessions — discover all sessions (act + deep reflect)
     if (path === "/sessions") {
       const [karmaKeys, reflectKeys, cached] = await Promise.all([
         kvListAll(env.KV, { prefix: "karma:" }),
@@ -98,7 +98,7 @@ export default {
         const id = k.name.replace("karma:", "");
         return {
           id,
-          type: deepReflectIds.has(id) ? "deep_reflect" : "orient",
+          type: deepReflectIds.has(id) ? "deep_reflect" : "act",
           ts: k.metadata?.updated_at || null,
         };
       });
@@ -107,6 +107,64 @@ export default {
       sessions.sort((a, b) => a.id.localeCompare(b.id));
 
       return json({ sessions });
+    }
+
+    // ── Chat helpers ──────────────────────────────────────────
+    // Resolve unique user IDs from chat messages to contact names
+    async function resolveParticipants(env, messages) {
+      const userIds = [...new Set(
+        (messages || []).filter(m => m.userId).map(m => m.userId)
+      )];
+      const participants = {};
+      await Promise.all(userIds.map(async (uid) => {
+        try {
+          const raw = await env.KV.get(`contact_index:slack:${uid}`, "text");
+          const slug = raw ? raw.replace(/^"|"$/g, '') : null;
+          if (slug) {
+            const contact = await env.KV.get(`contact:${slug}`, "json");
+            if (contact?.name) { participants[uid] = contact.name; return; }
+          }
+        } catch {}
+        participants[uid] = uid; // fallback to raw ID
+      }));
+      return participants;
+    }
+
+    // GET /chats — list all chat conversations
+    if (path === "/chats") {
+      const chatKeys = await kvListAll(env.KV, { prefix: "chat:" });
+      const chats = await Promise.all(
+        chatKeys.map(async (k) => {
+          const data = await env.KV.get(k.name, "json");
+          if (!data) return null;
+          const participants = await resolveParticipants(env, data.messages);
+          return {
+            key: k.name,
+            channel_id: k.name.split(":").slice(2).join(":"),
+            platform: k.name.split(":")[1] || "unknown",
+            turn_count: data.turn_count || 0,
+            total_cost: data.total_cost || 0,
+            created_at: data.created_at || null,
+            last_activity: data.last_activity || null,
+            message_count: data.messages?.length || 0,
+            source_session: data.source_session || null,
+            participants,
+          };
+        })
+      );
+      return json({ chats: chats.filter(Boolean).sort((a, b) =>
+        (b.last_activity || "").localeCompare(a.last_activity || "")
+      ) });
+    }
+
+    // GET /chat/:platform/:channelId — full chat object + resolved participants
+    const chatMatch = path.match(/^\/chat\/(\w+)\/(.+)$/);
+    if (chatMatch) {
+      const chatKey = `chat:${chatMatch[1]}:${chatMatch[2]}`;
+      const data = await env.KV.get(chatKey, "json");
+      if (!data) return json({ error: "not found" }, 404);
+      const participants = await resolveParticipants(env, data.messages);
+      return json({ key: chatKey, chat: data, participants });
     }
 
     // GET /kv — key listing, optional ?prefix= filter
@@ -136,6 +194,31 @@ export default {
         })
       );
       return json(results);
+    }
+
+    // GET /direct — check pending operator direct message
+    if (path === "/direct" && request.method === "GET") {
+      const val = await env.KV.get("operator:direct", "json");
+      return json({ pending: !!val, message: val });
+    }
+
+    // POST /direct — send a direct message to the agent (consumed on next wake)
+    if (path === "/direct" && request.method === "POST") {
+      const body = await request.json().catch(() => null);
+      if (!body?.message || typeof body.message !== "string" || !body.message.trim()) {
+        return json({ error: "message required" }, 400);
+      }
+      await env.KV.put("operator:direct", JSON.stringify({
+        message: body.message.trim(),
+        sent_at: new Date().toISOString(),
+      }));
+      return json({ ok: true });
+    }
+
+    // DELETE /direct — clear pending direct message
+    if (path === "/direct" && request.method === "DELETE") {
+      await env.KV.delete("operator:direct");
+      return json({ ok: true });
     }
 
     // GET /quarantine — list quarantined inbound messages (sealed:* keys, patron-only)

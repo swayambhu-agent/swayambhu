@@ -4,18 +4,25 @@
 //
 // Every kernel method is called via K (the kernel interface).
 // This module is kernel-level code — immutable, imported directly.
+//
+// Chat state is stored per-channel: chat:{channel}:{chatId}
+// One object per conversation, growing chronologically (mirrors Slack).
+// Karma (audit trail) is embedded in the chat object, not in karma:{sessionId}.
 
 export async function handleChat(K, channel, inbound, adapter) {
-  const { chatId, text, command } = inbound;
-  const convKey = `chat:state:${channel}:${chatId}`;
+  const { chatId, text, command, userId, resolvedChatKey } = inbound;
+  const convKey = `chat:${channel}:${resolvedChatKey || chatId}`;
 
   // Load or init conversation state
   let conv = await K.kvGet(convKey) || {
     messages: [],
+    karma: [],
     total_cost: 0,
     created_at: new Date().toISOString(),
     turn_count: 0,
   };
+  // Ensure karma array exists (migration from older format)
+  if (!conv.karma) conv.karma = [];
 
   // Handle commands
   if (command === "reset") {
@@ -33,7 +40,7 @@ export async function handleChat(K, channel, inbound, adapter) {
 
   // Load config: global defaults + contact overrides
   const defaults = await K.getDefaults();
-  const contact = await K.resolveContact(channel, inbound.userId);
+  const contact = await K.resolveContact(channel, userId);
   const chatDefaults = defaults?.chat || {};
   const contactConfig = contact?.chat || {};
   const chatConfig = { ...chatDefaults, ...contactConfig };
@@ -48,16 +55,24 @@ export async function handleChat(K, channel, inbound, adapter) {
   const contactContext = contact
     ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}`
     : "";
+
+  // If this conversation was initiated by the agent during a session, note it
+  const sourceSession = conv.source_session;
+  const sessionContext = sourceSession
+    ? `\n\nThis conversation was initiated during session ${sourceSession}. If the user asks about what you were doing, use kv_query to read karma:${sourceSession} for context.`
+    : "";
+
   const systemPrompt = [
     chatPrompt || "You are in a live chat. Respond conversationally.",
     contactContext,
+    sessionContext,
   ].join("\n\n").trim();
 
   // Append user message
-  conv.messages.push({ role: "user", content: text });
+  conv.messages.push({ role: "user", content: text, userId, ts: new Date().toISOString() });
 
   // Resolve model + tools (unapproved/unknown contacts get no tools — mechanical jailbreak prevention)
-  const chatModel = chatConfig.model || defaults?.orient?.model || "sonnet";
+  const chatModel = chatConfig.model || defaults?.act?.model || "sonnet";
   const model = await K.resolveModel(chatModel);
   let tools;
   if (contact?.approved) {
@@ -69,7 +84,7 @@ export async function handleChat(K, channel, inbound, adapter) {
       ? (await K.buildToolDefinitions()).filter(t => allowlist.includes(t.function?.name))
       : [];
     await K.karmaRecord({
-      event: 'inbound_unapproved', sender_id: inbound.userId, channel,
+      event: 'inbound_unapproved', sender_id: userId, channel,
     });
   } else {
     const allowlist = chatConfig.unknown_contact_tools || [];
@@ -77,7 +92,7 @@ export async function handleChat(K, channel, inbound, adapter) {
       ? (await K.buildToolDefinitions()).filter(t => allowlist.includes(t.function?.name))
       : [];
     await K.karmaRecord({
-      event: 'inbound_unknown', sender_id: inbound.userId, channel,
+      event: 'inbound_unknown', sender_id: userId, channel,
     });
   }
 
@@ -129,7 +144,7 @@ export async function handleChat(K, channel, inbound, adapter) {
     }
 
     reply = response.content;
-    conv.messages.push({ role: "assistant", content: reply });
+    conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
     break;
   }
 
@@ -137,6 +152,10 @@ export async function handleChat(K, channel, inbound, adapter) {
 
   // Send via channel adapter
   await adapter.sendReply(chatId, reply);
+
+  // Collect chat karma from kernel (in-memory only, not written to karma:{sessionId})
+  const chatKarma = await K.getChatKarma();
+  conv.karma.push(...chatKarma);
 
   // Trim + save state
   conv.turn_count++;
@@ -146,14 +165,6 @@ export async function handleChat(K, channel, inbound, adapter) {
     conv.messages = conv.messages.slice(-maxMsgs);
   }
   await K.kvPutSafe(convKey, conv);
-
-  await K.karmaRecord({
-    event: "chat_turn",
-    channel,
-    chat_id: chatId,
-    turn: conv.turn_count,
-    cost: conv.total_cost,
-  });
 
   return { ok: true, turn: conv.turn_count };
 }

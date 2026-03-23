@@ -38,7 +38,7 @@ describe("generateIndexJS", () => {
     expect(code).toContain("new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS })");
     expect(code).toContain("await brain.runScheduled()");
     expect(code).toContain("async fetch(request, env, ctx)");
-    expect(code).toContain("handleChat(brain, channel, inbound, adapter)");
+    expect(code).toContain("handleChat(K, channel, inbound, adapter)");
   });
 
   it("handles empty module lists", () => {
@@ -96,7 +96,7 @@ describe("keyToFilePath", () => {
   it("returns null for non-code keys", () => {
     expect(keyToFilePath("config:defaults")).toBeNull();
     expect(keyToFilePath("tool:kv_query:meta")).toBeNull();
-    expect(keyToFilePath("prompt:orient")).toBeNull();
+    expect(keyToFilePath("prompt:act")).toBeNull();
   });
 });
 

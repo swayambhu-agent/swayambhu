@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  buildOrientContext,
+  buildActContext,
   detectCrash,
   writeSessionResults,
   getBalances,
@@ -44,9 +44,9 @@ function makeState(overrides = {}) {
   };
 }
 
-// ── 1. buildOrientContext ───────────────────────────────────
+// ── 1. buildActContext ───────────────────────────────────
 
-describe("buildOrientContext", () => {
+describe("buildActContext", () => {
   it("returns JSON string with all expected keys", () => {
     const context = {
       balances: { providers: {}, wallets: {} },
@@ -55,7 +55,7 @@ describe("buildOrientContext", () => {
       effort: "medium",
       crashData: null,
     };
-    const result = JSON.parse(buildOrientContext(context));
+    const result = JSON.parse(buildActContext(context));
     expect(result).toHaveProperty("balances");
     expect(result).toHaveProperty("last_reflect");
     expect(result).toHaveProperty("additional_context");
@@ -71,14 +71,14 @@ describe("buildOrientContext", () => {
 // ── 2. getMaxSteps ──────────────────────────────────────────
 
 describe("getMaxSteps", () => {
-  it("returns execution config for orient", () => {
-    const state = makeState({ defaults: { execution: { max_steps: { orient: 7 } } } });
-    expect(getMaxSteps(state, "orient")).toBe(7);
+  it("returns execution config for act", () => {
+    const state = makeState({ defaults: { execution: { max_steps: { act: 7 } } } });
+    expect(getMaxSteps(state, "act")).toBe(7);
   });
 
-  it("returns default 12 for orient when not configured", () => {
+  it("returns default 12 for act when not configured", () => {
     const state = makeState();
-    expect(getMaxSteps(state, "orient")).toBe(12);
+    expect(getMaxSteps(state, "act")).toBe(12);
   });
 
   it("returns reflect for depth 1", () => {
@@ -120,7 +120,7 @@ describe("getReflectModel", () => {
       defaults: {
         reflect_levels: { 2: { model: "opus" } },
         deep_reflect: { model: "sonnet" },
-        orient: { model: "haiku" },
+        act: { model: "haiku" },
       },
     });
     expect(getReflectModel(state, 2)).toBe("opus");
@@ -130,15 +130,15 @@ describe("getReflectModel", () => {
     const state = makeState({
       defaults: {
         deep_reflect: { model: "sonnet" },
-        orient: { model: "haiku" },
+        act: { model: "haiku" },
       },
     });
     expect(getReflectModel(state, 1)).toBe("sonnet");
   });
 
-  it("falls back to orient.model", () => {
+  it("falls back to act.model", () => {
     const state = makeState({
-      defaults: { orient: { model: "haiku" } },
+      defaults: { act: { model: "haiku" } },
     });
     expect(getReflectModel(state, 1)).toBe("haiku");
   });
@@ -305,8 +305,8 @@ describe("applyReflectOutput", () => {
     // Since test_key is not a system key but has no unprotected metadata, it will be blocked
     // That's fine — we just verify applyReflectOutput processes the ops
     await applyReflectOutput(K, state, 1, output, {});
-    // The function ran without error
-    expect(K.karmaRecord).toHaveBeenCalled();
+    // The kv_operation was processed (test_key is new, so put succeeds)
+    expect(K.kvPutSafe).toHaveBeenCalled();
   });
 
   it("stores history at reflect:N:sessionId", async () => {
@@ -464,13 +464,12 @@ describe("writeSessionResults", () => {
     expect(wakeCall).toBeUndefined();
   });
 
-  it("increments session_counter", async () => {
+  it("does not increment session_counter (moved to kernel.runWake)", async () => {
     const K = makeMockK({}, { sessionCount: 5 });
     await writeSessionResults(K, {});
 
     const counterCall = K.kvPutSafe.mock.calls.find(([key]) => key === "session_counter");
-    expect(counterCall).toBeTruthy();
-    expect(counterCall[1]).toBe(6);
+    expect(counterCall).toBeUndefined();
   });
 });
 
@@ -543,10 +542,10 @@ describe("loadReflectHistory", () => {
 describe("runSession reflect_reserve_pct", () => {
   function makeRunSessionFixture(budgetOverrides = {}) {
     const defaults = {
-      orient: { model: "test/orient", effort: "low", max_output_tokens: 1000 },
+      act: { model: "test/act", effort: "low", max_output_tokens: 1000 },
       reflect: { model: "test/reflect" },
       session_budget: { max_cost: 0.15, max_duration_seconds: 600, ...budgetOverrides },
-      execution: { max_steps: { orient: 3 } },
+      execution: { max_steps: { act: 3 } },
     };
     const state = makeState({ defaults });
     const K = makeMockK();
@@ -565,22 +564,22 @@ describe("runSession reflect_reserve_pct", () => {
     return { K, state, context, config };
   }
 
-  it("passes budgetCap to orient when reflect_reserve_pct is set", async () => {
+  it("passes budgetCap to act when reflect_reserve_pct is set", async () => {
     const { K, state, context, config } = makeRunSessionFixture({ reflect_reserve_pct: 0.33 });
     await runSession(K, state, context, config);
 
-    const orientCall = K.runAgentLoop.mock.calls[0][0];
+    const actCall = K.runAgentLoop.mock.calls[0][0];
     // 0.15 * (1 - 0.33) = 0.1005
-    expect(orientCall.budgetCap).toBeCloseTo(0.1005, 4);
-    expect(orientCall.step).toBe("orient");
+    expect(actCall.budgetCap).toBeCloseTo(0.1005, 4);
+    expect(actCall.step).toBe("act");
   });
 
   it("does not pass budgetCap when reflect_reserve_pct is 0", async () => {
     const { K, state, context, config } = makeRunSessionFixture({ reflect_reserve_pct: 0 });
     await runSession(K, state, context, config);
 
-    const orientCall = K.runAgentLoop.mock.calls[0][0];
-    expect(orientCall.budgetCap).toBeUndefined();
+    const actCall = K.runAgentLoop.mock.calls[0][0];
+    expect(actCall.budgetCap).toBeUndefined();
   });
 
   it("does not pass budgetCap when reflect_reserve_pct is absent", async () => {
@@ -589,18 +588,18 @@ describe("runSession reflect_reserve_pct", () => {
     delete state.defaults.session_budget.reflect_reserve_pct;
     await runSession(K, state, context, config);
 
-    const orientCall = K.runAgentLoop.mock.calls[0][0];
-    expect(orientCall.budgetCap).toBeUndefined();
+    const actCall = K.runAgentLoop.mock.calls[0][0];
+    expect(actCall.budgetCap).toBeUndefined();
   });
 
-  it("still runs reflect when orient is soft-capped (budget_exceeded + reservePct)", async () => {
+  it("still runs reflect when act is soft-capped (budget_exceeded + reservePct)", async () => {
     const { K, state, context, config } = makeRunSessionFixture({ reflect_reserve_pct: 0.33 });
     K.runAgentLoop = vi.fn(async () => ({ budget_exceeded: true, reason: "Budget exceeded: cost" }));
 
     await runSession(K, state, context, config);
 
     // reflect uses runAgentLoop internally via executeReflect,
-    // but we can check that runAgentLoop was called at least for orient
+    // but we can check that runAgentLoop was called at least for act
     // and that the function didn't throw (i.e. it proceeded past the guard)
     expect(K.runAgentLoop).toHaveBeenCalled();
     // The function should complete without throwing
@@ -612,7 +611,7 @@ describe("runSession reflect_reserve_pct", () => {
 
     await runSession(K, state, context, config);
 
-    // runAgentLoop called once (orient only), reflect skipped
+    // runAgentLoop called once (act only), reflect skipped
     expect(K.runAgentLoop).toHaveBeenCalledTimes(1);
   });
 });
@@ -622,7 +621,7 @@ describe("runSession reflect_reserve_pct", () => {
 describe("runReflect budget_multiplier", () => {
   function makeReflectFixture(deepReflectOverrides = {}) {
     const defaults = {
-      orient: { model: "test/orient", effort: "low", max_output_tokens: 1000 },
+      act: { model: "test/act", effort: "low", max_output_tokens: 1000 },
       reflect: { model: "test/reflect" },
       session_budget: { max_cost: 0.10, max_duration_seconds: 600 },
       execution: { max_steps: { deep_reflect: 10 }, max_reflect_depth: 1 },
@@ -866,26 +865,12 @@ describe("summarizeKarma", () => {
 
 // ── writeSessionResults karma summary ──────────────────────
 
-describe("writeSessionResults karma summary", () => {
-  it("writes karma_summary when karma is non-empty", async () => {
+describe("writeSessionResults karma summary (moved to kernel)", () => {
+  it("does not write karma_summary (moved to kernel.runWake)", async () => {
     const K = makeMockK({}, { sessionCount: 5, sessionId: "s_test" });
     K.getKarma = vi.fn(async () => [
       { event: "llm_call", cost: 0.03, model: "opus", duration_ms: 500 },
-      { event: "tool_complete", tool: "kv_query" },
     ]);
-    await writeSessionResults(K, {});
-
-    const summaryCall = K.kvPutSafe.mock.calls.find(([key]) => key === "karma_summary:s_test");
-    expect(summaryCall).toBeTruthy();
-    const summary = summaryCall[1];
-    expect(summary.total_cost).toBeCloseTo(0.03);
-    expect(summary.models.opus).toBe(1);
-    expect(summary.tools.kv_query).toBe(1);
-  });
-
-  it("skips karma_summary when karma is empty", async () => {
-    const K = makeMockK({}, { sessionCount: 5, sessionId: "s_test" });
-    K.getKarma = vi.fn(async () => []);
     await writeSessionResults(K, {});
 
     const summaryCall = K.kvPutSafe.mock.calls.find(([key]) => key.startsWith("karma_summary:"));
@@ -929,7 +914,7 @@ describe("gatherReflectContext continuity", () => {
   it("includes wisdom_manifest with metadata summaries", async () => {
     const K = makeMockK({
       "prajna:reasoning:complexity": JSON.stringify({ text: "test" }),
-      "viveka:timing:urgency": JSON.stringify({ text: "test" }),
+      "upaya:timing:urgency": JSON.stringify({ text: "test" }),
     });
     // Set metadata with summary on one key
     K._kv._meta.set("prajna:reasoning:complexity", { summary: "Tends toward overcomplexity" });
@@ -941,10 +926,10 @@ describe("gatherReflectContext continuity", () => {
     expect(manifest.prajna).toHaveLength(1);
     expect(manifest.prajna[0].key).toBe("prajna:reasoning:complexity");
     expect(manifest.prajna[0].summary).toBe("Tends toward overcomplexity");
-    expect(manifest.viveka).toHaveLength(1);
-    expect(manifest.viveka[0].key).toBe("viveka:timing:urgency");
+    expect(manifest.upaya).toHaveLength(1);
+    expect(manifest.upaya[0].key).toBe("upaya:timing:urgency");
     // Falls back to key name when no summary metadata
-    expect(manifest.viveka[0].summary).toBe("viveka:timing:urgency");
+    expect(manifest.upaya[0].summary).toBe("upaya:timing:urgency");
   });
 });
 
@@ -1045,7 +1030,7 @@ describe("Proposal system (kernel)", () => {
     expect(Brainstem.isCodeKey("channel:slack:code")).toBe(true);
     expect(Brainstem.isCodeKey("config:defaults")).toBe(false);
     expect(Brainstem.isCodeKey("tool:kv_query:meta")).toBe(false);
-    expect(Brainstem.isCodeKey("prompt:orient")).toBe(false);
+    expect(Brainstem.isCodeKey("prompt:act")).toBe(false);
   });
 
   // Test evaluatePredicate

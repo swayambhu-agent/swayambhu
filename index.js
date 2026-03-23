@@ -16,7 +16,6 @@ import * as slackAdapter from './channels/slack.js';
 // Tool modules
 import * as send_slack from './tools/send_slack.js';
 import * as web_fetch from './tools/web_fetch.js';
-import * as kv_write from './tools/kv_write.js';
 import * as kv_manifest from './tools/kv_manifest.js';
 import * as kv_query from './tools/kv_query.js';
 import * as computer from './tools/computer.js';
@@ -34,7 +33,7 @@ import * as gmail from './providers/gmail.js';
 // ── Wire modules ──────────────────────────────────────────────
 
 const TOOLS = {
-  send_slack, web_fetch, kv_write, kv_manifest, kv_query,
+  send_slack, web_fetch, kv_manifest, kv_query,
   computer, check_email, send_email, test_model, web_search,
 };
 
@@ -65,7 +64,7 @@ export default {
     }
 
     const channel = match[1];
-    const brain = new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS });
+    const brain = new Brainstem(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, mode: 'chat' });
 
     // Load adapter from static imports
     const adapterMod = CHANNELS[channel];
@@ -76,6 +75,11 @@ export default {
     // Parse inbound message via adapter
     const inbound = adapterMod.parseInbound(body);
     if (!inbound) return new Response("OK", { status: 200 });
+
+    // Resolve canonical chat key (adapter-specific, e.g. Slack DMs → userId)
+    if (adapterMod.resolveChatKey) {
+      inbound.resolvedChatKey = adapterMod.resolveChatKey(inbound);
+    }
 
     // Channel-agnostic challenge response (e.g. Slack URL verification)
     if (inbound._challenge) {
@@ -88,7 +92,7 @@ export default {
       const dedupKey = `dedup:${inbound.msgId}`;
       const seen = await brain.kv.get(dedupKey);
       if (seen) return new Response("OK", { status: 200 });
-      await brain.kv.put(dedupKey, "1", { expirationTtl: 30 });
+      await brain.kv.put(dedupKey, "1", { expirationTtl: 60 });
     }
 
     // Process in background, return 200 immediately
@@ -106,7 +110,8 @@ export default {
           },
         };
 
-        await handleChat(brain, channel, inbound, adapter);
+        const K = brain.buildKernelInterface();
+        await handleChat(K, channel, inbound, adapter);
       } catch (err) {
         brain.karmaRecord({ event: "chat_error", channel, error: err.message });
       }

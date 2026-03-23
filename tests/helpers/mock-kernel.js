@@ -91,7 +91,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'proposal:', 'hook:', 'doc:',
-        'yama:', 'niyama:', 'viveka:', 'prajna:', 'comms_blocked:',
+        'yama:', 'niyama:', 'upaya:', 'prajna:', 'comms_blocked:',
         'contact:', 'contact_index:', 'sealed:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -102,7 +102,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'proposal:', 'hook:', 'doc:',
-        'yama:', 'niyama:', 'viveka:', 'prajna:', 'comms_blocked:',
+        'yama:', 'niyama:', 'upaya:', 'prajna:', 'comms_blocked:',
         'contact:', 'contact_index:', 'sealed:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
@@ -112,6 +112,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     getSessionId: vi.fn(async () => opts.sessionId || "test_session"),
     getSessionCost: vi.fn(async () => opts.sessionCost || 0),
     getKarma: vi.fn(async () => opts.karma || []),
+    getChatKarma: vi.fn(async () => []),
     getDefaults: vi.fn(async () => opts.defaults || {}),
     getModelsConfig: vi.fn(async () => opts.modelsConfig || null),
     getDharma: vi.fn(async () => opts.dharma || null),
@@ -133,7 +134,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     // Config utilities
     getMaxSteps: vi.fn(async (state, role, depth) => {
       const { defaults } = state;
-      if (role === 'orient') return defaults?.execution?.max_steps?.orient || 12;
+      if (role === 'act') return defaults?.execution?.max_steps?.act || 12;
       const perLevel = defaults?.reflect_levels?.[depth];
       if (perLevel?.max_steps) return perLevel.max_steps;
       return depth === 1
@@ -144,7 +145,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       const { defaults } = state;
       const perLevel = defaults?.reflect_levels?.[depth];
       if (perLevel?.model) return perLevel.model;
-      return defaults?.deep_reflect?.model || defaults?.orient?.model;
+      return defaults?.deep_reflect?.model || defaults?.act?.model;
     }),
 
     // Internal — expose KV store for assertions
@@ -155,7 +156,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'proposal:', 'hook:', 'doc:',
-    'yama:', 'niyama:', 'viveka:', 'prajna:', 'skill:', 'comms_blocked:',
+    'yama:', 'niyama:', 'upaya:', 'prajna:', 'skill:', 'comms_blocked:',
     'contact:', 'contact_index:', 'sealed:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];

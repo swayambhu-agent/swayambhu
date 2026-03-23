@@ -165,7 +165,7 @@
       mutation: { bg: 'bg-yellow-900/30', border: 'border-yellow-700', text: 'text-yellow-400', dot: 'bg-yellow-500' },
       kv_operations_requested: { bg: 'bg-yellow-900/20', border: 'border-yellow-800', text: 'text-yellow-400', dot: 'bg-yellow-400' },
       reflect: { bg: 'bg-teal-900/30', border: 'border-teal-700', text: 'text-teal-400', dot: 'bg-teal-500' },
-      orient: { bg: 'bg-cyan-900/30', border: 'border-cyan-700', text: 'text-cyan-400', dot: 'bg-cyan-500' },
+      act: { bg: 'bg-cyan-900/30', border: 'border-cyan-700', text: 'text-cyan-400', dot: 'bg-cyan-500' },
       subplan: { bg: 'bg-indigo-900/30', border: 'border-indigo-700', text: 'text-indigo-400', dot: 'bg-indigo-500' },
     };
 
@@ -419,10 +419,10 @@
       const refreshSessions = useCallback(async () => {
         try {
           const d = await api('/sessions', operatorKey);
-          const list = d.sessions || [];
+          const list = (d.sessions || []).reverse();
           if (list.length > 0) {
             setSessions(list);
-            setSelectedSession(prev => prev || list[list.length - 1].id);
+            setSelectedSession(prev => prev || list[0].id);
             return list;
           }
         } catch {}
@@ -431,9 +431,9 @@
           const d = await api('/kv/cache:session_ids', operatorKey);
           const ids = d.value || [];
           if (ids.length > 0) {
-            const list = ids.map(id => ({ id, type: 'orient', ts: null }));
+            const list = ids.reverse().map(id => ({ id, type: 'act', ts: null }));
             setSessions(list);
-            setSelectedSession(prev => prev || ids[ids.length - 1]);
+            setSelectedSession(prev => prev || list[0].id);
             return list;
           }
         } catch {}
@@ -619,10 +619,11 @@
               return (
                 <div
                   key={i}
-                  onClick={() => { setSelectedIdx(i); onSelectEntry(entry); }}
+                  onClick={() => { setSelectedIdx(i); onSelectEntry({ ...entry, _idx: i }); }}
                   className={`${c.bg} border ${c.border} rounded px-3 py-2 cursor-pointer hover:brightness-125 transition text-xs fade-in ${isResponse ? 'opacity-75' : ''} ${isSelected ? 'ring-1 ring-accent' : ''} ${isPaired ? 'ring-1 ring-accent/50 brightness-125' : ''}`}
                 >
                   <div className="flex items-center gap-2 mb-1">
+                    <span className="text-gray-600 text-[10px] w-5 text-right flex-shrink-0 tabular-nums">{i + 1}</span>
                     <span className={`w-2 h-2 rounded-full ${c.dot} flex-shrink-0 ${isResponse ? 'w-1.5 h-1.5' : ''}`}></span>
                     <span className={`${c.text} ${isResponse ? '' : 'font-semibold'}`}>{entry.type}</span>
                     {(isSelected || isPaired) && pairs[i] != null && (
@@ -738,6 +739,7 @@
           <div className={`flex-shrink-0 ${c.bg} border ${c.border} rounded px-3 py-2 m-4 mb-0`}>
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${c.dot}`}></span>
+              {entry._idx != null && <span className="text-gray-600 text-[10px]">#{entry._idx + 1}</span>}
               <span className={`${c.text} font-bold text-sm`}>{entry.type}</span>
               {entry.ts && (
                 <span className="text-gray-500 text-xs ml-auto">{formatTime(entry.ts)}</span>
@@ -1086,6 +1088,197 @@
       );
     }
 
+    // ── Chat Tab ──────────────────────────────────────────────
+    function ChatTab({ operatorKey }) {
+      const [chats, setChats] = useState([]);
+      const [selectedChat, setSelectedChat] = useState(null);
+      const [chatData, setChatData] = useState(null);
+      const [participants, setParticipants] = useState({});
+      const [loading, setLoading] = useState(false);
+
+      const refreshChats = useCallback(async () => {
+        try {
+          const d = await api('/chats', operatorKey);
+          setChats(d.chats || []);
+        } catch {}
+      }, [operatorKey]);
+
+      useEffect(() => {
+        refreshChats();
+        const iv = setInterval(refreshChats, 10000);
+        return () => clearInterval(iv);
+      }, [refreshChats]);
+
+      const loadChat = useCallback(async (platform, channelId) => {
+        setLoading(true);
+        try {
+          const d = await api(`/chat/${platform}/${channelId}`, operatorKey);
+          setChatData(d.chat || null);
+          setParticipants(d.participants || {});
+        } catch { setChatData(null); }
+        setLoading(false);
+      }, [operatorKey]);
+
+      useEffect(() => {
+        if (selectedChat) {
+          const c = chats.find(ch => ch.key === selectedChat);
+          if (c) loadChat(c.platform, c.channel_id);
+        }
+      }, [selectedChat, chats, loadChat]);
+
+      // Auto-refresh selected chat
+      useEffect(() => {
+        if (!selectedChat) return;
+        const c = chats.find(ch => ch.key === selectedChat);
+        if (!c) return;
+        const iv = setInterval(() => loadChat(c.platform, c.channel_id), 5000);
+        return () => clearInterval(iv);
+      }, [selectedChat, chats, loadChat]);
+
+      const formatTime = (ts) => {
+        if (!ts) return '';
+        const d = new Date(ts);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      };
+
+      const formatDate = (ts) => {
+        if (!ts) return '';
+        const d = new Date(ts);
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      };
+
+      const roleColors = {
+        user: { bg: 'bg-blue-900/30', border: 'border-blue-700', text: 'text-blue-300', label: 'text-blue-400' },
+        assistant: { bg: 'bg-green-900/30', border: 'border-green-700', text: 'text-green-300', label: 'text-green-400' },
+        system: { bg: 'bg-yellow-900/20', border: 'border-yellow-800', text: 'text-yellow-300', label: 'text-yellow-500' },
+        tool: { bg: 'bg-purple-900/20', border: 'border-purple-800', text: 'text-purple-300', label: 'text-purple-400' },
+      };
+
+      return (
+        <div className="flex h-full gap-0">
+          {/* Left: conversation list */}
+          <div className="w-64 flex-shrink-0 border-r border-border overflow-y-auto scrollbar-thin">
+            <div className="p-3 border-b border-border">
+              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Conversations</h3>
+              <span className="text-gray-600 text-xs">{chats.length} total</span>
+            </div>
+            {chats.map(c => (
+              <button
+                key={c.key}
+                onClick={() => setSelectedChat(c.key)}
+                className={`w-full text-left px-3 py-2 border-b border-border/50 transition text-xs ${
+                  selectedChat === c.key
+                    ? 'bg-accent/10 border-l-2 border-l-accent'
+                    : 'hover:bg-bg-card'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-300 truncate">
+                    {c.participants && Object.values(c.participants).some(v => v !== Object.keys(c.participants)[0])
+                      ? Object.values(c.participants).join(', ')
+                      : c.channel_id}
+                  </span>
+                  <span className="text-gray-600">{c.platform}</span>
+                </div>
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-gray-500">{c.turn_count} turns</span>
+                  <span className="text-gray-600">{formatDate(c.last_activity)} {formatTime(c.last_activity)}</span>
+                </div>
+                {c.total_cost > 0 && (
+                  <span className="text-gray-600">${c.total_cost.toFixed(4)}</span>
+                )}
+              </button>
+            ))}
+            {chats.length === 0 && (
+              <p className="text-gray-600 text-xs p-3">No conversations yet</p>
+            )}
+          </div>
+
+          {/* Right: message view */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {!selectedChat && (
+              <div className="flex-1 flex items-center justify-center text-gray-600 text-xs">
+                Select a conversation
+              </div>
+            )}
+            {selectedChat && loading && !chatData && (
+              <div className="flex-1 flex items-center justify-center text-gray-600 text-xs">
+                Loading...
+              </div>
+            )}
+            {selectedChat && chatData && (
+              <>
+                {/* Chat header */}
+                <div className="px-4 py-2 border-b border-border flex items-center gap-3 text-xs">
+                  <span className="text-accent font-semibold">Swayambhu</span>
+                  {Object.keys(participants).length > 0 && (
+                    <>
+                      <span className="text-gray-600">&</span>
+                      <span className="text-blue-400 font-semibold">{Object.values(participants).join(', ')}</span>
+                    </>
+                  )}
+                  <span className="text-gray-600">|</span>
+                  <span className="text-gray-500">{chatData.turn_count || 0} turns</span>
+                  <span className="text-gray-600">|</span>
+                  <span className="text-gray-500">${(chatData.total_cost || 0).toFixed(4)}</span>
+                  {chatData.source_session && (
+                    <>
+                      <span className="text-gray-600">|</span>
+                      <span className="text-accent text-xs">from {chatData.source_session}</span>
+                    </>
+                  )}
+                </div>
+
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-2">
+                  {(chatData.messages || []).map((msg, i) => {
+                    const rc = roleColors[msg.role] || roleColors.system;
+                    const isToolResult = msg.role === 'tool';
+                    return (
+                      <div key={i} className={`${rc.bg} border ${rc.border} rounded px-3 py-2 text-xs fade-in`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`font-semibold ${rc.label}`}>
+                            {msg.role === 'assistant' ? 'Swayambhu'
+                              : msg.role === 'user' ? (participants[msg.userId] || msg.userId || 'user')
+                              : msg.role}
+                          </span>
+                          {msg.ts && <span className="text-gray-600 ml-auto">{formatTime(msg.ts)}</span>}
+                          {msg.source_session && (
+                            <span className="text-accent text-[10px]">via {msg.source_session}</span>
+                          )}
+                        </div>
+                        {isToolResult ? (
+                          <pre className={`${rc.text} whitespace-pre-wrap break-all`}>
+                            {typeof msg.content === 'string' ? msg.content.slice(0, 500) : JSON.stringify(msg.content, null, 2).slice(0, 500)}
+                          </pre>
+                        ) : msg.tool_calls ? (
+                          <div className="space-y-1">
+                            {msg.content && <p className={rc.text}>{msg.content}</p>}
+                            {msg.tool_calls.map((tc, j) => (
+                              <div key={j} className="bg-purple-900/20 border border-purple-800 rounded px-2 py-1">
+                                <span className="text-purple-400 font-semibold">{tc.function?.name || tc.name}</span>
+                                <pre className="text-purple-300 text-[10px] mt-0.5 whitespace-pre-wrap break-all">
+                                  {typeof tc.function?.arguments === 'string'
+                                    ? tc.function.arguments.slice(0, 300)
+                                    : JSON.stringify(tc.function?.arguments, null, 2).slice(0, 300)}
+                                </pre>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className={`${rc.text} whitespace-pre-wrap`}>{msg.content}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     // ── Draggable Divider ─────────────────────────────────────
     function DraggableDivider({ onDrag }) {
       const handleMouseDown = useCallback((e) => {
@@ -1106,6 +1299,113 @@
           onMouseDown={handleMouseDown}
           style={{ width: 4, minWidth: 4, cursor: 'col-resize', background: '#1e1e3a' }}
         ></div>
+      );
+    }
+
+    // ── Direct Message Bar ─────────────────────────────────────
+    function DirectMessageBar({ operatorKey }) {
+      const [pending, setPending] = useState(null);     // { message, sent_at } or null
+      const [draft, setDraft] = useState('');
+      const [editing, setEditing] = useState(false);
+      const [sending, setSending] = useState(false);
+
+      const refresh = useCallback(async () => {
+        if (!operatorKey) return;
+        try {
+          const d = await api('/direct', operatorKey);
+          setPending(d.pending ? d.message : null);
+        } catch {}
+      }, [operatorKey]);
+
+      useEffect(() => { refresh(); }, [refresh]);
+      // Poll every 10s to detect when the agent consumes the message
+      useEffect(() => {
+        const iv = setInterval(refresh, 10000);
+        return () => clearInterval(iv);
+      }, [refresh]);
+
+      const send = async () => {
+        if (!draft.trim() || sending) return;
+        setSending(true);
+        try {
+          await fetch(`${API_URL}/direct`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Operator-Key': operatorKey },
+            body: JSON.stringify({ message: draft.trim() }),
+          });
+          setDraft('');
+          setEditing(false);
+          await refresh();
+        } catch {}
+        setSending(false);
+      };
+
+      const del = async () => {
+        try {
+          await fetch(`${API_URL}/direct`, {
+            method: 'DELETE',
+            headers: { 'X-Operator-Key': operatorKey },
+          });
+          setPending(null);
+          setDraft('');
+          setEditing(false);
+        } catch {}
+      };
+
+      const startEdit = () => {
+        setDraft(pending?.message || '');
+        setEditing(true);
+      };
+
+      // Show pending message
+      if (pending && !editing) {
+        return (
+          <div className="bg-cyan-950/30 border-b border-cyan-900/50 px-4 py-1.5 flex items-center gap-3 text-xs">
+            <span className="text-cyan-600 font-semibold flex-shrink-0">DIRECT</span>
+            <span className="bg-cyan-900/40 text-cyan-400 px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0">PENDING</span>
+            <span className="text-cyan-300/80 truncate flex-1">{pending.message}</span>
+            <span className="text-gray-600 flex-shrink-0">{pending.sent_at ? new Date(pending.sent_at).toLocaleTimeString() : ''}</span>
+            <button onClick={startEdit} className="text-cyan-600 hover:text-cyan-400 transition">edit</button>
+            <button onClick={del} className="text-red-700 hover:text-red-400 transition">delete</button>
+          </div>
+        );
+      }
+
+      // Show input (compose or edit mode)
+      if (editing) {
+        return (
+          <div className="bg-cyan-950/30 border-b border-cyan-900/50 px-4 py-1.5 flex items-center gap-2 text-xs">
+            <span className="text-cyan-600 font-semibold flex-shrink-0">DIRECT</span>
+            <input
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') send(); if (e.key === 'Escape') { setEditing(false); setDraft(''); } }}
+              placeholder="Message to agent (read on next wake)..."
+              className="flex-1 bg-transparent border border-cyan-900/50 rounded px-2 py-1 text-cyan-200 placeholder-gray-600 focus:outline-none focus:border-cyan-700"
+              autoFocus
+            />
+            <button
+              onClick={send}
+              disabled={!draft.trim() || sending}
+              className="text-cyan-500 hover:text-cyan-300 disabled:text-gray-700 transition font-semibold"
+            >{sending ? '...' : 'send'}</button>
+            <button
+              onClick={() => { setEditing(false); setDraft(''); }}
+              className="text-gray-600 hover:text-gray-400 transition"
+            >cancel</button>
+          </div>
+        );
+      }
+
+      // Collapsed — just a small trigger button
+      return (
+        <div className="bg-bg-panel border-b border-border px-4 py-1 flex items-center text-xs">
+          <button
+            onClick={() => setEditing(true)}
+            className="text-gray-600 hover:text-cyan-500 transition"
+          >+ direct message</button>
+        </div>
       );
     }
 
@@ -1149,8 +1449,8 @@
             try {
               const k = await api(`/kv/karma:${sid}`, operatorKey);
               const entries = k.value || [];
-              const reflect = [...entries].reverse().find(e => e.event === 'reflect_complete' && e.balances);
-              if (reflect?.balances) { setBalances(reflect.balances); return true; }
+              const end = [...entries].reverse().find(e => (e.event === 'session_end' || e.event === 'reflect_complete') && e.balances);
+              if (end?.balances) { setBalances(end.balances); return true; }
               const start = entries.find(e => e.event === 'session_start' && e.balances);
               if (start?.balances) { setBalances(start.balances); return true; }
             } catch {}
@@ -1196,6 +1496,7 @@
 
       const tabs = [
         { id: 'timeline', label: 'Timeline' },
+        { id: 'chat', label: 'Chat' },
         { id: 'kv', label: 'KV Explorer' },
         { id: 'reflections', label: 'Reflections' },
         { id: 'mutations', label: 'Modifications' },
@@ -1277,25 +1578,32 @@
             ))}
           </div>
 
-          {/* Content */}
+          {/* Direct message bar */}
+          <DirectMessageBar operatorKey={operatorKey} />
+
+          {/* Content — all tabs stay mounted (display:none) to preserve state */}
           <div ref={containerRef} className="flex-1 flex overflow-hidden">
-            {activeTab === 'timeline' ? (
-              <>
-                <div style={{ width: `${leftPct}%` }} className="flex-shrink-0 p-4 overflow-hidden flex flex-col">
-                  <TimelineTab operatorKey={operatorKey} onSelectEntry={setSelectedEntry} />
-                </div>
-                <DraggableDivider onDrag={handleDividerDrag} />
-                <div style={{ width: `${100 - leftPct}%` }} className="flex-shrink-0 overflow-hidden bg-bg-panel flex flex-col">
-                  <ContextPanel operatorKey={operatorKey} selectedEntry={selectedEntry} />
-                </div>
-              </>
-            ) : (
-              <div className="flex-1 p-4 overflow-hidden">
-                {activeTab === 'kv' && <KVExplorerTab operatorKey={operatorKey} />}
-                {activeTab === 'reflections' && <ReflectionsTab operatorKey={operatorKey} />}
-                {activeTab === 'mutations' && <MutationsTab operatorKey={operatorKey} />}
+            <div style={{ display: activeTab === 'timeline' ? 'flex' : 'none', width: '100%', height: '100%' }}>
+              <div style={{ width: `${leftPct}%` }} className="flex-shrink-0 p-4 overflow-hidden flex flex-col">
+                <TimelineTab operatorKey={operatorKey} onSelectEntry={setSelectedEntry} />
               </div>
-            )}
+              <DraggableDivider onDrag={handleDividerDrag} />
+              <div style={{ width: `${100 - leftPct}%` }} className="flex-shrink-0 overflow-hidden bg-bg-panel flex flex-col">
+                <ContextPanel operatorKey={operatorKey} selectedEntry={selectedEntry} />
+              </div>
+            </div>
+            <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', width: '100%', height: '100%' }}>
+              <ChatTab operatorKey={operatorKey} />
+            </div>
+            <div style={{ display: activeTab === 'kv' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
+              <KVExplorerTab operatorKey={operatorKey} />
+            </div>
+            <div style={{ display: activeTab === 'reflections' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
+              <ReflectionsTab operatorKey={operatorKey} />
+            </div>
+            <div style={{ display: activeTab === 'mutations' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
+              <MutationsTab operatorKey={operatorKey} />
+            </div>
           </div>
         </div>
       );

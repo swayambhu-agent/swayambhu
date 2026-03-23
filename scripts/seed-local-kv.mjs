@@ -48,7 +48,7 @@ await put("identity:did", {
 
 console.log("--- Config ---");
 await put("config:defaults", {
-  orient: { model: "minimax/minimax-m2.7", effort: "low", max_output_tokens: 4000 },
+  act: { model: "minimax/minimax-m2.7", effort: "low", max_output_tokens: 4000, budget_soft_limit_pct: 0.70, budget_hard_limit_pct: 0.85 },
   reflect: { model: "xiaomi/mimo-v2-pro", effort: "medium", max_output_tokens: 1000 },
   session_budget: { max_cost: 0.15, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
   chat: {
@@ -65,12 +65,16 @@ await put("config:defaults", {
   memory: { default_load_keys: ["config:models", "config:resources"], max_context_budget_tokens: 8000 },
   execution: {
     max_subplan_depth: 3, max_reflect_depth: 1, reflect_interval_multiplier: 5,
-    max_steps: { orient: 12, reflect: 5, deep_reflect: 10 },
+    max_steps: { act: 12, reflect: 5, deep_reflect: 10 },
     fallback_model: "anthropic/claude-haiku-4.5",
+  },
+  act_after_dm: {
+    model: "sonnet", effort: "high", max_output_tokens: 4000,
   },
   deep_reflect: {
     default_interval_sessions: 5, default_interval_days: 7,
     model: "anthropic/claude-opus-4.6", effort: "high", max_output_tokens: 4000, budget_multiplier: 3.0,
+    budget_soft_limit_pct: 0.65, budget_hard_limit_pct: 0.85,
   },
 }, "json", "Session budgets, model roles, effort levels, execution limits");
 
@@ -79,8 +83,8 @@ await put("config:models", {
     { id: "anthropic/claude-opus-4.6", alias: "opus", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection" },
     { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning" },
     { id: "anthropic/claude-haiku-4.5", alias: "haiku", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
-    { id: "deepseek/deepseek-v3.2", alias: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, orient flow, KV ops, prompt rendering" },
-    { id: "minimax/minimax-m2.7", alias: "minimax", input_cost_per_mtok: 0.30, output_cost_per_mtok: 1.20, max_output_tokens: 131072, best_for: "Long-context reasoning, cost-effective orient and planning" },
+    { id: "deepseek/deepseek-v3.2", alias: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, act flow, KV ops, prompt rendering" },
+    { id: "minimax/minimax-m2.7", alias: "minimax", input_cost_per_mtok: 0.30, output_cost_per_mtok: 1.20, max_output_tokens: 131072, best_for: "Long-context reasoning, cost-effective act and planning" },
     { id: "xiaomi/mimo-v2-pro", alias: "mimo", input_cost_per_mtok: 1.00, output_cost_per_mtok: 3.00, max_output_tokens: 131072, best_for: "Moderate reasoning, reflection, cost-effective alternative to Sonnet" },
   ],
   fallback_model: "anthropic/claude-haiku-4.5",
@@ -88,8 +92,8 @@ await put("config:models", {
 }, "json", "Available LLM models with pricing and aliases");
 
 await put("config:model_capabilities", {
-  "anthropic/claude-opus-4.6": { yama_capable: true, niyama_capable: true, comms_gate_capable: true },
-  "anthropic/claude-sonnet-4.6": { yama_capable: true, niyama_capable: true, comms_gate_capable: true },
+  "anthropic/claude-opus-4.6": { yama_capable: true, niyama_capable: true },
+  "anthropic/claude-sonnet-4.6": { yama_capable: true, niyama_capable: true },
 }, "json", "Model capability flags — separated from config:models to prevent agent self-escalation");
 
 await put("config:resources", {
@@ -112,12 +116,11 @@ await put("wallets", {
 
 await put("config:tool_registry", {
   tools: [
-    { name: "send_slack", description: "Post a message to the Slack channel. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { text: "required", channel: "optional — override default channel" } },
+    { name: "send_slack", description: "Send a Slack message to a channel or DM a user. Pass a channel ID (C...) to post to a channel, or a user ID (U...) to send a direct message. Omit channel to use the default channel. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { text: "required", channel: "optional — channel ID (C...) or user ID (U...) for DM. Omit for default channel." } },
     { name: "web_fetch", description: "Fetch contents of a URL", input: { url: "required", method: "GET|POST", headers: "optional", max_length: "default 10000" } },
-    { name: "kv_write", description: "Write to tool's own KV namespace", input: { key: "required", value: "required" } },
     { name: "check_balance", description: "Check balances across all configured providers and wallets. Returns balances grouped by scope (general vs project-specific). Only 'general' scope counts toward your operating budget.", input: { scope: "optional — filter by scope (e.g. 'general', 'project_x'). Omit to see all." } },
     { name: "kv_manifest", description: "List KV keys, optionally filtered by prefix. Use to explore what is stored in memory.", input: { prefix: "optional key prefix filter", limit: "max keys to return (default 100, max 500)" } },
-    { name: "kv_query", description: "Read a KV value. Returns small values directly. For large arrays/objects, returns a summary — use path to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, viveka:timing:urgency, config:defaults)", path: "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)" } },
+    { name: "kv_query", description: "Read a KV value. Returns small values directly. For large arrays/objects, returns a summary — use path to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, upaya:timing:urgency, config:defaults)", path: "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)" } },
     { name: "computer", description: "Run a shell command on your Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
     { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each. Emails from unknown senders (no contact record) have content replaced with [content redacted — unknown sender] and the original quarantined under sealed:* keys until approved by patron", input: { mark_read: "optional boolean — mark fetched emails as read (default true)", max_results: "optional — max emails to return (default 10, max 20)" } },
     { name: "send_email", description: "Send an email or reply to an existing thread via Gmail. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
@@ -140,7 +143,7 @@ for (const name of providerFiles) {
 
 console.log("--- Tools ---");
 const toolNames = [
-  "send_slack", "web_fetch", "kv_write",
+  "send_slack", "web_fetch",
   "kv_manifest", "kv_query", "computer",
   "check_email", "send_email", "test_model",
   "web_search",
@@ -167,7 +170,7 @@ await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool �
 // ── Prompts ───────────────────────────────────────────────────
 
 console.log("--- Prompts ---");
-await put("prompt:orient", read("prompts/orient.md"), "text", "Orient session system prompt — shapes waking behavior");
+await put("prompt:act", read("prompts/act.md"), "text", "Act session system prompt — shapes waking behavior");
 await put("prompt:subplan", read("prompts/subplan.md"), "text", "Subplan agent system prompt template");
 await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
 await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1) — examines alignment, patterns, structures");
@@ -212,7 +215,7 @@ await put("niyama:organization", "I keep my workspace (my projects, notes, recor
 // ── Policy code (mutable — agent can propose changes via proposals) ──
 
 console.log("--- Policy Code ---");
-await put("hook:act:code", read("act.js"), "text", "Session policy — orient flow, context building, session results");
+await put("hook:act:code", read("act.js"), "text", "Session policy — act flow, context building, session results");
 await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy — session/deep reflect, scheduling, prompts");
 
 // ── Kernel source (immutable — stored at kernel:* prefix, agent cannot modify) ──
@@ -282,17 +285,17 @@ await put("patron:public_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPRTP/9Jr6J1
 
 console.log("--- Communication wisdom (seed) ---");
 
-await put("viveka:comms:defaults", {
+await put("upaya:comms:defaults", {
   text: "When in doubt, do not send. Silence is safer than a poorly judged message. A blocked message can be reviewed later; a sent message cannot be unsent. Be especially cautious when initiating — responding carries implicit standing, initiating requires justification.",
-  type: "viveka",
+  type: "upaya",
   created: new Date().toISOString(),
   sources: [{ session: "seed", depth: 0, turn: 0, topic: "Initial seed — conservative communication baseline" }],
-}, "json", "Viveka: default communication stance");
+}, "json", "Upaya: default communication stance");
 
 // ── Skills (from skills/*.json + skills/*.md) ─────────────────
 
 console.log("--- Skills ---");
-const skillNames = ["model-config", "skill-authoring", "computer", "claude-code", "codex"];
+const skillNames = ["model-config", "skill-authoring", "computer", "claude-code", "codex", "comms"];
 for (const name of skillNames) {
   const meta = JSON.parse(read(`skills/${name}.json`));
   await put(`skill:${name}`, {

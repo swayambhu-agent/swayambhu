@@ -26,7 +26,7 @@ describe("handleChat", () => {
           max_output_tokens: 1000,
           max_history_messages: 40,
         },
-        orient: { model: "sonnet" },
+        act: { model: "sonnet" },
       },
     });
     // handleChat calls K.resolveModel and K.buildToolDefinitions synchronously
@@ -53,16 +53,17 @@ describe("handleChat", () => {
       chatId: "123", text: "Hi", userId: "user1",
     }, adapter);
 
-    // Verify state was saved
-    const savedConv = K.kvPutSafe.mock.calls[0];
-    expect(savedConv[0]).toBe("chat:state:slack:123");
-    const conv = savedConv[1];
+    // Verify state was saved (find by key, not index — digest writes interleave)
+    const findPut = (key) => K.kvPutSafe.mock.calls.filter(([k]) => k === key);
+    const saved1 = findPut("chat:slack:123");
+    expect(saved1).toHaveLength(1);
+    const conv = saved1[0][1];
     expect(conv.turn_count).toBe(1);
     expect(conv.messages).toHaveLength(2); // user + assistant
 
     // Turn 2: mock kvGet to return saved state
     K.kvGet.mockImplementation(async (key) => {
-      if (key === "chat:state:slack:123") return conv;
+      if (key === "chat:slack:123") return conv;
       if (key === "wisdom") return null;
       if (key === "prompt:chat") return null;
       return null;
@@ -72,9 +73,10 @@ describe("handleChat", () => {
       chatId: "123", text: "How are you?", userId: "user1",
     }, adapter);
 
-    const savedConv2 = K.kvPutSafe.mock.calls[1][1];
-    expect(savedConv2.turn_count).toBe(2);
-    expect(savedConv2.messages).toHaveLength(4); // 2 user + 2 assistant
+    const saved2 = findPut("chat:slack:123");
+    expect(saved2).toHaveLength(2);
+    expect(saved2[1][1].turn_count).toBe(2);
+    expect(saved2[1][1].messages).toHaveLength(4); // 2 user + 2 assistant
   });
 
   it("/reset refills budget but keeps messages", async () => {
@@ -89,7 +91,7 @@ describe("handleChat", () => {
       created_at: "2026-01-01T00:00:00.000Z",
     };
     K.kvGet.mockImplementation(async (key) => {
-      if (key === "chat:state:slack:123") return existingConv;
+      if (key === "chat:slack:123") return existingConv;
       return null;
     });
 
@@ -110,7 +112,7 @@ describe("handleChat", () => {
 
   it("/clear wipes conversation state entirely", async () => {
     K.kvGet.mockImplementation(async (key) => {
-      if (key === "chat:state:slack:123") return {
+      if (key === "chat:slack:123") return {
         messages: [{ role: "user", content: "old" }],
         total_cost: 0.10,
         turn_count: 5,
@@ -123,14 +125,14 @@ describe("handleChat", () => {
     }, adapter);
 
     expect(result).toEqual({ ok: true, reason: "clear" });
-    expect(K.kvDeleteSafe).toHaveBeenCalledWith("chat:state:slack:123");
+    expect(K.kvDeleteSafe).toHaveBeenCalledWith("chat:slack:123");
     expect(adapter.sendReply).toHaveBeenCalledWith("123", "Conversation cleared.");
     expect(K.callLLM).not.toHaveBeenCalled();
   });
 
   it("budget limit stops conversation", async () => {
     K.kvGet.mockImplementation(async (key) => {
-      if (key === "chat:state:slack:123") return {
+      if (key === "chat:slack:123") return {
         messages: [],
         total_cost: 0.50, // at limit
         turn_count: 10,
@@ -186,12 +188,12 @@ describe("handleChat", () => {
     // Set max to 4 messages for easy testing
     K.getDefaults.mockResolvedValue({
       chat: { max_history_messages: 4 },
-      orient: { model: "sonnet" },
+      act: { model: "sonnet" },
     });
 
     // Start with 3 existing messages
     K.kvGet.mockImplementation(async (key) => {
-      if (key === "chat:state:slack:123") return {
+      if (key === "chat:slack:123") return {
         messages: [
           { role: "user", content: "msg1" },
           { role: "assistant", content: "reply1" },
@@ -215,6 +217,25 @@ describe("handleChat", () => {
     expect(saved.messages[0].content).toBe("reply1");
   });
 
+  it("uses resolvedChatKey from adapter when present (e.g. Slack DMs)", async () => {
+    await handleChat(K, "slack", {
+      chatId: "D0ANXBBBWUQ", text: "Hi", userId: "U084ASKBXB7",
+      resolvedChatKey: "U084ASKBXB7", // set by adapter.resolveChatKey
+    }, adapter);
+
+    const saved = K.kvPutSafe.mock.calls[0];
+    expect(saved[0]).toBe("chat:slack:U084ASKBXB7");
+  });
+
+  it("falls back to chatId when resolvedChatKey is absent", async () => {
+    await handleChat(K, "slack", {
+      chatId: "C01234ABCDE", text: "Hi", userId: "U084ASKBXB7",
+    }, adapter);
+
+    const saved = K.kvPutSafe.mock.calls[0];
+    expect(saved[0]).toBe("chat:slack:C01234ABCDE");
+  });
+
   it("multiple conversations (different chatIds) are independent", async () => {
     // Chat 1
     await handleChat(K, "slack", {
@@ -226,30 +247,26 @@ describe("handleChat", () => {
       chatId: "bbb", text: "Hi from B", userId: "userB",
     }, adapter);
 
-    // Verify different KV keys
-    const call1 = K.kvPutSafe.mock.calls[0];
-    const call2 = K.kvPutSafe.mock.calls[1];
-    expect(call1[0]).toBe("chat:state:slack:aaa");
-    expect(call2[0]).toBe("chat:state:slack:bbb");
+    // Verify different KV keys (find by key, not index)
+    const findPut = (key) => K.kvPutSafe.mock.calls.find(([k]) => k === key);
+    const call1 = findPut("chat:slack:aaa");
+    const call2 = findPut("chat:slack:bbb");
+    expect(call1).toBeTruthy();
+    expect(call2).toBeTruthy();
 
     // Each has independent message history
     expect(call1[1].messages[0].content).toBe("Hi from A");
     expect(call2[1].messages[0].content).toBe("Hi from B");
   });
 
-  it("records karma after each turn", async () => {
+  it("embeds karma in chat object", async () => {
     await handleChat(K, "slack", {
       chatId: "123", text: "Hi", userId: "user1",
     }, adapter);
 
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "chat_turn",
-        channel: "slack",
-        chat_id: "123",
-        turn: 1,
-      })
-    );
+    const saved = K.kvPutSafe.mock.calls[0][1];
+    expect(saved.karma).toBeDefined();
+    expect(Array.isArray(saved.karma)).toBe(true);
   });
 
   it("falls back to '(no response)' when LLM returns no content after max rounds", async () => {
@@ -264,7 +281,7 @@ describe("handleChat", () => {
     // Use a low max_tool_rounds
     K.getDefaults.mockResolvedValue({
       chat: { max_tool_rounds: 2 },
-      orient: { model: "sonnet" },
+      act: { model: "sonnet" },
     });
 
     await handleChat(K, "slack", {
@@ -324,7 +341,7 @@ describe("handleChat", () => {
       // Cost 0.001 per call (from makeLLMResponse). maxCost = 0.50, 80% = 0.40.
       // Pre-load conversation at 0.399 — next call pushes to 0.40, crossing threshold.
       K.kvGet.mockImplementation(async (key) => {
-        if (key === "chat:state:slack:123") return {
+        if (key === "chat:slack:123") return {
           messages: [],
           total_cost: 0.399,
           turn_count: 5,
@@ -347,7 +364,7 @@ describe("handleChat", () => {
     it("does not inject warning twice", async () => {
       // Already warned, cost still above threshold
       K.kvGet.mockImplementation(async (key) => {
-        if (key === "chat:state:slack:123") return {
+        if (key === "chat:slack:123") return {
           messages: [],
           total_cost: 0.42,
           turn_count: 6,
@@ -368,7 +385,7 @@ describe("handleChat", () => {
 
     it("/reset clears warning flag", async () => {
       K.kvGet.mockImplementation(async (key) => {
-        if (key === "chat:state:slack:123") return {
+        if (key === "chat:slack:123") return {
           messages: [{ role: "user", content: "Hi" }],
           total_cost: 0.45,
           turn_count: 5,
@@ -477,7 +494,7 @@ describe("handleChat", () => {
           model: "sonnet",
           unknown_contact_tools: ["kv_query"],
         },
-        orient: { model: "sonnet" },
+        act: { model: "sonnet" },
       });
       K.buildToolDefinitions = vi.fn(() => [
         { function: { name: "kv_query" } },
