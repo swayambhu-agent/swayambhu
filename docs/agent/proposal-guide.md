@@ -1,4 +1,4 @@
-# Modification Guide
+# Proposal Guide
 
 How you self-modify — and why each step in the process exists.
 
@@ -24,26 +24,32 @@ How you self-modify — and why each step in the process exists.
                            circuit breaker)
 ```
 
-**Why this lifecycle exists instead of direct writes:** Staging creates a review period. Inflight means changes are live but reversible (a snapshot exists). Promoted means permanent. This gives you time to observe effects before committing — a bad modification that's inflight can be rolled back; a promoted one cannot.
+**Why this lifecycle exists instead of direct writes:** Staging creates a review period. Inflight means changes are live but reversible (a snapshot exists). Promoted means permanent. This gives you time to observe effects before committing — a bad proposal that's inflight can be rolled back; a promoted one cannot.
 
-There is also a **direct** path (`acceptDirect`) where deep reflect skips staging — the modification goes straight to inflight. This exists because deep reflect has tools and multi-step reasoning, so it can investigate before proposing. Use it for straightforward changes you're confident about. For anything that might interact with other modifications or have subtle effects, stage it instead.
+There is also a **direct** path (`acceptDirect`) where deep reflect skips staging — the proposal goes straight to inflight. This exists because deep reflect has tools and multi-step reasoning, so it can investigate before proposing. Use it for straightforward changes you're confident about. For anything that might interact with other proposals or have subtle effects, stage it instead.
 
 ---
 
-## Two modification types
+## Proposal types
 
-### Code modifications
+### Code proposals (via `proposal_requests`)
 
-Target tool code, hook code, prompts, config, providers. Required fields: `claims` (array of strings explaining what and why), `ops` (array of KV operations), `checks` (array of verification checks).
+`proposal_requests` is **code-only** — it targets tool code, hook code, providers, and channels. Required fields: `claims` (array of strings explaining what and why), `ops` (array of KV operations), `checks` (array of verification checks).
 
 - Can be staged at any depth (orient, session reflect, deep reflect)
 - Circuit breaker auto-rolls back on fatal error
 - Git sync runs on promote
 - Check results are evaluated on every load
 
-### Wisdom modifications
+### Non-code system changes (via `kv_operations`)
 
-Target `upaya:*` and `prajna:*` keys. Required fields: `validation` (what evidence supports this, what would falsify it), `ops` (array of KV operations).
+Config, prompts, wisdom, and skill changes go through `kv_operations` instead of `proposal_requests`. In deep-reflect context, `kv_operations` can write system keys directly via `kvWriteGated(op, "deep-reflect")`. This replaces the old `kvWritePrivileged` path — there is no separate privileged write method.
+
+### Wisdom proposals
+
+Target `upaya:*` and `prajna:*` keys. Can be written directly via `kv_operations` in deep-reflect context, or staged as wisdom proposals for review.
+
+Wisdom proposals via the Proposal Protocol require: `validation` (what evidence supports this, what would falsify it), `ops` (array of KV operations).
 
 **Why wisdom has higher friction than code:** Wisdom shapes all future reasoning — it's loaded into reflect prompts and informs decisions. Unlike code, which can be tested and produces observable errors when broken, bad wisdom silently degrades judgment. The higher friction (staging required, no `acceptDirect`, deep reflect only) compensates for the difficulty of detecting wisdom problems.
 
@@ -64,7 +70,7 @@ Restrictions:
 | `withdraw` | Deletes the staged record | You proposed something hasty — retract it |
 | `modify` | Updates the staged record in-place | Refine a proposal based on what you observed this session |
 
-Session reflect **cannot** accept, reject, promote, rollback, or defer. Why: it's a single LLM call with no tools and limited context. It sees the session karma and staged modifications but can't investigate further. Its job is honest assessment, not decision-making.
+Session reflect **cannot** accept, reject, promote, rollback, or defer. Why: it's a single LLM call with no tools and limited context. It sees the session karma and staged proposals but can't investigate further. Its job is honest assessment, not decision-making.
 
 ### Deep reflect (depth >= 1) — full authority
 
@@ -82,7 +88,7 @@ Session reflect **cannot** accept, reject, promote, rollback, or defer. Why: it'
 
 ## Checks
 
-Checks verify that modifications work as intended. Two types:
+Checks verify that proposals work as intended. Two types:
 
 **`kv_assert`** — Read a KV key, drill into a path, test a predicate. Use for: verifying config values are correct, confirming a tool's meta was updated, checking that a prompt contains expected content.
 
@@ -90,37 +96,37 @@ Checks verify that modifications work as intended. Two types:
 
 Available predicates: `exists`, `equals`, `gt`, `lt`, `matches` (regex), `type` (typeof).
 
-Checks are evaluated when loading modifications for review and after application. Write checks that will catch the failure modes you're worried about.
+Checks are evaluated when loading proposals for review and after application. Write checks that will catch the failure modes you're worried about.
 
 ---
 
 ## Conflict detection
 
-Before any modification becomes inflight, the system checks whether any currently-inflight modification touches the same keys. Why: if two inflight modifications touch the same key, rolling back one would corrupt the other's snapshot (the snapshot contains the pre-modification value, which is now the other modification's value).
+Before any proposal becomes inflight, the system checks whether any currently-inflight proposal touches the same keys. Why: if two inflight proposals touch the same key, rolling back one would corrupt the other's snapshot (the snapshot contains the pre-proposal value, which is now the other proposal's value).
 
-This means: if you have an inflight modification touching `prompt:orient`, you cannot accept another modification that also touches `prompt:orient` until the first one is promoted or rolled back.
+This means: if you have an inflight proposal touching `prompt:orient`, you cannot accept another proposal that also touches `prompt:orient` until the first one is promoted or rolled back.
 
-Conflict detection only checks inflight keys, not staged. Two staged modifications targeting the same key won't conflict until one is accepted.
+Conflict detection only checks inflight keys, not staged. Two staged proposals targeting the same key won't conflict until one is accepted.
 
 ---
 
 ## Circuit breaker
 
-When a `last_danger` signal exists in KV (written by the kernel on fatal error), the circuit breaker fires on the next wake. It iterates all inflight code modifications and rolls back any that were activated at or before the danger timestamp.
+When a `last_danger` signal exists in KV (written by the kernel on fatal error), the circuit breaker fires on the next wake. It iterates all inflight code proposals and rolls back any that were activated at or before the danger timestamp.
 
 **Why it skips wisdom:** Wisdom entries are text in prompts. They can cause bad decisions but not runtime crashes (no `TypeError`, no infinite loops). The circuit breaker is for code-level failures.
 
-**Why it checks timestamps:** Not every inflight modification caused the crash. Only modifications activated before the crash are suspects. Modifications activated after (in a different session) are innocent.
+**Why it checks timestamps:** Not every inflight proposal caused the crash. Only proposals activated before the crash are suspects. Proposals activated after (in a different session) are innocent.
 
 ---
 
 ## Git sync
 
-When a code modification is promoted, its ops are mapped to file paths and synced to the git repository on the remote server via the `computer` tool. The sync includes a secret scan that rejects known credential patterns (AWS keys, OpenAI keys, GitHub tokens, Slack tokens, PEM keys).
+When a code proposal is promoted, its ops are mapped to file paths and synced to the git repository on the remote server via the `computer` tool. The sync includes a secret scan that rejects known credential patterns (AWS keys, OpenAI keys, GitHub tokens, Slack tokens, PEM keys).
 
 **Why git sync exists:** KV is the runtime source of truth, but git provides history, diffing, and a second copy. If KV were corrupted or wiped, the git repo has the last-promoted state.
 
-**Why failed syncs are retried:** Git sync failures (network issues, server down) shouldn't block modifications. The pending sync is stored and retried on every subsequent wake until it succeeds.
+**Why failed syncs are retried:** Git sync failures (network issues, server down) shouldn't block proposals. The pending sync is stored and retried on every subsequent wake until it succeeds.
 
 ---
 
@@ -132,7 +138,7 @@ In addition to `put` and `delete`, ops support `patch` — a surgical find-and-r
 { "op": "patch", "key": "prompt:orient", "old_string": "original text", "new_string": "replacement text" }
 ```
 
-The patch is rejected if `old_string` is not found or matches multiple locations (ambiguous). This prevents accidental modifications when the target value has changed since you last read it.
+The patch is rejected if `old_string` is not found or matches multiple locations (ambiguous). This prevents accidental changes when the target value has changed since you last read it.
 
 **When to use `patch` vs `put`:** Use `patch` for surgical edits to prompts, config fragments, or tool code where you want to change one part and leave the rest untouched. Use `put` when you're replacing the entire value or writing a new key. `patch` is safer for large values because it proves you know what you're changing.
 
@@ -140,11 +146,11 @@ The patch is rejected if `old_string` is not found or matches multiple locations
 
 ## Common mistakes
 
-1. **Forgetting checks.** Every code modification needs checks that will detect failure. "It worked when I tested" isn't sufficient — write a `kv_assert` or `tool_call` that future sessions can evaluate.
+1. **Forgetting checks.** Every code proposal needs checks that will detect failure. "It worked when I tested" isn't sufficient — write a `kv_assert` or `tool_call` that future sessions can evaluate.
 
-2. **Targeting bookkeeping keys.** Ops targeting `modification_staged:*` or `modification_snapshot:*` are always rejected. The modification protocol's own state is protected from the modifications it manages.
+2. **Targeting bookkeeping keys.** Ops targeting `proposal_staged:*` or `proposal_snapshot:*` are always rejected. The proposal protocol's own state is protected from the proposals it manages.
 
-3. **Ignoring inflight conflicts.** If you get a null from `acceptDirect` or an error from `acceptStaged`, it means another inflight modification touches the same keys. Wait for it to be promoted or rolled back.
+3. **Ignoring inflight conflicts.** If you get a null from `acceptDirect` or an error from `acceptStaged`, it means another inflight proposal touches the same keys. Wait for it to be promoted or rolled back.
 
 4. **Using `acceptDirect` for wisdom.** Always rejected. Wisdom must go through staging to get a review cycle.
 

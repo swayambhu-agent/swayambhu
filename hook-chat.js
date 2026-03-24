@@ -28,7 +28,7 @@ export async function handleChat(K, channel, inbound, adapter) {
   if (command === "reset") {
     conv.total_cost = 0;
     delete conv._budget_warned;
-    await K.kvPutSafe(convKey, conv);
+    await K.kvWriteSafe(convKey, conv);
     await adapter.sendReply(chatId, "Budget refilled. Conversation history preserved.");
     return { ok: true, reason: "reset" };
   }
@@ -164,7 +164,7 @@ export async function handleChat(K, channel, inbound, adapter) {
   if (conv.messages.length > maxMsgs) {
     conv.messages = conv.messages.slice(-maxMsgs);
   }
-  await K.kvPutSafe(convKey, conv);
+  await K.kvWriteSafe(convKey, conv);
 
   // Advance next wake for approved contacts — conversation is a signal to wake sooner
   if (contact?.approved) {
@@ -175,7 +175,7 @@ export async function handleChat(K, channel, inbound, adapter) {
         const wakeAt = new Date(wakeConfig.next_wake_after).getTime();
         const advanceTo = Date.now() + advanceMins * 60 * 1000;
         if (wakeAt > advanceTo) {
-          await K.kvPutSafe("wake_config", {
+          await K.kvWriteSafe("wake_config", {
             ...wakeConfig,
             next_wake_after: new Date(advanceTo).toISOString(),
           });

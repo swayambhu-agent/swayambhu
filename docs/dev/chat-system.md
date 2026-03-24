@@ -269,7 +269,7 @@ conv.last_activity = new Date().toISOString();
 if (conv.messages.length > maxMsgs) {
   conv.messages = conv.messages.slice(-maxMsgs);
 }
-await K.kvPutSafe(convKey, conv);
+await K.kvWriteSafe(convKey, conv);
 ```
 
 History is trimmed to `max_history_messages` (default 40) from the end,

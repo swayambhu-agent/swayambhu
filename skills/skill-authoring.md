@@ -53,7 +53,7 @@ A skill is stored as a JSON value at `skill:{name}`:
 }
 ```
 
-When creating a skill via modification_request, the `instructions` field must contain the full markdown body inline in the JSON value. For patron-seeded skills, instructions are kept as separate `.md` files and assembled at seed time — but the KV value always contains the complete object with `instructions` included.
+When creating a skill via proposal_request, the `instructions` field must contain the full markdown body inline in the JSON value. For patron-seeded skills, instructions are kept as separate `.md` files and assembled at seed time — but the KV value always contains the complete object with `instructions` included.
 
 ### Field guidance
 
@@ -75,7 +75,7 @@ For skills with detailed procedures (patch examples, checklists, failure handlin
 - `skill:{name}` — concise guide (concepts, quick reference, decision framework)
 - `skill:{name}:ref` — detailed reference (step-by-step procedures, examples, edge cases)
 
-The main skill's instructions should tell the reader to load the `:ref` key before constructing any modification_request or performing complex procedures. Store the ref as plain text (markdown), not JSON.
+The main skill's instructions should tell the reader to load the `:ref` key before constructing any proposal_request or performing complex procedures. Store the ref as plain text (markdown), not JSON.
 
 **When to split:** If the instructions exceed ~200 lines, or if there's a natural division between "understanding" (main) and "doing" (reference). Don't split small skills.
 
@@ -124,9 +124,9 @@ Pointer to skill:{name}:ref with summary of what it contains.
 
 **Show the decision framework**, not just the steps. A skill should teach the reader to make good judgments, not just follow a script blindly.
 
-**Include the Modification Protocol path.** Every skill that touches protected keys must explain:
+**Include the Proposal Protocol path.** Every skill that touches protected keys must explain:
 - What act can do (research, note findings)
-- What reflect stages (modification_requests)
+- What reflect stages (proposal_requests)
 - What deep reflect decides (accept/reject/modify)
 
 ### Validation: your prior sessions are the test
@@ -147,17 +147,17 @@ For preparatory skills (complex unfamiliar domain), the validation is research q
 
 ---
 
-## 4. Creating a Skill via Modification Protocol
+## 4. Creating a Skill via Proposal Protocol
 
-`skill:` is a system key prefix — you cannot write to it directly. All skill creation goes through the Modification Protocol.
+`skill:` is a system key prefix — you cannot write to it directly. All skill creation goes through the Proposal Protocol.
 
 ### From reflect (depth 0): Stage the skill
 
-When you recognize a pattern worth crystallizing, stage a modification request. The `type` field is not currently enforced by the kernel but provides intent clarity in karma logs:
+When you recognize a pattern worth crystallizing, stage a proposal request. The `type` field is not currently enforced by the kernel but provides intent clarity in karma logs:
 
 ```json
 {
-  "modification_requests": [{
+  "proposal_requests": [{
     "type": "skill",
     "claims": [
       "Crystallize the model configuration workflow into a reusable skill",
@@ -206,7 +206,7 @@ Deep reflect reviews staged skills with these criteria:
 4. **Are trigger_patterns useful?** Would act realistically match a task to these patterns?
 5. **Does it duplicate existing knowledge?** Check `kv_manifest("skill:")` for overlap with existing skills.
 
-Deep reflect can also create skills directly via inflight modifications (no staging needed) when it identifies patterns from cross-session analysis.
+Deep reflect can also create skills directly via inflight proposals (no staging needed) when it identifies patterns from cross-session analysis.
 
 ### Updating a skill
 
@@ -258,4 +258,4 @@ kv_query("skill:{name}", ".trigger_patterns")
 - The procedure was absorbed into a tool (procedural knowledge became code)
 - It hasn't been activated in many sessions and the domain is no longer relevant
 
-To retire: update the description to note it's retired, or delete the key via Modification Protocol. Unlike config entries (where historical cost data must be preserved for karma log analysis), skills have no historical analysis value — clean deletion is fine.
+To retire: update the description to note it's retired, or delete the key via Proposal Protocol. Unlike config entries (where historical cost data must be preserved for karma log analysis), skills have no historical analysis value — clean deletion is fine.

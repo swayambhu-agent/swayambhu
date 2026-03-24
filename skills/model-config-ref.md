@@ -1,6 +1,6 @@
 # Skill: Model Configuration — Reference
 
-Detailed reference for modifying model configuration. This is a companion to `skill:model-config` (the concise guide). Load this key when you need to construct modification_requests.
+Detailed reference for modifying model configuration. This is a companion to `skill:model-config` (the concise guide). Load this key when you need to construct proposal_requests.
 
 ⚠️ **Serialization matters**: KV values may be stored with or without whitespace. Your `old_string` in any patch op must match the *exact* serialization in KV. Always read the current value first (`kv_query`) before constructing patches.
 
@@ -33,9 +33,9 @@ Checklist:
 - [ ] `max_output_tokens` comes from OpenRouter data
 - [ ] `best_for` is specific and guides role assignment
 
-### Step 2: Formulate the modification request
+### Step 2: Formulate the proposal request
 
-From **reflect**, stage a `modification_requests` entry with:
+From **reflect**, stage a `proposal_requests` entry with:
 - **claims**: What you're doing and why (e.g. "Add google/gemini-2.5-pro, pricing verified from OpenRouter API")
 - **ops**: Two patch ops — one to insert the model entry into the `models` array (anchor on `"fallback_model"`), one to add the alias to `alias_map` (anchor on the last existing alias entry)
 - **checks**: `kv_assert` that the new alias exists and maps to the correct model ID
@@ -50,7 +50,7 @@ From **reflect**, stage a `modification_requests` entry with:
 
 Most models need no family adapter. Only add one if the model requires request shaping that OpenRouter doesn't normalize (e.g. explicit cache_control injection).
 
-If needed, add a separate modification request for `provider:llm:code`. Example claim:
+If needed, add a separate proposal request for `provider:llm:code`. Example claim:
 
 ```
 "Add google family adapter to LLM provider for explicit cache_control injection"
@@ -77,7 +77,7 @@ When a model is being retired:
 
 1. Identify all references in `config:defaults` — check act.model, reflect.model, deep_reflect.model, chat.model, execution.fallback_model
 2. Stage config:defaults changes to point to the replacement model
-3. If the model has entries in `config:model_capabilities`, update or remove them (see §4 for the write gate requirements — 200-char deliberation, yama_capable model). Include the deliberation in the modification request.
+3. If the model has entries in `config:model_capabilities`, update or remove them (see §4 for the write gate requirements — 200-char deliberation, yama_capable model). Include the deliberation in the proposal request.
 4. Mark the old model as retired by adding `"status": "retired"` to its entry in config:models — do NOT remove it. Keeping the entry preserves cost data for historical karma log analysis.
 5. Optionally update `best_for` to note why it was retired (e.g. `"RETIRED — replaced by sonnet-5, deprecated by provider"`)
 
@@ -108,7 +108,7 @@ To reassign which model serves a role:
 
 ```json
 {
-  "modification_requests": [{
+  "proposal_requests": [{
     "claims": [
       "Switch act model from haiku to deepseek for 90% cost reduction",
       "DeepSeek v3.2 handles tool-calling adequately based on 5 sessions of observation"
@@ -147,7 +147,7 @@ Models should be marked retired rather than deleted — this preserves cost data
    - `execution.fallback_model`
    - `fallback_model` in config:models itself
 3. If referenced anywhere → migrate those references to the replacement model first
-4. Check `config:model_capabilities` — remove any capability entries for this model. Note: this key has its own write gate (requires 200-char deliberation and must be issued by a `yama_capable` model). Include the deliberation in the modification request.
+4. Check `config:model_capabilities` — remove any capability entries for this model. Note: this key has its own write gate (requires 200-char deliberation and must be issued by a `yama_capable` model). Include the deliberation in the proposal request.
 5. Patch the model entry to add `"status": "retired"` and update `best_for` with the reason
 
 ### Example retirement patch
@@ -186,6 +186,6 @@ OpenRouter pricing can change without notice. After a model has run for a few se
 ### Patch operation fails
 
 If `old_string` doesn't match (config was modified between read and patch):
-- The modification is rejected automatically
+- The proposal is rejected automatically
 - Re-read the current config and reformulate the patch
 - This is normal — it's optimistic concurrency control

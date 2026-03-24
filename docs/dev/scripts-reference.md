@@ -50,10 +50,10 @@ Seeds 70 keys into local KV. Runs in ~2s via Miniflare API (replacing
 | Dharma | 1 | `dharma` — from `DHARMA.md` |
 | Yamas | 7 | `yama:care`, `yama:truth`, `yama:responsibility`, `yama:discipline`, `yama:rules`, `yama:security`, `yama:humility` — inline text |
 | Niyamas | 7 | `niyama:health`, `niyama:acceptance`, `niyama:transformation`, `niyama:reflection`, `niyama:alignment`, `niyama:nonidentification`, `niyama:organization` — inline text |
-| Wake hook | 5 | `hook:wake:code`, `hook:wake:reflect`, `hook:wake:modifications`, `hook:wake:protect` (from source files) + `hook:wake:manifest` (inline JSON) |
+| Wake hook | 5 | `hook:wake:code`, `hook:wake:reflect`, `hook:wake:proposals`, `hook:wake:protect` (from source files) + `hook:wake:manifest` (inline JSON) |
 | Channel | 2 | `channel:slack:code` (from file), `channel:slack:config` (inline) |
 | Kernel | 5 | `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`, `kernel:fallback_model`, `kernel:tool_grants` |
-| Docs | 2 | `doc:modification_guide`, `doc:architecture` — from `docs/doc-*.md` |
+| Docs | 2 | `doc:proposal_guide`, `doc:architecture` — from `docs/doc-*.md` |
 | Contacts | 3 | `contact:swami_kevala`, `patron:contact`, `patron:public_key` |
 | Upaya | 1 | `upaya:comms:defaults` — seed communication wisdom |
 | Skills | 3 | `skill:model-config`, `skill:model-config:ref`, `skill:skill-authoring` — from `skills/*.json` + `skills/*.md` |
@@ -73,7 +73,7 @@ destinations:
 - **Grant fields** (`secrets`, `communication`, `inbound`, `provider`) →
   accumulated into `kernel:tool_grants` (kernel-only, agent cannot modify)
 - **Operational fields** (`kv_access`, `timeout_ms`, `kv_secrets`) →
-  stored in `tool:{name}:meta` (agent-modifiable via Modification Protocol)
+  stored in `tool:{name}:meta` (agent-modifiable via Proposal Protocol)
 
 The tool source files remain the single source of truth — they still
 declare all fields. The split only happens at seed time and in
@@ -175,10 +175,10 @@ node scripts/rollback-session.mjs --yes        # skip confirmation
 2. **Privileged writes** — reads `privileged_write` events from karma,
    reverses in order. Keys that didn't exist before are deleted; keys that
    had old values are restored
-3. **Modification snapshots** — for any `modification_accepted` events,
+3. **Proposal snapshots** — for any `proposal_accepted` events,
    loads the snapshot and restores all snapshotted keys. Deletes the
    snapshot record
-4. **Staged modifications** — deletes `modification_staged:*` records
+4. **Staged proposals** — deletes `proposal_staged:*` records
    created this session
 5. **Session counter** — decrements `session_counter`
 6. **Session ID list** — pops the last entry from `cache:session_ids`

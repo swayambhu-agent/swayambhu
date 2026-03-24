@@ -24,7 +24,7 @@ upaya:channel:{channel}:{id}   → channel norms, audience, appropriateness
 upaya:comms:{topic}            → general communication wisdom
 ```
 
-Created and refined by deep reflect through the Modification Protocol (wisdom type).
+Created and refined by deep reflect through the Proposal Protocol (wisdom type).
 
 ### The gate call
 
@@ -112,12 +112,12 @@ isCommsGateCapable(modelId) {
 
 ### kernel.js — SYSTEM_KEY_PREFIXES (line 303)
 
-Add `'comms_blocked:'` to the prefix list so blocked comm records are protected system keys (writable via `kvWritePrivileged` only):
+Add `'comms_blocked:'` to the prefix list so blocked comm records are protected system keys (writable via `kvWriteGated` only):
 
 ```javascript
 static SYSTEM_KEY_PREFIXES = [
   'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-  'modification_staged:', 'modification_snapshot:', 'hook:', 'doc:', 'git_pending:',
+  'proposal_staged:', 'proposal_snapshot:', 'hook:', 'doc:', 'git_pending:',
   'yama:', 'niyama:',
   'upaya:', 'prajna:',
   'comms_blocked:',
@@ -156,7 +156,7 @@ async queueBlockedComm(toolName, args, meta, reason, gateResult) {
     model: this.lastCallModel,
     timestamp: new Date().toISOString(),
   };
-  await this.kvPut(`comms_blocked:${id}`, JSON.stringify(record));
+  await this.kvWrite(`comms_blocked:${id}`, JSON.stringify(record));
   await this.karmaRecord({
     event: "comms_blocked",
     id,
@@ -489,7 +489,7 @@ async processCommsVerdict(id, verdict, revision) {
 Load blocked comms queue and add to template vars:
 
 ```javascript
-// After loading modifications, before returning templateVars:
+// After loading proposals, before returning templateVars:
 const blockedComms = await K.listBlockedComms();
 templateVars.blockedComms = blockedComms.length > 0
   ? JSON.stringify(blockedComms, null, 2)
@@ -498,7 +498,7 @@ templateVars.blockedComms = blockedComms.length > 0
 
 ### reflect.js — applyReflectOutput (line ~208)
 
-After modification verdicts processing (line ~221), add comms verdict processing:
+After proposal verdicts processing (line ~221), add comms verdict processing:
 
 ```javascript
 // 2b. Communication verdicts
@@ -511,7 +511,7 @@ if (output.comms_verdicts) {
 
 ### prompts/deep-reflect.md
 
-Add blocked comms section after the inflight modifications section (line ~43):
+Add blocked comms section after the inflight proposals section (line ~43):
 
 ```markdown
 ## Blocked communications
@@ -523,7 +523,7 @@ These messages were attempted by a session but blocked by the communication gate
 - **revise_and_send** — right intent, wrong execution; provide a revision
 - **drop** — should not have been attempted; log and discard
 
-If a message was blocked because the recipient has no upaya entry, consider whether to create one via a wisdom modification request. Adding a upaya:contact entry means future sessions can communicate with this recipient (subject to gate judgment).
+If a message was blocked because the recipient has no upaya entry, consider whether to create one via a wisdom proposal request. Adding a upaya:contact entry means future sessions can communicate with this recipient (subject to gate judgment).
 ```
 
 Add `comms_verdicts` to the output schema (line ~254):

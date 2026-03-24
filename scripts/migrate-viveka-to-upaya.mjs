@@ -44,7 +44,7 @@ const reseedMap = {
   "kernel:source:kernel.js":   () => read("kernel.js"),
   "kernel:source:hook-chat.js": () => read("hook-chat.js"),
   "doc:design_rationale": () => read("docs/agent/design-rationale.md"),
-  "doc:modification_guide": () => read("docs/agent/modification-guide.md"),
+  "doc:proposal_guide": () => read("docs/agent/proposal-guide.md"),
   "doc:wisdom_guide":     () => read("docs/agent/wisdom-guide.md"),
   "skill:skill-authoring": () => read("skills/skill-authoring.md"),
 };
@@ -86,7 +86,7 @@ for (const [key, readFn] of Object.entries(reseedMap)) {
 // ── 4. Delete stale hook keys from old architecture ──────────
 
 const staleKeys = [
-  "hook:wake:modifications",
+  "hook:wake:proposals",
   "hook:wake:reflect",
   "hook:wake:code",
   "hook:wake:manifest",

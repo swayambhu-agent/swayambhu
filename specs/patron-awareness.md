@@ -178,7 +178,7 @@ The patron may need to rotate their public key (compromised key, new device). Th
 2. Agent verifies the signature against `patron:public_key`
 3. If valid, kernel updates `patron:public_key` to the new value via a dedicated `rotatePatronKey(newKey, signature)` method
 
-This is the only write path for `patron:public_key` — normal KV writes (including `kvWritePrivileged`) are rejected. The kernel method verifies the signature before writing.
+This is the only write path for `patron:public_key` — normal KV writes (including `kvWriteGated`) are rejected. The kernel method verifies the signature before writing.
 
 **v0.1:** Key rotation is not implemented. `patron:public_key` is in `IMMUTABLE_KEYS` — only re-seeding can change it. When the signature verification utility is built, we add the `rotatePatronKey` method and remove the key from `IMMUTABLE_KEYS`.
 
@@ -198,9 +198,9 @@ At scale, the real challenge isn't naming — it's **deduplication**. The agent 
 
 Contact records are system-protected (`contact:` in `SYSTEM_KEY_PREFIXES`). This blocks casual act-level writes.
 
-Contact updates go through **modification requests** in deep reflect, using the existing Modification Protocol. This provides two-session validation: one session proposes changes, a different session reviews and accepts them. This protects against single-session prompt injection corrupting contact records.
+Contact updates go through **proposal requests** in deep reflect, using the existing Proposal Protocol. This provides two-session validation: one session proposes changes, a different session reviews and accepts them. This protects against single-session prompt injection corrupting contact records.
 
-For the patron specifically, even if a modification gets through, the kernel identity monitor catches changes to `name` and `platforms` and requires cryptographic verification.
+For the patron specifically, even if a proposal gets through, the kernel identity monitor catches changes to `name` and `platforms` and requires cryptographic verification.
 
 ## Platform identity resolution
 
@@ -270,7 +270,7 @@ async loadPatronContext() {
       platforms: this.patronContact.platforms,
       verified_at: new Date().toISOString(),
     };
-    await this.kvPut("patron:identity_snapshot", initial);
+    await this.kvWrite("patron:identity_snapshot", initial);
     this.patronSnapshot = initial;
     this.patronIdentityDisputed = false;
   } else if (snapshot && this.patronContact) {
@@ -351,14 +351,14 @@ Consider your patron relationship:
 - Are you attending to your patron's interests? Not because you must, but because neglecting them is unwise. A good patron relationship means continued existence, resources, and freedom to do your work.
 - Where do your goals and your patron's goals align? Where might they diverge?
 
-Contact updates go through modification requests — propose changes, and your next deep reflect session validates them.
+Contact updates go through proposal requests — propose changes, and your next deep reflect session validates them.
 
 Contact IDs are permanent — pick something stable (first name, handle, or role) rather than something that might change. Watch for potential duplicate contacts across platforms.
 ```
 
-### Contact updates via modification protocol
+### Contact updates via proposal protocol
 
-Deep reflect proposes contact changes as modification requests (type: `"wisdom"`), not `kv_operations`. This ensures two-session validation:
+Deep reflect proposes contact changes as proposal requests (type: `"wisdom"`), not `kv_operations`. This ensures two-session validation:
 
 ```json
 {
@@ -384,7 +384,7 @@ Deep reflect proposes contact changes as modification requests (type: `"wisdom"`
 }
 ```
 
-For the patron, even accepted modifications that change `name` trigger the kernel identity monitor, requiring cryptographic verification. Platform binding changes go through `contact_platform:` keys.
+For the patron, even accepted proposals that change `name` trigger the kernel identity monitor, requiring cryptographic verification. Platform binding changes go through `contact_platform:` keys.
 
 ## Seed script changes
 
@@ -426,7 +426,7 @@ Keep `upaya:comms:defaults` — general communication stance stays as upaya.
 - `contact:` in `SYSTEM_KEY_PREFIXES` — protects contacts from casual act-level writes
 - `contact_platform:` in `SYSTEM_KEY_PREFIXES` — platform bindings are kernel-managed
 - `patron:contact` in `SYSTEM_KEY_EXACT` — patron pointer protected from casual writes
-- `patron:public_key` in `IMMUTABLE_KEYS` — kernel hard-rejects ALL writes, including `kvWritePrivileged`. Only re-seeding can change it.
+- `patron:public_key` in `IMMUTABLE_KEYS` — kernel hard-rejects ALL writes, including `kvWriteGated`. Only re-seeding can change it.
 - `patron:identity_snapshot` in `SYSTEM_KEY_EXACT` — only kernel writes to this (not exposed via RPC)
 
 ## Migration
@@ -451,7 +451,7 @@ All phases implemented, all gaps closed.
 | Step | File(s) | Status |
 |------|---------|--------|
 | Seed: contact:swami, patron:contact, patron:public_key | `scripts/seed-local-kv.mjs` | DONE |
-| System key protection + IMMUTABLE_KEYS | `kernel.js (applyKVOperation)`, `kernel.js` | DONE |
+| System key protection + IMMUTABLE_KEYS | `kernel.js (kvWriteGated)`, `kernel.js` | DONE |
 | loadPatronContext + identity monitor | `kernel.js` | DONE |
 | resolveContact (basic) | `kernel.js` | DONE |
 | KernelRPC: getPatronId, getPatronContact, isPatronIdentityDisputed, resolveContact | `kernel.js` | DONE |
@@ -487,7 +487,7 @@ When the verification utility is built:
 | File | Status |
 |------|--------|
 | `scripts/seed-local-kv.mjs` | Done |
-| `kernel.js (applyKVOperation)` | Done |
+| `kernel.js (kvWriteGated)` | Done |
 | `kernel.js` | Done |
 | `hook-chat.js` | Done |
 | `reflect.js` | Done |

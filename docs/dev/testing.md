@@ -64,10 +64,10 @@ method that hook code calls via `K.*`.
 - `kvGet(key)` — reads from internal KV, parses JSON
 - `kvGetWithMeta(key)` — includes metadata
 - `kvList(opts)` — prefix + limit filtering
-- `kvPutSafe(key, value, metadata)` — writes with metadata
+- `kvWriteSafe(key, value, metadata)` — writes with metadata
 - `kvDeleteSafe(key)` — deletes key
-- `kvWritePrivileged(ops)` — handles `put`, `delete`, and `patch` ops.
-  Patch validates `old_string` exists and is unique before replacing.
+- `kvWriteGated(op, context)` — handles `put`, `delete`, and `patch` ops
+  with context-based permissions. Returns `{ok: true}` or `{ok: false, error}`.
 
 **Agent loop:**
 - `runAgentLoop()` → `{}`
@@ -140,16 +140,16 @@ and environment.
 **KV protection:**
 - `isSystemKey / isKernelOnly` (3 tests) — prefix recognition, exact key
   recognition, non-system rejection
-- `kvPutSafe` (2 tests) — blocks dharma, blocks system keys
+- `kvWriteSafe` (2 tests) — blocks dharma, blocks system keys
 - `kvDeleteSafe` (2 tests) — blocks dharma + system, allows non-system
-- `kvWritePrivileged` (3 tests) — blocks immutable keys, allows system
+- `kvWriteGated` (3 tests) — blocks immutable keys, allows system
   with snapshot, rate limit enforcement
 - `Sealed namespace enforcement` (3 tests) — system key and kernel-only
   recognition, KV write blocking
 
 **Yamas and Niyamas** (27 tests):
 - `callLLM` injection of `[YAMAS]`/`[NIYAMAS]` blocks
-- `kvWritePrivileged` deliberation requirements (200 chars yama, 100
+- `kvWriteGated` deliberation requirements (200 chars yama, 100
   chars niyama)
 - Model capability checks (`yama_capable`, `niyama_capable`)
 - Audit trail at `{key}:audit`
@@ -190,7 +190,7 @@ and environment.
 ### tests/wake-hook.test.js — 68 tests
 
 Tests the hook modules (`act.js`, `reflect.js`,
-`kernel.js (proposal methods)`, `kernel.js (applyKVOperation)`) using `makeMockK`.
+`kernel.js (proposal methods)`, `kernel.js (kvWriteGated)`) using `makeMockK`.
 
 **Wake flow helpers:**
 - `buildOrientContext` (1 test) — JSON structure
@@ -217,8 +217,8 @@ Tests the hook modules (`act.js`, `reflect.js`,
 - `runCircuitBreaker` (1 test) — no-op without last_danger
 - `patch op in mock kernel` (4 tests) — replace, not found, ambiguous,
   non-string
-- `applyKVOperation blocks yama/niyama` (2 tests) — system key rejection
-- `acceptStaged with patch op` (1 test) — forwards to kvWritePrivileged
+- `kvWriteGated blocks yama/niyama` (2 tests) — system key rejection
+- `acceptStaged with patch op` (1 test) — forwards to kvWriteGated
 
 **Budget:**
 - `runSession reflect_reserve_pct` (5 tests) — budgetCap passing, soft-cap

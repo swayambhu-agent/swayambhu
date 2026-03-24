@@ -16,7 +16,7 @@ This skill teaches you to manage LLM models in your own configuration — discov
 ### Critical invariants
 
 - **Every model used in config:defaults SHOULD have an entry in config:models.** If it doesn't, `estimateCost()` returns null and the caller (`callLLM()`) falls back to a pessimistic cost estimate (using the most expensive model's rates). Budget tracking still works, but overestimates spend — which may cause premature budget exhaustion. A karma warning is logged.
-- **`kernel:fallback_model`** is a kernel-only last-resort fallback (under `KERNEL_ONLY_PREFIXES` — blocked by `kvWritePrivileged()`), separate from `config:models.fallback_model`. The agent can modify the latter but not the former. The kernel itself can write to kernel-only keys internally, but the agent cannot. Don't confuse the two fallback keys.
+- **`kernel:fallback_model`** is a kernel-only last-resort fallback (under `KERNEL_ONLY_PREFIXES` — blocked by `kvWriteGated()`), separate from `config:models.fallback_model`. The agent can modify the latter but not the former. The kernel itself can write to kernel-only keys internally, but the agent cannot. Don't confuse the two fallback keys.
 
 ### Alias resolution
 
@@ -33,7 +33,7 @@ Both `config:models` and `config:defaults` are **protected keys**. You cannot wr
 | Depth | Can do |
 |-------|--------|
 | act (depth 0) | Research models, read config, note findings in session_summary |
-| reflect (depth 0) | Stage modification_requests for config changes |
+| reflect (depth 0) | Stage proposal_requests for config changes |
 | deep_reflect (depth 1+) | Accept/reject/modify staged changes, or issue inflight changes directly |
 
 ---
@@ -215,14 +215,14 @@ test_model({ model_id: "google/gemini-2.5-pro", prompt: "What is 2+2?", max_toke
 2. Run `test_model` with a simple prompt — verify it completes successfully
 3. Check the response: does it look coherent? Is latency acceptable?
 4. Check `usage` — do token counts look reasonable? Cross-check against pricing to estimate real costs.
-5. If the model passes, proceed to add it to config:models via modification request
+5. If the model passes, proceed to add it to config:models via proposal request
 6. After the first real session using the model, reflect should check karma logs for errors, cost anomalies, or degraded quality
 
 ---
 
 ## 6. Reference
 
-The detailed reference is in `skill:model-config:ref`. **Load that key before constructing any modification_request.**
+The detailed reference is in `skill:model-config:ref`. **Load that key before constructing any proposal_request.**
 
 ```
 kv_query("skill:model-config:ref")
@@ -230,10 +230,10 @@ kv_query("skill:model-config:ref")
 
 It covers:
 
-- **§1. Adding a New Model** — Constructing model entries, formulating modification requests, patch anchor strategy, serialization matching, adding new family adapters
+- **§1. Adding a New Model** — Constructing model entries, formulating proposal requests, patch anchor strategy, serialization matching, adding new family adapters
 - **§2. Updating an Existing Model** — Pricing updates, model deprecation/retirement workflow
 - **§3. Changing Model Role Assignments** — Cost-quality tradeoff framework, formulating config:defaults patches
 - **§4. Retiring a Model** — Retirement checklist, model_capabilities write gate, example retirement patch
 - **§5. Handling Failures** — Tripwire behavior, post-deployment monitoring, stale pricing detection, patch operation failures
 
-⚠️ The reference doc contains critical details about patch serialization, write gates, and safety mechanisms. Do not construct modification_requests from memory — always load and follow the reference.
+⚠️ The reference doc contains critical details about patch serialization, write gates, and safety mechanisms. Do not construct proposal_requests from memory — always load and follow the reference.

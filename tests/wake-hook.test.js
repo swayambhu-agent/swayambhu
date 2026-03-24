@@ -19,6 +19,7 @@ import {
   loadReflectPrompt,
   loadBelowPrompt,
   loadReflectHistory,
+  getRelevantSessionIds,
   runReflect,
 } from "../reflect.js";
 
@@ -27,9 +28,9 @@ const evaluateTripwires = Kernel.evaluateTripwires;
 const getMaxSteps = Kernel.getMaxSteps;
 const getReflectModel = Kernel.getReflectModel;
 
-// applyKVOperation is now a kernel instance method called via K.applyKVOperation(op).
-// Tests used the old standalone signature applyKVOperation(K, op) — this wrapper preserves it.
-async function applyKVOperation(K, op) { return K.applyKVOperation(op); }
+// kvWriteGated is a kernel instance method called via K.kvWriteGated(op, context).
+// Tests use a wrapper that defaults to "act" context for backwards compat.
+async function kvWriteGated(K, op, context = "act") { return K.kvWriteGated(op, context); }
 import { makeMockK } from "./helpers/mock-kernel.js";
 
 function makeState(overrides = {}) {
@@ -301,12 +302,12 @@ describe("applyReflectOutput", () => {
         { op: "put", key: "test_key", value: "test_val" },
       ],
     };
-    // applyKVOperation will check isSystemKey and metadata — mock appropriately
+    // kvWriteGated will check isSystemKey and metadata — mock appropriately
     // Since test_key is not a system key but has no unprotected metadata, it will be blocked
     // That's fine — we just verify applyReflectOutput processes the ops
     await applyReflectOutput(K, state, 1, output, {});
     // The kv_operation was processed (test_key is new, so put succeeds)
-    expect(K.kvPutSafe).toHaveBeenCalled();
+    expect(K.kvWriteSafe).toHaveBeenCalled();
   });
 
   it("stores history at reflect:N:sessionId", async () => {
@@ -319,7 +320,7 @@ describe("applyReflectOutput", () => {
 
     await applyReflectOutput(K, state, 2, output, {});
 
-    expect(K.kvPutSafe).toHaveBeenCalledWith(
+    expect(K.kvWriteSafe).toHaveBeenCalledWith(
       "reflect:2:test_session",
       expect.objectContaining({
         reflection: "deep thoughts",
@@ -340,11 +341,11 @@ describe("applyReflectOutput", () => {
 
     await applyReflectOutput(K, state, 1, output, {});
 
-    const lastReflectCall = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
+    const lastReflectCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflectCall).toBeTruthy();
     expect(lastReflectCall[1].was_deep_reflect).toBe(true);
 
-    const wakeConfigCall = K.kvPutSafe.mock.calls.find(([key]) => key === "wake_config");
+    const wakeConfigCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "wake_config");
     expect(wakeConfigCall).toBeTruthy();
     expect(wakeConfigCall[1].sleep_seconds).toBe(3600);
     expect(wakeConfigCall[1]).toHaveProperty("next_wake_after");
@@ -361,9 +362,9 @@ describe("applyReflectOutput", () => {
 
     await applyReflectOutput(K, state, 2, output, {});
 
-    const lastReflectCall = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
+    const lastReflectCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflectCall).toBeUndefined();
-    const wakeConfigCall = K.kvPutSafe.mock.calls.find(([key]) => key === "wake_config");
+    const wakeConfigCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "wake_config");
     expect(wakeConfigCall).toBeUndefined();
   });
 });
@@ -451,7 +452,7 @@ describe("writeSessionResults", () => {
     K.getDefaults = vi.fn(async () => ({ wake: { sleep_seconds: 3600 } }));
     await writeSessionResults(K, {}, { reflectRan: false });
 
-    const wakeCall = K.kvPutSafe.mock.calls.find(([key]) => key === "wake_config");
+    const wakeCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "wake_config");
     expect(wakeCall).toBeTruthy();
     expect(wakeCall[1]).toHaveProperty("next_wake_after");
   });
@@ -460,7 +461,7 @@ describe("writeSessionResults", () => {
     const K = makeMockK({}, { sessionCount: 5 });
     await writeSessionResults(K, {});
 
-    const wakeCall = K.kvPutSafe.mock.calls.find(([key]) => key === "wake_config");
+    const wakeCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "wake_config");
     expect(wakeCall).toBeUndefined();
   });
 
@@ -468,7 +469,7 @@ describe("writeSessionResults", () => {
     const K = makeMockK({}, { sessionCount: 5 });
     await writeSessionResults(K, {});
 
-    const counterCall = K.kvPutSafe.mock.calls.find(([key]) => key === "session_counter");
+    const counterCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "session_counter");
     expect(counterCall).toBeUndefined();
   });
 });
@@ -534,6 +535,65 @@ describe("loadReflectHistory", () => {
     });
     const result = await loadReflectHistory(K, 1, 2);
     expect(Object.keys(result)).toHaveLength(2);
+  });
+});
+
+// ── 15b. getRelevantSessionIds ────────────────────────────
+
+describe("getRelevantSessionIds", () => {
+  it("depth 1, no prior reflect — returns all session IDs", async () => {
+    const ids = ["s_100_aaa", "s_200_bbb", "s_300_ccc"];
+    const K = makeMockK({ "cache:session_ids": JSON.stringify(ids) });
+    const result = await getRelevantSessionIds(K, 1);
+    expect(result).toEqual(ids);
+  });
+
+  it("depth 1, with prior reflect — returns only IDs after cutoff", async () => {
+    const ids = ["s_100_aaa", "s_200_bbb", "s_300_ccc", "s_400_ddd"];
+    const K = makeMockK({
+      "cache:session_ids": JSON.stringify(ids),
+      "reflect:schedule:1": JSON.stringify({ last_reflect_session_id: "s_200_bbb" }),
+    });
+    const result = await getRelevantSessionIds(K, 1);
+    expect(result).toEqual(["s_300_ccc", "s_400_ddd"]);
+  });
+
+  it("depth 1, cap enforcement — returns last N", async () => {
+    const ids = Array.from({ length: 60 }, (_, i) =>
+      `s_${String(i).padStart(4, "0")}_xx`
+    );
+    const K = makeMockK({ "cache:session_ids": JSON.stringify(ids) });
+    const result = await getRelevantSessionIds(K, 1, 50);
+    expect(result).toHaveLength(50);
+    expect(result[0]).toBe("s_0010_xx");
+    expect(result[49]).toBe("s_0059_xx");
+  });
+
+  it("depth 2, no prior reflect — returns all depth-1 reflect session IDs", async () => {
+    const K = makeMockK({
+      "reflect:1:s_100_aaa": JSON.stringify({ reflection: "a" }),
+      "reflect:1:s_200_bbb": JSON.stringify({ reflection: "b" }),
+    });
+    const result = await getRelevantSessionIds(K, 2);
+    expect(result).toEqual(["s_100_aaa", "s_200_bbb"]);
+  });
+
+  it("depth 2, with prior reflect — filters by cutoff", async () => {
+    const K = makeMockK({
+      "reflect:1:s_100_aaa": JSON.stringify({ reflection: "a" }),
+      "reflect:1:s_200_bbb": JSON.stringify({ reflection: "b" }),
+      "reflect:1:s_300_ccc": JSON.stringify({ reflection: "c" }),
+      "reflect:schedule:2": JSON.stringify({ last_reflect_session_id: "s_100_aaa" }),
+    });
+    const result = await getRelevantSessionIds(K, 2);
+    expect(result).toEqual(["s_200_bbb", "s_300_ccc"]);
+  });
+
+  it("missing schedule (cold start) — returns everything", async () => {
+    const ids = ["s_100_aaa", "s_200_bbb"];
+    const K = makeMockK({ "cache:session_ids": JSON.stringify(ids) });
+    const result = await getRelevantSessionIds(K, 1);
+    expect(result).toEqual(ids);
   });
 });
 
@@ -668,77 +728,58 @@ describe("runReflect budget_multiplier", () => {
   });
 });
 
-// ── 18. applyKVOperation blocks yama/niyama (system keys) ───
+// ── 18. kvWriteGated blocks system keys in act context ───
 
-describe("applyKVOperation blocks yama/niyama", () => {
+describe("kvWriteGated blocks system keys in act context", () => {
   it("blocks yama: prefix as system key", async () => {
     const K = makeMockK();
-    await applyKVOperation(K, { op: "put", key: "yama:care", value: "new value" });
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "modification_blocked", key: "yama:care", reason: "system_key" })
-    );
-    // Should NOT have written the value
-    expect(K.kvPutSafe).not.toHaveBeenCalled();
+    const result = await kvWriteGated(K, { op: "put", key: "yama:care", value: "new value" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/system key/);
+    expect(K.kvWriteSafe).not.toHaveBeenCalled();
   });
 
   it("blocks niyama: prefix as system key", async () => {
     const K = makeMockK();
-    await applyKVOperation(K, { op: "put", key: "niyama:health", value: "new value" });
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "modification_blocked", key: "niyama:health", reason: "system_key" })
-    );
-    expect(K.kvPutSafe).not.toHaveBeenCalled();
+    const result = await kvWriteGated(K, { op: "put", key: "niyama:health", value: "new value" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/system key/);
+    expect(K.kvWriteSafe).not.toHaveBeenCalled();
+  });
+
+  it("allows system keys in deep-reflect context", async () => {
+    const K = makeMockK();
+    const result = await kvWriteGated(K, { op: "put", key: "config:test", value: "val" }, "deep-reflect");
+    expect(result.ok).toBe(true);
   });
 });
 
-// ── 19b. applyKVOperation routes contact: and contact_platform: to kvWritePrivileged ───
+// ── 19b. kvWriteGated handles contact: and contact_platform: keys ───
 
-describe("applyKVOperation routes contact: and contact_platform: to kvWritePrivileged", () => {
-  it("routes contact: put to kvWritePrivileged", async () => {
+describe("kvWriteGated handles contact: and contact_platform:", () => {
+  it("allows contact: put in act context", async () => {
     const K = makeMockK();
-    await applyKVOperation(K, { op: "put", key: "contact:alice", value: { name: "Alice" } });
-    expect(K.kvWritePrivileged).toHaveBeenCalledWith([
-      { op: "put", key: "contact:alice", value: { name: "Alice" } },
-    ]);
-    expect(K.kvPutSafe).not.toHaveBeenCalled();
+    const result = await kvWriteGated(K, { op: "put", key: "contact:alice", value: { name: "Alice" } });
+    expect(result.ok).toBe(true);
+    expect(K.kvWriteSafe).toHaveBeenCalled();
   });
 
-  it("routes contact_platform: put to kvWritePrivileged", async () => {
+  it("allows contact_platform: put in act context", async () => {
     const K = makeMockK();
-    await applyKVOperation(K, { op: "put", key: "contact_platform:slack:U123", value: { slug: "alice", approved: false } });
-    expect(K.kvWritePrivileged).toHaveBeenCalledWith([
-      { op: "put", key: "contact_platform:slack:U123", value: { slug: "alice", approved: false } },
-    ]);
-    expect(K.kvPutSafe).not.toHaveBeenCalled();
+    const result = await kvWriteGated(K, { op: "put", key: "contact_platform:slack:U123", value: { slug: "alice", approved: false } });
+    expect(result.ok).toBe(true);
   });
 
-  it("records modification_blocked when kvWritePrivileged rejects platform binding", async () => {
+  it("allows contact: delete", async () => {
     const K = makeMockK();
-    K.kvWritePrivileged = vi.fn(async () => { throw new Error("Setting approved: true on platform bindings is operator-only"); });
-    await applyKVOperation(K, { op: "put", key: "contact_platform:email:evil@example.com", value: { slug: "evil", approved: true } });
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "modification_blocked",
-        key: "contact_platform:email:evil@example.com",
-        reason: "Setting approved: true on platform bindings is operator-only",
-      })
-    );
+    const result = await kvWriteGated(K, { op: "delete", key: "contact:alice" });
+    expect(result.ok).toBe(true);
   });
 
-  it("routes contact: delete to kvWritePrivileged", async () => {
+  it("allows contact_platform: delete", async () => {
     const K = makeMockK();
-    await applyKVOperation(K, { op: "delete", key: "contact:alice" });
-    expect(K.kvWritePrivileged).toHaveBeenCalledWith([
-      { op: "delete", key: "contact:alice" },
-    ]);
-  });
-
-  it("routes contact_platform: delete to kvWritePrivileged", async () => {
-    const K = makeMockK();
-    await applyKVOperation(K, { op: "delete", key: "contact_platform:slack:U123" });
-    expect(K.kvWritePrivileged).toHaveBeenCalledWith([
-      { op: "delete", key: "contact_platform:slack:U123" },
-    ]);
+    const result = await kvWriteGated(K, { op: "delete", key: "contact_platform:slack:U123" });
+    expect(result.ok).toBe(true);
   });
 });
 
@@ -889,7 +930,7 @@ describe("writeSessionResults karma summary (moved to kernel)", () => {
     ]);
     await writeSessionResults(K, {});
 
-    const summaryCall = K.kvPutSafe.mock.calls.find(([key]) => key.startsWith("karma_summary:"));
+    const summaryCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("karma_summary:"));
     expect(summaryCall).toBeUndefined();
   });
 });
@@ -971,24 +1012,24 @@ describe("Session reflect wisdom manifest", () => {
   });
 });
 
-// ── executeReflect modification_observations persistence ────
+// ── executeReflect proposal_observations persistence ────
 
-describe("executeReflect modification_observations", () => {
-  it("stores modification_observations in reflect:0 record", async () => {
+describe("executeReflect proposal_observations", () => {
+  it("stores proposal_observations in reflect:0 record", async () => {
     const K = makeMockK({}, { sessionId: "s_obs_test" });
     K.runAgentLoop = vi.fn(async () => ({
       session_summary: "test session",
       note_to_future_self: "remember",
-      modification_observations: { "m_abc": "cost decreased 10%" },
+      proposal_observations: { "m_abc": "cost decreased 10%" },
     }));
     const state = makeState({ defaults: { reflect: { model: "test/model" } } });
 
     await executeReflect(K, state, { model: "test/model" });
 
-    const stored = K.kvPutSafe.mock.calls.find(([key]) => key === "reflect:0:s_obs_test");
+    const stored = K.kvWriteSafe.mock.calls.find(([key]) => key === "reflect:0:s_obs_test");
     expect(stored).toBeTruthy();
     const record = stored[1];
-    expect(record.modification_observations).toEqual({ "m_abc": "cost decreased 10%" });
+    expect(record.proposal_observations).toEqual({ "m_abc": "cost decreased 10%" });
   });
 });
 
@@ -1012,7 +1053,7 @@ describe("vikalpa_updates in session reflect", () => {
 
     await executeReflect(K, state, { model: "test/model" });
 
-    const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
+    const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect).toBeTruthy();
     expect(lastReflect[1].vikalpas).toHaveLength(1);
     expect(lastReflect[1].vikalpas[0].vikalpa).toBe("Slack broken");
@@ -1032,16 +1073,19 @@ describe("vikalpa_updates in session reflect", () => {
       session_summary: "retested slack",
       note_to_future_self: "slack works now",
       vikalpa_updates: [
-        { vikalpa: "Slack broken", status: "resolved" },
+        { vikalpa: "Slack broken", status: "resolved", evidence: "sent 3 messages successfully" },
       ],
     }));
     const state = makeState({ defaults: { reflect: { model: "test/model" } } });
 
     await executeReflect(K, state, { model: "test/model" });
 
-    const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
-    expect(lastReflect[1].vikalpas).toHaveLength(1);
-    expect(lastReflect[1].vikalpas[0].vikalpa).toBe("Email empty");
+    const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
+    expect(lastReflect[1].vikalpas).toHaveLength(2);
+    const resolved = lastReflect[1].vikalpas.find(v => v.vikalpa === "Slack broken");
+    expect(resolved.status).toBe("resolved");
+    expect(resolved.evidence).toBe("sent 3 messages successfully");
+    expect(resolved.resolved_session).toBe("s_resolve");
   });
 
   it("confirms a vikalpa and bumps revisit date", async () => {
@@ -1064,7 +1108,7 @@ describe("vikalpa_updates in session reflect", () => {
 
     await executeReflect(K, state, { model: "test/model" });
 
-    const lastReflect = K.kvPutSafe.mock.calls.find(([key]) => key === "last_reflect");
+    const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect[1].vikalpas).toHaveLength(1);
     expect(lastReflect[1].vikalpas[0].revisit_by_session).toBe(35);
   });
@@ -1080,18 +1124,16 @@ describe("applyReflectOutput conditional fields", () => {
       reflection: "deep thoughts",
       note_to_future_self: "remember",
       sankalpas: [{ sankalpa: "test", status: "active" }],
-      modification_observations: { "m_123": "looks good" },
-      system_trajectory: "on track",
+      proposal_observations: { "m_123": "looks good" },
     };
 
     await applyReflectOutput(K, state, 1, output, {});
 
-    const stored = K.kvPutSafe.mock.calls.find(([key]) => key === "reflect:1:s_new");
+    const stored = K.kvWriteSafe.mock.calls.find(([key]) => key === "reflect:1:s_new");
     expect(stored).toBeTruthy();
     const record = stored[1];
     expect(record.sankalpas).toEqual([{ sankalpa: "test", status: "active" }]);
-    expect(record.modification_observations).toEqual({ "m_123": "looks good" });
-    expect(record.system_trajectory).toBe("on track");
+    expect(record.proposal_observations).toEqual({ "m_123": "looks good" });
   });
 
   it("omits new fields when absent", async () => {
@@ -1104,12 +1146,11 @@ describe("applyReflectOutput conditional fields", () => {
 
     await applyReflectOutput(K, state, 2, output, {});
 
-    const stored = K.kvPutSafe.mock.calls.find(([key]) => key === "reflect:2:s_minimal");
+    const stored = K.kvWriteSafe.mock.calls.find(([key]) => key === "reflect:2:s_minimal");
     expect(stored).toBeTruthy();
     const record = stored[1];
     expect(record).not.toHaveProperty("sankalpas");
-    expect(record).not.toHaveProperty("modification_observations");
-    expect(record).not.toHaveProperty("system_trajectory");
+    expect(record).not.toHaveProperty("proposal_observations");
   });
 });
 

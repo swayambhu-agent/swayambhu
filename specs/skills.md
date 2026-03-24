@@ -52,14 +52,14 @@ No need for the skill metadata to declare which mode. Act judges this.
 Session reflect (depth 0) proposes, deep reflect (depth 1+) approves.
 
 - Session reflect has the freshest signal — "I just did this multi-step
-  thing again." It stages a skill via the Modification Protocol with
+  thing again." It stages a skill via the Proposal Protocol with
   `type: 'skill'`.
 - Deep reflect has cross-session visibility to judge whether the pattern
   is real or a one-off. It reviews and promotes/rejects.
 
 Mirrors the wisdom creation pattern.
 
-## Modification Protocol
+## Proposal Protocol
 
 New type: `type: 'skill'`. Distinct from `code` (executable mutations)
 and `wisdom` (principled knowledge). The staging/promotion/rollback
@@ -88,7 +88,7 @@ The real work. Three prompts need updates:
    or spawn_subplan).
 
 2. **prompt:reflect** (depth 0) — needs to know it can propose skills
-   via modification_requests with `type: 'skill'`. Needs the skill
+   via proposal_requests with `type: 'skill'`. Needs the skill
    schema so it can author well-formed entries.
 
 3. **prompt:reflect:1** (depth 1) — needs to know it reviews skill

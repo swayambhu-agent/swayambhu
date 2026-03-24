@@ -36,7 +36,7 @@ async function kvGetWithMeta(key) {
   }
 }
 
-async function kvPut(key, value, metadata = {}) {
+async function kvWrite(key, value, metadata = {}) {
   const val = typeof value === "string" ? value : JSON.stringify(value);
   await kv.put(key, val, { metadata });
 }
@@ -117,10 +117,10 @@ for (const pw of privilegedWrites) {
   }
 }
 
-// 3. Modification snapshot records created this session — restore snapshots, delete record
-const modificationAccepted = karma.filter(e => e.event === "modification_accepted");
-for (const ma of modificationAccepted) {
-  const snapshotKey = `modification_snapshot:${ma.modification_id}`;
+// 3. Proposal snapshot records created this session — restore snapshots, delete record
+const proposalAccepted = karma.filter(e => e.event === "proposal_accepted");
+for (const ma of proposalAccepted) {
+  const snapshotKey = `proposal_snapshot:${ma.proposal_id}`;
   const snapshot = await kvGet(snapshotKey);
   if (snapshot?.snapshots) {
     for (const [key, snap] of Object.entries(snapshot.snapshots)) {
@@ -131,7 +131,7 @@ for (const ma of modificationAccepted) {
           key,
           value: snap.value,
           metadata: snap.metadata,
-          reason: `modification ${ma.modification_id} snapshot restore`,
+          reason: `proposal ${ma.proposal_id} snapshot restore`,
         });
       }
     }
@@ -143,10 +143,10 @@ for (const ma of modificationAccepted) {
   }
 }
 
-// 4. Staged modifications created this session
-const modificationStaged = karma.filter(e => e.event === "modification_staged");
-for (const ms of modificationStaged) {
-  const key = `modification_staged:${ms.modification_id}`;
+// 4. Staged proposals created this session
+const proposalStaged = karma.filter(e => e.event === "proposal_staged");
+for (const ms of proposalStaged) {
+  const key = `proposal_staged:${ms.proposal_id}`;
   if (!plan.deletes.includes(key)) {
     plan.deletes.push(key);
   }
@@ -223,7 +223,7 @@ if (lastDanger && lastDanger.session_id !== targetId) {
   }
 }
 
-// 12. Warn about agent KV ops (unprotected key writes via applyKVOperation)
+// 12. Warn about agent KV ops (unprotected key writes via kvWriteGated)
 const agentKVWrites = [];
 for (const entry of karma) {
   if (entry.event === "tool_execution" && entry.tool === "kv_write" && entry.input?.key) {
@@ -318,7 +318,7 @@ for (const key of plan.deletes) {
 }
 
 for (const r of plan.restores) {
-  await kvPut(r.key, r.value, r.metadata || {});
+  await kvWrite(r.key, r.value, r.metadata || {});
   console.log(`  restored: ${r.key}`);
 }
 

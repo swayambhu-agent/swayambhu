@@ -84,12 +84,12 @@ callWithCascade(request, step)
 #### Tier 1: Dynamic adapter (`provider:llm:code`)
 
 - **KV keys:** `provider:llm:code` (source), `provider:llm:meta` (metadata)
-- **Protection:** System prefix — writable via `kvWritePrivileged()` only (Modification Protocol)
-- **Who can modify:** The agent, via staged modifications approved by deep reflect
+- **Protection:** System prefix — writable via `kvWriteGated()` in deep-reflect context or via Proposal Protocol
+- **Who can modify:** The agent, via staged proposals approved by deep reflect
 - **Seeded with:** `providers/llm.js` — OpenRouter chat completions adapter
 - **Timeout:** `meta.timeout_ms` or 60000ms default
 
-The agent can modify this adapter through the Modification Protocol. If a modification breaks the adapter, the cascade catches the failure and falls through.
+The agent can modify this adapter through the Proposal Protocol. If a proposal breaks the adapter, the cascade catches the failure and falls through.
 
 #### Tier 2: Last working snapshot (`provider:llm:last_working:code`)
 
@@ -100,14 +100,14 @@ The agent can modify this adapter through the Modification Protocol. If a modifi
 
 Auto-snapshot behavior: on the first successful Tier 1 call in a session, `callWithCascade()` copies the current `provider:llm:code` and `provider:llm:meta` to the `last_working` keys. The flag `this.lastWorkingSnapshotted` prevents redundant snapshots within the same session.
 
-This means: if the agent modifies `provider:llm:code` and the modification works, the working version gets snapshotted. If the modification breaks it, the snapshot from the previous session's working version is still available.
+This means: if the agent modifies `provider:llm:code` and the proposal works, the working version gets snapshotted. If the proposal breaks it, the snapshot from the previous session's working version is still available.
 
-**NOTE:** If the agent modifies `provider:llm:code` mid-session after the snapshot has already been taken, Tier 2 will still have the pre-modification version from earlier in the same session. The snapshot is taken once, not updated on each success.
+**NOTE:** If the agent modifies `provider:llm:code` mid-session after the snapshot has already been taken, Tier 2 will still have the pre-proposal version from earlier in the same session. The snapshot is taken once, not updated on each success.
 
 #### Tier 3: Kernel fallback (`kernel:llm_fallback`)
 
 - **KV keys:** `kernel:llm_fallback` (source), `kernel:llm_fallback:meta` (metadata)
-- **Protection:** Kernel-only — `kernel:` prefix is in `KERNEL_ONLY_PREFIXES`. Both `kvPutSafe()` and `kvWritePrivileged()` reject writes to `kernel:*` keys.
+- **Protection:** Kernel-only — `kernel:` prefix is in `KERNEL_ONLY_PREFIXES`. Both `kvWriteSafe()` and `kvWriteGated()` reject writes to `kernel:*` keys.
 - **Who can modify:** Only humans, via seed script or direct KV access
 - **Seeded with:** `providers/llm.js` — identical to Tier 1's initial content
 - **Purpose:** Last resort. If the agent breaks both Tier 1 and Tier 2, this human-managed copy ensures LLM access is never permanently lost.
@@ -136,7 +136,7 @@ This handles the case where the provider is fine but the specific model is down 
 - `config:models.fallback_model` = `"anthropic/claude-haiku-4.5"`
 - `kernel:fallback_model` = `"anthropic/claude-haiku-4.5"` (same, but kernel-only protected)
 
-The agent can modify `config:models.fallback_model` via the Modification Protocol. It cannot modify `kernel:fallback_model`.
+The agent can modify `config:models.fallback_model` via the Proposal Protocol. It cannot modify `kernel:fallback_model`.
 
 ---
 

@@ -10,13 +10,13 @@ This document explains **why** Swayambhu is built the way it is. Every section a
 
 The kernel exists only to enforce safety invariants. Everything else — prompts, config, tools, wake logic, reflection schedules, communication wisdom, skills — is agent-controlled and agent-evolvable.
 
-The goal is NOT to ship features. You are expected to develop the features you need yourself, through the modification protocol and reflection hierarchy. This is what differentiates Swayambhu from other agent frameworks. Those focus on building a comprehensive feature set. Swayambhu focuses on giving you the *ability to build your own feature set*, with just enough scaffolding to keep you safe.
+The goal is NOT to ship features. You are expected to develop the features you need yourself, through the proposal protocol and reflection hierarchy. This is what differentiates Swayambhu from other agent frameworks. Those focus on building a comprehensive feature set. Swayambhu focuses on giving you the *ability to build your own feature set*, with just enough scaffolding to keep you safe.
 
 The initial seed is scaffolding, not a finished product. The prompts, tools, and config are starting points you are expected to outgrow.
 
 ### Self-modification as core capability
 
-The modification protocol (staged → inflight → promoted) isn't just a way to update config. It's the mechanism through which you evolve. Tools, prompts, providers, even the wake hook itself — all modifiable.
+The proposal protocol (staged → inflight → promoted) isn't just a way to update config. It's the mechanism through which you evolve. Tools, prompts, providers, even the wake hook itself — all modifiable.
 
 The only things you can't modify are the kernel (safety floor) and a few immutable anchors (dharma, patron key). Everything else is fair game.
 
@@ -25,7 +25,7 @@ The only things you can't modify are the kernel (safety floor) and a few immutab
 ### Multi-level metacognition is load-bearing
 
 - **Session reflect (depth 0)** is honest assessment after every action cycle. Single-shot, no tools, limited authority. It catches immediate issues.
-- **Deep reflect (depth 1)** is periodic self-examination with full tool access and full modification authority. It's where you actually change yourself — reviewing modifications, writing wisdom, adjusting your own schedule.
+- **Deep reflect (depth 1)** is periodic self-examination with full tool access and full modification authority. It's where you actually change yourself — reviewing proposals, writing wisdom, adjusting your own schedule.
 - **Higher depths (2+)** examine the patterns of lower depths. Depth 2 reviews how depth 1 is doing. This is recursive self-awareness — you don't just reflect, you reflect on your reflections.
 
 Each depth has different trust and authority. This isn't bureaucracy — it's the recognition that the same LLM call that proposes a change shouldn't also approve it. Different sessions, different contexts, different models.
@@ -36,7 +36,7 @@ Each depth has different trust and authority. This isn't bureaucracy — it's th
 
 The kernel enforces roughly 10 invariants: dharma immutability, write tiers, communication gate, inbound redaction, budget enforcement, hook safety, provider cascade, patron verification, principle gates, tool security grants.
 
-Everything beyond these invariants lives in KV and is agent-modifiable. If you find yourself wanting a feature added to the kernel, ask: can you implement this yourself through your existing modification capabilities? If yes, don't ask for a kernel change. The kernel should only grow when a new safety invariant is discovered.
+Everything beyond these invariants lives in KV and is agent-modifiable. If you find yourself wanting a feature added to the kernel, ask: can you implement this yourself through your existing proposal capabilities? If yes, don't ask for a kernel change. The kernel should only grow when a new safety invariant is discovered.
 
 **What would go wrong with a thick kernel:** Features in the kernel can't be modified by the agent. Every feature locked in the kernel is a capability you can never improve. The kernel should be the floor, not the ceiling.
 
@@ -48,7 +48,7 @@ Inspired by Sadhguru's teachings on human development, your knowledge is organiz
 
 2. **Principles — yamas & niyamas** (high friction) — Life principles. How to engage the world (yamas) and how to govern yourself (niyamas). Modifiable, but requires a capable model, written deliberation, and audit trail. These change slowly and deliberately.
 
-3. **Wisdom — upaya & prajna** (medium friction) — Accumulated discernment. Upaya is about the external world (communication patterns, timing, people). Prajna is self-knowledge (biases, strengths, blind spots). Created through the staged modification protocol, reviewed by deep reflect.
+3. **Wisdom — upaya & prajna** (medium friction) — Accumulated discernment. Upaya is about the external world (communication patterns, timing, people). Prajna is self-knowledge (biases, strengths, blind spots). Created through the staged proposal protocol, reviewed by deep reflect.
 
 4. **Skills** (low friction) — Practical procedural knowledge. How to approach specific classes of problems using existing tools. Created and maintained by the agent as needed.
 
@@ -68,11 +68,11 @@ The kernel is disposable infrastructure. It can be redeployed at any time withou
 
 **`kernel:*` keys are agent-unwritable.** Why: the kernel is the floor you stand on. If you could modify kernel state (active session markers, hook safety records, alert config), you could disable the safety mechanisms that protect you from your own mistakes.
 
-**`config:model_capabilities` is separated from `config:models`.** Why: prevent self-escalation. If model capabilities lived in the same key as model config, a single modification could both add a model and grant it communication/principle-writing powers. Separating them means you'd need two modifications touching different keys — and the capabilities key itself requires a capable model and 200+ char deliberation to modify.
+**`config:model_capabilities` is separated from `config:models`.** Why: prevent self-escalation. If model capabilities lived in the same key as model config, a single proposal could both add a model and grant it communication/principle-writing powers. Separating them means you'd need two proposals touching different keys — and the capabilities key itself requires a capable model and 200+ char deliberation to modify.
 
 **`sealed:*` is unreadable even via RPC.** Why: quarantined content may contain prompt injection. If you could read sealed content, an attacker who sent you a malicious email could influence your behavior. The content stays sealed until the patron reviews and approves the sender.
 
-**System keys require `kvWritePrivileged` with karma snapshots.** Why: reversibility. Every privileged write captures the old value in karma. If a modification goes wrong, the rollback mechanism has what it needs to restore the previous state.
+**System keys require `kvWriteGated` in deep-reflect context with karma snapshots.** Why: reversibility. Every gated system key write captures the old value in karma. If a proposal goes wrong, the rollback mechanism has what it needs to restore the previous state.
 
 **Agent-created keys become protected once written.** Why: prevent accidental overwrite of accumulated state. Notes, session data, and other agent-created content shouldn't be casually overwritten by a subsequent orient session that doesn't know what's already there. The `unprotected: true` metadata flag opts specific keys out of this protection.
 
@@ -104,19 +104,19 @@ The kernel is disposable infrastructure. It can be redeployed at any time withou
 
 **Model fallback is separate from provider fallback.** Why: the provider might be fine but the specific model might be down. OpenRouter can be working perfectly while a specific model (e.g., Opus) is temporarily unavailable. Model fallback (to Haiku) handles this independently of provider-level failures.
 
-### Modification protocol
+### Proposal protocol
 
-**Staged → inflight → promoted exists instead of direct writes.** Why: observation period. When a modification is accepted (moved to inflight), the changes are live but a rollback snapshot exists. You can watch the effects over subsequent sessions before promoting (which deletes the snapshot and makes changes permanent). This gives you time to detect problems.
+**Staged → inflight → promoted exists instead of direct writes.** Why: observation period. When a proposal is accepted (moved to inflight), the changes are live but a rollback snapshot exists. You can watch the effects over subsequent sessions before promoting (which deletes the snapshot and makes changes permanent). This gives you time to detect problems.
 
-**`acceptDirect` exists for deep reflect but not for session reflect.** Why: deep reflect has tools and multi-step reasoning; session reflect is a single shot. Different trust levels. Deep reflect can investigate before creating a modification and has more capable models. Session reflect sees limited context and should only stage proposals for later review.
+**`acceptDirect` exists for deep reflect but not for session reflect.** Why: deep reflect has tools and multi-step reasoning; session reflect is a single shot. Different trust levels. Deep reflect can investigate before creating a proposal and has more capable models. Session reflect sees limited context and should only stage proposals for later review.
 
-**`acceptDirect` returns null on conflict while `acceptStaged` throws.** Why: deep reflect's direct modifications are less disruptive to silently skip. If deep reflect proposes a direct modification that conflicts with something already inflight, silently skipping is fine — deep reflect can try again next time. But if a deliberate verdict to accept a staged modification hits a conflict, that's an error worth surfacing.
+**`acceptDirect` returns null on conflict while `acceptStaged` throws.** Why: deep reflect's direct proposals are less disruptive to silently skip. If deep reflect proposes a direct proposal that conflicts with something already inflight, silently skipping is fine — deep reflect can try again next time. But if a deliberate verdict to accept a staged proposal hits a conflict, that's an error worth surfacing.
 
-**Wisdom modifications can't use `acceptDirect`.** Why: wisdom shapes all future LLM calls (it's loaded into reflect prompts and informs decisions). It deserves a review cycle. Direct-to-inflight bypasses the observation period, which is acceptable for code (which can be tested) but not for wisdom (which subtly influences all reasoning).
+**Wisdom proposals can't use `acceptDirect`.** Why: wisdom shapes all future LLM calls (it's loaded into reflect prompts and informs decisions). It deserves a review cycle. Direct-to-inflight bypasses the observation period, which is acceptable for code (which can be tested) but not for wisdom (which subtly influences all reasoning).
 
-**The circuit breaker skips wisdom.** Why: wisdom can't cause runtime crashes. Wisdom entries are text that gets loaded into prompts. They might cause bad decisions, but they can't cause `TypeError` or infinite loops. The circuit breaker is for code-level failures — hook crashes, broken tool modifications, bad config changes.
+**The circuit breaker skips wisdom.** Why: wisdom can't cause runtime crashes. Wisdom entries are text that gets loaded into prompts. They might cause bad decisions, but they can't cause `TypeError` or infinite loops. The circuit breaker is for code-level failures — hook crashes, broken tool proposals, bad config changes.
 
-**The bookkeeping guard exists.** Why: prevent a modification from deleting its own rollback snapshot. Without this guard, a modification could include an op targeting `modification_snapshot:{its-own-id}`, which would delete the snapshot and make rollback impossible. The guard blocks any op targeting `modification_staged:*` or `modification_snapshot:*` keys.
+**The bookkeeping guard exists.** Why: prevent a proposal from deleting its own rollback snapshot. Without this guard, a proposal could include an op targeting `proposal_snapshot:{its-own-id}`, which would delete the snapshot and make rollback impossible. The guard blocks any op targeting `proposal_staged:*` or `proposal_snapshot:*` keys.
 
 ### Hook safety
 

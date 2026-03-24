@@ -178,7 +178,7 @@ POSTs to `https://akash.swayambhu.dev/execute?wait={timeout}` with
 Cloudflare Access client ID and bearer token auth. Returns `{ ok, status,
 exit_code, output, process_id }`.
 
-Used by git sync to push modifications to the self-repository.
+Used by git sync to push proposals to the self-repository.
 
 ---
 

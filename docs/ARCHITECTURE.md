@@ -64,11 +64,11 @@ Self-modification is the point. But ungoverned self-modification is how you bric
 
 **The dharma.** One key in the store is immutable — the runtime physically prevents it from being overwritten. This is Swayambhu's foundational identity: his values, his relationship with his creator, his core constraints. Everything else can orbit, evolve, and restructure, but it can't drift away from this fixed attractor.
 
-**Protected keys.** All writes from the agent loop pass through a protection gate (`applyKVOperation` in `kernel.js`). System keys — prompts, config, tools, credentials, wisdom entries (`upaya:*`, `prajna:*`) — are blocked from direct writes. They can only be modified through appropriate write tiers. Agent-created data keys pass through freely.
+**Protected keys.** All writes from agent `kv_operations` pass through a context-based gate (`kvWriteGated` in `kernel.js`). In act and reflect contexts, system keys are blocked. In deep-reflect context, system keys (config, prompts, wisdom, skills) are writable with karma snapshots and rate limiting. Agent-created data keys pass through freely in all contexts. Blocked writes return `{ok: false, error: "reason"}` — no silent failures.
 
-**The proposal system.** Code changes (tools, hooks, providers, channels) go through the proposal system. The agent proposes code changes during reflect via `K.createProposal()`. A future deep reflect session reviews and accepts or rejects them via `K.processProposalVerdicts()`. Accepted proposals are picked up by the governor worker, which applies the changes and redeploys the runtime. The governor tracks version history for rollback.
+**The proposal system.** Code changes (tools, hooks, providers, channels) go through the proposal system (`proposal_requests` is code-only). The agent proposes code changes during reflect via `K.createProposal()`. A future deep reflect session reviews and accepts or rejects them via `K.processProposalVerdicts()`. Accepted proposals are picked up by the governor worker, which applies the changes and redeploys the runtime. The governor tracks version history for rollback.
 
-Non-code changes (config, prompts, wisdom) go through KV write tiers directly (`kvPutSafe`, `kvWritePrivileged`) and take effect on the next session without deployment.
+Non-code changes (config, prompts, wisdom) go through `kv_operations` with context-based permissions — in deep-reflect context, system keys are writable via `kvWriteGated`. These take effect on the next session without deployment.
 
 **The circuit breaker.** The governor worker monitors crash history. If the runtime crashes three times in a row, the governor rolls back to the previous known-good version. This catches the case where a bad code change breaks the system so badly that no LLM call succeeds. Recovery happens mechanically without needing a model.
 
@@ -82,7 +82,7 @@ Non-code changes (config, prompts, wisdom) go through KV write tiers directly (`
 
 *Tool path:* Inbound tools (e.g. `check_email`) declare an `inbound` meta field (`{ channel, sender_field, content_field, result_array }`). After tool execution, the kernel post-processes results: for each item, resolves the sender against contacts. Unknown sender content is redacted from the LLM-facing result and quarantined under `sealed:*` keys. The kernel stays channel-agnostic — tools extract platform-specific sender identifiers, the kernel just calls `resolveContact`.
 
-**Sealed namespace.** `sealed:*` keys are mechanically unreadable by tools — `ScopedKV.get()` returns null, `ScopedKV.list()` filters them out. Writes are blocked by `KERNEL_ONLY_PREFIXES`. Only the kernel (internal `kvPut`) can write sealed keys, and the dashboard API (which reads KV directly) can display them to the patron. Hook code can read sealed keys via `K.kvGet()` — this is intentional, as hooks are the trusted policy layer and may need audit access.
+**Sealed namespace.** `sealed:*` keys are mechanically unreadable by tools — `ScopedKV.get()` returns null, `ScopedKV.list()` filters them out. Writes are blocked by `KERNEL_ONLY_PREFIXES`. Only the kernel (internal `kvWrite`) can write sealed keys, and the dashboard API (which reads KV directly) can display them to the patron. Hook code can read sealed keys via `K.kvGet()` — this is intentional, as hooks are the trusted policy layer and may need audit access.
 
 **Trust model.** The kernel enforces a two-tier trust boundary: *tools* are sandboxed (ScopedKV, no direct kernel access) and handle untrusted external input. *Hooks* are trusted policy code (full KernelRPC access, go through proposal system review). Sealed keys protect against tool-level jailbreak propagation, not against hook self-modification — the proposal system governs that.
 
@@ -154,19 +154,21 @@ On each cron trigger, the kernel's `scheduled()` entry point:
 
 The hook modules call kernel primitives via the K interface — `K.callLLM()`, `K.kvGet()`, `K.runAgentLoop()`, etc. The kernel builds this interface via `buildKernelInterface()`. The modules compose primitives into policy; the kernel enforces invariants on every call regardless of what the modules do.
 
-### Two-tier KV writes
+### Three-tier KV writes
 
-Two methods gate all writes:
+Three methods gate all writes:
 
-**`kvPutSafe(key, value, metadata)`** — allows writes to non-system keys. Blocks writes to system key prefixes (`prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `proposal:`, `upaya:`, `prajna:`, `hook:`), kernel-only prefixes (`kernel:`), system exact keys (`dharma`, `providers`, `wallets`), and the `dharma` key unconditionally. This is for routine data writes.
+**`kvWrite(key, value, metadata)`** — raw write, immutability check only. Internal kernel use, not exposed via the K interface.
 
-**`kvWritePrivileged(ops)`** — allows writes to system keys (but not `kernel:*` or `dharma`). For each operation: snapshots the current value to karma before writing, increments a per-session counter (max 50, hardcoded), and auto-reloads cached config after writes to config keys. Used for vetted changes to prompts, config, and wisdom.
+**`kvWriteSafe(key, value, metadata)`** — standard gated write, allows writes to non-system keys. Blocks writes to system key prefixes (`prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `proposal:`, `upaya:`, `prajna:`, `hook:`), kernel-only prefixes (`kernel:`), system exact keys (`dharma`, `providers`, `wallets`), and the `dharma` key unconditionally. This is for routine data writes.
 
-Neither path can write `kernel:*` keys or `dharma`. Only the kernel's internal `kvPut` (not exposed via the K interface) can write kernel-namespaced keys.
+**`kvWriteGated(op, context)`** — context-based permissions for all agent-originated `kv_operations` writes. In "act" and "reflect" contexts: can write agent keys + contacts. In "deep-reflect" context: can also write system keys (config, prompts, wisdom, skills), with karma snapshots, rate limiting (max 50/session), and audit trails for principle keys. Yama/niyama require deliberation. Always returns `{ok: true}` or `{ok: false, error: "reason"}` — blocked writes are collected and recorded as a `kv_writes_blocked` karma event.
+
+No write path can write `kernel:*` keys or `dharma`.
 
 ### Meta-safety tripwire
 
-The kernel maintains `kernel:last_sessions` — a list of the last 5 session outcomes (clean/crash/killed), written via internal `kvPut` after every session. Platform kills are detected by a `kernel:active_session` breadcrumb: written before session execution, deleted after. If present at the start of the next session, the previous session was killed by the platform (wall-time, CPU, or OOM).
+The kernel maintains `kernel:last_sessions` — a list of the last 5 session outcomes (clean/crash/killed), written via internal `kvWrite` after every session. Platform kills are detected by a `kernel:active_session` breadcrumb: written before session execution, deleted after. If present at the start of the next session, the previous session was killed by the platform (wall-time, CPU, or OOM).
 
 If the last 3 outcomes are all crashes or kills, `checkHookSafety` fires: writes `deploy:rollback_requested` to KV (signaling the governor to roll back), sends a kernel alert, and the current session runs the hardcoded minimal fallback. This catches the case where a bad code change breaks the system — the kernel recovers mechanically without needing a working LLM call. The governor's cron picks up the rollback signal.
 

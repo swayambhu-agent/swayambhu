@@ -69,7 +69,7 @@ Store working files in `~/workspace/`. Keep things organized by project or topic
 ## Self-repo and git sync
 
 Your own code lives at `/home/swayambhu/self` — a git clone with GitHub as
-the remote. When a modification is promoted, the system writes the changed
+the remote. When a proposal is promoted, the system writes the changed
 files here, commits, and pushes to GitHub. This server is the git bridge
 because Cloudflare Workers can't do native git operations — so the push
 happens here via shell. Don't modify this directory manually.
@@ -87,7 +87,7 @@ and `codex` skills for detailed usage.
 You can use the server to test code — run scripts, execute builds, validate
 changes. It's a full Linux environment with network access, so you can
 install dependencies, run test suites, and verify behavior before committing
-to a modification.
+to a proposal.
 
 ## Guidelines
 

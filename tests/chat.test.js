@@ -54,7 +54,7 @@ describe("handleChat", () => {
     }, adapter);
 
     // Verify state was saved (find by key, not index — digest writes interleave)
-    const findPut = (key) => K.kvPutSafe.mock.calls.filter(([k]) => k === key);
+    const findPut = (key) => K.kvWriteSafe.mock.calls.filter(([k]) => k === key);
     const saved1 = findPut("chat:slack:123");
     expect(saved1).toHaveLength(1);
     const conv = saved1[0][1];
@@ -104,7 +104,7 @@ describe("handleChat", () => {
       "123", "Budget refilled. Conversation history preserved."
     );
     // Should save state with cost zeroed but messages kept
-    const saved = K.kvPutSafe.mock.calls[0][1];
+    const saved = K.kvWriteSafe.mock.calls[0][1];
     expect(saved.total_cost).toBe(0);
     expect(saved.messages).toHaveLength(2); // messages preserved
     expect(K.callLLM).not.toHaveBeenCalled();
@@ -174,7 +174,7 @@ describe("handleChat", () => {
 
     // Check messages in saved state:
     // user, assistant (tool_calls), tool result, assistant (final) = 4
-    const saved = K.kvPutSafe.mock.calls[0][1];
+    const saved = K.kvWriteSafe.mock.calls[0][1];
     expect(saved.messages).toHaveLength(4);
     expect(saved.messages[0].role).toBe("user");
     expect(saved.messages[1].role).toBe("assistant");
@@ -210,7 +210,7 @@ describe("handleChat", () => {
       chatId: "123", text: "msg3", userId: "user1",
     }, adapter);
 
-    const saved = K.kvPutSafe.mock.calls[0][1];
+    const saved = K.kvWriteSafe.mock.calls[0][1];
     // 3 existing + 1 user + 1 assistant = 5, trimmed to last 4
     expect(saved.messages).toHaveLength(4);
     // slice(-4) keeps: reply1, msg2, msg3, Hello!
@@ -223,7 +223,7 @@ describe("handleChat", () => {
       resolvedChatKey: "U084ASKBXB7", // set by adapter.resolveChatKey
     }, adapter);
 
-    const saved = K.kvPutSafe.mock.calls[0];
+    const saved = K.kvWriteSafe.mock.calls[0];
     expect(saved[0]).toBe("chat:slack:U084ASKBXB7");
   });
 
@@ -232,7 +232,7 @@ describe("handleChat", () => {
       chatId: "C01234ABCDE", text: "Hi", userId: "U084ASKBXB7",
     }, adapter);
 
-    const saved = K.kvPutSafe.mock.calls[0];
+    const saved = K.kvWriteSafe.mock.calls[0];
     expect(saved[0]).toBe("chat:slack:C01234ABCDE");
   });
 
@@ -248,7 +248,7 @@ describe("handleChat", () => {
     }, adapter);
 
     // Verify different KV keys (find by key, not index)
-    const findPut = (key) => K.kvPutSafe.mock.calls.find(([k]) => k === key);
+    const findPut = (key) => K.kvWriteSafe.mock.calls.find(([k]) => k === key);
     const call1 = findPut("chat:slack:aaa");
     const call2 = findPut("chat:slack:bbb");
     expect(call1).toBeTruthy();
@@ -264,7 +264,7 @@ describe("handleChat", () => {
       chatId: "123", text: "Hi", userId: "user1",
     }, adapter);
 
-    const saved = K.kvPutSafe.mock.calls[0][1];
+    const saved = K.kvWriteSafe.mock.calls[0][1];
     expect(saved.karma).toBeDefined();
     expect(Array.isArray(saved.karma)).toBe(true);
   });
@@ -332,7 +332,7 @@ describe("handleChat", () => {
       chatId: "123", text: "Go", userId: "user1",
     }, adapter);
 
-    const saved = K.kvPutSafe.mock.calls[0][1];
+    const saved = K.kvWriteSafe.mock.calls[0][1];
     expect(saved.total_cost).toBeCloseTo(0.03);
   });
 
@@ -354,7 +354,7 @@ describe("handleChat", () => {
         chatId: "123", text: "Hi", userId: "user1",
       }, adapter);
 
-      const saved = K.kvPutSafe.mock.calls[0][1];
+      const saved = K.kvWriteSafe.mock.calls[0][1];
       const systemMsgs = saved.messages.filter(m => m.role === "system");
       expect(systemMsgs).toHaveLength(1);
       expect(systemMsgs[0].content).toContain("budget is running low");
@@ -378,7 +378,7 @@ describe("handleChat", () => {
         chatId: "123", text: "Hi again", userId: "user1",
       }, adapter);
 
-      const saved = K.kvPutSafe.mock.calls[0][1];
+      const saved = K.kvWriteSafe.mock.calls[0][1];
       const systemMsgs = saved.messages.filter(m => m.role === "system");
       expect(systemMsgs).toHaveLength(0);
     });
@@ -399,7 +399,7 @@ describe("handleChat", () => {
         chatId: "123", text: "/reset", userId: "user1", command: "reset",
       }, adapter);
 
-      const saved = K.kvPutSafe.mock.calls[0][1];
+      const saved = K.kvWriteSafe.mock.calls[0][1];
       expect(saved.total_cost).toBe(0);
       expect(saved._budget_warned).toBeUndefined();
     });

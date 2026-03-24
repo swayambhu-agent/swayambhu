@@ -394,16 +394,6 @@ describe("processProposalVerdicts", () => {
     expect(p1.status).toBe("accepted");
   });
 
-  it("accepts modification_id as alias for proposal_id", async () => {
-    await kernel.processProposalVerdicts(
-      [{ modification_id: "p_1", verdict: "accept" }],
-      1,
-    );
-
-    const stored = await env.KV.get("proposal:p_1", "json");
-    expect(stored.status).toBe("accepted");
-  });
-
   it("handles null/undefined verdicts gracefully", async () => {
     await kernel.processProposalVerdicts(null, 1);
     await kernel.processProposalVerdicts(undefined, 1);

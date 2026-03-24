@@ -16,7 +16,7 @@ The output should be a single KV value (JSON object) matching the skill schema b
 
 Swayambhu is an autonomous agent that runs on a wake/reflect cycle. It wakes up, orients itself (decides what to do), acts using tools, then reflects on what happened. Reflections at depth 0 happen every session. Deep reflections (depth 1+) happen periodically and can modify the agent's own configuration, prompts, and code.
 
-All state lives in a KV store. The agent reads and writes KV keys. Some keys are protected (config, prompts, principles) and can only be changed through the Modification Protocol — a staged review process where reflect proposes changes and deep reflect accepts/rejects them.
+All state lives in a KV store. The agent reads and writes KV keys. Some keys are protected (config, prompts, principles) and can only be changed through the Proposal Protocol — a staged review process where reflect proposes changes and deep reflect accepts/rejects them.
 
 The agent calls LLMs via OpenRouter. It has a `web_fetch` tool for HTTP requests and `kv_query` / `kv_manifest` tools for reading its own state.
 
@@ -263,9 +263,9 @@ Returns rate limits and usage for the current key. Useful for checking if a mode
 
 ---
 
-## Modification Protocol
+## Proposal Protocol
 
-The agent cannot directly write to `config:models` or `config:defaults` — these are protected keys. Changes must go through modification requests.
+The agent cannot directly write to `config:models` or `config:defaults` — these are protected keys. Changes must go through proposal requests.
 
 ### During orient (depth 0 session)
 
@@ -273,11 +273,11 @@ Orient CANNOT modify config directly. If orient determines a model change is nee
 
 ### During reflect (depth 0)
 
-Reflect can stage a modification:
+Reflect can stage a proposal:
 
 ```json
 {
-  "modification_requests": [{
+  "proposal_requests": [{
     "claims": ["Add new model X to config:models with correct pricing"],
     "ops": [
       {"op": "patch", "key": "config:models",
@@ -338,7 +338,7 @@ The skill instructions (the markdown body) should be a complete, step-by-step gu
 ### 3. Adding a new model
 - Construct the model entry with all required fields
 - Add to both `models` array and `alias_map`
-- Formulate the modification request with appropriate checks
+- Formulate the proposal request with appropriate checks
 - Handle the case where a new family is needed (flag for provider code update)
 
 ### 4. Updating an existing model
@@ -358,7 +358,7 @@ This is the critical safety step. The agent MUST verify a model works BEFORE pro
 
 1. Use `test_model` tool to make a real completion call to the candidate model
 2. Verify it returns a valid response, check token usage
-3. Only THEN formulate the modification request to add it to config:models / config:defaults
+3. Only THEN formulate the proposal request to add it to config:models / config:defaults
 
 This "try before you buy" pattern prevents bricking — a bad model ID or unsupported model never makes it into config because the test fails before the modification is proposed. No circuit breaker or rollback needed.
 

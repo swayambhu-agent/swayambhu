@@ -47,7 +47,7 @@ was fully exhausted and no reflect reserve was configured.
 
 - **No tools** — `tools: []`, `maxSteps: 1`
 - **Single LLM call** — one-shot JSON output, no agent loop
-- **Limited authority** — can only withdraw or modify staged modifications;
+- **Limited authority** — can only withdraw or modify staged proposals;
   cannot accept, reject, promote, rollback, or defer
 
 ### Flow
@@ -56,7 +56,7 @@ was fully exhausted and no reflect reserve was configured.
 2. Loads system key patterns for template injection
 3. Builds system prompt via `K.buildPrompt`
 4. Gathers context: karma log (with `request`/`tools_available` fields
-   stripped from `llm_call` events), session cost, staged modifications
+   stripped from `llm_call` events), session cost, staged proposals
    with check results
 5. Resolves model from `step.model` or `defaults.reflect.model`
 6. Calls `K.runAgentLoop` with `maxSteps: 1`
@@ -72,11 +72,11 @@ On success, processes in order:
 1. **last_reflect** — writes full output + `session_id`
 2. **reflect:0:{sessionId}** — stores `reflection`, `note_to_future_self`,
    depth, session_id, timestamp
-3. **kv_operations** — each op passed through `applyKVOperation` (protection
-   gated)
-4. **modification_verdicts** — `processReflectVerdicts` (withdraw/modify
+3. **kv_operations** — each op passed through `kvWriteGated(op, context)`
+   (context-based permissions)
+4. **proposal_verdicts** — `processReflectVerdicts` (withdraw/modify
    only)
-5. **modification_requests** — each request passed to `stageModification`
+5. **proposal_requests** — each request passed to `stageModification`
    at depth 0
 6. **next_wake_config** — converts `sleep_seconds` to absolute
    `next_wake_after` timestamp, writes `wake_config`
@@ -89,9 +89,9 @@ On success, processes in order:
 | `note_to_future_self` | yes | Carried into next session's context |
 | `next_orient_context.load_keys` | no | KV keys to load for next orient |
 | `next_wake_config` | no | Sleep duration, effort for next wake |
-| `kv_operations` | no | Direct KV writes (protection gated) |
-| `modification_verdicts` | no | Verdicts on staged modifications |
-| `modification_requests` | no | New modifications to stage |
+| `kv_operations` | no | Direct KV writes (context-based permissions via `kvWriteGated`) |
+| `proposal_verdicts` | no | Verdicts on staged proposals |
+| `proposal_requests` | no | New code proposals to stage |
 
 ---
 
@@ -107,8 +107,8 @@ Runs instead of orient when `highestReflectDepthDue` returns > 0.
   (`reflect.js:134-135`)
 - **Multi-step agent loop** — configurable `maxSteps` per depth
 - **Full authority** — can apply, reject, promote, rollback, defer, modify,
-  withdraw modifications; can process comms verdicts; can create direct
-  inflight modifications
+  withdraw proposals; can process comms verdicts; can create direct
+  inflight proposals
 - **Recursive** — after processing, cascades to `depth - 1` if depth > 1
   (`reflect.js:162-164`)
 
@@ -138,7 +138,7 @@ changes (e.g. modifying `prompt:reflect:1`) are visible to lower depths.
 ### One-level-below write discipline
 
 The default prompt for depth 2+ includes: "You can only propose
-modifications targeting `prompt:reflect:{depth-1}`." This is a
+proposals targeting `prompt:reflect:{depth-1}`." This is a
 prompt-level convention, not a kernel-enforced constraint.
 
 ---
@@ -217,16 +217,17 @@ Injected as `{{belowPrompt}}` in the deep reflect prompt template.
 Session reflect fallback. Minimal prompt asking for JSON with:
 `session_summary`, `note_to_future_self`, `next_orient_context`,
 and optionally `next_wake_config`, `kv_operations`,
-`modification_verdicts`, `modification_requests`.
+`proposal_verdicts`, `proposal_requests`.
 
 ### defaultDeepReflectPrompt(depth)
 
 `reflect.js:384`
 
 **Depth 1:** Instructs the LLM to examine karma, orient prompt, and
-patterns. Lists the full output schema. Notes that `modification_requests`
-go through `acceptDirect` and `modification_verdicts` target
-staged/inflight modifications.
+patterns. Lists the full output schema. Notes that `proposal_requests`
+(code-only) go through `acceptDirect` and `proposal_verdicts` target
+staged/inflight proposals. Non-code system changes go through
+`kv_operations` with deep-reflect permissions.
 
 **Depth 2+:** Instructs the LLM to examine depth-(n-1) outputs for
 patterns, drift, and alignment. Includes the one-level-below write
@@ -301,15 +302,14 @@ Every reflection writes `reflect:{depth}:{sessionId}` with:
   "session_id": "s_...",
   "timestamp": "2026-03-16T...",
   "current_intentions": [],
-  "modification_observations": {},
-  "system_trajectory": "..."
+  "proposal_observations": {}
 }
 ```
 
-The last three fields are optional — stored conditionally only when
+The last two fields are optional — stored conditionally only when
 present in the output, omitted (not null) when absent. Deep reflect
-(depth 1+) produces all three; session reflect (depth 0) may produce
-`modification_observations` only.
+(depth 1+) produces both; session reflect (depth 0) may produce
+`proposal_observations` only.
 
 Session reflect (depth 0) also writes `last_reflect` — which is read by
 the next orient session as context (`act.js:76, 94`).
@@ -391,9 +391,9 @@ uncapped.
 
 ### Session reflect — inline in executeReflect
 
-Processes: `kv_operations`, `modification_verdicts` (via
-`processReflectVerdicts` — withdraw/modify only),
-`modification_requests` (via `stageModification` at depth 0),
+Processes: `kv_operations` (via `kvWriteGated(op, "reflect")`),
+`proposal_verdicts` (via `processReflectVerdicts` — withdraw/modify only),
+`proposal_requests` (code-only, via `stageModification` at depth 0),
 `next_wake_config`.
 
 ### Deep reflect — applyReflectOutput(K, state, depth, output, context)
@@ -402,13 +402,13 @@ Processes: `kv_operations`, `modification_verdicts` (via
 
 Processes in this order (order matters for conflict resolution):
 
-1. **kv_operations** — each op through `applyKVOperation` (protection gated)
-2. **modification_verdicts** — `processDeepReflectVerdicts` (full authority:
+1. **kv_operations** — each op through `kvWriteGated(op, "deep-reflect")` (context-based permissions — can write system keys)
+2. **proposal_verdicts** — `processDeepReflectVerdicts` (full authority:
    apply, reject, withdraw, modify, promote, rollback, defer)
 3. **comms_verdicts** — each verdict through `K.processCommsVerdict`
    (send, revise_and_send, drop)
-4. **modification_requests** — each through `acceptDirect` (straight to
-   inflight, no staging)
+4. **proposal_requests** — code-only; each through `acceptDirect` (straight to
+   inflight, no staging). Non-code system changes go through `kv_operations`.
 5. **next_reflect / next_deep_reflect** — writes `reflect:schedule:{depth}`
    with `after_sessions`, `after_days`, plus `last_reflect` timestamp and
    `last_reflect_session` count
@@ -439,9 +439,9 @@ Loaded by `loadCommsUpaya()` in `kernel.js:469` and injected into
 the `COMMS_GATE_PROMPT`. Format: JSON, type `"wisdom"`.
 
 These keys are in `SYSTEM_KEY_PREFIXES` — writes require
-`kvWritePrivileged`. They can be written via the Modification Protocol
-or via `kv_operations` in reflect output (which routes through
-`applyKVOperation` in `kernel.js (applyKVOperation)`).
+`kvWriteGated` in deep-reflect context. They can be written via the
+Proposal Protocol or via `kv_operations` in deep reflect output
+(which routes through `kvWriteGated(op, "deep-reflect")`).
 
 ### prajna:* — Self-knowledge
 
@@ -454,16 +454,16 @@ or via `kv_operations` in reflect output (which routes through
 > available for the agent to write to and read via tools (e.g. `kv_query`),
 > but have no kernel-level consumer.
 
-### Wisdom via Modification Protocol
+### Wisdom via Proposal Protocol
 
-The Modification Protocol has a dedicated `wisdom` type for
-principle-level changes. Wisdom modifications:
+The Proposal Protocol has a dedicated `wisdom` type for
+principle-level changes. Wisdom proposals:
 - Can only be staged by deep reflect (depth >= 1)
 - Cannot use `acceptDirect` — must go through staging
 - Inject the `validation` field into op values on accept
 - Skip circuit breaker and git sync on promote
 
-See `docs/dev/modification-protocol.md` for full details.
+See `docs/dev/proposal-protocol.md` for full details.
 
 ### Yamas and Niyamas — Operating Principles
 
@@ -534,7 +534,7 @@ key names + metadata summaries, built by `loadWisdomManifest(K)` in
 reflect.js. Deep reflect uses `kv_query` to load specific entries on
 demand. Session reflect (no tools, single-shot call) sees the manifest as
 informational only — it references entries by name in
-`modification_observations` and `note_to_future_self` for deep reflect to
+`proposal_observations` and `note_to_future_self` for deep reflect to
 follow up.
 
 Metadata `summary` field provides a one-line description for relevance
@@ -550,19 +550,19 @@ paths get manifest + on-demand.
 
 ## Observation Cycle
 
-1. **Propose with criteria** — modification requests include a `criteria`
+1. **Propose with criteria** — proposal requests include a `criteria`
    field with natural-language observation instructions for what the future
    self should look for
 2. **First observation** — session reflect notes immediate effects in
-   `modification_observations`; deep reflect compares against criteria and
+   `proposal_observations`; deep reflect compares against criteria and
    prior observations
 3. **Longitudinal tracking** — `sessions_since_activation` and
    `sessions_since_staged` computed in `loadInflightModifications` /
    `loadStagedModifications`; visible in template context
-4. **Verdict or justification** — modifications exceeding 30 sessions need
+4. **Verdict or justification** — proposals exceeding 30 sessions need
    a verdict or explicit deferral reason
 5. **Crystallization** — completed intentions become `prajna:*` entries via
-   wisdom modification requests with `type: 'wisdom'`
+   wisdom proposal requests with `type: 'wisdom'`
 
 ---
 
