@@ -66,5 +66,5 @@ createServer((req, res) => {
   });
   createReadStream(file).pipe(res);
 }).listen(port, () => {
-  console.log(`Dashboard SPA: http://localhost:${port}/operator/`);
+  console.log(`Dashboard SPA: http://localhost:${port}/patron/`);
 });

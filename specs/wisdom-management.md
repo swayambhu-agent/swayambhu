@@ -1,12 +1,12 @@
-# Implementation Spec: Wisdom Management & Modification Protocol Unification
+# Implementation Spec: Wisdom Management & Proposal Protocol Unification
 
 ## Overview
 
 Two changes:
 
-1. **Unify mutation protocol into the Modification Protocol.** Rename `mutation_*` → `modification_*` across the codebase. Add a `type` field (`"code"` or `"wisdom"`) so one engine handles both code changes and wisdom entries with appropriate validation for each.
+1. **Unify mutation protocol into the Proposal Protocol.** Rename `mutation_*` → `proposal_*` across the codebase. Add a `type` field (`"code"` or `"wisdom"`) so one engine handles both code changes and wisdom entries with appropriate validation for each.
 
-2. **Add wisdom management** using two new KV prefixes (`upaya:` and `prajna:`). Replaces the existing single `wisdom` key. Wisdom entries go through the same Modification Protocol lifecycle as code changes, but with `validation` instead of `claims + checks`.
+2. **Add wisdom management** using two new KV prefixes (`upaya:` and `prajna:`). Replaces the existing single `wisdom` key. Wisdom entries go through the same Proposal Protocol lifecycle as code changes, but with `validation` instead of `claims + checks`.
 
 ## Design principles
 
@@ -14,10 +14,10 @@ Two changes:
 - **Prajna** (self-knowledge) is available during deep reflect sessions — it informs introspection.
 - **Deep reflect knows about both** — it's the only place wisdom gets written, and upaya context may be relevant when reviewing how act sessions went.
 - **No pre-loading.** The agent has kv_query available and decides when to query wisdom. No template vars, no forced injection.
-- **One protocol, two modes.** Code modifications require `claims + checks` and enable circuit breaker + git sync. Wisdom modifications require `validation` and skip both.
+- **One protocol, two modes.** Code proposals require `claims + checks` and enable circuit breaker + git sync. Wisdom proposals require `validation` and skip both.
 - **No code-level schema enforcement.** The wisdom JSON schema is a prompt convention. Validation criteria are evaluated by the reviewing deep reflect, not mechanically.
 
-## The Modification Protocol
+## The Proposal Protocol
 
 ### Lifecycle (applies to both code and wisdom)
 
@@ -33,8 +33,8 @@ staged ──accept──→ inflight ──promote──→ promoted
 ### KV prefixes
 
 ```
-modification_staged:{id}     — proposed change, not yet active
-modification_snapshot:{id}   — saved previous state for rollback
+proposal_staged:{id}     — proposed change, not yet active
+proposal_snapshot:{id}   — saved previous state for rollback
 ```
 
 ### States
@@ -59,30 +59,30 @@ modification_snapshot:{id}   — saved previous state for rollback
 
 ### Leveling
 
-Every promoted modification has a **level** equal to the reflect depth that promoted it:
+Every promoted proposal has a **level** equal to the reflect depth that promoted it:
 
-- Depth-1 reflect promotes a modification → level 1
-- Depth-2 reflect promotes a modification → level 2
+- Depth-1 reflect promotes a proposal → level 1
+- Depth-2 reflect promotes a proposal → level 2
 
 **Authority rule (prompt-enforced):** Before modifying, rolling back, or deleting any promoted entry — code or wisdom — check whether it was promoted by a higher-depth reflect than your current depth. If so:
 - Do NOT touch the entry
 - Flag it as needing review at the next higher-depth session
 - Defer with a reason explaining why you think it should be reconsidered
 
-This is prompt-enforced, not mechanically gated. The single source of truth for levels is the karma log — the `modification_promoted` event records the modification ID, target keys, and promoting depth. Deep reflect checks karma before modifying any promoted entry.
+This is prompt-enforced, not mechanically gated. The single source of truth for levels is the karma log — the `proposal_promoted` event records the proposal ID, target keys, and promoting depth. Deep reflect checks karma before modifying any promoted entry.
 
-Human input (from chats, emails, operator feedback) is treated as evidence, not authority. Deep reflect evaluates human input alongside karma logs and other signals when proposing or reviewing modifications. Humans are a source, not an override — the agent is the authority on its own wisdom and configuration.
+Human input (from chats, emails, patron feedback) is treated as evidence, not authority. Deep reflect evaluates human input alongside karma logs and other signals when proposing or reviewing proposals. Humans are a source, not an override — the agent is the authority on its own wisdom and configuration.
 
 ### Two modes
 
-#### Code modifications (`type: "code"`)
+#### Code proposals (`type: "code"`)
 
 For system config, prompts, tools, providers — changes that could brick the agent.
 
 ```json
 {
   "type": "code",
-  "claims": ["What this modification achieves"],
+  "claims": ["What this proposal achieves"],
   "ops": [
     {"op": "put", "key": "config:defaults", "value": {"act": {"effort": "medium"}}}
   ],
@@ -94,10 +94,10 @@ For system config, prompts, tools, providers — changes that could brick the ag
 
 - Signal mechanism: `claims` + `checks` (mechanical: `kv_assert`, `tool_call`)
 - Circuit breaker: yes — auto-rollback on fatal error
-- Git sync: yes — promoted modifications sync to repo
+- Git sync: yes — promoted proposals sync to repo
 - Who can propose: session reflect (staged) or deep reflect (direct/inflight)
 
-#### Wisdom modifications (`type: "wisdom"`)
+#### Wisdom proposals (`type: "wisdom"`)
 
 For upaya and prajna entries — accumulated understanding that should be earned.
 
@@ -126,65 +126,65 @@ For upaya and prajna entries — accumulated understanding that should be earned
 
 ## Changes required
 
-### 1. Rename `mutation_*` → `modification_*` across codebase
+### 1. Rename `mutation_*` → `proposal_*` across codebase
 
 This is a mechanical rename. Every occurrence of:
-- `mutation_staged:` → `modification_staged:`
-- `mutation_rollback:` → `modification_snapshot:`
+- `mutation_staged:` → `proposal_staged:`
+- `mutation_rollback:` → `proposal_snapshot:`
 
 And in code identifiers:
-- `stageMutation` → `stageModification`
+- `stageMutation` → `stageProposal`
 - `applyStaged` → `acceptStaged` (aligns with verdict name)
 - `applyDirect` → `acceptDirect`
 - `promoteInflight` → `promoteInflight` (unchanged)
 - `rollbackInflight` → `rollbackInflight` (unchanged)
 - `findInflightConflict` → `findInflightConflict` (unchanged)
-- `loadStagedMutations` → `loadStagedModifications`
-- `loadInflightMutations` → `loadInflightModifications`
+- `loadStagedMutations` → `loadStagedProposals`
+- `loadInflightMutations` → `loadInflightProposals`
 - `processReflectVerdicts` → `processReflectVerdicts` (unchanged)
 - `processDeepReflectVerdicts` → `processDeepReflectVerdicts` (unchanged)
 - `runCircuitBreaker` → `runCircuitBreaker` (unchanged)
-- `generateMutationId` → `generateModificationId`
-- `BOOKKEEPING_PREFIXES` updated to `['modification_staged:', 'modification_snapshot:']`
+- `generateMutationId` → `generateProposalId`
+- `BOOKKEEPING_PREFIXES` updated to `['proposal_staged:', 'proposal_snapshot:']`
 
 **Files affected:**
-- `kernel.js` — `SYSTEM_KEY_PREFIXES`, `kvWritePrivileged`, karma event names
-- `kernel.js (applyKVOperation)` — `SYSTEM_KEY_PREFIXES`
+- `kernel.js` — `SYSTEM_KEY_PREFIXES`, `kvWriteGated`, karma event names
+- `kernel.js (kvWriteGated)` — `SYSTEM_KEY_PREFIXES`
 - `kernel.js (proposal methods)` → rename file to `kernel.js (proposal methods)` — all function names, KV key references, karma event names
 - `reflect.js` — imports, function calls
 - `act.js` — imports, function calls
 - `prompts/deep-reflect.md` — terminology throughout
 - `prompts/reflect.md` — terminology
 - `prompts/act.md` — terminology
-- `docs/doc-mutation-guide.md` → rename to `docs/doc-modification-guide.md`
+- `docs/doc-mutation-guide.md` → rename to `docs/doc-proposal-guide.md`
 - `tests/kernel.test.js` — all references
 - `tests/wake-hook.test.js` — all references
 - `scripts/seed-local-kv.mjs` — KV key references if any
 
 Karma event names update:
-- `mutation_staged` → `modification_staged`
-- `mutation_applied` → `modification_accepted`
-- `mutation_promoted` → `modification_promoted`
-- `mutation_rolled_back` → `modification_rolled_back`
-- `mutation_rejected` → `modification_rejected`
-- `mutation_deferred` → `modification_deferred`
-- `mutation_withdrawn` → `modification_withdrawn`
-- `mutation_modified` → `modification_modified`
-- `mutation_conflict` → `modification_conflict`
-- `mutation_invalid` → `modification_invalid`
-- `mutation_blocked` → `modification_blocked`
+- `mutation_staged` → `proposal_staged`
+- `mutation_applied` → `proposal_accepted`
+- `mutation_promoted` → `proposal_promoted`
+- `mutation_rolled_back` → `proposal_rolled_back`
+- `mutation_rejected` → `proposal_rejected`
+- `mutation_deferred` → `proposal_deferred`
+- `mutation_withdrawn` → `proposal_withdrawn`
+- `mutation_modified` → `proposal_modified`
+- `mutation_conflict` → `proposal_conflict`
+- `mutation_invalid` → `proposal_invalid`
+- `mutation_blocked` → `proposal_blocked`
 - `circuit_breaker_fired` → `circuit_breaker_fired` (unchanged)
 
-### 2. Add `type` field to modification protocol
+### 2. Add `type` field to proposal protocol
 
 In `kernel.js (proposal methods)` (formerly kernel.js (proposal methods)):
 
-**`stageModification()`** — updated signature to accept `depth`:
+**`stageProposal()`** — updated signature to accept `depth`:
 ```js
 // Before
 export async function stageMutation(K, request, sessionId)
 // After
-export async function stageModification(K, request, sessionId, depth = 0)
+export async function stageProposal(K, request, sessionId, depth = 0)
 ```
 
 Callers must pass depth: session reflect passes 0, deep reflect passes its current depth.
@@ -208,12 +208,12 @@ value: {
 - `type: "code"` requires `claims` and `checks` (existing behavior)
 - `type: "wisdom"` requires `validation` field, does not require `claims` or `checks`
 
-**`stageModification()`** — reject wisdom from session reflect:
+**`stageProposal()`** — reject wisdom from session reflect:
 ```js
 // Wisdom can only be staged by deep reflect (depth >= 1)
 // Session reflect (depth 0) should flag observations in note_to_future_self instead
 if (request.type === 'wisdom' && depth < 1) {
-  await K.karmaRecord({ event: "modification_invalid", reason: "wisdom can only be staged by deep reflect" });
+  await K.karmaRecord({ event: "proposal_invalid", reason: "wisdom can only be staged by deep reflect" });
   return null;
 }
 ```
@@ -223,14 +223,14 @@ if (request.type === 'wisdom' && depth < 1) {
 // Wisdom must go through staging — no same-session accept
 // The proposing session and validating session must be different
 if (request.type === 'wisdom') {
-  await K.karmaRecord({ event: "modification_invalid", reason: "wisdom cannot use acceptDirect — must be staged" });
+  await K.karmaRecord({ event: "proposal_invalid", reason: "wisdom cannot use acceptDirect — must be staged" });
   return null;
 }
 ```
 
-**`runCircuitBreaker()`** — skip wisdom modifications:
+**`runCircuitBreaker()`** — skip wisdom proposals:
 ```js
-// Only auto-rollback code modifications on fatal error
+// Only auto-rollback code proposals on fatal error
 if (record.type === 'wisdom') continue;
 ```
 
@@ -239,7 +239,7 @@ if (record.type === 'wisdom') continue;
 // Before
 export async function promoteInflight(K, mutationId)
 // After
-export async function promoteInflight(K, modificationId, depth)
+export async function promoteInflight(K, proposalId, depth)
 ```
 
 **`processDeepReflectVerdicts()`** — updated signature to accept `depth` and pass it through:
@@ -255,14 +255,14 @@ Required so it can pass `depth` to `promoteInflight` when processing promote ver
 The karma event must record depth and target keys for leveling:
 ```js
 await K.karmaRecord({
-  event: "modification_promoted",
-  modification_id: modificationId,
+  event: "proposal_promoted",
+  proposal_id: proposalId,
   target_keys: record.ops.map(op => op.key),
   depth,
 });
 ```
 
-**`acceptStaged()`** — for wisdom modifications, inject `validation` from the staged record into the op's value before writing to the live key:
+**`acceptStaged()`** — for wisdom proposals, inject `validation` from the staged record into the op's value before writing to the live key:
 ```js
 if (record.type === 'wisdom' && record.validation) {
   for (const op of writeOps) {
@@ -277,7 +277,7 @@ This ensures the live entry has `validation` from the moment it goes inflight, n
 **`syncToGit()` / `promoteInflight()`** — skip git sync for wisdom:
 ```js
 if (record?.type !== 'wisdom' && record?.ops) {
-  await syncToGit(K, modificationId, record.ops, record.claims);
+  await syncToGit(K, proposalId, record.ops, record.claims);
 }
 ```
 
@@ -288,20 +288,20 @@ if (record?.type !== 'wisdom' && record?.ops) {
 // Remove 'wisdom' from exact keys
 static SYSTEM_KEY_EXACT = ['providers', 'wallets'];
 
-// Add upaya: and prajna: to prefix list (forces all writes through kvWritePrivileged / Modification Protocol)
+// Add upaya: and prajna: to prefix list (forces all writes through kvWriteGated / Proposal Protocol)
 static SYSTEM_KEY_PREFIXES = [
   'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-  'modification_staged:', 'modification_snapshot:', 'hook:', 'git_pending:',
+  'proposal_staged:', 'proposal_snapshot:', 'hook:', 'git_pending:',
   'yama:', 'niyama:',
   'upaya:', 'prajna:',
 ];
 ```
 
-**kernel.js (applyKVOperation)** — Same changes to both `SYSTEM_KEY_EXACT` and `SYSTEM_KEY_PREFIXES`.
+**kernel.js (kvWriteGated)** — Same changes to both `SYSTEM_KEY_EXACT` and `SYSTEM_KEY_PREFIXES`.
 
-This ensures upaya/prajna entries can only be written through the Modification Protocol — `kv_operations` from reflect output will be blocked by the protection gate, just like attempts to write prompts or config directly.
+This ensures upaya/prajna entries can only be written through the Proposal Protocol — `kv_operations` from reflect output will be blocked by the protection gate, just like attempts to write prompts or config directly.
 
-**Do NOT add `upaya:` or `prajna:` to `PRINCIPLE_PREFIXES`.** That array (`['yama:', 'niyama:']`) gates the deliberation + model capability checks in `kvWritePrivileged`. Wisdom entries should not require deliberation — the Modification Protocol's staging lifecycle provides the signal mechanism instead.
+**Do NOT add `upaya:` or `prajna:` to `PRINCIPLE_PREFIXES`.** That array (`['yama:', 'niyama:']`) gates the deliberation + model capability checks in `kvWriteGated`. Wisdom entries should not require deliberation — the Proposal Protocol's staging lifecycle provides the signal mechanism instead.
 
 ### 4. Update deep reflect prompt (prompts/deep-reflect.md)
 
@@ -314,7 +314,7 @@ Remove the `{{wisdom}}` template section (lines 14-17 of deep-reflect.md):
 <!-- DELETE to here (inclusive — remove the blank line after {{wisdom}}) -->
 ```
 
-Replace all "mutation" terminology with "modification" throughout the prompt.
+Replace all "mutation" terminology with "proposal" throughout the prompt.
 
 Add the following section after the "What to do" heading:
 
@@ -328,9 +328,9 @@ You maintain two kinds of wisdom in KV, accumulated through experience and refle
 
 **Before you begin reflecting, query your `prajna:*` entries to ground your reflection in accumulated self-knowledge. Also query `upaya:*` entries relevant to the sessions you're reviewing.**
 
-Wisdom goes through the same Modification Protocol as code changes, but with `type: "wisdom"`. You propose wisdom in one session; a different session validates it. You don't grade your own homework.
+Wisdom goes through the same Proposal Protocol as code changes, but with `type: "wisdom"`. You propose wisdom in one session; a different session validates it. You don't grade your own homework.
 
-To stage a new wisdom entry, include a modification request with `type: "wisdom"`:
+To stage a new wisdom entry, include a proposal request with `type: "wisdom"`:
 
 ```json
 {
@@ -352,14 +352,14 @@ To stage a new wisdom entry, include a modification request with `type: "wisdom"
 
 The `validation` field replaces `claims + checks` for wisdom. It's a natural-language statement of what evidence supports this wisdom and what would falsify it. When you review staged wisdom in a subsequent session, evaluate the validation against recent karma.
 
-Note: `validation` lives on the modification request (like `claims` for code), not duplicated inside the op's value. The engine stores it on the staged record. When a wisdom modification is accepted, the engine injects `validation` from the staged record into the live entry's JSON value. Single source of truth during staging; embedded in the entry once live.
+Note: `validation` lives on the proposal request (like `claims` for code), not duplicated inside the op's value. The engine stores it on the staged record. When a wisdom proposal is accepted, the engine injects `validation` from the staged record into the live entry's JSON value. Single source of truth during staging; embedded in the entry once live.
 
 ### When to write wisdom
 
 Write upaya when you identify:
 - A pattern in how situations, people, or contexts work
 - A judgment call that succeeded or failed and carries a transferable lesson
-- A pattern observed in human feedback (chats, emails, operator corrections)
+- A pattern observed in human feedback (chats, emails, patron corrections)
 - A general principle that would serve across many different situations
 
 Write prajna when you identify:
@@ -430,8 +430,8 @@ Fields:
 ### Wisdom maintenance
 
 Each deep reflect session should:
-- Review all staged wisdom modifications — issue verdicts (accept, reject, modify, defer)
-- Review all inflight wisdom modifications — issue verdicts (promote, rollback, defer)
+- Review all staged wisdom proposals — issue verdicts (accept, reject, modify, defer)
+- Review all inflight wisdom proposals — issue verdicts (promote, rollback, defer)
 - Consolidate overlapping promoted entries
 - Delete promoted wisdom no longer applicable
 - Verify no entry contains domain-specific technical knowledge (move to notes)
@@ -442,7 +442,7 @@ Each deep reflect session should:
 
 ### 5. Update deep reflect output schema
 
-In the deep reflect prompt's "What to produce" section, rename `mutation_requests` → `modification_requests` and `mutation_verdicts` → `modification_verdicts`. Update the example to show both code and wisdom types:
+In the deep reflect prompt's "What to produce" section, rename `mutation_requests` → `proposal_requests` and `mutation_verdicts` → `proposal_verdicts`. Update the example to show both code and wisdom types:
 
 ```json
 {
@@ -450,7 +450,7 @@ In the deep reflect prompt's "What to produce" section, rename `mutation_request
   "note_to_future_self": "...",
   "kv_operations": [],
 
-  "modification_requests": [
+  "proposal_requests": [
     {
       "type": "code",
       "claims": ["Update act effort to medium"],
@@ -464,13 +464,13 @@ In the deep reflect prompt's "What to produce" section, rename `mutation_request
     }
   ],
 
-  "modification_verdicts": [
-    {"modification_id": "m_...", "verdict": "accept"},
-    {"modification_id": "m_...", "verdict": "reject", "reason": "..."},
-    {"modification_id": "m_...", "verdict": "promote"},
-    {"modification_id": "m_...", "verdict": "rollback", "reason": "..."},
-    {"modification_id": "m_...", "verdict": "defer", "reason": "need more sessions"},
-    {"modification_id": "m_...", "verdict": "modify", "updated_ops": []}
+  "proposal_verdicts": [
+    {"proposal_id": "m_...", "verdict": "accept"},
+    {"proposal_id": "m_...", "verdict": "reject", "reason": "..."},
+    {"proposal_id": "m_...", "verdict": "promote"},
+    {"proposal_id": "m_...", "verdict": "rollback", "reason": "..."},
+    {"proposal_id": "m_...", "verdict": "defer", "reason": "need more sessions"},
+    {"proposal_id": "m_...", "verdict": "modify", "updated_ops": []}
   ],
 
   "next_reflect": {},
@@ -480,7 +480,7 @@ In the deep reflect prompt's "What to produce" section, rename `mutation_request
 
 ### 6. Update session reflect prompt and output schema (prompts/reflect.md)
 
-Rename `mutation_requests` → `modification_requests` and `mutation_verdicts` → `modification_verdicts` throughout.
+Rename `mutation_requests` → `proposal_requests` and `mutation_verdicts` → `proposal_verdicts` throughout.
 
 Add wisdom awareness:
 
@@ -503,11 +503,11 @@ discernment about situations, people, timing, and action. Begin by querying
 your upaya entries relevant to your current task via `kv_query`.
 ```
 
-Rename any `mutation_requests` references to `modification_requests`.
+Rename any `mutation_requests` references to `proposal_requests`.
 
 Update the protected keys line to remove mention of wisdom:
 ```markdown
-Protected keys (prompts, config) require modification_requests via reflect.
+Protected keys (prompts, config) require proposal_requests via reflect.
 ```
 
 ### 8. Remove `{{wisdom}}` template var from reflect.js
@@ -522,26 +522,26 @@ And remove `wisdom` from the `templateVars` object.
 
 ### 9. Add staged/inflight context to deep reflect template vars
 
-In `gatherReflectContext` (reflect.js), the existing code already loads staged and inflight modifications (formerly mutations). These now include both code and wisdom types automatically — no separate wisdom loading needed.
+In `gatherReflectContext` (reflect.js), the existing code already loads staged and inflight proposals (formerly mutations). These now include both code and wisdom types automatically — no separate wisdom loading needed.
 
 Rename the template vars:
-- `stagedMutations` → `stagedModifications`
-- `inflightMutations` → `inflightModifications`
+- `stagedMutations` → `stagedProposals`
+- `inflightMutations` → `inflightProposals`
 
 Update corresponding template sections in deep-reflect.md:
 ```markdown
-## Staged modifications (awaiting review)
+## Staged proposals (awaiting review)
 
-{{stagedModifications}}
+{{stagedProposals}}
 
-## Inflight modifications (active, snapshot held)
+## Inflight proposals (active, snapshot held)
 
-{{inflightModifications}}
+{{inflightProposals}}
 ```
 
-The existing `loadStagedModifications()` and `loadInflightModifications()` functions (renamed from mutation equivalents) will return both code and wisdom modifications since they both use the same `modification_staged:` and `modification_snapshot:` prefixes.
+The existing `loadStagedProposals()` and `loadInflightProposals()` functions (renamed from mutation equivalents) will return both code and wisdom proposals since they both use the same `proposal_staged:` and `proposal_snapshot:` prefixes.
 
-Note: the current deep-reflect.md template uses `{{candidateMutations}}` but the code provides `inflightMutations` — these don't match (pre-existing bug). The rename to `{{inflightModifications}}` / `inflightModifications` fixes this by making both sides consistent.
+Note: the current deep-reflect.md template uses `{{candidateMutations}}` but the code provides `inflightMutations` — these don't match (pre-existing bug). The rename to `{{inflightProposals}}` / `inflightProposals` fixes this by making both sides consistent.
 
 ### 10. Update seed script
 
@@ -570,7 +570,7 @@ if (key === 'wisdom') return 'wisdom.md';
 
 The wake hook manifest (`hook:wake:manifest`) maps filenames to KV keys. Update:
 - `kernel.js (proposal methods)` → `kernel.js (proposal methods)`
-- KV key: `hook:wake:mutations` → `hook:wake:modifications`
+- KV key: `hook:wake:mutations` → `hook:wake:proposals`
 
 Update imports in `act.js` and `reflect.js` accordingly.
 
@@ -579,7 +579,7 @@ Update imports in `act.js` and `reflect.js` accordingly.
 - **No new tools.** kv_query already supports arbitrary keys.
 - **No schema enforcement in code.** Prompt convention only.
 - **No kernel-level validation of wisdom.** The reviewing deep reflect evaluates validation criteria, not the kernel.
-- **Upaya and prajna are system-protected prefixes.** All writes go through the Modification Protocol — no direct `kv_operations` bypass.
+- **Upaya and prajna are system-protected prefixes.** All writes go through the Proposal Protocol — no direct `kv_operations` bypass.
 
 ## Architecture context
 
@@ -588,31 +588,31 @@ Updated hierarchy:
 | Layer | Outer | Inner | Protection |
 |---|---|---|---|
 | Principles | Yama (conduct) | Niyama (discipline) | Kernel-enforced friction |
-| Wisdom | Upaya (discernment) | Prajna (self-knowledge) | Modification Protocol (wisdom mode) |
+| Wisdom | Upaya (discernment) | Prajna (self-knowledge) | Proposal Protocol (wisdom mode) |
 | Record | Karma | | Append-only |
 
 - Dharma is immutable (kernel-blocked)
 - Yamas require deliberation + capable model (kernel-enforced)
 - Niyamas require deliberation + capable model (kernel-enforced)
-- Code changes go through Modification Protocol with claims + checks, circuit breaker, git sync
-- Wisdom goes through Modification Protocol with validation, no circuit breaker, no git sync
+- Code changes go through Proposal Protocol with claims + checks, circuit breaker, git sync
+- Wisdom goes through Proposal Protocol with validation, no circuit breaker, no git sync
 - Karma is append-only record
 
 ## Files to modify
 
 | File | Change |
 |---|---|
-| `kernel.js` | Remove `wisdom` from `SYSTEM_KEY_EXACT`; add `upaya:`, `prajna:` to `SYSTEM_KEY_PREFIXES`; do NOT add them to `PRINCIPLE_PREFIXES` (no deliberation gate); rename all `mutation_*` → `modification_*` in prefixes, method names, karma events |
-| `kernel.js (applyKVOperation)` | Remove `wisdom` from `SYSTEM_KEY_EXACT`; add `upaya:`, `prajna:` to `SYSTEM_KEY_PREFIXES`; rename `mutation_*` → `modification_*` in prefixes |
+| `kernel.js` | Remove `wisdom` from `SYSTEM_KEY_EXACT`; add `upaya:`, `prajna:` to `SYSTEM_KEY_PREFIXES`; do NOT add them to `PRINCIPLE_PREFIXES` (no deliberation gate); rename all `mutation_*` → `proposal_*` in prefixes, method names, karma events |
+| `kernel.js (kvWriteGated)` | Remove `wisdom` from `SYSTEM_KEY_EXACT`; add `upaya:`, `prajna:` to `SYSTEM_KEY_PREFIXES`; rename `mutation_*` → `proposal_*` in prefixes |
 | `kernel.js (proposal methods)` | Rename file → `kernel.js (proposal methods)`; rename all functions, KV keys, karma events; add `type` field handling; skip circuit breaker + git sync for wisdom type |
-| `reflect.js` | Update imports from hook-modifications; rename function calls; remove `wisdom` loading from `gatherReflectContext`; rename template vars; pass `depth` to `stageModification`, `processDeepReflectVerdicts`, and callers of `promoteInflight` |
-| `act.js` | Update imports from hook-modifications; rename function calls |
+| `reflect.js` | Update imports from hook-proposals; rename function calls; remove `wisdom` loading from `gatherReflectContext`; rename template vars; pass `depth` to `stageProposal`, `processDeepReflectVerdicts`, and callers of `promoteInflight` |
+| `act.js` | Update imports from hook-proposals; rename function calls |
 | `hook-chat.js` | Remove `K.kvGet("wisdom")` loading; optionally add upaya awareness to chat context |
-| `prompts/deep-reflect.md` | Remove `{{wisdom}}` section; add wisdom management instructions; rename all mutation → modification terminology; update output schema |
-| `prompts/act.md` | Add upaya awareness; rename mutation → modification; remove wisdom from protected keys |
-| `prompts/reflect.md` | Add wisdom awareness; rename mutation → modification; remove wisdom from protected keys; update output schema |
+| `prompts/deep-reflect.md` | Remove `{{wisdom}}` section; add wisdom management instructions; rename all mutation → proposal terminology; update output schema |
+| `prompts/act.md` | Add upaya awareness; rename mutation → proposal; remove wisdom from protected keys |
+| `prompts/reflect.md` | Add wisdom awareness; rename mutation → proposal; remove wisdom from protected keys; update output schema |
 | `scripts/seed-local-kv.mjs` | Remove wisdom seed; remove from default_load_keys; update any mutation references |
-| `docs/doc-mutation-guide.md` | Rename → `docs/doc-modification-guide.md`; update all terminology |
+| `docs/agent/proposal-guide.md` | Update all terminology |
 | `tests/kernel.test.js` | Rename all `mutation_*` references |
 | `tests/wake-hook.test.js` | Rename all `mutation_*` references |
 | Hook manifest | Update `kernel.js (proposal methods)` → `kernel.js (proposal methods)` mapping |

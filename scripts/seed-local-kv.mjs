@@ -181,7 +181,7 @@ await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep ref
 
 console.log("--- Documentation ---");
 await put("doc:design_rationale", read("docs/agent/design-rationale.md"), "text", "Design rationale — why each subsystem exists, threat models, what would break if changed");
-await put("doc:modification_guide", read("docs/agent/modification-guide.md"), "text", "Modification guide — lifecycle, verdicts, checks, conflict detection, common mistakes");
+await put("doc:proposal_guide", read("docs/agent/proposal-guide.md"), "text", "Proposal guide — lifecycle, verdicts, checks, conflict detection, common mistakes");
 await put("doc:threat_model", read("docs/agent/threat-model.md"), "text", "Threat model — attacks, defenses, what to watch for, what happens if defenses are removed");
 await put("doc:wisdom_guide", read("docs/agent/wisdom-guide.md"), "text", "Wisdom guide — schema, naming, when to write, maintenance, why wisdom has higher friction");
 await put("doc:patron", read("docs/agent/patron-relationship.md"), "text", "Patron relationship — what patron controls, what agent controls, identity verification");
@@ -298,7 +298,7 @@ await put("upaya:comms:defaults", {
 // ── Skills (from skills/*.json + skills/*.md) ─────────────────
 
 console.log("--- Skills ---");
-const skillNames = ["model-config", "skill-authoring", "computer", "claude-code", "codex", "comms"];
+const skillNames = ["model-config", "skill-authoring", "tool-authoring", "computer", "claude-code", "codex", "comms"];
 for (const name of skillNames) {
   const meta = JSON.parse(read(`skills/${name}.json`));
   await put(`skill:${name}`, {

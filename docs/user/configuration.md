@@ -21,7 +21,7 @@ Everything else: models, budgets, prompts, tools, contacts, behavior
 config. Changed via:
 - **Seed script** (`scripts/seed-local-kv.mjs`) — for initial setup
 - **Dashboard API** — for contacts and quarantine management
-- **Agent self-modification** — through the Modification Protocol during
+- **Agent self-modification** — through the Proposal Protocol during
   reflection
 
 ### Config Files
@@ -321,7 +321,7 @@ it can see from inbound messages, and how it behaves in chat.
   prompt instruction.
 - **Inbound redaction** — Messages from unknown senders have their
   content redacted before the agent sees it. The original content is
-  quarantined for operator review.
+  quarantined for patron review.
 - **Chat tools** — Known contacts get full tool access in chat. Unknown
   contacts get only the tools in the `unknown_contact_tools` allowlist
   (empty by default = no tools).
@@ -367,7 +367,7 @@ live in separate `contact_platform:` keys.
 
 ```bash
 curl -X POST http://localhost:8790/contacts \
-  -H "X-Operator-Key: test" \
+  -H "X-Patron-Key: test" \
   -H "Content-Type: application/json" \
   -d '{
     "slug": "jane_doe",
@@ -382,7 +382,7 @@ curl -X POST http://localhost:8790/contacts \
 the Contacts section and re-seed.
 
 The agent can create contacts freely (identity metadata only) and propose
-platform bindings (always unapproved). Platform approval is operator-only
+platform bindings (always unapproved). Platform approval is patron-only
 via the dashboard.
 
 ### Platform Bindings
@@ -511,7 +511,7 @@ The seed value establishes a conservative baseline:
 > be unsent. Be especially cautious when initiating — responding carries
 > implicit standing, initiating requires justification.
 
-The agent can evolve this stance through the wisdom modification protocol
+The agent can evolve this stance through the wisdom proposal protocol
 during deep reflection.
 
 ### Blocked Communications
@@ -602,20 +602,20 @@ numbers, everything else is a string.
 
 | Key | What It Controls | Changed By |
 |-----|-----------------|------------|
-| `config:defaults` | Models, budgets, effort, steps, sleep, chat | Seed, agent (via modification protocol) |
-| `config:models` | Model registry, aliases, pricing | Seed, agent (via modification protocol) |
-| `config:model_capabilities` | Per-model capability flags | Seed, operator (manual KV edit) |
+| `config:defaults` | Models, budgets, effort, steps, sleep, chat | Seed, agent (via proposal protocol) |
+| `config:models` | Model registry, aliases, pricing | Seed, agent (via proposal protocol) |
+| `config:model_capabilities` | Per-model capability flags | Seed, patron (manual KV edit) |
 | `config:resources` | Platform limits, external endpoints | Seed |
-| `config:tool_registry` | Tool names and descriptions for LLM | Seed, agent (via modification protocol) |
+| `config:tool_registry` | Tool names and descriptions for LLM | Seed, agent (via proposal protocol) |
 | `wake_config` | Next wake time, sleep duration, effort | Agent (after each session) |
 | `reflect:schedule:{depth}` | When next deep reflect is due | Agent (after deep reflect) |
-| `contact:{slug}` | Contact records | Operator (dashboard API or seed) |
-| `upaya:comms:defaults` | Default communication stance | Agent (via wisdom modification) |
-| `upaya:comms:*` | Communication wisdom entries | Agent (via wisdom modification) |
-| `upaya:contact:*` | Per-contact communication wisdom | Agent (via wisdom modification) |
-| `prompt:orient` | Orient session system prompt | Agent (via modification protocol) |
-| `prompt:reflect` | Session reflect prompt | Agent (via modification protocol) |
-| `prompt:reflect:1` | Deep reflect prompt | Agent (via modification protocol) |
-| `prompt:chat` | Chat system prompt | Agent (via modification protocol) |
+| `contact:{slug}` | Contact records | Patron (dashboard API or seed) |
+| `upaya:comms:defaults` | Default communication stance | Agent (via wisdom proposal) |
+| `upaya:comms:*` | Communication wisdom entries | Agent (via wisdom proposal) |
+| `upaya:contact:*` | Per-contact communication wisdom | Agent (via wisdom proposal) |
+| `prompt:orient` | Orient session system prompt | Agent (via proposal protocol) |
+| `prompt:reflect` | Session reflect prompt | Agent (via proposal protocol) |
+| `prompt:reflect:1` | Deep reflect prompt | Agent (via proposal protocol) |
+| `prompt:chat` | Chat system prompt | Agent (via proposal protocol) |
 | `yama:*` | Outer ethics | Agent (with deliberation + capable model) |
 | `niyama:*` | Inner ethics | Agent (with deliberation + capable model) |

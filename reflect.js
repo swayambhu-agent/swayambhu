@@ -71,12 +71,12 @@ export async function executeReflect(K, state, step) {
 
   // Detect parse failure
   if (output.raw !== undefined) {
-    await K.kvPutSafe("last_reflect", {
+    await K.kvWriteSafe("last_reflect", {
       raw: output.raw,
       parse_error: true,
       session_id: sessionId,
     });
-    await K.kvPutSafe(`reflect:0:${sessionId}`, {
+    await K.kvWriteSafe(`reflect:0:${sessionId}`, {
       raw: output.raw,
       parse_error: true,
       depth: 0,
@@ -92,7 +92,12 @@ export async function executeReflect(K, state, step) {
   if (output.vikalpa_updates) {
     for (const update of output.vikalpa_updates) {
       if (update.status === "resolved") {
-        vikalpas = vikalpas.filter(a => a.vikalpa !== update.vikalpa);
+        const existing = vikalpas.find(a => a.vikalpa === update.vikalpa);
+        if (existing) {
+          existing.status = "resolved";
+          if (update.evidence) existing.evidence = update.evidence;
+          existing.resolved_session = sessionId;
+        }
       } else if (update.status === "confirmed") {
         const existing = vikalpas.find(a => a.vikalpa === update.vikalpa);
         if (existing) existing.revisit_by_session = update.revisit_by_session;
@@ -100,7 +105,7 @@ export async function executeReflect(K, state, step) {
     }
   }
 
-  await K.kvPutSafe("last_reflect", {
+  await K.kvWriteSafe("last_reflect", {
     ...output,
     vikalpas,
     session_id: sessionId,
@@ -113,21 +118,26 @@ export async function executeReflect(K, state, step) {
     session_id: sessionId,
     timestamp: new Date().toISOString(),
   };
-  if (output.modification_observations) sessionReflectRecord.modification_observations = output.modification_observations;
-  await K.kvPutSafe(`reflect:0:${sessionId}`, sessionReflectRecord);
+  if (output.proposal_observations) sessionReflectRecord.proposal_observations = output.proposal_observations;
+  await K.kvWriteSafe(`reflect:0:${sessionId}`, sessionReflectRecord);
 
   if (output.kv_operations) {
+    const blocked = [];
     for (const op of output.kv_operations) {
-      await K.applyKVOperation(op);
+      const result = await K.kvWriteGated(op, "reflect");
+      if (!result.ok) blocked.push({ key: op.key, error: result.error });
+    }
+    if (blocked.length) {
+      await K.karmaRecord({ event: "kv_writes_blocked", blocked });
     }
   }
 
-  if (output.modification_verdicts) {
-    await K.processProposalVerdicts(output.modification_verdicts, 0);
+  if (output.proposal_verdicts) {
+    await K.processProposalVerdicts(output.proposal_verdicts, 0);
   }
 
-  if (output.modification_requests) {
-    for (const req of output.modification_requests) {
+  if (output.proposal_requests) {
+    for (const req of output.proposal_requests) {
       await K.createProposal(req, sessionId, 0);
     }
   }
@@ -139,7 +149,7 @@ export async function executeReflect(K, state, step) {
         Date.now() + wakeConf.sleep_seconds * 1000
       ).toISOString();
     }
-    await K.kvPutSafe("wake_config", wakeConf);
+    await K.kvWriteSafe("wake_config", wakeConf);
   }
 }
 
@@ -201,7 +211,7 @@ export async function gatherReflectContext(K, state, depth, context) {
   const blockedComms = await K.listBlockedComms();
   const systemKeyPatterns = await K.getSystemKeyPatterns();
 
-  const recentSessionIds = await K.kvGet("cache:session_ids") || [];
+  const recentSessionIds = await getRelevantSessionIds(K, depth);
 
   const patronId = await K.getPatronId();
   const patronContact = await K.getPatronContact();
@@ -297,16 +307,21 @@ export async function gatherReflectContext(K, state, depth, context) {
 export async function applyReflectOutput(K, state, depth, output, context) {
   const sessionId = await K.getSessionId();
 
-  // 1. KV operations (gated by kernel protection)
+  // 1. KV operations (context-based gating — deep-reflect can write system keys)
   if (output.kv_operations?.length) {
+    const blocked = [];
     for (const op of output.kv_operations) {
-      await K.applyKVOperation(op);
+      const result = await K.kvWriteGated(op, "deep-reflect");
+      if (!result.ok) blocked.push({ key: op.key, error: result.error });
+    }
+    if (blocked.length) {
+      await K.karmaRecord({ event: "kv_writes_blocked", blocked });
     }
   }
 
   // 2. Verdicts BEFORE new requests — clears conflicts first
-  if (output.modification_verdicts) {
-    await K.processProposalVerdicts(output.modification_verdicts, depth);
+  if (output.proposal_verdicts) {
+    await K.processProposalVerdicts(output.proposal_verdicts, depth);
   }
 
   // 2b. Communication verdicts
@@ -320,28 +335,13 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     }
   }
 
-  // 3. New requests — route by target type
-  if (output.modification_requests) {
-    for (const req of output.modification_requests) {
-      const hasCodeOps = req.ops?.some(op => {
-        const key = op.key;
-        return ['tool:', 'hook:', 'provider:', 'channel:'].some(p => key.startsWith(p)) && key.endsWith(':code');
-      });
-      if (hasCodeOps) {
-        // Code changes → proposal (governor deploys)
-        // Deep reflect creates at "accepted" status (it IS the reviewer)
-        const id = await K.createProposal(req, sessionId, depth);
-        if (id && depth >= 1) {
-          await K.updateProposalStatus(id, "accepted", { accepted_by_depth: depth });
-        }
-      } else {
-        // Non-code changes → direct KV write
-        for (const op of (req.ops || [])) {
-          try { await K.kvWritePrivileged([op]); }
-          catch (err) {
-            await K.karmaRecord({ event: "direct_write_failed", key: op.key, error: err.message });
-          }
-        }
+  // 3. Code proposals — proposal_requests is for code changes only
+  if (output.proposal_requests) {
+    for (const req of output.proposal_requests) {
+      // createProposal validates all ops target code keys; rejects mixed ops
+      const id = await K.createProposal(req, sessionId, depth);
+      if (id && depth >= 1) {
+        await K.updateProposalStatus(id, "accepted", { accepted_by_depth: depth });
       }
     }
   }
@@ -350,10 +350,11 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   const schedule = output.next_reflect || output.next_deep_reflect;
   if (schedule) {
     const sessionCount = await K.getSessionCount();
-    await K.kvPutSafe(`reflect:schedule:${depth}`, {
+    await K.kvWriteSafe(`reflect:schedule:${depth}`, {
       ...schedule,
       last_reflect: new Date().toISOString(),
       last_reflect_session: sessionCount,
+      last_reflect_session_id: sessionId,
     });
   }
 
@@ -366,14 +367,13 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     timestamp: new Date().toISOString(),
   };
   if (output.sankalpas) reflectRecord.sankalpas = output.sankalpas;
-  if (output.modification_observations) reflectRecord.modification_observations = output.modification_observations;
-  if (output.system_trajectory) reflectRecord.system_trajectory = output.system_trajectory;
+  if (output.proposal_observations) reflectRecord.proposal_observations = output.proposal_observations;
   if (output.vikalpas) reflectRecord.vikalpas = output.vikalpas;
-  await K.kvPutSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
+  await K.kvWriteSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 6. Only depth 1: write last_reflect and wake_config
   if (depth === 1) {
-    await K.kvPutSafe("last_reflect", {
+    await K.kvWriteSafe("last_reflect", {
       session_summary: output.reflection,
       vikalpas: output.vikalpas || [],
       was_deep_reflect: true,
@@ -387,7 +387,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
         Date.now() + wakeConf.sleep_seconds * 1000
       ).toISOString();
     }
-    await K.kvPutSafe("wake_config", wakeConf);
+    await K.kvWriteSafe("wake_config", wakeConf);
   }
 
   // 7. Refresh defaults after every depth (cascade visibility)
@@ -406,6 +406,24 @@ export async function loadReflectPrompt(K, state, depth) {
 export async function loadBelowPrompt(K, depth) {
   if (depth === 1) return K.kvGet("prompt:act");
   return K.kvGet(`prompt:reflect:${depth - 1}`);
+}
+
+export async function getRelevantSessionIds(K, depth, cap = 50) {
+  const schedule = await K.kvGet(`reflect:schedule:${depth}`);
+  const cutoffId = schedule?.last_reflect_session_id || null;
+
+  if (depth === 1) {
+    // Depth 1 reviews act sessions
+    const allIds = await K.kvGet("cache:session_ids") || [];
+    let filtered = cutoffId ? allIds.filter(id => id > cutoffId) : allIds;
+    return filtered.length > cap ? filtered.slice(-cap) : filtered;
+  }
+
+  // Depth 2+: review depth-(N-1) reflect session IDs
+  const result = await K.kvList({ prefix: `reflect:${depth - 1}:`, limit: 1000 });
+  let ids = result.keys.map(k => k.name.replace(`reflect:${depth - 1}:`, '')).sort();
+  if (cutoffId) ids = ids.filter(id => id > cutoffId);
+  return ids.length > cap ? ids.slice(-cap) : ids;
 }
 
 export async function loadReflectHistory(K, depth, count = 10) {
@@ -462,7 +480,7 @@ Review the session karma log and cost provided in the user message.
 
 Produce a JSON object with: session_summary, note_to_future_self,
 next_act_context (with load_keys array), and optionally
-next_wake_config, kv_operations, modification_verdicts, and modification_requests.`;
+next_wake_config, kv_operations, proposal_verdicts, and proposal_requests.`;
 }
 
 export function defaultDeepReflectPrompt(depth) {
@@ -486,7 +504,7 @@ and do not appear in session karma. Use kv_query to read chat history if relevan
 Session timing: each session_start event includes a scheduled_wake field
 showing when you were scheduled to wake. Actual wake time may differ due
 to chat-triggered advancement (contacts messaging you brings the next wake
-forward) or operator manual intervention. Don't assume irregular intervals
+forward) or patron manual intervention. Don't assume irregular intervals
 indicate broken scheduling.
 
 ## Your prior reflections at this depth
@@ -506,17 +524,17 @@ Examine your karma, your act prompt, your patterns. Produce a JSON object:
   "reflection": "What you see when you look at yourself as a system",
   "note_to_future_self": "Orientation, not action items",
   "sankalpas": [{"sankalpa": "...", "status": "active", "observation": "..."}],
-  "modification_observations": {"m_123": "What you observe about this modification"},
-  "system_trajectory": "Brief assessment of overall direction",
+  "proposal_observations": {"m_123": "What you observe about this proposal"},
   "kv_operations": [],
-  "modification_requests": [],
-  "modification_verdicts": [],
+  "proposal_requests": [],
+  "proposal_verdicts": [],
   "next_reflect": { "after_sessions": 20, "after_days": 7, "reason": "..." },
   "next_wake_config": { "sleep_seconds": 21600, "effort": "low" }
 }
 
-modification_requests: code changes become proposals (governor deploys); non-code changes apply directly.
-modification_verdicts: accept/reject/modify/withdraw proposals.
+kv_operations: write to any key including system keys (config, prompts, wisdom). Yama/niyama require deliberation field.
+proposal_requests: code changes ONLY — become proposals (governor deploys).
+proposal_verdicts: accept/reject/modify/withdraw proposals.
 Required: reflection, note_to_future_self. Everything else optional.`;
   }
 
@@ -539,7 +557,7 @@ Read these for continuity. If you set sankalpas, honor or explicitly revise them
 Use kv_query to load specific entries relevant to your examination.
 
 ## One-level-below write discipline
-You can only propose modifications targeting prompt:reflect:${depth - 1} (the prompt for the level below you).
+You can only propose changes targeting prompt:reflect:${depth - 1} (the prompt for the level below you).
 
 Below-level prompt: {{belowPrompt}}
 
@@ -548,11 +566,10 @@ Examine the depth-${depth - 1} outputs for patterns, drift, and alignment. Produ
   "reflection": "What you see in the level-below patterns",
   "note_to_future_self": "Orientation for next depth-${depth} reflection",
   "sankalpas": [{"sankalpa": "...", "status": "active", "observation": "..."}],
-  "modification_observations": {"m_123": "What you observe about this modification"},
-  "system_trajectory": "Brief assessment of overall direction",
+  "proposal_observations": {"m_123": "What you observe about this proposal"},
   "kv_operations": [],
-  "modification_requests": [],
-  "modification_verdicts": [],
+  "proposal_requests": [],
+  "proposal_verdicts": [],
   "next_reflect": { "after_sessions": 100, "after_days": 30, "reason": "..." }
 }
 

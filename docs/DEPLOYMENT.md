@@ -10,7 +10,7 @@
 | Provider cascade | Direct `fetch()` to OpenRouter (fallback tier) | Three-tier cascade (dynamic → last working → kernel fallback) |
 | KV storage | Local SQLite (`.wrangler/shared-state/`) | Cloudflare KV namespace |
 | Secrets | `.env` file sourced into shell | `wrangler secret put` per secret |
-| Dashboard auth | `OPERATOR_KEY = "test"` in `wrangler.toml` | `wrangler secret put OPERATOR_KEY` with real value |
+| Dashboard auth | `PATRON_KEY = "test"` in `wrangler.toml` | `wrangler secret put PATRON_KEY` with real value |
 
 ## Staging: local prod-mode with tunnel
 
@@ -58,7 +58,7 @@ source .env
 ```
 
 Wrangler picks up env vars for the runtime worker. The dashboard API
-does NOT use `.env` — its only secret (`OPERATOR_KEY`) is hardcoded as
+does NOT use `.env` — its only secret (`PATRON_KEY`) is hardcoded as
 `"test"` in `dashboard-api/wrangler.toml` for local dev.
 
 This is deliberate: the dashboard API is a read-only observer and should
@@ -86,11 +86,11 @@ encrypts them at rest and injects them as `env.SECRET_NAME` at runtime.
 **Dashboard API** (from `dashboard-api/`):
 
 ```bash
-wrangler secret put OPERATOR_KEY
+wrangler secret put PATRON_KEY
 ```
 
 This overrides the `"test"` placeholder in `dashboard-api/wrangler.toml`.
-The dashboard worker only receives `OPERATOR_KEY` — it has no access to
+The dashboard worker only receives `PATRON_KEY` — it has no access to
 runtime secrets. This isolation is enforced by Cloudflare: each worker
 has its own secret namespace.
 
@@ -142,7 +142,7 @@ The governor reads module source from KV to build the runtime.
 ### First deploy
 
 1. Set all runtime secrets: `wrangler secret put <NAME>` for each
-2. Set dashboard API secret: `cd dashboard-api && wrangler secret put OPERATOR_KEY`
+2. Set dashboard API secret: `cd dashboard-api && wrangler secret put PATRON_KEY`
 3. Seed remote KV with tools, modules, prompts, config
 4. Deploy runtime: `npx wrangler deploy`
 5. Deploy dashboard: `cd dashboard-api && npx wrangler deploy`

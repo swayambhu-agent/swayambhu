@@ -34,7 +34,7 @@ actually happened — not what was planned, but what occurred. Periodically it
 does deeper reflection, examining its alignment, its structures, and its
 trajectory. These reflections compound into wisdom over time.
 
-**Modify its own code.** Through a staged modification protocol, Swayambhu
+**Modify its own code.** Through a staged proposal protocol, Swayambhu
 can rewrite its own prompts, configuration, tools, and even its core wake
 logic. Every change is snapshotted, reviewed, and verified before it becomes
 permanent. If a change causes crashes, it's automatically rolled back.
@@ -65,12 +65,12 @@ It cannot:
   around blocks.
 - **Access quarantined content.** Messages from unknown senders are
   redacted before the agent sees them and stored in a sealed namespace
-  that only the human operator can access through the dashboard.
+  that only the human patron can access through the dashboard.
 - **Modify kernel safety mechanisms.** Alerting, crash detection, the
   tripwire, write protection tiers — these are hardcoded in the kernel.
   The agent's self-modifiable code cannot reach them.
 - **Suppress alerts.** When the agent modifies its own wake logic, the
-  human operator is automatically notified. This cannot be disabled.
+  human patron is automatically notified. This cannot be disabled.
 
 ---
 
@@ -219,11 +219,11 @@ architecture:
 
 - The patron's identity is cryptographically anchored (public key stored
   as an immutable key).
-- The patron has access to the operator dashboard, which shows everything
+- The patron has access to the patron dashboard, which shows everything
   the agent has done, everything in its memory, and everything it has
   quarantined.
 - Contact records (who the agent can communicate with) are
-  operator-managed — the agent cannot create contacts on its own during
+  patron-managed — the agent cannot create contacts on its own during
   normal sessions.
 - The patron can review quarantined content from unknown senders and
   decide what to release.
@@ -254,7 +254,7 @@ time to wake (based on its own sleep schedule), and if so, runs a session:
    kernel handles the rest.
 
 The entire cycle is observable. Every LLM call, every tool execution, every
-KV write is recorded in a karma log. The operator dashboard provides a
+KV write is recorded in a karma log. The patron dashboard provides a
 real-time view of sessions, reflections, KV state, and quarantined content.
 
 Nothing is hidden. Nothing is opaque. The system is built for transparency

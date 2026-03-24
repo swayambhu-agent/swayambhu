@@ -1030,7 +1030,7 @@ describe("isSystemKey / isKernelOnly", () => {
     expect(Kernel.isSystemKey("tool:kv_query:code")).toBe(true);
     expect(Kernel.isSystemKey("hook:wake:code")).toBe(true);
     expect(Kernel.isSystemKey("proposal:p_1")).toBe(true);
-    expect(Kernel.isSystemKey("doc:modification_guide")).toBe(true);
+    expect(Kernel.isSystemKey("doc:proposal_guide")).toBe(true);
     expect(Kernel.isSystemKey("skill:model-config")).toBe(true);
   });
 
@@ -1058,30 +1058,30 @@ describe("isSystemKey / isKernelOnly", () => {
   });
 });
 
-// ── 13. kvPutSafe ──────────────────────────────────────────
+// ── 13. kvWriteSafe ──────────────────────────────────────────
 
-describe("kvPutSafe", () => {
+describe("kvWriteSafe", () => {
   it("blocks dharma", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvPutSafe("dharma", "new value"))
+    await expect(kernel.kvWriteSafe("dharma", "new value"))
       .rejects.toThrow("immutable");
   });
 
   it("blocks kernel-only keys", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvPutSafe("kernel:last_sessions", []))
+    await expect(kernel.kvWriteSafe("kernel:last_sessions", []))
       .rejects.toThrow("kernel-only");
   });
 
   it("blocks system keys", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvPutSafe("config:defaults", {}))
+    await expect(kernel.kvWriteSafe("config:defaults", {}))
       .rejects.toThrow("system key");
   });
 
   it("allows non-system keys", async () => {
     const { kernel } = makeKernel();
-    await kernel.kvPutSafe("wake_config", { sleep_seconds: 100 });
+    await kernel.kvWriteSafe("wake_config", { sleep_seconds: 100 });
     // Should not throw
   });
 });
@@ -1114,39 +1114,45 @@ describe("kvDeleteSafe", () => {
   });
 });
 
-// ── 15. kvWritePrivileged ──────────────────────────────────
+// ── 15. kvWriteGated ──────────────────────────────────
 
-describe("kvWritePrivileged", () => {
+describe("kvWriteGated", () => {
   it("blocks dharma", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "dharma", value: "evil" },
-    ])).rejects.toThrow("immutable");
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "dharma", value: "evil" }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/immutable/);
   });
 
   it("blocks immutable keys (patron:public_key)", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "patron:public_key", value: "attacker-key" },
-    ])).rejects.toThrow("immutable");
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "patron:public_key", value: "attacker-key" }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/immutable/);
   });
 
   it("blocks kernel-only keys", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "kernel:last_sessions", value: [] },
-    ])).rejects.toThrow("kernel-only");
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "kernel:last_sessions", value: [] }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/kernel key/);
   });
 
   it("allows system keys with snapshot", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWritePrivileged([
-      { op: "put", key: "config:defaults", value: { new: true } },
-    ]);
+    await kernel.kvWriteGated(
+      { op: "put", key: "config:defaults", value: { new: true } }, "deep-reflect"
+    );
     expect(kernel.karmaRecord).toHaveBeenCalledWith(
       expect.objectContaining({ event: "privileged_write", key: "config:defaults" })
     );
@@ -1156,11 +1162,12 @@ describe("kvWritePrivileged", () => {
   it("enforces rate limit", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    kernel.privilegedWriteCount = 49;
-    await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "config:defaults", value: {} },
-      { op: "put", key: "wisdom", value: "new" },
-    ])).rejects.toThrow("Privileged write limit");
+    kernel.privilegedWriteCount = 50;
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "config:defaults", value: {} }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Privileged write limit/);
   });
 
   it("auto-refreshes config after privileged writes", async () => {
@@ -1168,45 +1175,45 @@ describe("kvWritePrivileged", () => {
       "config:defaults": JSON.stringify({ updated: true }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWritePrivileged([
-      { op: "put", key: "config:defaults", value: { updated: true } },
-    ]);
+    await kernel.kvWriteGated(
+      { op: "put", key: "config:defaults", value: { updated: true } }, "deep-reflect"
+    );
     expect(kernel.defaults).toEqual({ updated: true });
   });
 
   it("handles delete operations", async () => {
     const { kernel, env } = makeKernel({
-      "modification_staged:m_1": JSON.stringify({ id: "m_1" }),
+      "prompt:test_prompt": JSON.stringify({ text: "hello" }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWritePrivileged([
-      { op: "delete", key: "modification_staged:m_1" },
-    ]);
-    expect(env.KV.delete).toHaveBeenCalledWith("modification_staged:m_1");
+    await kernel.kvWriteGated(
+      { op: "delete", key: "prompt:test_prompt" }, "deep-reflect"
+    );
+    expect(env.KV.delete).toHaveBeenCalledWith("prompt:test_prompt");
     expect(kernel.privilegedWriteCount).toBe(1);
   });
 });
 
-// ── 15b. kvWritePrivileged contact and platform binding write rules ─────────────
+// ── 15b. kvWriteGated contact and platform binding write rules ─────────────
 
-describe("kvWritePrivileged contact write rules", () => {
+describe("kvWriteGated contact write rules", () => {
   it("allows put to an existing contact", async () => {
     const { kernel } = makeKernel({
       "contact:alice": JSON.stringify({ name: "Alice" }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWritePrivileged([
-      { op: "put", key: "contact:alice", value: { name: "Alice", notes: "likes tea" } },
-    ]);
+    await kernel.kvWriteGated(
+      { op: "put", key: "contact:alice", value: { name: "Alice", notes: "likes tea" } }, "deep-reflect"
+    );
     expect(kernel.privilegedWriteCount).toBe(1);
   });
 
   it("allows creation of new contacts (identity metadata)", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWritePrivileged([
-      { op: "put", key: "contact:newperson", value: { name: "New Person", relationship: "friend" } },
-    ]);
+    await kernel.kvWriteGated(
+      { op: "put", key: "contact:newperson", value: { name: "New Person", relationship: "friend" } }, "deep-reflect"
+    );
     expect(kernel.privilegedWriteCount).toBe(1);
   });
 
@@ -1215,9 +1222,9 @@ describe("kvWritePrivileged contact write rules", () => {
       "contact:alice": JSON.stringify({ name: "Alice" }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWritePrivileged([
-      { op: "delete", key: "contact:alice" },
-    ]);
+    await kernel.kvWriteGated(
+      { op: "delete", key: "contact:alice" }, "deep-reflect"
+    );
     expect(kernel.privilegedWriteCount).toBe(1);
   });
 
@@ -1225,20 +1232,20 @@ describe("kvWritePrivileged contact write rules", () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     kernel.env.KV._store.set("contact:alice", "Alice likes old tea");
-    await kernel.kvWritePrivileged([
-      { op: "patch", key: "contact:alice", old_string: "old tea", new_string: "green tea" },
-    ]);
+    await kernel.kvWriteGated(
+      { op: "patch", key: "contact:alice", old_string: "old tea", new_string: "green tea" }, "deep-reflect"
+    );
     expect(kernel.privilegedWriteCount).toBe(1);
   });
 });
 
-describe("kvWritePrivileged platform binding write rules", () => {
+describe("kvWriteGated platform binding write rules", () => {
   it("allows creation of platform binding with approved: false", async () => {
     const { kernel, env } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWritePrivileged([
-      { op: "put", key: "contact_platform:email:alice@example.com", value: { slug: "alice", approved: false } },
-    ]);
+    await kernel.kvWriteGated(
+      { op: "put", key: "contact_platform:email:alice@example.com", value: { slug: "alice", approved: false } }, "deep-reflect"
+    );
     expect(kernel.privilegedWriteCount).toBe(1);
     // Verify approved was forced to false
     const putCall = env.KV.put.mock.calls.find(([key]) => key === "contact_platform:email:alice@example.com");
@@ -1250,17 +1257,21 @@ describe("kvWritePrivileged platform binding write rules", () => {
   it("forces approved: false even when agent tries to set true", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "contact_platform:email:alice@example.com", value: { slug: "alice", approved: true } },
-    ])).rejects.toThrow("Setting approved: true on platform bindings is operator-only");
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "contact_platform:email:alice@example.com", value: { slug: "alice", approved: true } }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Setting approved: true on platform bindings is patron-only/);
   });
 
   it("rejects platform binding without slug", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
-    await expect(kernel.kvWritePrivileged([
-      { op: "put", key: "contact_platform:email:alice@example.com", value: { approved: false } },
-    ])).rejects.toThrow("Platform binding must include a slug");
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "contact_platform:email:alice@example.com", value: { approved: false } }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Platform binding must include a slug/);
   });
 
   it("allows delete of unapproved platform bindings", async () => {
@@ -1268,9 +1279,9 @@ describe("kvWritePrivileged platform binding write rules", () => {
       "contact_platform:email:alice@example.com": JSON.stringify({ slug: "alice", approved: false }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWritePrivileged([
-      { op: "delete", key: "contact_platform:email:alice@example.com" },
-    ]);
+    await kernel.kvWriteGated(
+      { op: "delete", key: "contact_platform:email:alice@example.com" }, "deep-reflect"
+    );
     expect(kernel.privilegedWriteCount).toBe(1);
   });
 
@@ -1279,18 +1290,22 @@ describe("kvWritePrivileged platform binding write rules", () => {
       "contact_platform:email:alice@example.com": JSON.stringify({ slug: "alice", approved: true }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
-    await expect(kernel.kvWritePrivileged([
-      { op: "delete", key: "contact_platform:email:alice@example.com" },
-    ])).rejects.toThrow("Deletion of approved platform bindings is operator-only");
+    const result = await kernel.kvWriteGated(
+      { op: "delete", key: "contact_platform:email:alice@example.com" }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Deletion of approved platform bindings is patron-only/);
   });
 
   it("blocks patch that modifies approved field on platform binding", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     kernel.env.KV._store.set("contact_platform:email:alice@example.com", '{"slug":"alice","approved":false}');
-    await expect(kernel.kvWritePrivileged([
-      { op: "patch", key: "contact_platform:email:alice@example.com", old_string: '"approved":false', new_string: '"approved":true' },
-    ])).rejects.toThrow('Cannot patch "approved" field on platform bindings');
+    const result = await kernel.kvWriteGated(
+      { op: "patch", key: "contact_platform:email:alice@example.com", old_string: '"approved":false', new_string: '"approved":true' }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Cannot patch "approved" field on platform bindings/);
   });
 });
 
@@ -1742,7 +1757,7 @@ describe("Yamas and Niyamas", () => {
     });
   });
 
-  describe("kvWritePrivileged enforcement", () => {
+  describe("kvWriteGated enforcement", () => {
     function makePrincipleBrain(kvInit = {}) {
       const { kernel, env } = makeKernel(kvInit, {
         modelsConfig: {
@@ -1763,57 +1778,65 @@ describe("Yamas and Niyamas", () => {
 
     it("rejects yama write if deliberation < 200 chars", async () => {
       const { kernel } = makePrincipleBrain();
-      await expect(kernel.kvWritePrivileged([
-        { op: "put", key: "yama:care", value: "new value", deliberation: "too short" },
-      ])).rejects.toThrow("Yama modifications require deliberation (min 200 chars");
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "yama:care", value: "new value", deliberation: "too short" }, "deep-reflect"
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/Yama modifications require deliberation \(min 200 chars/);
     });
 
     it("rejects niyama write if deliberation < 100 chars", async () => {
       const { kernel } = makePrincipleBrain();
-      await expect(kernel.kvWritePrivileged([
-        { op: "put", key: "niyama:health", value: "new value", deliberation: "short" },
-      ])).rejects.toThrow("Niyama modifications require deliberation (min 100 chars");
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "niyama:health", value: "new value", deliberation: "short" }, "deep-reflect"
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/Niyama modifications require deliberation \(min 100 chars/);
     });
 
     it("rejects if last model lacks yama_capable flag", async () => {
       const { kernel } = makePrincipleBrain();
       kernel.lastCallModel = "anthropic/claude-haiku-4.5";
-      await expect(kernel.kvWritePrivileged([
-        { op: "put", key: "yama:care", value: "new value", deliberation: "x".repeat(200) },
-      ])).rejects.toThrow("yama_capable model");
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "yama:care", value: "new value", deliberation: "x".repeat(200) }, "deep-reflect"
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/yama_capable model/);
     });
 
     it("rejects if last model lacks niyama_capable flag", async () => {
       const { kernel } = makePrincipleBrain();
       kernel.lastCallModel = "anthropic/claude-haiku-4.5";
-      await expect(kernel.kvWritePrivileged([
-        { op: "put", key: "niyama:health", value: "new value", deliberation: "x".repeat(100) },
-      ])).rejects.toThrow("niyama_capable model");
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "niyama:health", value: "new value", deliberation: "x".repeat(100) }, "deep-reflect"
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/niyama_capable model/);
     });
 
     it("returns warning with diff when modifying a yama", async () => {
       const { kernel } = makePrincipleBrain({
         "yama:care": "Old care text",
       });
-      const result = await kernel.kvWritePrivileged([
-        { op: "put", key: "yama:care", value: "New care text", deliberation: "x".repeat(200) },
-      ]);
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "yama:care", value: "New care text", deliberation: "x".repeat(200) }, "deep-reflect"
+      );
       expect(result).toBeDefined();
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings[0].key).toBe("yama:care");
-      expect(result.warnings[0].type).toBe("yama");
-      expect(result.warnings[0].current_value).toBe("Old care text");
-      expect(result.warnings[0].proposed_value).toBe("New care text");
-      expect(result.warnings[0].message).toContain("core principle of how you act in the world");
+      expect(result.ok).toBe(true);
+      expect(result.warning.key).toBe("yama:care");
+      expect(result.warning.type).toBe("yama");
+      expect(result.warning.current_value).toBe("Old care text");
+      expect(result.warning.proposed_value).toBe("New care text");
+      expect(result.warning.message).toContain("core principle of how you act in the world");
     });
 
     it("returns warning for niyama with different severity message", async () => {
       const { kernel } = makePrincipleBrain();
-      const result = await kernel.kvWritePrivileged([
-        { op: "put", key: "niyama:health", value: "New health text", deliberation: "x".repeat(100) },
-      ]);
-      expect(result.warnings[0].message).toContain("how you reflect and improve");
-      expect(result.warnings[0].message).not.toContain("how you act in the world");
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "niyama:health", value: "New health text", deliberation: "x".repeat(100) }, "deep-reflect"
+      );
+      expect(result.warning.message).toContain("how you reflect and improve");
+      expect(result.warning.message).not.toContain("how you act in the world");
     });
 
     it("same warning weight for create and delete", async () => {
@@ -1821,23 +1844,23 @@ describe("Yamas and Niyamas", () => {
         "yama:care": "Existing care text",
       });
       // Create (no existing value)
-      const createResult = await kernel.kvWritePrivileged([
-        { op: "put", key: "yama:new", value: "New yama", deliberation: "x".repeat(200) },
-      ]);
-      expect(createResult.warnings[0].message).toContain("WARNING: You are modifying yama");
+      const createResult = await kernel.kvWriteGated(
+        { op: "put", key: "yama:new", value: "New yama", deliberation: "x".repeat(200) }, "deep-reflect"
+      );
+      expect(createResult.warning.message).toContain("WARNING: You are modifying yama");
 
       // Delete
-      const deleteResult = await kernel.kvWritePrivileged([
-        { op: "delete", key: "yama:care", deliberation: "x".repeat(200) },
-      ]);
-      expect(deleteResult.warnings[0].message).toContain("WARNING: You are modifying yama");
+      const deleteResult = await kernel.kvWriteGated(
+        { op: "delete", key: "yama:care", deliberation: "x".repeat(200) }, "deep-reflect"
+      );
+      expect(deleteResult.warning.message).toContain("WARNING: You are modifying yama");
     });
 
     it("writes audit entry to {key}:audit", async () => {
       const { kernel, env } = makePrincipleBrain();
-      await kernel.kvWritePrivileged([
-        { op: "put", key: "yama:care", value: "New care text", deliberation: "x".repeat(200) },
-      ]);
+      await kernel.kvWriteGated(
+        { op: "put", key: "yama:care", value: "New care text", deliberation: "x".repeat(200) }, "deep-reflect"
+      );
       const auditRaw = env.KV._store.get("yama:care:audit");
       expect(auditRaw).toBeDefined();
       const audit = JSON.parse(auditRaw);
@@ -1852,41 +1875,42 @@ describe("Yamas and Niyamas", () => {
       // Pre-populate some yamas in KV
       env.KV._store.set("yama:truth", "Be transparent.");
       kernel.yamas = {};
-      await kernel.kvWritePrivileged([
-        { op: "put", key: "yama:care", value: "New care", deliberation: "x".repeat(200) },
-      ]);
+      await kernel.kvWriteGated(
+        { op: "put", key: "yama:care", value: "New care", deliberation: "x".repeat(200) }, "deep-reflect"
+      );
       // loadYamasNiyamas should have been called, refreshing the cache
       expect(kernel.yamas).toHaveProperty("yama:care");
     });
 
-    it("non-yama/niyama writes still return undefined (backward compatible)", async () => {
+    it("non-yama/niyama writes return {ok: true} without warning", async () => {
       const { kernel } = makePrincipleBrain();
-      const result = await kernel.kvWritePrivileged([
-        { op: "put", key: "config:defaults", value: { updated: true } },
-      ]);
-      expect(result).toBeUndefined();
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "config:defaults", value: { updated: true } }, "deep-reflect"
+      );
+      expect(result.ok).toBe(true);
+      expect(result.warning).toBeUndefined();
     });
 
     it("audit keys don't require deliberation", async () => {
       const { kernel } = makePrincipleBrain();
       // Writing to an audit key should go through without deliberation gate
-      await kernel.kvWritePrivileged([
-        { op: "put", key: "yama:care:audit", value: [{ entry: "test" }] },
-      ]);
-      // Should not throw
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "yama:care:audit", value: [{ entry: "test" }] }, "deep-reflect"
+      );
+      expect(result.ok).toBe(true);
     });
   });
 
-  describe("kvPutSafe blocks yama/niyama", () => {
+  describe("kvWriteSafe blocks yama/niyama", () => {
     it("blocks yama:* keys", async () => {
       const { kernel } = makeKernel();
-      await expect(kernel.kvPutSafe("yama:care", "new value"))
+      await expect(kernel.kvWriteSafe("yama:care", "new value"))
         .rejects.toThrow("system key");
     });
 
     it("blocks niyama:* keys", async () => {
       const { kernel } = makeKernel();
-      await expect(kernel.kvPutSafe("niyama:health", "new value"))
+      await expect(kernel.kvWriteSafe("niyama:health", "new value"))
         .rejects.toThrow("system key");
     });
   });
@@ -2440,21 +2464,23 @@ describe("sealed namespace", () => {
     });
   });
 
-  describe("kvPutSafe blocks sealed: keys", () => {
+  describe("kvWriteSafe blocks sealed: keys", () => {
     it("blocks writes to sealed: keys", async () => {
       const { kernel } = makeKernel();
-      await expect(kernel.kvPutSafe("sealed:quarantine:test", { data: 1 }))
+      await expect(kernel.kvWriteSafe("sealed:quarantine:test", { data: 1 }))
         .rejects.toThrow("kernel-only");
     });
   });
 
-  describe("kvWritePrivileged blocks sealed: keys", () => {
+  describe("kvWriteGated blocks sealed: keys", () => {
     it("blocks writes to sealed: keys", async () => {
       const { kernel } = makeKernel();
       kernel.sessionId = "test_session";
-      await expect(kernel.kvWritePrivileged([
-        { op: "put", key: "sealed:quarantine:test", value: { data: 1 } },
-      ])).rejects.toThrow("kernel-only");
+      const result = await kernel.kvWriteGated(
+        { op: "put", key: "sealed:quarantine:test", value: { data: 1 } }, "deep-reflect"
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/kernel key/);
     });
   });
 });
@@ -2533,8 +2559,8 @@ describe("inbound content gate", () => {
     // Stub karmaRecord
     kernel.karmaRecord = vi.fn(async () => {});
 
-    // Stub kvPut for quarantine writes
-    kernel.kvPut = vi.fn(async () => {});
+    // Stub kvWrite for quarantine writes
+    kernel.kvWrite = vi.fn(async () => {});
 
     // Stub communication gate methods
     kernel._commsGateApproved = false;
@@ -2585,8 +2611,8 @@ describe("inbound content gate", () => {
       function: { name: "check_email", arguments: "{}" },
     });
 
-    // kvPut should have been called with a sealed:quarantine: key for Bob
-    const quarantineCall = kernel.kvPut.mock.calls.find(
+    // kvWrite should have been called with a sealed:quarantine: key for Bob
+    const quarantineCall = kernel.kvWrite.mock.calls.find(
       ([key]) => key.startsWith("sealed:quarantine:")
     );
     expect(quarantineCall).toBeDefined();
@@ -2634,7 +2660,7 @@ describe("inbound content gate", () => {
     expect(result.emails[1].body).toBe("Buy my product!");
 
     // No quarantine writes
-    const quarantineCall = kernel.kvPut.mock.calls.find(
+    const quarantineCall = kernel.kvWrite.mock.calls.find(
       ([key]) => key.startsWith("sealed:quarantine:")
     );
     expect(quarantineCall).toBeUndefined();
@@ -2797,9 +2823,9 @@ describe("rotatePatronKey", () => {
       .rejects.toThrow();
   });
 
-  it("patron:public_key remains immutable via kvPut", async () => {
+  it("patron:public_key remains immutable via kvWrite", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvPut("patron:public_key", "new value"))
+    await expect(kernel.kvWrite("patron:public_key", "new value"))
       .rejects.toThrow("immutable");
   });
 });

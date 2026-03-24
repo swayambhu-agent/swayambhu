@@ -81,7 +81,7 @@ kernel.runScheduled()                                kernel.js:881
 │         │   │
 │         │   ├─► runCircuitBreaker(K)              kernel.js (proposal methods):445
 │         │   │   Read last_danger
-│         │   │   For each inflight code modification activated before danger:
+│         │   │   For each inflight code proposal activated before danger:
 │         │   │     rollbackInflight() → restore snapshot, delete proposal:*
 │         │   │   Delete last_danger via kvDeleteSafe
 │         │   │
@@ -113,10 +113,10 @@ kernel.runScheduled()                                kernel.js:881
 │         │   │           │ K.runAgentLoop({ tools, model: deep_reflect model, ... })
 │         │   │           │   └─► LLM + tool loop (see agent loop below)
 │         │   │           │ applyReflectOutput():
-│         │   │           │   Apply kv_operations via protection gate
-│         │   │           │   Process modification_verdicts (apply/reject/promote/rollback/etc.)
+│         │   │           │   Apply kv_operations via kvWriteGated
+│         │   │           │   Process proposal_verdicts (apply/reject/promote/rollback/etc.)
 │         │   │           │   Process comms_verdicts (send/revise_and_send/drop)
-│         │   │           │   Apply modification_requests via acceptDirect()
+│         │   │           │   Apply proposal_requests via acceptDirect()
 │         │   │           │   Save reflect schedule + output
 │         │   │           │   If depth == 1: write last_reflect + wake_config
 │         │   │           │
@@ -134,7 +134,7 @@ kernel.runScheduled()                                kernel.js:881
 │         │               │ K.runAgentLoop({ tools, model: orient model, ... })
 │         │               │   └─► LLM + tool loop (see agent loop below)
 │         │               │
-│         │               │ Apply kv_operations via applyKVOperation (protection gate)
+│         │               │ Apply kv_operations via kvWriteGated (context-based permissions)
 │         │               │
 │         │               │ [budget not fully exhausted?]
 │         │               │   executeReflect(K, state, step)    reflect.js:14
@@ -142,9 +142,9 @@ kernel.runScheduled()                                kernel.js:881
 │         │               │   │ Get karma (strip request payloads) + session cost
 │         │               │   │ K.runAgentLoop({ tools: [], maxSteps: 1, model: reflect model })
 │         │               │   │ Save last_reflect + reflect:0:{sessionId}
-│         │               │   │ Apply kv_operations via protection gate
-│         │               │   │ Process modification_verdicts (withdraw, modify only)
-│         │               │   │ Stage modification_requests
+│         │               │   │ Apply kv_operations via kvWriteGated
+│         │               │   │ Process proposal_verdicts (withdraw, modify only)
+│         │               │   │ Stage proposal_requests
 │         │               │   │ Apply next_wake_config if present
 │         │               │
 │         │               │ writeSessionResults()
@@ -311,7 +311,7 @@ fetch(request, env, ctx)                            kernel.js:147
     ├─► Trim + save state                            hook-chat.js:122
     │   Increment turn_count
     │   Trim messages to max_history_messages (default 40)
-    │   Save to chat:state:slack:{chatId} via kvPutSafe
+    │   Save to chat:state:slack:{chatId} via kvWriteSafe
     │
     └─► Record chat_turn karma                       hook-chat.js:130
 ```
@@ -330,13 +330,13 @@ Dev mode may skip webhook signature verification for convenience during testing.
 
 **Separate Cloudflare Worker.** Source: `dashboard-api/worker.js`. Shares the same KV namespace as kernel.
 
-**Wrangler config:** `dashboard-api/wrangler.toml`. Dev port 8790. `OPERATOR_KEY` is `"test"` in dev (set as `[vars]`), overridden by secret in prod.
+**Wrangler config:** `dashboard-api/wrangler.toml`. Dev port 8790. `PATRON_KEY` is `"test"` in dev (set as `[vars]`), overridden by secret in prod.
 
 ### Auth model
 
 - `GET /reflections` — **public, no auth**
 - `OPTIONS` on any path — CORS preflight, no auth
-- All other routes — require `X-Operator-Key` header matching `env.OPERATOR_KEY`
+- All other routes — require `X-Patron-Key` header matching `env.PATRON_KEY`
 
 ### Routes
 
@@ -392,7 +392,7 @@ DELETE /quarantine/:key                  → auth required
 │ Return { ok: true }
 ```
 
-**NOTE:** The dashboard reads `kernel:active_session` and `sealed:quarantine:*` directly from KV. The kernel's `K interface.kvGet()` blocks `sealed:*` reads, but the dashboard doesn't go through RPC — it uses `env.KV` directly. This is by design: the dashboard is operator-only, and quarantine content is intended for patron review.
+**NOTE:** The dashboard reads `kernel:active_session` and `sealed:quarantine:*` directly from KV. The kernel's `K interface.kvGet()` blocks `sealed:*` reads, but the dashboard doesn't go through RPC — it uses `env.KV` directly. This is by design: the dashboard is patron-only, and quarantine content is intended for patron review.
 
 **NOTE:** `GET /health` reads a key called `session` (plain text). This key is never written by any code in the codebase. The result is `null` and falls through to `activeSession` via the `||` operator, so it's harmless but dead.
 
@@ -408,15 +408,15 @@ DELETE /quarantine/:key                  → auth required
 |------|------|-------------|
 | `/` | `site/index.html` | Landing/redirect |
 | `/reflections/` | `site/reflections/index.html` | Public reflections page — fetches `GET /reflections` from dashboard API |
-| `/operator/` | `site/operator/index.html` | Authenticated operator dashboard — React SPA via Babel in-browser transform |
+| `/patron/` | `site/patron/index.html` | Authenticated patron dashboard — React SPA via Babel in-browser transform |
 
-### Operator dashboard (`/operator/`)
+### Patron dashboard (`/patron/`)
 
 Single-file React SPA loaded via CDN (React 18, Babel standalone, Tailwind CSS, marked.js, highlight.js). No build step.
 
 The SPA:
-- Prompts for operator key on load (stored in memory)
-- Sends `X-Operator-Key` header with every API request
+- Prompts for patron key on load (stored in memory)
+- Sends `X-Patron-Key` header with every API request
 - Hardcodes API base URL to `http://localhost:8790` for dev
 - Fetches `/health`, `/sessions`, `/kv`, `/kv/:key`, `/kv/multi`, `/quarantine`
 
@@ -426,7 +426,7 @@ Minimal Node.js HTTP server. Serves `site/` directory with `Cache-Control: no-st
 
 Special route: `POST /wake` proxies to `http://localhost:8787/__scheduled` (triggers a wake cycle from the SPA).
 
-**NOTE:** In production, the SPA would need a different API base URL. The `localhost:8790` is hardcoded in the operator HTML.
+**NOTE:** In production, the SPA would need a different API base URL. The `localhost:8790` is hardcoded in the patron HTML.
 
 ---
 

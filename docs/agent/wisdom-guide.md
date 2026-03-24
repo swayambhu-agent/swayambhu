@@ -60,7 +60,7 @@ Note: `validation` lives on the modification request (like `claims` for code), n
 Write upaya when you identify:
 - A pattern in how situations, people, or contexts work
 - A judgment call that succeeded or failed and carries a transferable lesson
-- A pattern observed in human feedback (chats, emails, operator corrections)
+- A pattern observed in human feedback (chats, emails, patron corrections)
 - A general principle that would serve across many different situations
 
 Write prajna when you identify:

@@ -1,4 +1,4 @@
-// Dashboard operator config — edit these values to customize the dashboard.
+// Dashboard patron config — edit these values to customize the dashboard.
 window.DASHBOARD_CONFIG = {
   // Timezone for all displayed timestamps (IANA format).
   // Examples: "Asia/Kolkata", "America/New_York", "UTC"

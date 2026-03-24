@@ -1,9 +1,9 @@
-// Swayambhu Dashboard API — stateless KV reader for operator dashboard
+// Swayambhu Dashboard API — stateless KV reader for patron dashboard
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Operator-Key",
+  "Access-Control-Allow-Headers": "Content-Type, X-Patron-Key",
 };
 
 function json(data, status = 200) {
@@ -14,8 +14,8 @@ function json(data, status = 200) {
 }
 
 function auth(request, env) {
-  const key = request.headers.get("X-Operator-Key");
-  return key && key === env.OPERATOR_KEY;
+  const key = request.headers.get("X-Patron-Key");
+  return key && key === env.PATRON_KEY;
 }
 
 async function kvListAll(kv, opts = {}) {
@@ -196,9 +196,9 @@ export default {
       return json(results);
     }
 
-    // GET /direct — check pending operator direct message
+    // GET /direct — check pending patron direct message
     if (path === "/direct" && request.method === "GET") {
-      const val = await env.KV.get("operator:direct", "json");
+      const val = await env.KV.get("patron:direct", "json");
       return json({ pending: !!val, message: val });
     }
 
@@ -208,7 +208,7 @@ export default {
       if (!body?.message || typeof body.message !== "string" || !body.message.trim()) {
         return json({ error: "message required" }, 400);
       }
-      await env.KV.put("operator:direct", JSON.stringify({
+      await env.KV.put("patron:direct", JSON.stringify({
         message: body.message.trim(),
         sent_at: new Date().toISOString(),
       }));
@@ -217,7 +217,7 @@ export default {
 
     // DELETE /direct — clear pending direct message
     if (path === "/direct" && request.method === "DELETE") {
-      await env.KV.delete("operator:direct");
+      await env.KV.delete("patron:direct");
       return json({ ok: true });
     }
 

@@ -9,7 +9,7 @@ We're restructuring into two workers on the GA free tier:
 - **Governor Worker** — reads approved code from KV, builds and deploys runtime via CF API
 
 Key design decisions (from conversation):
-- Code proposals replace the modification protocol (no snapshots, no inflight, no dual rollback)
+- Code proposals replace the proposal protocol (no snapshots, no inflight, no dual rollback)
 - `hook-protect.js` logic moves into kernel (immutable safety)
 - `hook-main.js` splits: orchestration → kernel, session policy → `act.js`
 - `hook-reflect.js` → `reflect.js` (nearly unchanged)
@@ -31,21 +31,21 @@ These issues are addressed inline in the phases below, but listed here for visib
 
 4. **`updateSessionOutcome()` last_good_hook snapshot is obsolete** — Worker versions replace it. Fix: remove snapshot logic, keep only session history update.
 
-5. **Tool grants security regression** — if agent modifies tool code including meta exports, grants change implicitly. Fix: kernel reads `kernel:tool_grants` from KV first (operator-controlled, kernel-only), falls back to module extraction only if KV is empty. Governor does NOT update `kernel:tool_grants`. New tool grants require operator intervention.
+5. **Tool grants security regression** — if agent modifies tool code including meta exports, grants change implicitly. Fix: kernel reads `kernel:tool_grants` from KV first (patron-controlled, kernel-only), falls back to module extraction only if KV is empty. Governor does NOT update `kernel:tool_grants`. New tool grants require patron intervention.
 
-6. **Governor reads kernel.js from KV at a kernel-only key** — stored at `kernel:source:kernel.js` and `kernel:source:hook-chat.js` by the seed script. CF Workers can't access their own source files at runtime, so embedding is impractical. Immutability is enforced by the `kernel:*` prefix — the agent can't write to `kernel:*` keys through any path (kvPutSafe, kvWritePrivileged, applyKVOperation, and proposals all block it). This is consistent: ALL source code lives in KV, with prefix-based protection levels. Kernel source has the strongest protection.
+6. **Governor reads kernel.js from KV at a kernel-only key** — stored at `kernel:source:kernel.js` and `kernel:source:hook-chat.js` by the seed script. CF Workers can't access their own source files at runtime, so embedding is impractical. Immutability is enforced by the `kernel:*` prefix — the agent can't write to `kernel:*` keys through any path (kvWriteSafe, kvWriteGated, kvWriteGated, and proposals all block it). This is consistent: ALL source code lives in KV, with prefix-based protection levels. Kernel source has the strongest protection.
 
-7. **Circuit breaker gap** — between Phase 3 (removed from hooks) and Phase 4 (governor created), there's no crash auto-recovery for code modifications. Acceptable for local dev (code changes are manual), but the plan should keep a minimal crash-detection-and-fallback in kernel.js (which already exists as `checkHookSafety` → `runMinimalFallback`).
+7. **Circuit breaker gap** — between Phase 3 (removed from hooks) and Phase 4 (governor created), there's no crash auto-recovery for code proposals. Acceptable for local dev (code changes are manual), but the plan should keep a minimal crash-detection-and-fallback in kernel.js (which already exists as `checkHookSafety` → `runMinimalFallback`).
 
 8. **Hook code KV keys for governor** — need explicit naming. Governor reads act.js source from `hook:act:code` and reflect.js source from `hook:reflect:code`. Seed script updated accordingly.
 
-9. **Proposal mechanics belong in the kernel** — they control the proposal/review mechanism (structural safety, same category as kvWritePrivileged and the communication gate). If mutable, the agent could bypass review. So proposals.js doesn't exist as a separate file — its ~150 lines become methods on the Kernel class in kernel.js. reflect.js calls `K.createProposal()`, `K.loadProposals()`, `K.processProposalVerdicts()`. This keeps the immutable/mutable boundary clean: kernel.js = immutable, everything else = mutable.
+9. **Proposal mechanics belong in the kernel** — they control the proposal/review mechanism (structural safety, same category as kvWriteGated and the communication gate). If mutable, the agent could bypass review. So proposals.js doesn't exist as a separate file — its ~150 lines become methods on the Kernel class in kernel.js. reflect.js calls `K.createProposal()`, `K.loadProposals()`, `K.processProposalVerdicts()`. This keeps the immutable/mutable boundary clean: kernel.js = immutable, everything else = mutable.
 
-10. **Proposals are code-only** — the proposal system only handles executable code changes (`tool:*:code`, `hook:*:code`, `provider:*:code`, `channel:*:code`). Config, prompt, wisdom, and skill changes continue through existing KV write tiers (kvPutSafe, kvWritePrivileged, applyKVOperation) and take effect on the next session without deployment. reflect.js must route these differently: code targets → createProposal(), non-code targets → direct KV write.
+10. **Proposals are code-only** — the proposal system only handles executable code changes (`tool:*:code`, `hook:*:code`, `provider:*:code`, `channel:*:code`). Config, prompt, wisdom, and skill changes continue through existing KV write tiers (kvWriteSafe, kvWriteGated, kvWriteGated) and take effect on the next session without deployment. reflect.js must route these differently: code targets → createProposal(), non-code targets → direct KV write.
 
 11. **`getMaxSteps()` cross-dependency** — currently in hook-reflect.js but used by both act.js (act max_steps) and reflect.js (reflect max_steps). Move to kernel.js as a utility method — it's a mechanical config lookup, not policy. Same for `getReflectModel()`.
 
-12. **Non-code changes lose multi-session review** — conscious tradeoff. Currently the modification protocol reviews all changes (code + config). In the new system, only code changes get multi-session review via proposals. Config/prompt changes go through KV write tiers directly. This is acceptable because: config changes are immediately reversible (agent or deep reflect can write a correction), KV write tiers have validation gates (deliberation for yamas/niyamas, model capability checks), and the blast radius is smaller (config doesn't crash the worker the way bad code does).
+12. **Non-code changes lose multi-session review** — conscious tradeoff. Currently the proposal protocol reviews all changes (code + config). In the new system, only code changes get multi-session review via proposals. Config/prompt changes go through KV write tiers directly. This is acceptable because: config changes are immediately reversible (agent or deep reflect can write a correction), KV write tiers have validation gates (deliberation for yamas/niyamas, model capability checks), and the blast radius is smaller (config doesn't crash the worker the way bad code does).
 
 ## Files Reference
 
@@ -54,7 +54,7 @@ These issues are addressed inline in the phases below, but listed here for visib
 - `kernel-dev.js` (317 lines) — already implements target pattern as subclass
 - `hook-main.js` (362 lines) — wake flow + session policy
 - `hook-reflect.js` (485 lines) — reflection hierarchy
-- `kernel.js (proposal methods)` (694 lines) — modification protocol (to simplify)
+- `kernel.js (proposal methods)` (694 lines) — proposal protocol (to simplify)
 - `hook-protect.js` (87 lines) — KV gating (to move into kernel)
 
 **Unchanged (tools/providers/channels):**
@@ -101,7 +101,7 @@ These issues are addressed inline in the phases below, but listed here for visib
 - `_buildScopedKV(toolName, kvAccess)` — from kernel-dev.js:215-247
 - `_buildToolGrantsFromModules()` — from kernel-dev.js:156-167, used as FALLBACK only when `kernel:tool_grants` not in KV
 - `buildKernelInterface()` — returns K object matching KernelRPC API surface (see `tests/helpers/mock-kernel.js` for the wake hook contract + `callLLM` for hook-chat.js). **Must include sealed: key filtering** in kvGet, kvGetWithMeta, and loadKeys (matching KernelRPC lines 68-70, 73-74, 112-114). All methods async (hooks await them). Note: mock-kernel.js doesn't include `callLLM` because wake hooks don't call it directly — but hook-chat.js does, so `buildKernelInterface()` must include it.
-- `applyKVOperation(op)` — moved from hook-protect.js (kernel safety, immutable)
+- `kvWriteGated(op)` — moved from hook-protect.js (kernel safety, immutable)
 
 **Replace `callHook()`** (line 1941) — currently loads from KV + runs in isolate. New version: check if tool exists in `this.TOOLS`, call directly if found, otherwise return null. Same graceful degradation.
 
@@ -111,9 +111,9 @@ These issues are addressed inline in the phases below, but listed here for visib
 
 **Replace `runScheduled()`** (line 950) — remove manifest/KV code loading (lines 960-977). Simplified: detectPlatformKill → checkHookSafety → if safe, call executeHook directly (no modules argument needed since hooks are statically compiled).
 
-**Tool grants loading** — `loadEagerConfig()` reads `kernel:tool_grants` from KV first. Only if empty, falls back to `_buildToolGrantsFromModules()`. This preserves operator control: `kernel:tool_grants` is a kernel-only key the agent cannot modify.
+**Tool grants loading** — `loadEagerConfig()` reads `kernel:tool_grants` from KV first. Only if empty, falls back to `_buildToolGrantsFromModules()`. This preserves patron control: `kernel:tool_grants` is a kernel-only key the agent cannot modify.
 
-**Keep unchanged:** All safety gates (kvPutSafe, kvWritePrivileged, communicationGate, inbound gate), callLLM + dharma injection, runAgentLoop, budget enforcement, karma, session management, patron identity, alerting.
+**Keep unchanged:** All safety gates (kvWriteSafe, kvWriteGated, communicationGate, inbound gate), callLLM + dharma injection, runAgentLoop, budget enforcement, karma, session management, patron identity, alerting.
 
 ### Create `index.js` (entry point)
 
@@ -153,7 +153,7 @@ export default {
 ### Update tests
 
 - `tests/kernel.test.js`: import from `kernel.js`, update `makeBrain()` to pass TOOLS/PROVIDERS where tool execution tests need them
-- `tests/helpers/mock-kernel.js`: add `applyKVOperation` to the mock interface
+- `tests/helpers/mock-kernel.js`: add `kvWriteGated` to the mock interface
 
 ### Delete
 
@@ -177,7 +177,7 @@ Extract from hook-main.js:
 - `getBalances(K, state)` (line 325-327) — balance helper
 - `summarizeKarma(karma)` (lines 277-321) — karma summary
 
-Note: `runSession` currently calls `applyKVOperation` from hook-protect.js. In the new architecture, it calls `K.applyKVOperation()` (kernel method added in Phase 1). Also calls `executeReflect` from hook-reflect.js — in Phase 2 this becomes an import from reflect.js.
+Note: `runSession` currently calls `kvWriteGated` from hook-protect.js. In the new architecture, it calls `K.kvWriteGated()` (kernel method added in Phase 1). Also calls `executeReflect` from hook-reflect.js — in Phase 2 this becomes an import from reflect.js.
 
 ### Move to kernel.js
 
@@ -187,14 +187,14 @@ From hook-main.js:
 - `evaluateTripwires(config, liveData)` (lines 329-350) → kernel static method
 - `getMaxSteps(state, role, depth)` and `getReflectModel(state, depth)` from hook-reflect.js → kernel utility methods (mechanical config lookups used by both act.js and reflect.js — avoids cross-dependency between the two)
 
-**Important sequencing note**: The current `wake()` calls `initTracking()`, `runCircuitBreaker()`, and `retryPendingGitSyncs()` from kernel.js (proposal methods). In Phase 2, these calls remain in the kernel's `runWake()` as imports from kernel.js (proposal methods) (which still exists until Phase 3). In Phase 3, these calls are removed when the modification protocol is replaced by proposals.
+**Important sequencing note**: The current `wake()` calls `initTracking()`, `runCircuitBreaker()`, and `retryPendingGitSyncs()` from kernel.js (proposal methods). In Phase 2, these calls remain in the kernel's `runWake()` as imports from kernel.js (proposal methods) (which still exists until Phase 3). In Phase 3, these calls are removed when the proposal protocol is replaced by proposals.
 
 The kernel's wake flow calls `this.HOOKS.act.runSession()` for act sessions and `this.HOOKS.reflect.runReflect()` for deep reflect.
 
 ### Create `reflect.js`
 
 Copy hook-reflect.js with these changes:
-- Remove `import { applyKVOperation } from './hook-protect.js'` → use `K.applyKVOperation(op)` instead
+- Remove `import { kvWriteGated } from './hook-protect.js'` → use `K.kvWriteGated(op)` instead
 - Keep `import { ... } from './kernel.js (proposal methods)'` temporarily (updated in Phase 3)
 - Remove Worker Loader default export (lines 354-361 of hook-main.js — but this is in hook-main, not hook-reflect. hook-reflect has no default export, so no change needed)
 
@@ -216,7 +216,7 @@ Change imports from `hook-main.js` / `hook-reflect.js` to `act.js` / `reflect.js
 
 ---
 
-## Phase 3: Simplify modification protocol to proposal system
+## Phase 3: Simplify proposal protocol to proposal system
 
 **Goal**: Replace kernel.js (proposal methods) (694 lines) with proposal methods in kernel.js (~150 lines).
 
@@ -263,7 +263,7 @@ Statuses: `proposed` → `accepted` → `deploying` → `deployed` → `stable` 
 - `executeReflect()` (session reflect): calls `K.loadProposals('proposed')` instead of `loadStagedModifications(K)`. Verdicts use `K.processProposalVerdicts()`.
 - `runReflect()` (deep reflect): same pattern. Verdicts are simpler — "accept" means set status to accepted (governor deploys later), not "execute KV writes immediately"
 - `applyReflectOutput()`: replace `processDeepReflectVerdicts()` with new `processProposalVerdicts()`. Remove snapshot/inflight terminology.
-- Remove modification_requests → route by target: code keys (`tool:*:code`, `hook:*:code`, `provider:*:code`, `channel:*:code`) become `K.createProposal()` calls; non-code keys (config, prompts, wisdom, skills) continue as direct KV writes via `K.kvWritePrivileged()` or `K.applyKVOperation()`
+- Remove proposal_requests → route by target: code keys (`tool:*:code`, `hook:*:code`, `provider:*:code`, `channel:*:code`) become `K.createProposal()` calls; non-code keys (config, prompts, wisdom, skills) continue as direct KV writes via `K.kvWriteGated()` or `K.kvWriteGated()`
 
 ### Update kernel.js wake orchestration
 
@@ -274,7 +274,7 @@ Statuses: `proposed` → `accepted` → `deploying` → `deployed` → `stable` 
 ### Update seed script
 
 - `scripts/seed-local-kv.mjs`:
-  - Remove `hook:wake:manifest`, `hook:wake:modifications`, `hook:wake:protect` seeding
+  - Remove `hook:wake:manifest`, `hook:wake:proposals`, `hook:wake:protect` seeding
   - Remove `hook:wake:code` (was hook-main.js source)
   - Add `hook:act:code` ← seeds act.js source (governor reads this key)
   - Change `hook:wake:reflect` → `hook:reflect:code` ← seeds reflect.js source
@@ -286,7 +286,7 @@ Statuses: `proposed` → `accepted` → `deploying` → `deployed` → `stable` 
 
 ### Update tests
 
-- `tests/wake-hook.test.js`: remove all modification protocol tests (staging, inflight, circuit breaker, git sync, predicate evaluation, conflict detection). Add proposal system tests.
+- `tests/wake-hook.test.js`: remove all proposal protocol tests (staging, inflight, circuit breaker, git sync, predicate evaluation, conflict detection). Add proposal system tests.
 
 ### Delete
 
@@ -334,7 +334,7 @@ id = "05720444f9654ed4985fb67af4aea24d"
 - **Mutable files from KV**: tools, providers, channels, act.js (`hook:act:code`), reflect.js (`hook:reflect:code`)
 - **Generated**: index.js (by builder.js)
 - Records deployment in KV: `deploy:version:{id}`, `deploy:current`, `deploy:history`
-- Does NOT update `kernel:tool_grants` — operator-only
+- Does NOT update `kernel:tool_grants` — patron-only
 
 **Governor deployment flow:**
 1. Read accepted proposals from KV (status = "accepted")
@@ -381,12 +381,12 @@ No service binding or HTTP needed. Both workers communicate solely through the s
 - New code layout table (kernel.js, act.js, reflect.js, governor/)
 - Remove Worker Loader references
 - Update wake hook module table
-- Update modification protocol section → proposal system
+- Update proposal protocol section → proposal system
 - Add governor section
 
 ### Update prompts
 
-- `prompt:reflect` and `prompt:reflect:1` reference modification_requests, modification_verdicts, staged/inflight terminology. Update to use proposal terminology.
+- `prompt:reflect` and `prompt:reflect:1` reference proposal_requests, proposal_verdicts, staged/inflight terminology. Update to use proposal terminology.
 
 ### Final verification
 
@@ -413,7 +413,7 @@ Phase 4 (governor) can start after Phase 1 since it's new code, but needs Phase 
 
 | New File | Lines | Source |
 |----------|-------|--------|
-| kernel.js | ~1950 | kernel.js - Worker Loader + kernel-dev.js overrides + wake orchestration + applyKVOperation + proposal methods (~150 lines) |
+| kernel.js | ~1950 | kernel.js - Worker Loader + kernel-dev.js overrides + wake orchestration + kvWriteGated + proposal methods (~150 lines) |
 | index.js | ~60 | Entry point wiring |
 | act.js | ~150 | hook-main.js session logic |
 | reflect.js | ~450 | hook-reflect.js (minor changes) |
@@ -428,7 +428,7 @@ Phase 4 (governor) can start after Phase 1 since it's new code, but needs Phase 
 | kernel.js | 2274 | kernel.js |
 | kernel-dev.js | 317 | Merged into kernel.js |
 | hook-main.js | 362 | kernel.js (orchestration) + act.js (session) |
-| hook-protect.js | 87 | kernel.js (applyKVOperation method) |
+| hook-protect.js | 87 | kernel.js (kvWriteGated method) |
 | kernel.js (proposal methods) | 694 | kernel.js (proposal methods) |
 | hook-reflect.js | 485 | reflect.js |
 | **Total removed** | **4219** | |

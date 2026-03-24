@@ -74,7 +74,7 @@ main = "worker.js"
 compatibility_date = "2025-06-01"
 
 [vars]
-OPERATOR_KEY = "test"
+PATRON_KEY = "test"
 
 [[kv_namespaces]]
 binding = "KV"
@@ -105,7 +105,7 @@ echo -n "your-value-here" | npx wrangler secret put SECRET_NAME
 For the dashboard worker:
 ```bash
 cd dashboard-api
-echo -n "your-strong-password" | npx wrangler secret put OPERATOR_KEY
+echo -n "your-strong-password" | npx wrangler secret put PATRON_KEY
 cd ..
 ```
 
@@ -262,7 +262,7 @@ source .env && bash scripts/start.sh --reset-all-state --wake
 
 ### Verify It's Working
 
-- **Dashboard** at `http://localhost:3001/operator/` — enter `test` as operator key
+- **Dashboard** at `http://localhost:3001/patron/` — enter `test` as patron key
 - **Timeline tab** — should show the first session
 - **KV Explorer** — should show 70+ keys
 - **Slack** — send a message to the bot

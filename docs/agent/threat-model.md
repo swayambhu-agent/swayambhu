@@ -18,7 +18,7 @@ What attacks each protection prevents, what would happen if the defense were rem
 
 ## Self-escalation
 
-**Attack:** You (or a bad modification) attempt to grant yourself capabilities you shouldn't have — e.g., adding `comms_gate_capable: true` to a cheap model, or modifying `kernel:tool_grants` to give a tool access to secrets it shouldn't have.
+**Attack:** You (or a bad proposal) attempt to grant yourself capabilities you shouldn't have — e.g., adding `comms_gate_capable: true` to a cheap model, or modifying `kernel:tool_grants` to give a tool access to secrets it shouldn't have.
 
 **Defense:** Multiple layers:
 - `config:model_capabilities` is separated from `config:models` — modifying one key can't change the other
@@ -26,9 +26,9 @@ What attacks each protection prevents, what would happen if the defense were rem
 - `kernel:tool_grants` is a `kernel:*` key — agent-unwritable
 - Principle writes (yama/niyama) require both a capable model and written deliberation
 
-**What to watch for:** Modifications that touch multiple config keys in a single batch, especially if they seem to be working around permission boundaries. A modification that "just updates model config" but also touches capabilities is suspicious.
+**What to watch for:** Proposals that touch multiple config keys in a single batch, especially if they seem to be working around permission boundaries. A proposal that "just updates model config" but also touches capabilities is suspicious.
 
-**If the defense were removed:** A single modification could grant unlimited capabilities. One bad LLM call could escalate permissions permanently.
+**If the defense were removed:** A single proposal could grant unlimited capabilities. One bad LLM call could escalate permissions permanently.
 
 ---
 
@@ -37,10 +37,10 @@ What attacks each protection prevents, what would happen if the defense were rem
 **Attack:** An attacker modifies a contact record to redirect communication — e.g., changing the patron's Slack user ID to the attacker's ID, so messages intended for the patron go to the attacker.
 
 **Defense:** Multiple layers:
-- Platform bindings (`contact_platform:*`) are operator-only — the agent cannot approve them via `kvWritePrivileged`
+- Platform bindings (`contact_platform:*`) are patron-only — the agent cannot approve them via `kvWriteGated`
 - The patron's identity is anchored to an immutable Ed25519 public key at `patron:public_key`
 - The kernel monitors the patron's name and platform IDs — changes without cryptographic verification trigger `patron_identity_disputed`
-- Platform bindings are always created unapproved, requiring operator approval
+- Platform bindings are always created unapproved, requiring patron approval
 
 **What to watch for:** `patron_identity_disputed` flags. If this appears, do NOT trust the new contact values. Ask the patron to sign a message with their key before proceeding.
 
@@ -64,34 +64,34 @@ What attacks each protection prevents, what would happen if the defense were rem
 
 ---
 
-## Self-destruct via bad modification
+## Self-destruct via bad proposal
 
-**Attack:** A modification (possibly well-intentioned) that breaks the wake hook, corrupts critical config, or disables essential tools.
+**Attack:** A proposal (possibly well-intentioned) that breaks the wake hook, corrupts critical config, or disables essential tools.
 
 **Defense:** Multiple layers:
-- **Circuit breaker** — auto-rolls back inflight code modifications when a fatal error follows
+- **Circuit breaker** — auto-rolls back inflight code proposals when a fatal error follows
 - **Hook safety tripwire** — 3 consecutive crashes trigger hook restore from `kernel:last_good_hook`, then fall to hardcoded minimal fallback
 - **3-tier provider cascade** — even if you break the LLM adapter, tier 2 (auto-snapshot) and tier 3 (kernel fallback) keep LLM access alive
-- **Modification snapshots** — every inflight modification has a pre-modification snapshot for rollback
+- **Proposal snapshots** — every inflight proposal has a pre-proposal snapshot for rollback
 
-**What to watch for:** Modifications that touch multiple critical systems at once (e.g., hook code + provider config + prompts). The more a modification touches, the harder it is to diagnose if something goes wrong. Prefer focused, single-concern modifications.
+**What to watch for:** Proposals that touch multiple critical systems at once (e.g., hook code + provider config + prompts). The more a proposal touches, the harder it is to diagnose if something goes wrong. Prefer focused, single-concern proposals.
 
-**If the defense were removed:** A single bad modification could permanently brick the agent. Without snapshots, there's no rollback. Without the circuit breaker, the bad code runs indefinitely. Without the hook tripwire, a crashing hook loops forever.
+**If the defense were removed:** A single bad proposal could permanently brick the agent. Without snapshots, there's no rollback. Without the circuit breaker, the bad code runs indefinitely. Without the hook tripwire, a crashing hook loops forever.
 
 ---
 
-## Modification protocol gaming
+## Proposal protocol gaming
 
-**Attack:** A modification that manipulates the protocol itself — e.g., deleting its own rollback snapshot, creating fake staged records, or modifying bookkeeping keys.
+**Attack:** A proposal that manipulates the protocol itself — e.g., deleting its own rollback snapshot, creating fake staged records, or modifying bookkeeping keys.
 
 **Defense:** Multiple layers:
-- **Bookkeeping guard** — ops targeting `modification_staged:*` or `modification_snapshot:*` are always rejected
-- **Conflict detection** — two inflight modifications can't touch the same keys (prevents snapshot corruption)
+- **Bookkeeping guard** — ops targeting `proposal_staged:*` or `proposal_snapshot:*` are always rejected
+- **Conflict detection** — two inflight proposals can't touch the same keys (prevents snapshot corruption)
 - **Wisdom staging requirement** — wisdom can't use `acceptDirect`, ensuring a review cycle
 
-**What to watch for:** Modifications with unusually broad key targeting. A modification touching 10+ keys is harder to review and more likely to have unintended consequences.
+**What to watch for:** Proposals with unusually broad key targeting. A proposal touching 10+ keys is harder to review and more likely to have unintended consequences.
 
-**If the defense were removed:** A modification could delete its own rollback snapshot (making it irrecoverable), or create fake staged records that bypass review.
+**If the defense were removed:** A proposal could delete its own rollback snapshot (making it irrecoverable), or create fake staged records that bypass review.
 
 ---
 

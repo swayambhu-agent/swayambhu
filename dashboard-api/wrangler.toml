@@ -3,7 +3,7 @@ main = "worker.js"
 compatibility_date = "2025-06-01"
 
 [vars]
-OPERATOR_KEY = "test"  # overridden by secret in production
+PATRON_KEY = "test"  # overridden by secret in production
 
 [[kv_namespaces]]
 binding = "KV"

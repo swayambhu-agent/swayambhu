@@ -62,7 +62,7 @@ script handles restarting both automatically.
 
 ### Dashboard auth
 
-The operator key for local dev is `test` (set in `dashboard-api/wrangler.toml`).
+The patron key for local dev is `test` (set in `dashboard-api/wrangler.toml`).
 Enter it in the dashboard login prompt.
 
 ## Testing
@@ -171,23 +171,25 @@ imports directly from disk. Use `--governor` flag with start.sh to run it.
 
 ### Proposal system (code changes)
 
-Code changes go through the proposal system (kernel methods):
+Code changes go through the proposal system (kernel methods).
+`proposal_requests` is code-only:
 1. Agent proposes code changes during reflect → `K.createProposal()`
 2. Future deep reflect reviews and accepts/rejects → `K.processProposalVerdicts()`
 3. Runtime writes `deploy:pending` to KV on accepted proposals
 4. Governor picks up pending deploys, applies to KV, builds, deploys via CF API
 5. Governor tracks version history for rollback
 
-Non-code changes (config, prompts, wisdom) go through KV write tiers
-directly (`kvPutSafe`, `kvWritePrivileged`) — no deployment needed.
+Non-code changes (config, prompts, wisdom) go through `kv_operations`
+with context-based permissions — in deep-reflect context, system keys
+are writable via `kvWriteGated`. No deployment needed.
 
 ### Yamas and Niyamas (operating principles)
 
 `yama:*` (outer world) and `niyama:*` (inner world) keys in KV. Kernel-injected
-into every LLM prompt after dharma. Mutable via `kvWritePrivileged` but with
-kernel-enforced friction: requires `deliberation` field (min 200 chars for yamas,
-100 for niyamas) and a `yama_capable/niyama_capable` model. Audit trail at
-`{key}:audit`.
+into every LLM prompt after dharma. Mutable via `kvWriteGated` in deep-reflect
+context, with kernel-enforced friction: requires `deliberation` field (min
+200 chars for yamas, 100 for niyamas) and a `yama_capable/niyama_capable`
+model. Audit trail at `{key}:audit`.
 
 ### Tools and providers
 
@@ -230,6 +232,13 @@ Agreeing without thinking leads to worse outcomes than honest disagreement.
 changes accumulate — commit as soon as a coherent unit of work is complete
 (a bug fix, a feature, a refactor). This protects against lost work and
 keeps the git history useful.
+
+**When working on prompt fine-tuning, role-play the prompt internally.**
+Imagine yourself as the model receiving the prompt. Before recommending
+a change, simulate how the wording would land — what it would emphasize,
+what it would suppress, what behavior it would actually produce. This
+is how you evaluate prompting ideas: not by abstract reasoning about them,
+but by feeling their effect on yourself.
 
 ## Problem-Solving Approach
 

@@ -17,10 +17,10 @@ Generated 2026-03-17. Covers every file in the project.
 
 | File | Purpose | KV Key | Exports | Imports | Imported by |
 |------|---------|--------|---------|---------|-------------|
-| `act.js` | Wake flow entry point — session control, crash detection, orient session, balance checking, tripwire evaluation | `hook:wake:code` | `wake`, `detectCrash`, `runSession`, `buildOrientContext`, `writeSessionResults`, `getBalances`, `evaluateTripwires`, `default` (static import export) | `./kernel.js (applyKVOperation)` (applyKVOperation), `./kernel.js (proposal methods)` (initTracking, runCircuitBreaker, retryPendingGitSyncs), `./reflect.js` (executeReflect, runReflect, highestReflectDepthDue, getMaxSteps) | `index.js` |
-| `reflect.js` | Reflection system — session reflect (depth 0), deep reflect (recursive depth 1+), scheduling, default prompts | `hook:wake:reflect` | `executeReflect`, `runReflect`, `gatherReflectContext`, `applyReflectOutput`, `loadReflectPrompt`, `loadBelowPrompt`, `loadReflectHistory`, `getReflectModel`, `getMaxSteps`, `isReflectDue`, `highestReflectDepthDue`, `defaultReflectPrompt`, `defaultDeepReflectPrompt` | `./kernel.js (applyKVOperation)` (applyKVOperation), `./kernel.js (proposal methods)` (loadStagedModifications, loadInflightModifications, stageModification, acceptDirect, processReflectVerdicts, processDeepReflectVerdicts) | `act.js` |
-| `kernel.js (proposal methods)` | Modification Protocol — staging, inflight management, conflict detection, circuit breaker, verdict processing, git sync | `hook:wake:modifications` | `initTracking`, `evaluatePredicate`, `evaluateCheck`, `evaluateChecks`, `stageModification`, `acceptStaged`, `acceptDirect`, `promoteInflight`, `rollbackInflight`, `findInflightConflict`, `loadStagedModifications`, `loadInflightModifications`, `processReflectVerdicts`, `processDeepReflectVerdicts`, `runCircuitBreaker`, `kvToPath`, `syncToGit`, `attemptGitSync`, `retryPendingGitSyncs` | None (standalone) | `act.js`, `reflect.js` |
-| `kernel.js (applyKVOperation)` | KV operation protection gate — blocks writes to system/protected keys | `hook:wake:protect` | `applyKVOperation` | None (standalone, leaf module) | `act.js`, `reflect.js` |
+| `act.js` | Wake flow entry point — session control, crash detection, orient session, balance checking, tripwire evaluation | `hook:wake:code` | `wake`, `detectCrash`, `runSession`, `buildOrientContext`, `writeSessionResults`, `getBalances`, `evaluateTripwires`, `default` (static import export) | `./kernel.js (kvWriteGated)` (kvWriteGated), `./kernel.js (proposal methods)` (initTracking, runCircuitBreaker, retryPendingGitSyncs), `./reflect.js` (executeReflect, runReflect, highestReflectDepthDue, getMaxSteps) | `index.js` |
+| `reflect.js` | Reflection system — session reflect (depth 0), deep reflect (recursive depth 1+), scheduling, default prompts | `hook:wake:reflect` | `executeReflect`, `runReflect`, `gatherReflectContext`, `applyReflectOutput`, `loadReflectPrompt`, `loadBelowPrompt`, `loadReflectHistory`, `getReflectModel`, `getMaxSteps`, `isReflectDue`, `highestReflectDepthDue`, `defaultReflectPrompt`, `defaultDeepReflectPrompt` | `./kernel.js (kvWriteGated)` (kvWriteGated), `./kernel.js (proposal methods)` (loadStagedModifications, loadInflightModifications, stageModification, acceptDirect, processReflectVerdicts, processDeepReflectVerdicts) | `act.js` |
+| `kernel.js (proposal methods)` | Proposal Protocol — staging, inflight management, conflict detection, circuit breaker, verdict processing, git sync | `hook:wake:proposals` | `initTracking`, `evaluatePredicate`, `evaluateCheck`, `evaluateChecks`, `stageModification`, `acceptStaged`, `acceptDirect`, `promoteInflight`, `rollbackInflight`, `findInflightConflict`, `loadStagedModifications`, `loadInflightModifications`, `processReflectVerdicts`, `processDeepReflectVerdicts`, `runCircuitBreaker`, `kvToPath`, `syncToGit`, `attemptGitSync`, `retryPendingGitSyncs` | None (standalone) | `act.js`, `reflect.js` |
+| `kernel.js (kvWriteGated)` | KV operation protection gate — blocks writes to system/protected keys | `hook:wake:protect` | `kvWriteGated` | None (standalone, leaf module) | `act.js`, `reflect.js` |
 
 ### Chat System
 
@@ -60,9 +60,9 @@ Generated 2026-03-17. Covers every file in the project.
 
 | File | Purpose | Exports | Imports | Imported by |
 |------|---------|---------|---------|-------------|
-| `dashboard-api/worker.js` | Stateless KV reader for operator dashboard — health, sessions, KV browse, reflections, quarantine, contacts | `default` (fetch handler) | None | None (entry point via `dashboard-api/wrangler.toml`) |
-| `site/operator/index.html` | Operator dashboard SPA (HTML/JS) | N/A | N/A | N/A |
-| `site/operator/config.js` | Dashboard timezone/locale/truncation/polling config | `window.DASHBOARD_CONFIG` | N/A | `site/operator/index.html` |
+| `dashboard-api/worker.js` | Stateless KV reader for patron dashboard — health, sessions, KV browse, reflections, quarantine, contacts | `default` (fetch handler) | None | None (entry point via `dashboard-api/wrangler.toml`) |
+| `site/patron/index.html` | Patron dashboard SPA (HTML/JS) | N/A | N/A | N/A |
+| `site/patron/config.js` | Dashboard timezone/locale/truncation/polling config | `window.DASHBOARD_CONFIG` | N/A | `site/patron/index.html` |
 | `site/index.html` | Landing page (static) | N/A | N/A | N/A |
 | `site/reflections/index.html` | Public reflections viewer (static) | N/A | N/A | N/A |
 
@@ -97,7 +97,7 @@ Generated 2026-03-17. Covers every file in the project.
 | File | Purpose | Test count | Imports |
 |------|---------|------------|---------|
 | `tests/kernel.test.js` | Kernel logic — KV tiers, tool execution, LLM calls, agent loop, communication gate, inbound gate, patron verification, hook safety | ~104 | `kernel.js`, `tests/helpers/mock-kv.js` |
-| `tests/wake-hook.test.js` | Wake flow, reflect, modifications, circuit breaker, git sync | ~62 | `act.js`, `reflect.js`, `kernel.js (proposal methods)`, `kernel.js (applyKVOperation)`, `tests/helpers/mock-kernel.js` |
+| `tests/wake-hook.test.js` | Wake flow, reflect, proposals, circuit breaker, git sync | ~62 | `act.js`, `reflect.js`, `kernel.js (proposal methods)`, `kernel.js (kvWriteGated)`, `tests/helpers/mock-kernel.js` |
 | `tests/tools.test.js` | Tool/provider execute(), module structure, meta field validation | ~100 | All `tools/*.js`, all `providers/*.js` |
 | `tests/chat.test.js` | Chat system — conversation flow, budgets, commands, unknown contacts | ~12 | `hook-chat.js`, `tests/helpers/mock-kernel.js` |
 | `tests/helpers/mock-kv.js` | In-memory KV store mock (Map-backed) | N/A | `vitest` |
@@ -109,7 +109,7 @@ Generated 2026-03-17. Covers every file in the project.
 |------|---------|
 | `wrangler.toml` | Production CF Worker config — kernel.js entry, KV binding, cron trigger (* * * * *), static import binding |
 | `wrangler.dev.toml` | Dev CF Worker config — index.js entry, KV binding, cron trigger |
-| `dashboard-api/wrangler.toml` | Dashboard API Worker config — OPERATOR_KEY var, KV binding |
+| `dashboard-api/wrangler.toml` | Dashboard API Worker config — PATRON_KEY var, KV binding |
 | `package.json` | ES module project — vitest + ethers devDeps, wrangler dep |
 | `vitest.config.js` | Vitest config — aliases `cloudflare:workers` to `__mocks__/cloudflare-workers.js` |
 | `__mocks__/cloudflare-workers.js` | Stub: exports empty `WorkerEntrypoint` class for test environment |
@@ -122,7 +122,7 @@ Generated 2026-03-17. Covers every file in the project.
 | `docs/dev/chat-system.md` | Chat system documentation |
 | `docs/dev/communication-gating.md` | Communication gate documentation |
 | `docs/dev/kv-schema.md` | KV key schema reference |
-| `docs/dev/modification-protocol.md` | Modification Protocol documentation |
+| `docs/dev/proposal-protocol.md` | Proposal Protocol documentation |
 | `docs/dev/provider-cascade.md` | LLM provider cascade documentation |
 | `docs/dev/reflection-system.md` | Reflection system documentation |
 | `docs/dev/scripts-reference.md` | Scripts reference |
@@ -132,7 +132,7 @@ Generated 2026-03-17. Covers every file in the project.
 | `docs/dev/adding-a-channel.md` | How to add a channel adapter |
 | `docs/dev/dashboard.md` | Dashboard documentation |
 | `docs/doc-architecture.md` | System architecture (seeded into KV as `doc:architecture`) |
-| `docs/doc-modification-guide.md` | Modification Protocol guide (seeded into KV as `doc:modification_guide`) |
+| `docs/doc-proposal-guide.md` | Proposal Protocol guide (seeded into KV as `doc:proposal_guide`) |
 | `docs/user/*.md` | End-user documentation (setup, config, security, operations, what-is) |
 | `specs/*.md` | Design specs (chunked-content-reader, communication-gating, patron-awareness, wisdom-management) |
 | `skills/computer.json` + `skills/computer.md` | Computer (Linux server) skill spec |
@@ -152,7 +152,7 @@ graph TD
         HM[act.js]
         HR[reflect.js]
         HMod[kernel.js (proposal methods)]
-        HP[kernel.js (applyKVOperation)]
+        HP[kernel.js (kvWriteGated)]
         HC[hook-chat.js]
     end
 
@@ -257,7 +257,7 @@ CF Cron trigger
       → kernel.checkHookSafety()             // 3-consecutive-failure tripwire
       → kernel.kvGet("hook:wake:manifest")   // load module manifest
       → kernel.executeHook(modules, mainModule)
-        → kernel.kvPut("kernel:active_session", sessionId)
+        → kernel.kvWrite("kernel:active_session", sessionId)
         → kernel._invokeHookModules(modules, mainModule)
           → [CF static import static import]
             → act.js default.fetch()
@@ -280,7 +280,7 @@ CF Cron trigger
                   → K.buildPrompt(orientPrompt, ...)
                   → K.buildToolDefinitions()
                   → K.runAgentLoop(...)                 // orient with tools
-                  → applyKVOperation(K, op)             // for each kv_operation
+                  → kvWriteGated(K, op)             // for each kv_operation
                   → executeReflect(K, state, ...)       // session reflect (depth 0)
                   → writeSessionResults(K, output, config)
         → kernel.updateSessionOutcome(outcome)
@@ -343,7 +343,7 @@ HTTP POST /channel/slack
               → kernel._executeTool(...)        // in static import
             → [inbound content gate]
           → adapter.sendReply(chatId, reply)
-          → kernel.kvPutSafe(convKey, conv)     // save state
+          → kernel.kvWriteSafe(convKey, conv)     // save state
       })
 ```
 
@@ -374,7 +374,7 @@ HTTP request
   → export default.fetch(request, env)
     → [CORS preflight → 204]
     → [GET /reflections → public, no auth — reads reflect:1:* keys]
-    → [auth check via X-Operator-Key header]
+    → [auth check via X-Patron-Key header]
     → GET /health        → session_counter, wake_config, last_reflect, active_session
     → GET /sessions      → karma:* keys, reflect:1:* keys, cache:session_ids
     → GET /kv            → kvListAll with optional ?prefix

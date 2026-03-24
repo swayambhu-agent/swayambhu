@@ -1,6 +1,6 @@
 # System Architecture
 
-Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a cron schedule, runs an LLM-driven session (orient), reflects on what it did, then sleeps until the next wake. All of its state — prompts, tools, config, memory, accumulated wisdom — lives in Cloudflare KV. The agent can modify its own prompts, tools, and config through a staged modification protocol, making the runtime disposable and the data the actual agent.
+Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a cron schedule, runs an LLM-driven session (orient), reflects on what it did, then sleeps until the next wake. All of its state — prompts, tools, config, memory, accumulated wisdom — lives in Cloudflare KV. The agent can modify its own prompts, tools, and config through a staged proposal protocol, making the runtime disposable and the data the actual agent.
 
 ## System diagram
 
@@ -9,7 +9,7 @@ Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a
                         │        Cloudflare Workers        │
                         │                                  │
                         │  ┌────────────┐  ┌────────────┐  │
- Cron (every minute) ──►│  │ kernel  │  │ dashboard  │  │◄── Operator browser
+ Cron (every minute) ──►│  │ kernel  │  │ dashboard  │  │◄── Patron browser
                         │  │   :8787    │  │  API :8790 │  │
  POST /channel/slack ──►│  │            │  │            │  │
                         │  └─────┬──────┘  └─────┬──────┘  │
@@ -37,7 +37,7 @@ Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a
 | Kernel (main) | `kernel.js` | 8787 | `scheduled()` (cron), `fetch()` (HTTP) |
 | Dashboard API | `dashboard-api/worker.js` | 8790 | `fetch()` only |
 
-The kernel handles all agent logic — wake cycles, chat, tool execution, LLM calls. The dashboard API is a stateless KV reader that serves the operator UI. It authenticates via `X-Operator-Key` header against an `OPERATOR_KEY` env var.
+The kernel handles all agent logic — wake cycles, chat, tool execution, LLM calls. The dashboard API is a stateless KV reader that serves the patron UI. It authenticates via `X-Patron-Key` header against a `PATRON_KEY` env var.
 
 ---
 
@@ -66,14 +66,15 @@ static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 
 ### What the kernel enforces
 
-1. **Dharma immutability** — `kvPut()`, `kvPutSafe()`, and `kvWritePrivileged()` all reject writes to `"dharma"` and keys in `IMMUTABLE_KEYS`.
+1. **Dharma immutability** — `kvWrite()`, `kvWriteSafe()`, and `kvWriteGated()` all reject writes to `"dharma"` and keys in `IMMUTABLE_KEYS`.
 
 2. **Dharma + principles injection** — `callLLM()` prepends dharma, yamas, and niyamas to every system prompt before the hook-provided content. No hook or prompt modification can bypass this (`kernel.js:1416-1440`).
 
 3. **Three-tier KV write gates:**
-   - `kvPutSafe(key, value, metadata)` — blocks `dharma`, kernel-only keys, and system keys. Used for agent-created data.
-   - `kvDeleteSafe(key)` — same blocks as `kvPutSafe`.
-   - `kvWritePrivileged(ops)` — for system keys. Pre-validates the entire batch before any writes execute. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact_platform:*` keys (operator-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on hook writes. Auto-reloads cached config after writing config keys.
+   - `kvWrite(key, value, metadata)` — raw write, immutability check only. Internal kernel use.
+   - `kvWriteSafe(key, value, metadata)` — standard gated write, blocks `dharma`, kernel-only keys, and system keys. Used for agent-created data.
+   - `kvDeleteSafe(key)` — same blocks as `kvWriteSafe`.
+   - `kvWriteGated(op, context)` — context-based permissions for agent-originated writes via `kv_operations`. In "act" and "reflect" contexts: can write agent keys + contacts. In "deep-reflect" context: can also write system keys (config, prompts, wisdom, skills). Yama/niyama require deliberation. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact_platform:*` keys (patron-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on hook writes. Always returns `{ok: true}` or `{ok: false, error: "reason"}` — no silent failures. Blocked writes are collected and recorded as a `kv_writes_blocked` karma event.
 
 4. **Communication gate** — `communicationGate()` (`kernel.js:515`) intercepts every tool call to a tool with a `communication` grant in `kernel:tool_grants`. Three checks in sequence:
    - Mechanical floor: blocks initiating contact with unknown persons (no contact record).
@@ -136,8 +137,8 @@ Exposes these categories of methods:
 |----------|---------|
 | LLM | `callLLM(opts)` |
 | KV reads | `kvGet(key)`, `kvGetWithMeta(key)`, `kvList(opts)` — all block `sealed:*` |
-| KV writes (safe) | `kvPutSafe(key, value, metadata)`, `kvDeleteSafe(key)` |
-| KV writes (privileged) | `kvWritePrivileged(ops)` |
+| KV writes (safe) | `kvWriteSafe(key, value, metadata)`, `kvDeleteSafe(key)` |
+| KV writes (gated) | `kvWriteGated(op, context)` |
 | Agent loop | `runAgentLoop(opts)`, `executeToolCall(tc)`, `buildToolDefinitions(extra)`, `spawnSubplan(args, depth)`, `callHook(name, ctx)` |
 | Communication | `listBlockedComms()`, `processCommsVerdict(id, verdict, revision)` |
 | Execution | `executeAction(step)`, `executeAdapter(adapterKey, input)`, `checkBalance(args)` |
@@ -173,7 +174,7 @@ Three modules compose the policy layer, all statically compiled into the runtime
 
 The kernel calls `act.js` for orient sessions and `reflect.js` for deep reflect. Both receive the K interface (built by `buildKernelInterface()`) which provides access to kernel primitives.
 
-KV operation gating (`applyKVOperation`) is now a kernel method in `kernel.js`. Proposal methods (`createProposal`, `loadProposals`, `processProposalVerdicts`) are also kernel methods.
+KV operation gating (`kvWriteGated`) is a kernel method in `kernel.js`. Proposal methods (`createProposal`, `loadProposals`, `processProposalVerdicts`) are also kernel methods.
 
 ### `act.js` — wake flow
 
@@ -181,8 +182,8 @@ KV operation gating (`applyKVOperation`) is now a kernel method in `kernel.js`. 
 
 1. **Sleep check** — reads `wake_config.next_wake_after`. Returns early if it's not time yet.
 2. **Crash detection** — `detectCrash(K)` checks `kernel:active_session`. If a stale session ID exists that doesn't match the current session, the previous session crashed. Returns the dead session's karma.
-3. **Modification tracking** — scans `proposal:*` and `proposal:*` prefixes, initializes the in-memory tracking arrays.
-4. **Circuit breaker** — `runCircuitBreaker(K)` (from `kernel.js (proposal methods)`) auto-rolls back inflight code modifications if `last_danger` timestamp is after their `activated_at`. Clears `last_danger` after processing.
+3. **Proposal tracking** — scans `proposal:*` prefixes, initializes the in-memory tracking arrays.
+4. **Circuit breaker** — `runCircuitBreaker(K)` (from `kernel.js (proposal methods)`) auto-rolls back inflight code proposals if `last_danger` timestamp is after their `activated_at`. Clears `last_danger` after processing.
 5. **Retry pending git syncs** — retries any `git_pending:*` records from previous sessions.
 6. **Load ground truth** — fetches balances via `checkBalance()`.
 7. **Reflection check** — `highestReflectDepthDue(K, state)` scans from `max_reflect_depth` down to 1, checking if any depth is due based on session count or elapsed days.
@@ -193,46 +194,55 @@ KV operation gating (`applyKVOperation`) is now a kernel method in `kernel.js`. 
 
 ### `reflect.js` — reflection hierarchy
 
-**Session reflect** (`executeReflect`, depth 0): Runs after every normal orient session. Gets karma (with request payloads stripped) and session cost. Uses no tools (`tools: []`), `maxSteps: 1`. Processes `kv_operations`, `modification_verdicts` (withdraw, modify only), and `modification_requests` (stages them).
+**Session reflect** (`executeReflect`, depth 0): Runs after every normal orient session. Gets karma (with request payloads stripped) and session cost. Uses no tools (`tools: []`), `maxSteps: 1`. Processes `kv_operations` (via `kvWriteGated` with reflect context), `proposal_verdicts` (withdraw, modify only), and `proposal_requests` (code-only, stages them).
 
 **Deep reflect** (`runReflect`, depth >= 1): Runs instead of a normal session when due. Gets tools (excluding `spawn_subplan`), uses `maxSteps` from config (default 10 for deep reflect, 5 for depth-1 reflect). Cascades downward — after completing depth N, runs depth N-1, down to depth 1.
 
 Deep reflect output processing (`applyReflectOutput`):
-1. Apply `kv_operations` via protection gate
-2. Process `modification_verdicts` (apply, reject, withdraw, modify, promote, rollback, defer)
+1. Apply `kv_operations` via `kvWriteGated(op, "deep-reflect")` — can write system keys
+2. Process `proposal_verdicts` (apply, reject, withdraw, modify, promote, rollback, defer)
 3. Process `comms_verdicts` (send, revise_and_send, drop)
-4. Apply `modification_requests` via `acceptDirect()` (skips staging — goes straight to inflight)
+4. Apply `proposal_requests` via `acceptDirect()` (skips staging — goes straight to inflight)
 5. Save reflect schedule
 6. Store output as `reflect:{depth}:{sessionId}`
 7. Only depth 1 writes `last_reflect` and `wake_config`
 
 **Reflect scheduling**: `isReflectDue(K, state, depth)` checks `reflect:schedule:{depth}`. If a schedule exists, it fires when `sessionsSince >= after_sessions` or `daysSince >= after_days`. Cold-start fallback uses exponential intervals: `baseInterval * multiplier^(depth-1)` sessions.
 
-### `kernel.js (proposal methods)` — Modification Protocol
+### `kernel.js (proposal methods)` — Proposal Protocol
 
-Two types of modifications:
+Two types of proposals:
 
 - **Code** (prompts, config, tools, hooks): requires `claims` (array), `ops` (array), `checks` (array). Goes through staged → inflight → promoted lifecycle.
 - **Wisdom** (`upaya:*`, `prajna:*`): requires `validation` and `ops`. Can only be staged by deep reflect (depth >= 1). Cannot use `acceptDirect()`. No circuit breaker rollback.
 
 Lifecycle:
-1. **`stageModification(K, request, sessionId, depth)`** — validates fields, writes to `proposal:{id}` via `kvWritePrivileged`.
-2. **`acceptStaged(K, modificationId)`** — checks for inflight conflicts (same target keys), snapshots current values, applies ops via `kvWritePrivileged`, moves from staged to `proposal:{id}`. Called by deep reflect verdicts.
-3. **`acceptDirect(K, request, sessionId)`** — skips staging, goes straight to inflight. Only for code type (wisdom rejected). Used by deep reflect `modification_requests`.
-4. **`promoteInflight(K, modificationId, depth)`** — deletes snapshot, triggers git sync (except wisdom type).
-5. **`rollbackInflight(K, modificationId, reason)`** — restores snapshotted values via `kvWritePrivileged`, deletes snapshot.
+1. **`stageModification(K, request, sessionId, depth)`** — validates fields, writes to `proposal:{id}` via `kvWriteGated`.
+2. **`acceptStaged(K, proposalId)`** — checks for inflight conflicts (same target keys), snapshots current values, applies ops via `kvWriteGated`, moves from staged to `proposal:{id}`. Called by deep reflect verdicts.
+3. **`acceptDirect(K, request, sessionId)`** — skips staging, goes straight to inflight. Code proposals only (wisdom rejected). Used by deep reflect `proposal_requests`.
+4. **`promoteInflight(K, proposalId, depth)`** — deletes snapshot, triggers git sync.
+5. **`rollbackInflight(K, proposalId, reason)`** — restores snapshotted values via `kvWriteGated`, deletes snapshot.
 
 **Conflict detection**: `findInflightConflict()` iterates `activeInflight` IDs and checks for overlapping target keys.
 
 **Git sync**: on promotion, `syncToGit()` maps KV keys to file paths via `kvToPath()`, builds a shell script that base64-decodes files, runs a secret scan (rejects known patterns like `sk-*`, `AKIA*`, PEM keys, `ghp_*`, `xoxb-*`), then commits and pushes. Executed via `computer` tool on the Hetzner server. Failed syncs are stored as `git_pending:*` and retried on subsequent wakes.
 
-### `kernel.js (applyKVOperation)` — KV operation gate
+### `kernel.js (kvWriteGated)` — KV operation gate
 
-`applyKVOperation(K, op)` gates all KV writes from the agent loop's output:
+`kvWriteGated(op, context)` gates all KV writes from agent `kv_operations` output. Context determines permissions:
 
-1. If `isSystemKey(key)` → blocked (logged to karma).
-2. If key exists and metadata doesn't have `unprotected: true` → blocked.
-3. Otherwise → applies via `applyKVOperationDirect()`.
+**In "act" and "reflect" contexts:**
+1. If `isSystemKey(key)` and not `contact:*` → returns `{ok: false, error: "reason"}`.
+2. `contact:*` keys are allowed (identity metadata only).
+3. If key exists and metadata doesn't have `unprotected: true` → returns `{ok: false, error: "reason"}`.
+4. Otherwise → applies the write.
+
+**In "deep-reflect" context:**
+1. System keys are allowed (config, prompts, wisdom, skills). Snapshots old values to karma, rate-limited (50/session), writes audit trails for principle keys.
+2. Yama/niyama require deliberation field and capable model.
+3. `kernel:*`, `dharma`, and `contact_platform:*` remain blocked in all contexts.
+
+**No silent failures** — always returns `{ok: true}` or `{ok: false, error: "reason"}`. Blocked writes are collected and recorded as a `kv_writes_blocked` karma event.
 
 Supported operations: `put`, `delete`, `patch` (find-and-replace in string values — rejects if `old_string` is missing or matches multiple locations), `rename` (copy value to new key, delete old key).
 
@@ -321,7 +331,7 @@ To add a new model with reasoning: add the model entry in `config:models` with `
 
 ### Model capability flags
 
-`config:model_capabilities` is a separate KV key (not in `config:models`) to prevent the agent from self-escalating model permissions via a single modification. As seeded:
+`config:model_capabilities` is a separate KV key (not in `config:models`) to prevent the agent from self-escalating model permissions via a single proposal. As seeded:
 
 ```json
 {
@@ -338,7 +348,7 @@ Only Opus and Sonnet have capability flags. Haiku and DeepSeek have none — the
 |------|--------------|---------|
 | Orient | `anthropic/claude-haiku-4.5` | Normal session agent loop |
 | Reflect (depth 0) | `anthropic/claude-sonnet-4.6` | Session-level reflection |
-| Deep reflect | `anthropic/claude-opus-4.6` | Depth 1+ reflection, modification verdicts |
+| Deep reflect | `anthropic/claude-opus-4.6` | Depth 1+ reflection, proposal verdicts |
 | Chat | `sonnet` (resolved to Sonnet 4.6) | Live chat responses |
 | Subplan | haiku (via `getFallbackModel()`) | Nested agent tasks |
 | Fallback | `anthropic/claude-haiku-4.5` | When primary model fails |
@@ -371,13 +381,13 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 |------|--------|---------|
 | **Immutable** | Cannot be written by anyone (except `rotatePatronKey` for `patron:public_key`) | `dharma`, `patron:public_key` |
 | **Kernel-only** | Only kernel internal code can read/write | `kernel:*`, `sealed:*` |
-| **Operator-only** | Blocked from agent writes in `kvWritePrivileged` | `contact_platform:*` |
-| **System (privileged)** | Writable via `kvWritePrivileged` only — snapshots to karma, rate-limited, audited | All `SYSTEM_KEY_PREFIXES` keys |
+| **Patron-only** | Blocked from agent writes in `kvWriteGated` | `contact_platform:*` |
+| **System (gated)** | Writable via `kvWriteGated` in deep-reflect context — snapshots to karma, rate-limited, audited | All `SYSTEM_KEY_PREFIXES` keys |
 | **Principle keys** | System-privileged + deliberation requirement + model capability gate | `yama:*` (200 char, yama_capable), `niyama:*` (100 char, niyama_capable) |
-| **Protected agent** | Agent-created keys with no `unprotected` metadata flag — `applyKVOperation` blocks modification | Any existing key without `{ unprotected: true }` metadata |
-| **Unprotected agent** | Freely writable via `kvPutSafe` or `applyKVOperation` | New keys, keys with `{ unprotected: true }` metadata |
+| **Protected agent** | Agent-created keys with no `unprotected` metadata flag — `kvWriteGated` blocks modification | Any existing key without `{ unprotected: true }` metadata |
+| **Unprotected agent** | Freely writable via `kvWriteSafe` or `kvWriteGated` | New keys, keys with `{ unprotected: true }` metadata |
 
-**NOTE:** The protection-gate logic in `kernel.js (applyKVOperation):applyKVOperation` means that agent-created keys become read-only once written unless they were created with `{ unprotected: true }` metadata. The `applyKVOperationDirect` function adds `{ unprotected: true }` to its puts, so keys created through the orient loop's `kv_operations` remain writable in future sessions.
+**NOTE:** The protection-gate logic in `kvWriteGated` means that agent-created keys become read-only once written unless they were created with `{ unprotected: true }` metadata. `kvWriteGated` adds `{ unprotected: true }` to its puts, so keys created through `kv_operations` remain writable in future sessions.
 
 ### Key namespace layout
 
@@ -392,8 +402,8 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 | `karma:*` | Session karma logs (flight recorder) |
 | `reflect:*:*` | Reflection outputs by depth and session |
 | `reflect:schedule:*` | Reflection scheduling state |
-| `proposal:*` | Staged modification proposals |
-| `proposal:*` | Inflight modification snapshots (for rollback) |
+| `proposal:*` | Staged proposals |
+| `proposal:*` | Inflight proposal snapshots (for rollback) |
 | `yama:*`, `niyama:*` | Operating principles (outer world / inner practice) |
 | `upaya:*` | Accumulated wisdom (communication, channels) |
 | `prajna:*` | Accumulated self-knowledge |
@@ -418,4 +428,4 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 
 ### Auto-tagging
 
-`kvPut()` (`kernel.js:1969`) auto-tags every write with metadata based on the key prefix. For example, `tool:*` keys get `{ type: "tool", runtime: "worker", format: "text" }`. Caller metadata can override defaults. `updated_at` is always set. System keys have `unprotected` stripped from metadata.
+`kvWrite()` auto-tags every write with metadata based on the key prefix. For example, `tool:*` keys get `{ type: "tool", runtime: "worker", format: "text" }`. Caller metadata can override defaults. `updated_at` is always set. System keys have `unprotected` stripped from metadata.

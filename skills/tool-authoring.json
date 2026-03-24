@@ -1,0 +1,14 @@
+{
+  "name": "tool-authoring",
+  "description": "Create, modify, or remove tools (executable code modules) via the proposal system. Covers the tool contract, the meta/grants security boundary, and the coordinated outputs needed for tool changes.",
+  "tools_used": ["kv_query", "kv_manifest", "test_model"],
+  "trigger_patterns": [
+    "create a tool", "new tool", "add a tool",
+    "modify tool", "fix tool", "update tool code",
+    "remove tool", "retire tool", "delete tool",
+    "tool not working", "tool needs changing"
+  ],
+  "created_by_depth": null,
+  "created_at": "2026-03-24T00:00:00.000Z",
+  "revision": 1
+}

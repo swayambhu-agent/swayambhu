@@ -6,9 +6,9 @@ schema, naming conventions, or decision criteria.
 
 ---
 
-## Wisdom modification format
+## Wisdom proposal format
 
-To propose a wisdom entry, include a modification request with `type: "wisdom"`:
+To propose a wisdom entry, include a proposal request with `type: "wisdom"`:
 
 ```json
 {
@@ -30,7 +30,7 @@ To propose a wisdom entry, include a modification request with `type: "wisdom"`:
 
 The `validation` field replaces `claims + checks` for wisdom. It's a natural-language statement of what evidence supports this wisdom and what would falsify it. When you review staged wisdom in a subsequent session, evaluate the validation against recent karma.
 
-Note: `validation` lives on the modification request (like `claims` for code), not duplicated inside the op's value. The engine stores it on the staged record. When a wisdom modification is accepted, the engine injects `validation` from the staged record into the live entry's JSON value. Single source of truth during staging; embedded in the entry once live.
+Note: `validation` lives on the proposal request (like `claims` for code), not duplicated inside the op's value. The engine stores it on the staged record. When a wisdom proposal is accepted, the engine injects `validation` from the staged record into the live entry's JSON value. Single source of truth during staging; embedded in the entry once live.
 
 ---
 
@@ -39,7 +39,7 @@ Note: `validation` lives on the modification request (like `claims` for code), n
 Write upaya when you identify:
 - A pattern in how situations, people, or contexts work
 - A judgment call that succeeded or failed and carries a transferable lesson
-- A pattern observed in human feedback (chats, emails, operator corrections)
+- A pattern observed in human feedback (chats, emails, patron corrections)
 - A general principle that would serve across many different situations
 
 Write prajna when you identify:
@@ -116,8 +116,8 @@ Fields:
 ## Maintenance
 
 Each deep reflect session should:
-- Review all staged wisdom modifications — issue verdicts (accept, reject, modify, defer)
-- Review all inflight wisdom modifications — issue verdicts (promote, rollback, defer)
+- Review all staged wisdom proposals — issue verdicts (accept, reject, modify, defer)
+- Review all inflight wisdom proposals — issue verdicts (promote, rollback, defer)
 - Consolidate overlapping promoted entries
 - Delete promoted wisdom no longer applicable
 - Verify no entry contains domain-specific technical knowledge (move to notes)

@@ -258,7 +258,7 @@ echo ""
 echo "=== Running ==="
 echo "  Kernel:      http://localhost:$KERNEL_PORT"
 echo "  Dashboard API:  http://localhost:$DASHBOARD_PORT"
-echo "  Dashboard SPA:  http://localhost:$SPA_PORT/operator/"
+echo "  Dashboard SPA:  http://localhost:$SPA_PORT/patron/"
 if $GOVERNOR; then
   echo "  Governor:       http://localhost:$GOVERNOR_PORT"
 fi

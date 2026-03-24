@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Swayambhu — Operator Dashboard</title>
+  <title>Swayambhu — Patron Dashboard</title>
   <link rel="icon" type="image/png" href="../avatar.png">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -117,7 +117,7 @@
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
         const res = await fetch(`${API_URL}${path}`, {
-          headers: { 'X-Operator-Key': key },
+          headers: { 'X-Patron-Key': key },
           signal: ctrl.signal,
         });
         if (res.status === 401) throw new Error('UNAUTHORIZED');
@@ -145,10 +145,10 @@
       return data;
     }
 
-    async function apiMulti(keys, operatorKey) {
+    async function apiMulti(keys, patronKey) {
       if (!keys.length) return {};
       const encoded = keys.map(k => encodeURIComponent(k)).join(',');
-      return api(`/kv/multi?keys=${encoded}`, operatorKey);
+      return api(`/kv/multi?keys=${encoded}`, patronKey);
     }
 
     // ── Event type colors ─────────────────────────────────────
@@ -377,12 +377,12 @@
         <div className="min-h-screen flex items-center justify-center">
           <form onSubmit={handleSubmit} className="bg-bg-panel border border-border rounded-lg p-8 w-full max-w-sm">
             <h1 className="text-accent font-bold text-lg tracking-widest mb-1">SWAYAMBHU</h1>
-            <p className="text-gray-500 text-sm mb-6">Operator Dashboard</p>
+            <p className="text-gray-500 text-sm mb-6">Patron Dashboard</p>
             <input
               type="password"
               value={key}
               onChange={(e) => setKey(e.target.value)}
-              placeholder="Operator key"
+              placeholder="Patron key"
               className="w-full bg-bg border border-border rounded px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent mb-4"
               autoFocus
             />
@@ -400,7 +400,7 @@
     }
 
     // ── Timeline Tab ──────────────────────────────────────────
-    function TimelineTab({ operatorKey, onSelectEntry }) {
+    function TimelineTab({ patronKey, onSelectEntry }) {
       const [sessions, setSessions] = useState([]);       // [{id, type, ts}]
       const [selectedSession, setSelectedSession] = useState(null);
       const [karma, setKarma] = useState([]);
@@ -418,7 +418,7 @@
 
       const refreshSessions = useCallback(async () => {
         try {
-          const d = await api('/sessions', operatorKey);
+          const d = await api('/sessions', patronKey);
           const list = (d.sessions || []).reverse();
           if (list.length > 0) {
             setSessions(list);
@@ -428,7 +428,7 @@
         } catch {}
         // Fallback: try cache:session_ids
         try {
-          const d = await api('/kv/cache:session_ids', operatorKey);
+          const d = await api('/kv/cache:session_ids', patronKey);
           const ids = d.value || [];
           if (ids.length > 0) {
             const list = ids.reverse().map(id => ({ id, type: 'act', ts: null }));
@@ -438,7 +438,7 @@
           }
         } catch {}
         return [];
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => {
         refreshSessions();
@@ -454,7 +454,7 @@
         if (!sid) return;
         setLoading(true);
         try {
-          const d = await api(`/kv/karma:${sid}`, operatorKey);
+          const d = await api(`/kv/karma:${sid}`, patronKey);
           if (d.error) {
             // Session not found — refresh session list
             const fresh = await refreshSessions();
@@ -474,7 +474,7 @@
           karmaRef.current = entries;
         } catch { setKarma([]); karmaRef.current = []; }
         setLoading(false);
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => {
         if (selectedSession) loadKarma(selectedSession);
@@ -491,7 +491,7 @@
           loadKarma(selectedSession);
           watchRef.current = setInterval(async () => {
             try {
-              const d = await api(`/kv/karma:${selectedSession}`, operatorKey);
+              const d = await api(`/kv/karma:${selectedSession}`, patronKey);
               if (d.error) {
                 // Session no longer exists (e.g. KV wiped) — refresh session list
                 const fresh = await refreshSessions();
@@ -514,7 +514,7 @@
               }
               // Auto-stop if no active session
               try {
-                const h = await api('/health', operatorKey);
+                const h = await api('/health', patronKey);
                 if (!h.session) {
                   clearInterval(watchRef.current);
                   watchRef.current = null;
@@ -719,7 +719,7 @@
     }
 
     // ── Context Panel ─────────────────────────────────────────
-    function ContextPanel({ operatorKey, selectedEntry }) {
+    function ContextPanel({ patronKey, selectedEntry }) {
       if (!selectedEntry) {
         return (
           <div className="h-full flex items-center justify-center p-4">
@@ -779,7 +779,7 @@
     }
 
     // ── KV Explorer Tab ───────────────────────────────────────
-    function KVExplorerTab({ operatorKey }) {
+    function KVExplorerTab({ patronKey }) {
       const [index, setIndex] = useState([]);
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState(null);
@@ -789,10 +789,10 @@
 
       const loadIndex = useCallback(() => {
         setLoading(true); setError(null);
-        api('/kv', operatorKey)
+        api('/kv', patronKey)
           .then(d => { setIndex(d.keys || []); setLoading(false); })
           .catch(e => { setError(e.message); setLoading(false); });
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => { loadIndex(); }, [loadIndex]);
 
@@ -824,7 +824,7 @@
         setExpandedKey(key);
         setKeyLoading(true);
         try {
-          const d = await api(`/kv/${encodeURIComponent(key)}`, operatorKey);
+          const d = await api(`/kv/${encodeURIComponent(key)}`, patronKey);
           setKeyValue(d.value);
         } catch { setKeyValue('(error fetching)'); }
         setKeyLoading(false);
@@ -884,7 +884,7 @@
     }
 
     // ── Reflections Tab ───────────────────────────────────────
-    function ReflectionsTab({ operatorKey }) {
+    function ReflectionsTab({ patronKey }) {
       const [reflect, setReflect] = useState(null);
       const [reflectKeys, setReflectKeys] = useState([]);
       const [selectedReflect, setSelectedReflect] = useState(null);
@@ -894,21 +894,21 @@
       const loadReflections = useCallback(() => {
         setLoading(true); setError(null);
         Promise.all([
-          api('/kv/last_reflect', operatorKey),
-          api('/kv?prefix=reflect:', operatorKey),
+          api('/kv/last_reflect', patronKey),
+          api('/kv?prefix=reflect:', patronKey),
         ]).then(([lr, idx]) => {
           setReflect(lr.value);
           setReflectKeys((idx.keys || []).map(k => k.key));
           setLoading(false);
         }).catch(e => { setError(e.message); setLoading(false); });
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => { loadReflections(); }, [loadReflections]);
 
       const loadReflect = async (key) => {
         setSelectedReflect(null);
         try {
-          const d = await api(`/kv/${encodeURIComponent(key)}`, operatorKey);
+          const d = await api(`/kv/${encodeURIComponent(key)}`, patronKey);
           setSelectedReflect({ key, value: d.value });
         } catch {}
       };
@@ -983,7 +983,7 @@
     }
 
     // ── Mutations Tab ─────────────────────────────────────────
-    function MutationsTab({ operatorKey }) {
+    function MutationsTab({ patronKey }) {
       const [staged, setStaged] = useState([]);
       const [inflight, setInflight] = useState([]);
       const [loading, setLoading] = useState(true);
@@ -995,14 +995,14 @@
       const loadMutations = useCallback(() => {
         setLoading(true); setError(null);
         Promise.all([
-          api('/kv?prefix=mutation_staged:', operatorKey),
-          api('/kv?prefix=mutation_rollback:', operatorKey),
+          api('/kv?prefix=mutation_staged:', patronKey),
+          api('/kv?prefix=mutation_rollback:', patronKey),
         ]).then(([s, c]) => {
           setStaged((s.keys || []).map(k => ({ ...k, status: 'staged' })));
           setInflight((c.keys || []).map(k => ({ ...k, status: 'inflight' })));
           setLoading(false);
         }).catch(e => { setError(e.message); setLoading(false); });
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => { loadMutations(); }, [loadMutations]);
 
@@ -1019,7 +1019,7 @@
         if (expandedId === key) { setExpandedId(null); return; }
         setExpandedId(key);
         try {
-          const d = await api(`/kv/${encodeURIComponent(key)}`, operatorKey);
+          const d = await api(`/kv/${encodeURIComponent(key)}`, patronKey);
           setDetail(d.value);
         } catch { setDetail('(error)'); }
       };
@@ -1031,7 +1031,7 @@
         rolled_back: { bar: 'bg-red-500', text: 'text-red-400', label: 'Rolled Back' },
       };
 
-      if (loading) return <p className="text-gray-500 text-sm">Loading modifications...</p>;
+      if (loading) return <p className="text-gray-500 text-sm">Loading proposals...</p>;
       if (error) return <LoadError error={error} onRetry={loadMutations} />;
 
       return (
@@ -1056,7 +1056,7 @@
           </div>
 
           <div className="space-y-2">
-            {filtered.length === 0 && <p className="text-gray-500 text-xs">No modifications found</p>}
+            {filtered.length === 0 && <p className="text-gray-500 text-xs">No proposals found</p>}
             {filtered.map(m => {
               const sc = STATUS_COLORS[m.status] || STATUS_COLORS.staged;
               return (
@@ -1089,7 +1089,7 @@
     }
 
     // ── Contacts Tab ────────────────────────────────────────────
-    function ContactsTab({ operatorKey }) {
+    function ContactsTab({ patronKey }) {
       const [contacts, setContacts] = useState([]);
       const [bindings, setBindings] = useState([]);
       const [selectedSlug, setSelectedSlug] = useState(null);
@@ -1100,15 +1100,15 @@
         setLoading(true); setError(null);
         try {
           const [cRes, pRes] = await Promise.all([
-            api('/kv?prefix=contact:', operatorKey),
-            api('/kv?prefix=contact_platform:', operatorKey),
+            api('/kv?prefix=contact:', patronKey),
+            api('/kv?prefix=contact_platform:', patronKey),
           ]);
           // Load contact values
           const contactList = [];
           for (const k of (cRes.keys || [])) {
             if (k.key.startsWith('contact_platform:')) continue;
             try {
-              const d = await api(`/kv/${encodeURIComponent(k.key)}`, operatorKey);
+              const d = await api(`/kv/${encodeURIComponent(k.key)}`, patronKey);
               contactList.push({ slug: k.key.replace('contact:', ''), ...d.value });
             } catch {}
           }
@@ -1116,7 +1116,7 @@
           const bindingList = [];
           for (const k of (pRes.keys || [])) {
             try {
-              const d = await api(`/kv/${encodeURIComponent(k.key)}`, operatorKey);
+              const d = await api(`/kv/${encodeURIComponent(k.key)}`, patronKey);
               const parts = k.key.replace('contact_platform:', '').split(':');
               const platform = parts[0];
               const platformId = parts.slice(1).join(':');
@@ -1127,7 +1127,7 @@
           setBindings(bindingList);
           setLoading(false);
         } catch (e) { setError(e.message); setLoading(false); }
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => { load(); }, [load]);
 
@@ -1136,7 +1136,7 @@
         try {
           await fetch(`${API_URL}/contact-platform/${encodeURIComponent(binding.platform)}/${encodeURIComponent(binding.platformId)}/approve`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', 'X-Operator-Key': operatorKey },
+            headers: { 'Content-Type': 'application/json', 'X-Patron-Key': patronKey },
             body: JSON.stringify({ approved: newApproved }),
           });
           await load();
@@ -1256,7 +1256,7 @@
     }
 
     // ── Chat Tab ──────────────────────────────────────────────
-    function ChatTab({ operatorKey }) {
+    function ChatTab({ patronKey }) {
       const [chats, setChats] = useState([]);
       const [selectedChat, setSelectedChat] = useState(null);
       const [chatData, setChatData] = useState(null);
@@ -1265,10 +1265,10 @@
 
       const refreshChats = useCallback(async () => {
         try {
-          const d = await api('/chats', operatorKey);
+          const d = await api('/chats', patronKey);
           setChats(d.chats || []);
         } catch {}
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => {
         refreshChats();
@@ -1279,12 +1279,12 @@
       const loadChat = useCallback(async (platform, channelId) => {
         setLoading(true);
         try {
-          const d = await api(`/chat/${platform}/${channelId}`, operatorKey);
+          const d = await api(`/chat/${platform}/${channelId}`, patronKey);
           setChatData(d.chat || null);
           setParticipants(d.participants || {});
         } catch { setChatData(null); }
         setLoading(false);
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => {
         if (selectedChat) {
@@ -1470,19 +1470,19 @@
     }
 
     // ── Direct Message Bar ─────────────────────────────────────
-    function DirectMessageBar({ operatorKey }) {
+    function DirectMessageBar({ patronKey }) {
       const [pending, setPending] = useState(null);     // { message, sent_at } or null
       const [draft, setDraft] = useState('');
       const [editing, setEditing] = useState(false);
       const [sending, setSending] = useState(false);
 
       const refresh = useCallback(async () => {
-        if (!operatorKey) return;
+        if (!patronKey) return;
         try {
-          const d = await api('/direct', operatorKey);
+          const d = await api('/direct', patronKey);
           setPending(d.pending ? d.message : null);
         } catch {}
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => { refresh(); }, [refresh]);
       // Poll every 10s to detect when the agent consumes the message
@@ -1497,7 +1497,7 @@
         try {
           await fetch(`${API_URL}/direct`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Operator-Key': operatorKey },
+            headers: { 'Content-Type': 'application/json', 'X-Patron-Key': patronKey },
             body: JSON.stringify({ message: draft.trim() }),
           });
           setDraft('');
@@ -1511,7 +1511,7 @@
         try {
           await fetch(`${API_URL}/direct`, {
             method: 'DELETE',
-            headers: { 'X-Operator-Key': operatorKey },
+            headers: { 'X-Patron-Key': patronKey },
           });
           setPending(null);
           setDraft('');
@@ -1578,7 +1578,7 @@
 
     // ── Main App ──────────────────────────────────────────────
     function App() {
-      const [operatorKey, setOperatorKey] = useState(() => sessionStorage.getItem('operatorKey'));
+      const [patronKey, setPatronKey] = useState(() => sessionStorage.getItem('patronKey'));
       const [health, setHealth] = useState(null);
       const [balances, setBalances] = useState(null);
       const [countdown, setCountdown] = useState(null);
@@ -1594,27 +1594,27 @@
       }, []);
 
       const handleLogin = (key) => {
-        sessionStorage.setItem('operatorKey', key);
-        setOperatorKey(key);
+        sessionStorage.setItem('patronKey', key);
+        setPatronKey(key);
       };
 
       const handleLogout = () => {
-        sessionStorage.removeItem('operatorKey');
-        setOperatorKey(null);
+        sessionStorage.removeItem('patronKey');
+        setPatronKey(null);
         setHealth(null);
         setBalances(null);
       };
 
       // Load health + balances on auth, poll every 10s
       const loadHealth = useCallback(async () => {
-        if (!operatorKey) return;
+        if (!patronKey) return;
         try {
-          const h = await api('/health', operatorKey);
+          const h = await api('/health', patronKey);
           setHealth(h);
           const tryLoadBalances = async (sid) => {
             if (!sid) return false;
             try {
-              const k = await api(`/kv/karma:${sid}`, operatorKey);
+              const k = await api(`/kv/karma:${sid}`, patronKey);
               const entries = k.value || [];
               const end = [...entries].reverse().find(e => (e.event === 'session_end' || e.event === 'reflect_complete') && e.balances);
               if (end?.balances) { setBalances(end.balances); return true; }
@@ -1625,7 +1625,7 @@
           };
           if (!(await tryLoadBalances(h.session))) {
             try {
-              const d = await api('/kv/cache:session_ids', operatorKey);
+              const d = await api('/kv/cache:session_ids', patronKey);
               const ids = d.value || [];
               if (ids.length) await tryLoadBalances(ids[ids.length - 1]);
             } catch {}
@@ -1633,7 +1633,7 @@
         } catch (err) {
           if (err.message === 'UNAUTHORIZED') handleLogout();
         }
-      }, [operatorKey]);
+      }, [patronKey]);
 
       useEffect(() => {
         loadHealth();
@@ -1659,7 +1659,7 @@
         return () => clearInterval(iv);
       }, [health?.wakeConfig?.next_wake_after]);
 
-      if (!operatorKey) return <LoginScreen onLogin={handleLogin} />;
+      if (!patronKey) return <LoginScreen onLogin={handleLogin} />;
 
       const tabs = [
         { id: 'timeline', label: 'Timeline' },
@@ -1675,7 +1675,7 @@
           {/* Header + status bar */}
           <div className="bg-bg-panel border-b border-border px-4 py-2 flex items-center gap-4 text-xs">
             <span className="text-accent font-bold tracking-widest text-sm">SWAYAMBHU</span>
-            <span className="text-gray-600">operator</span>
+            <span className="text-gray-600">patron</span>
             {health && (
               <>
                 <span className="text-gray-600">|</span>
@@ -1747,33 +1747,33 @@
           </div>
 
           {/* Direct message bar */}
-          <DirectMessageBar operatorKey={operatorKey} />
+          <DirectMessageBar patronKey={patronKey} />
 
           {/* Content — all tabs stay mounted (display:none) to preserve state */}
           <div ref={containerRef} className="flex-1 flex overflow-hidden">
             <div style={{ display: activeTab === 'timeline' ? 'flex' : 'none', width: '100%', height: '100%' }}>
               <div style={{ width: `${leftPct}%` }} className="flex-shrink-0 p-4 overflow-hidden flex flex-col">
-                <TimelineTab operatorKey={operatorKey} onSelectEntry={setSelectedEntry} />
+                <TimelineTab patronKey={patronKey} onSelectEntry={setSelectedEntry} />
               </div>
               <DraggableDivider onDrag={handleDividerDrag} />
               <div style={{ width: `${100 - leftPct}%` }} className="flex-shrink-0 overflow-hidden bg-bg-panel flex flex-col">
-                <ContextPanel operatorKey={operatorKey} selectedEntry={selectedEntry} />
+                <ContextPanel patronKey={patronKey} selectedEntry={selectedEntry} />
               </div>
             </div>
             <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', width: '100%', height: '100%' }}>
-              <ChatTab operatorKey={operatorKey} />
+              <ChatTab patronKey={patronKey} />
             </div>
             <div style={{ display: activeTab === 'contacts' ? 'flex' : 'none', width: '100%', height: '100%' }}>
-              <ContactsTab operatorKey={operatorKey} />
+              <ContactsTab patronKey={patronKey} />
             </div>
             <div style={{ display: activeTab === 'kv' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
-              <KVExplorerTab operatorKey={operatorKey} />
+              <KVExplorerTab patronKey={patronKey} />
             </div>
             <div style={{ display: activeTab === 'reflections' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
-              <ReflectionsTab operatorKey={operatorKey} />
+              <ReflectionsTab patronKey={patronKey} />
             </div>
             <div style={{ display: activeTab === 'mutations' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
-              <MutationsTab operatorKey={operatorKey} />
+              <MutationsTab patronKey={patronKey} />
             </div>
           </div>
         </div>

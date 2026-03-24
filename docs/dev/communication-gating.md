@@ -36,7 +36,7 @@ below). A contact must have an approved platform binding before the agent
 can send to them, receive unredacted content from them, or give them tool
 access in chat.
 
-**Agent contact rules** (enforced by `kvWritePrivileged` in
+**Agent contact rules** (enforced by `kvWriteGated` in
 `kernel.js`):
 
 | Action | Allowed? | Constraints |
@@ -44,13 +44,13 @@ access in chat.
 | Create contact | Yes | Identity metadata only (no `approved` or `platforms` fields) |
 | Edit contact fields | Yes | Can update name, relationship, chat config, etc. |
 | Propose platform binding | Yes | Creates `contact_platform:` key with `approved: false` |
-| Approve platform binding | No | Operator-only (via dashboard `PATCH /contact-platform/:platform/:id/approve`) |
+| Approve platform binding | No | Patron-only (via dashboard `PATCH /contact-platform/:platform/:id/approve`) |
 | Delete contact | Yes | Agent can clean up contacts it created |
 
-**Write path:** Agent `kv_operations` → `applyKVOperation` in
-`kernel.js:applyKVOperation` → routes `contact:*` keys to `kvWritePrivileged` →
-kernel-enforced rules above. `contact_platform:*` keys remain
-kernel-managed (rejected by `kvWritePrivileged`).
+**Write path:** Agent `kv_operations` → `kvWriteGated(op, context)` →
+routes `contact:*` keys through the gated write path in any context.
+`contact_platform:*` keys remain kernel-managed (rejected by
+`kvWriteGated`).
 
 ### Platform bindings (index + approval)
 
@@ -100,8 +100,8 @@ Loaded at boot by `loadPatronContext()`.
 
 ### patron:public_key
 
-Listed in `IMMUTABLE_KEYS` — blocked by `kvPut`, `kvPutSafe`, and
-`kvWritePrivileged`. The only write path is `rotatePatronKey()`, which
+Listed in `IMMUTABLE_KEYS` — blocked by `kvWrite`, `kvWriteSafe`, and
+`kvWriteGated`. The only write path is `rotatePatronKey()`, which
 bypasses the guard via direct `this.kv.put()` after verifying a
 rotation signature from the current key holder.
 
@@ -280,7 +280,7 @@ Only blocks `person`-type tools. Two checks:
    out).
 2. **Unapproved contact** (contact exists but `approved` is false) →
    hard block for **both** initiating and responding. All communication
-   with unapproved contacts is blocked until the operator approves.
+   with unapproved contacts is blocked until the patron approves.
 
 This means `send_email` to an unknown or unapproved recipient is
 mechanically blocked, but `send_slack` (destination type) always
@@ -375,8 +375,8 @@ Record contains:
 - `reason`, `gate_verdict` — why it was blocked
 - `session_id`, `model`, `timestamp`
 
-The write uses `this.kvPut` (kernel-internal), not `kvPutSafe` or
-`kvWritePrivileged` — this is a direct kernel write.
+The write uses `this.kvWrite` (kernel-internal), not `kvWriteSafe` or
+`kvWriteGated` — this is a direct kernel write.
 
 ### listBlockedComms()
 
@@ -422,7 +422,7 @@ for (const cv of output.comms_verdicts) {
 
 `upaya:comms:*` and `upaya:channel:*` are agent-writable KV keys that
 accumulate communication wisdom over time. They are in the `upaya:` system
-prefix — writes require `kvWritePrivileged`.
+prefix — writes require `kvWriteGated` in deep-reflect context.
 
 These keys are loaded by `loadCommsUpaya()` (`kernel.js:469`) and
 injected into the `COMMS_GATE_PROMPT` as the `[COMMUNICATION WISDOM]`

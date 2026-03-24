@@ -75,10 +75,15 @@ export async function runSession(K, state, context, config) {
     budgetCap: actBudgetCap,
   });
 
-  // Apply KV operations (gated by kernel protection)
+  // Apply KV operations (gated by kernel — context determines permissions)
   if (output.kv_operations?.length) {
+    const blocked = [];
     for (const op of output.kv_operations) {
-      await K.applyKVOperation(op);
+      const result = await K.kvWriteGated(op, "act");
+      if (!result.ok) blocked.push({ key: op.key, error: result.error });
+    }
+    if (blocked.length) {
+      await K.karmaRecord({ event: "kv_writes_blocked", blocked });
     }
   }
 
@@ -99,7 +104,7 @@ export function buildActContext(context) {
   // volatile fields last so cache hits on the stable prefix.
   // current_time is always different — must be last.
   return JSON.stringify({
-    // Operator direct message — first so the agent reads it immediately
+    // Patron direct message — first so the agent reads it immediately
     ...(context.directMessage ? { direct_message: context.directMessage } : {}),
     // Chat digest — conversations active since last session
     ...(context.chatDigest?.length ? { chat_since_last_session: context.chatDigest } : {}),
@@ -166,7 +171,7 @@ export async function writeSessionResults(K, config, { reflectRan = true } = {})
   if (!reflectRan) {
     const defaults = await K.getDefaults();
     const sleepSeconds = defaults?.wake?.sleep_seconds || 21600;
-    await K.kvPutSafe("wake_config", {
+    await K.kvWriteSafe("wake_config", {
       next_wake_after: new Date(Date.now() + sleepSeconds * 1000).toISOString(),
     });
   }

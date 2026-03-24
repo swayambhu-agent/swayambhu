@@ -69,7 +69,7 @@ will send anything unchecked.
 3. You add platform IDs and approve via the dashboard API:
    ```bash
    curl -X PATCH http://localhost:8790/contacts/jane/approve \
-     -H "X-Operator-Key: test" \
+     -H "X-Patron-Key: test" \
      -H "Content-Type: application/json" \
      -d '{ "approved": true }'
    ```
@@ -85,10 +85,10 @@ use the API:
 
 ```bash
 # List all quarantined items
-curl -H "X-Operator-Key: your-key" https://your-dashboard-api/quarantine
+curl -H "X-Patron-Key: your-key" https://your-dashboard-api/quarantine
 
 # Delete after review
-curl -X DELETE -H "X-Operator-Key: your-key" \
+curl -X DELETE -H "X-Patron-Key: your-key" \
   https://your-dashboard-api/quarantine/sealed:quarantine:email:sender@example.com:1710700000
 ```
 
@@ -106,8 +106,8 @@ code that the agent cannot modify, override, or access.
 
 ### Modify Its Core Identity
 
-The dharma key is immutable. Both `kvPutSafe` (the agent's normal write
-path) and `kvWritePrivileged` (the system key write path) reject writes
+The dharma key is immutable. Both `kvWriteSafe` (the agent's normal write
+path) and `kvWriteGated` (the context-based write path) reject writes
 to `dharma`. No code path in the system can change it. It can only be
 changed by redeploying with a different `DHARMA.md`.
 
@@ -153,10 +153,10 @@ details.
 The `sealed:*` namespace is mechanically unreadable by tools:
 - `ScopedKV.get()` returns `null` for any `sealed:` key
 - `ScopedKV.list()` filters out `sealed:` keys from results
-- `kvPutSafe` and `kvDeleteSafe` reject writes to `sealed:` keys
+- `kvWriteSafe` and `kvDeleteSafe` reject writes to `sealed:` keys
 
 The hook (trusted policy layer) *can* read sealed keys via `K.kvGet()`,
-but the hook is reviewed through the modification protocol. Tools, which
+but the hook is reviewed through the proposal protocol. Tools, which
 handle untrusted external input, cannot.
 
 ### Change Kernel Code
@@ -182,12 +182,12 @@ This means the agent cannot:
 Tool source files declare all metadata fields, but the seed script splits
 them: security grants go to `kernel:tool_grants`, operational config goes
 to modifiable tool metadata. Even if the agent modifies the tool metadata
-through the Modification Protocol, the security grants remain unchanged.
+through the Proposal Protocol, the security grants remain unchanged.
 
 ### Write to Kernel Keys
 
-All `kernel:*` keys are blocked from both `kvPutSafe` and
-`kvWritePrivileged`. The agent cannot modify:
+All `kernel:*` keys are blocked from both `kvWriteSafe` and
+`kvWriteGated`. The agent cannot modify:
 - `kernel:tool_grants` — tool security grants (secrets, gate classification)
 - `kernel:active_session` — crash detection breadcrumb
 - `kernel:last_sessions` — session outcome history (drives the tripwire)
@@ -207,13 +207,13 @@ agent cannot read or modify it.
 
 The agent can create contact stubs (`approved: false`, empty `platforms`)
 and edit contact fields, but it **cannot** set `approved: true`. Approval
-is operator-only, enforced mechanically by the kernel. The agent also
+is patron-only, enforced mechanically by the kernel. The agent also
 cannot delete approved contacts — only unapproved stubs it created.
 
 If the agent modifies a contact's `platforms` field, `approved`
-auto-flips to `false`, requiring operator re-approval. This prevents
+auto-flips to `false`, requiring patron re-approval. This prevents
 the agent from re-routing an approved contact to a different platform
-identity without operator review.
+identity without patron review.
 
 ---
 
@@ -252,7 +252,7 @@ Explorer.
 ### Modify Its Own Code
 
 The agent can rewrite its prompts, tools, configuration, and wake hook
-logic through the Modification Protocol:
+logic through the Proposal Protocol:
 
 1. **Staged** — The agent proposes a change with claims (why), operations
    (what to change), and checks (how to verify it works). The change
@@ -276,7 +276,7 @@ The agent accumulates wisdom through two prefixes:
 - `upaya:*` — discernment about the external world
 - `prajna:*` — self-knowledge about its own patterns
 
-Wisdom modifications follow the same staged protocol but with lighter
+Wisdom proposals follow the same staged protocol but with lighter
 safety: no circuit breaker (wisdom can't crash the system) and no git
 sync. They still require staging and review.
 
@@ -333,20 +333,20 @@ You can browse blocked messages in the KV Explorer under `comms_blocked:`.
 
 ## Circuit Breaker
 
-The circuit breaker automatically rolls back code modifications that
+The circuit breaker automatically rolls back code proposals that
 cause problems.
 
 **How it works:** The kernel writes a `last_danger` key whenever a fatal
 error, parse error, or provider cascade failure occurs. On the next wake,
-the hook checks `last_danger` against all inflight modifications. Any
-code modification that was activated *before* the danger event is
+the hook checks `last_danger` against all inflight proposals. Any
+code proposal that was activated *before* the danger event is
 automatically rolled back — its snapshotted old values are restored.
 
-**What it protects against:** A bad modification to a prompt, tool, or
+**What it protects against:** A bad proposal to a prompt, tool, or
 hook module that breaks the agent. The danger signal triggers rollback
 without waiting for human intervention.
 
-**What it doesn't cover:** Wisdom modifications (`upaya:*`, `prajna:*`)
+**What it doesn't cover:** Wisdom proposals (`upaya:*`, `prajna:*`)
 are excluded from circuit breaker rollback. Bad wisdom can't crash the
 system — it just leads to suboptimal decisions, which get corrected
 through normal reflection.
@@ -377,7 +377,7 @@ Everything is logged. The karma log for each session records:
 - Every LLM call (model, tokens, cost, what was sent and received)
 - Every tool execution (what tool, what input, what result)
 - Every system key write (old value and new value)
-- Every modification operation (staged, accepted, promoted, rolled back)
+- Every proposal operation (staged, accepted, promoted, rolled back)
 - Every blocked communication
 - Every error
 
@@ -408,7 +408,7 @@ the most recent session. Look for:
 - `fatal_error` events — something crashed
 - Unexpected `tool_complete` results — a tool did something wrong
 - `privileged_write` events — the agent changed a system key
-- `modification_accepted` events — the agent applied a code change
+- `proposal_accepted` events — the agent applied a code change
 
 ### Step 2: Check Blocked Communications
 
@@ -422,14 +422,14 @@ Browse `sealed:quarantine:*` in the KV Explorer. If suspicious inbound
 content arrived from an unknown sender, it's quarantined here. The agent
 never saw the content — but the attempt is logged.
 
-### Step 4: Check Modifications
+### Step 4: Check Proposals
 
-Browse `proposal:*` and `proposal:*` in the KV
-Explorer. Staged modifications are proposals that haven't been applied.
-Inflight modifications (snapshots) are active changes that can still be
+Browse `proposal:*` in the KV
+Explorer. Staged proposals are proposals that haven't been applied.
+Inflight proposals (snapshots) are active changes that can still be
 rolled back.
 
-If an inflight modification looks wrong, you can roll back the session
+If an inflight proposal looks wrong, you can roll back the session
 that applied it:
 
 ```bash
@@ -461,7 +461,7 @@ If the agent's state is compromised or you need to start fresh:
 source .env && bash scripts/start.sh --reset-all-state --wake
 ```
 
-This wipes all KV state — sessions, wisdom, modifications, config
+This wipes all KV state — sessions, wisdom, proposals, config
 overrides, everything — and re-seeds from the canonical seed script. The
 agent starts over with its original configuration.
 
@@ -481,8 +481,8 @@ agent starts over with its original configuration.
 | **Model capabilities** | Principle modification, comms gate | Per-model flags in separate config key |
 | **Deliberation gate** | Yama/niyama changes | Minimum character count + audit trail |
 | **Modification protocol** | Prompts, tools, config, hook code | Staged review, inflight snapshots, rollback |
-| **Circuit breaker** | Bad code modifications | Auto-rollback on danger signals |
+| **Circuit breaker** | Bad code proposals | Auto-rollback on danger signals |
 | **Tripwire** | Repeated crashes | Auto-restore last good hook, then minimal fallback |
 | **Hook write alerts** | Self-modification visibility | Slack alert on every hook:wake:* write |
 | **Karma logging** | Full audit trail | Every event recorded, viewable in dashboard |
-| **Contact approval** | Who the agent can communicate with | Three-tier gate (unknown/unapproved/approved); agent creates stubs, operator approves |
+| **Contact approval** | Who the agent can communicate with | Three-tier gate (unknown/unapproved/approved); agent creates stubs, patron approves |

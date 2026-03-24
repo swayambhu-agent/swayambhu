@@ -32,7 +32,7 @@ unread emails during its orient sessions (wake cycles), not in real time.
 It can reply to threads, maintaining the email conversation.
 
 Emails from unknown senders are redacted before the agent sees them — the
-content is quarantined for operator review (see
+content is quarantined for patron review (see
 [Quarantine](#quarantine)).
 
 ### What to Expect
@@ -52,11 +52,11 @@ configured maximum (default: 40 messages) to stay within token limits.
 
 ### Dashboard Access
 
-Open the operator dashboard:
-- **Local:** `http://localhost:3001/operator/`
+Open the patron dashboard:
+- **Local:** `http://localhost:3001/patron/`
 - **Production:** Your deployed dashboard SPA URL
 
-Enter your operator key to authenticate (`test` for local development).
+Enter your patron key to authenticate (`test` for local development).
 
 ### Health Check
 
@@ -64,7 +64,7 @@ The `/health` endpoint on the dashboard API returns a system status
 snapshot:
 
 ```bash
-curl -H "X-Operator-Key: your-key" https://your-dashboard-api/health
+curl -H "X-Patron-Key: your-key" https://your-dashboard-api/health
 ```
 
 Response:
@@ -138,13 +138,13 @@ is a chronological array of events:
 | `tool_start` | Tool name, input arguments |
 | `tool_complete` | Tool result or error |
 | `privileged_write` | System key modification with old and new values |
-| `modification_staged` | A change was proposed |
-| `modification_accepted` | A staged change was applied |
-| `modification_promoted` | An inflight change became permanent |
-| `modification_rolled_back` | A change was reverted |
+| `proposal_staged` | A change was proposed |
+| `proposal_accepted` | A staged change was applied |
+| `proposal_promoted` | An inflight change became permanent |
+| `proposal_rolled_back` | A change was reverted |
 | `budget_exceeded` | Session hit a cost or time limit |
 | `fatal_error` | Something went wrong |
-| `circuit_breaker_fired` | Automatic rollback of a modification |
+| `circuit_breaker_fired` | Automatic rollback of a proposal |
 
 To read a karma log locally:
 
@@ -187,10 +187,10 @@ to tools. Only you, through the dashboard, can view it.
 
 ```bash
 # List all quarantined items
-curl -H "X-Operator-Key: your-key" https://your-dashboard-api/quarantine
+curl -H "X-Patron-Key: your-key" https://your-dashboard-api/quarantine
 
 # Delete a quarantine entry after review
-curl -X DELETE -H "X-Operator-Key: your-key" \
+curl -X DELETE -H "X-Patron-Key: your-key" \
   https://your-dashboard-api/quarantine/sealed:quarantine:email:user@example.com:1710700000
 ```
 
@@ -206,21 +206,21 @@ The agent can propose changes to its own configuration, prompts, tools,
 and wisdom. These go through a staged lifecycle:
 
 **Staged** — A proposal. The agent suggested a change but it hasn't been
-applied yet. Visible in the dashboard under the `modification_staged:`
-prefix. Staged modifications are reviewed during the next deep reflect.
+applied yet. Visible in the dashboard under the `proposal_staged:`
+prefix. Staged proposals are reviewed during the next deep reflect.
 
 **Inflight** — Applied but not yet verified. The old values are
-snapshotted for rollback. Visible under `modification_snapshot:`. If the
+snapshotted for rollback. Visible under `proposal_snapshot:`. If the
 change causes problems, the circuit breaker automatically reverts it.
 
 **Promoted** — The snapshot is deleted. The change is permanent. No more
 rollback possible.
 
-To see all pending modifications:
+To see all pending proposals:
 
 ```bash
-node scripts/read-kv.mjs modification_staged:
-node scripts/read-kv.mjs modification_snapshot:
+node scripts/read-kv.mjs proposal_staged:
+node scripts/read-kv.mjs proposal_snapshot:
 ```
 
 ---
@@ -237,13 +237,13 @@ email content, and outbound communication.
 The agent can create contact stubs (unapproved, no platform IDs) when it
 encounters new people. You approve them via the dashboard.
 
-### Adding a Contact (operator)
+### Adding a Contact (patron)
 
 Via the dashboard API:
 
 ```bash
 curl -X POST http://localhost:8790/contacts \
-  -H "X-Operator-Key: test" \
+  -H "X-Patron-Key: test" \
   -H "Content-Type: application/json" \
   -d '{
     "slug": "jane_doe",
@@ -257,7 +257,7 @@ curl -X POST http://localhost:8790/contacts \
   }'
 ```
 
-Operator-created contacts are `approved: true` by default. The `slug` is
+Patron-created contacts are `approved: true` by default. The `slug` is
 permanent — choose something stable (name, handle, or role). The
 `platforms` map connects their platform identities so the agent can
 recognize them across channels.
@@ -273,7 +273,7 @@ activate it:
 
 ```bash
 curl -X PATCH http://localhost:8790/contacts/jane_doe/approve \
-  -H "X-Operator-Key: test" \
+  -H "X-Patron-Key: test" \
   -H "Content-Type: application/json" \
   -d '{ "approved": true }'
 ```
@@ -282,7 +282,7 @@ You can also revoke approval:
 
 ```bash
 curl -X PATCH http://localhost:8790/contacts/jane_doe/approve \
-  -H "X-Operator-Key: test" \
+  -H "X-Patron-Key: test" \
   -H "Content-Type: application/json" \
   -d '{ "approved": false }'
 ```
@@ -304,7 +304,7 @@ approved contact to a different platform identity without your review.
 The `relationship` field is freeform — it becomes context the agent sees
 during conversations and reflections. Common values:
 
-- `patron` — The operator/owner
+- `patron` — The patron/owner
 - `volunteer` — Isha volunteer
 - `coordinator` — Someone who manages projects or teams
 - `services` — External service provider (transactional relationship)
@@ -325,11 +325,11 @@ agent processes corrections during its next reflection cycle:
 1. The correction appears in the session's karma log.
 2. Session reflect notes the correction.
 3. Deep reflect may distill the correction into wisdom (`upaya:*` or
-   `prajna:*` entries) through the modification protocol.
+   `prajna:*` entries) through the proposal protocol.
 
 Corrections that become wisdom entries carry the session reference as a
 source, so the agent can trace its wisdom back to specific interactions.
-Wisdom entries go through the staged modification lifecycle — proposed in
+Wisdom entries go through the staged proposal lifecycle — proposed in
 one session, reviewed and validated in a subsequent deep reflect.
 
 ### Rolling Back a Session
@@ -352,7 +352,7 @@ The rollback script:
 - Deletes the session's karma log and reflect output
 - Reverses all privileged KV writes (restores old values from snapshots
   in karma)
-- Restores modification snapshots
+- Restores proposal snapshots
 - Decrements the session counter
 - Restores `last_reflect` from the previous session
 
@@ -412,7 +412,7 @@ the start script terminal for a cleaner shutdown.
 
 ### Reset All State
 
-Wipes everything — sessions, wisdom, modifications, config overrides —
+Wipes everything — sessions, wisdom, proposals, config overrides —
 and re-seeds from the canonical seed script:
 
 ```bash
@@ -431,7 +431,7 @@ fresh start.
 curl http://localhost:8790/health
 
 # Production
-curl -H "X-Operator-Key: your-key" https://your-dashboard-api/health
+curl -H "X-Patron-Key: your-key" https://your-dashboard-api/health
 ```
 
 Look for:

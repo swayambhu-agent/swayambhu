@@ -88,14 +88,14 @@ main = "worker.js"
 compatibility_date = "2025-06-01"
 
 [vars]
-OPERATOR_KEY = "test"
+PATRON_KEY = "test"
 
 [[kv_namespaces]]
 binding = "KV"
 id = "<your-kv-namespace-id>"
 ```
 
-The `OPERATOR_KEY` is the password for the dashboard. Set it to `"test"`
+The `PATRON_KEY` is the password for the dashboard. Set it to `"test"`
 for local development. For production, set it as a secret (see below).
 
 ### Set Secrets
@@ -125,11 +125,11 @@ For production, set each one:
 echo -n "your-value-here" | npx wrangler secret put SECRET_NAME
 ```
 
-For the dashboard worker, set the operator key as a secret in production:
+For the dashboard worker, set the patron key as a secret in production:
 
 ```bash
 cd dashboard-api
-echo -n "your-strong-password" | npx wrangler secret put OPERATOR_KEY
+echo -n "your-strong-password" | npx wrangler secret put PATRON_KEY
 cd ..
 ```
 
@@ -418,7 +418,7 @@ This:
 3. Starts three services:
    - **Kernel** at `http://localhost:8787` — the agent
    - **Dashboard API** at `http://localhost:8790` — KV reader for the dashboard
-   - **Dashboard SPA** at `http://localhost:3001/operator/` — the operator dashboard
+   - **Dashboard SPA** at `http://localhost:3001/patron/` — the patron dashboard
 4. Triggers a wake cycle (the agent orients, acts, and reflects).
 
 ### Using Cheap Models for Development
@@ -434,7 +434,7 @@ source .env && bash scripts/start.sh --reset-all-state --wake \
 
 DeepSeek is fine for testing tool wiring, orient flow, KV operations,
 prompt rendering, and basic wake cycles. Use real Claude models when
-testing the reflection hierarchy, modification protocol, or anything
+testing the reflection hierarchy, proposal protocol, or anything
 requiring structured JSON adherence.
 
 ### Subsequent Runs (Preserve State)
@@ -443,7 +443,7 @@ requiring structured JSON adherence.
 source .env && bash scripts/start.sh
 ```
 
-This preserves existing KV state (sessions, wisdom, modifications) and
+This preserves existing KV state (sessions, wisdom, proposals) and
 just restarts the services. Add `--wake` to trigger a wake cycle after
 startup.
 
@@ -461,8 +461,8 @@ what it found, set a sleep timer, and go dormant.
 
 ### Verify It's Working
 
-**Check the dashboard.** Open `http://localhost:3001/operator/` in your
-browser. Enter `test` as the operator key (the default for local
+**Check the dashboard.** Open `http://localhost:3001/patron/` in your
+browser. Enter `test` as the patron key (the default for local
 development). You should see:
 
 - **Timeline** tab — the session that just ran, with its karma log.
@@ -521,7 +521,7 @@ echo -n "..." | npx wrangler secret put SLACK_SIGNING_SECRET
 
 # Dashboard worker secret
 cd dashboard-api
-echo -n "your-strong-password" | npx wrangler secret put OPERATOR_KEY
+echo -n "your-strong-password" | npx wrangler secret put PATRON_KEY
 cd ..
 ```
 
@@ -557,7 +557,7 @@ automatically.
 **Check health via the dashboard API:**
 
 ```bash
-curl -H "X-Operator-Key: your-password" \
+curl -H "X-Patron-Key: your-password" \
   https://swayambhu-dashboard-api.<your-subdomain>.workers.dev/health
 ```
 
@@ -602,13 +602,13 @@ Once running, these scripts help you inspect and manage the system:
 
 ## Dashboard Reference
 
-The operator dashboard at `http://localhost:3001/operator/` (local) or
+The patron dashboard at `http://localhost:3001/patron/` (local) or
 your deployed dashboard URL (production) provides a real-time view of the
 system.
 
 ### Authentication
 
-Enter your operator key to access protected routes. For local development,
+Enter your patron key to access protected routes. For local development,
 the key is `test`.
 
 ### Tabs
@@ -622,7 +622,7 @@ to view its value. Use the prefix filter to narrow results.
 **Reflections** — All depth-1 (deep) reflections. These are the agent's
 periodic self-examinations — its most thoughtful output.
 
-**Mutations** — Staged and inflight modifications. See what the agent is
+**Mutations** — Staged and inflight proposals. See what the agent is
 proposing to change about itself and what changes are currently active.
 
 ### Public Endpoint
@@ -633,7 +633,7 @@ returns the 20 most recent deep reflections. The static page at
 
 ### API Routes
 
-All routes except `/reflections` require the `X-Operator-Key` header.
+All routes except `/reflections` require the `X-Patron-Key` header.
 
 | Route | Method | Description |
 |-------|--------|-------------|
@@ -707,9 +707,9 @@ source .env && bash scripts/start.sh --reset-all-state --wake \
 
 ### Dashboard shows "unauthorized"
 
-Make sure you're entering the correct operator key. For local development,
+Make sure you're entering the correct patron key. For local development,
 it's `test`. For production, it's whatever you set via `wrangler secret
-put OPERATOR_KEY` in the `dashboard-api` directory.
+put PATRON_KEY` in the `dashboard-api` directory.
 
 ### Agent crashes repeatedly
 

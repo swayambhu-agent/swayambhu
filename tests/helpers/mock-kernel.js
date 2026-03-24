@@ -27,34 +27,14 @@ export function makeMockK(kvInit = {}, opts = {}) {
     }),
 
     // KV writes
-    kvPutSafe: vi.fn(async (key, value, metadata) => {
+    kvWriteSafe: vi.fn(async (key, value, metadata) => {
       kv._store.set(key, typeof value === "string" ? value : JSON.stringify(value));
       if (metadata) kv._meta.set(key, metadata);
     }),
     kvDeleteSafe: vi.fn(async (key) => {
       kv._store.delete(key);
     }),
-    kvWritePrivileged: vi.fn(async (ops) => {
-      for (const op of ops) {
-        if (op.op === "delete") {
-          kv._store.delete(op.key);
-        } else if (op.op === "patch") {
-          const current = kv._store.get(op.key) ?? null;
-          if (typeof current !== "string") {
-            throw new Error(`patch op: key "${op.key}" is not a string value`);
-          }
-          if (!current.includes(op.old_string)) {
-            throw new Error(`patch op: old_string not found in "${op.key}"`);
-          }
-          if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) {
-            throw new Error(`patch op: old_string matches multiple locations in "${op.key}"`);
-          }
-          kv._store.set(op.key, current.replace(op.old_string, op.new_string));
-        } else {
-          kv._store.set(op.key, typeof op.value === "string" ? op.value : JSON.stringify(op.value));
-        }
-      }
-    }),
+    // kvWritePrivileged removed — functionality moved to kvWriteGated with context
 
     // Blocked communications
     listBlockedComms: vi.fn(async () => []),
@@ -152,7 +132,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     _kv: kv,
   };
 
-  // applyKVOperation needs `this` bound to the mock object (calls kvPutSafe, karmaRecord, etc.)
+  // kvWriteGated mock — mirrors kernel context-based permission logic
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'proposal:', 'hook:', 'doc:',
@@ -160,55 +140,75 @@ export function makeMockK(kvInit = {}, opts = {}) {
     'contact:', 'contact_platform:', 'sealed:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
+  const _KERNEL_ONLY = ['kernel:', 'sealed:', 'karma:'];
+  const _KERNEL_ONLY_EXACT = ['patron:direct'];
+  const _CODE_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
   function _isSystemKey(key) {
     if (_SYSTEM_EXACT.includes(key)) return true;
     return _SYSTEM_PREFIXES.some(p => key.startsWith(p));
   }
+  function _isKernelOnly(key) {
+    if (_KERNEL_ONLY_EXACT.includes(key)) return true;
+    return _KERNEL_ONLY.some(p => key.startsWith(p));
+  }
+  function _isCodeKey(key) { return _CODE_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code'); }
 
-  mock.applyKVOperation = vi.fn(async (op) => {
+  mock.kvWriteGated = vi.fn(async (op, context) => {
     const key = op.key;
-    const valueSummary = op.value != null
-      ? (typeof op.value === 'string'
-          ? (op.value.length > 500 ? op.value.slice(0, 500) + '\u2026' : op.value)
-          : JSON.stringify(op.value).slice(0, 500))
-      : undefined;
 
+    if (key === "dharma" || key === "patron:public_key") {
+      return { ok: false, error: `Cannot write "${key}" — immutable` };
+    }
+    if (_isKernelOnly(key)) {
+      return { ok: false, error: `Cannot write kernel key "${key}"` };
+    }
+    if (_isCodeKey(key)) {
+      return { ok: false, error: `Code key "${key}" requires proposal_requests` };
+    }
+
+    // Contact keys — allowed in all contexts
     if (key.startsWith("contact:") || key.startsWith("contact_platform:")) {
-      try { await mock.kvWritePrivileged([op]); }
-      catch (err) {
-        await mock.karmaRecord({ event: "modification_blocked", key, op: op.op, reason: err.message, attempted_value: valueSummary });
-      }
-      return;
+      if (op.op === "put") await mock.kvWriteSafe(op.key, op.value, op.metadata);
+      else if (op.op === "delete") await mock.kvDeleteSafe(op.key);
+      return { ok: true };
     }
 
+    // System keys — deep-reflect only
     if (_isSystemKey(key)) {
-      await mock.karmaRecord({ event: "modification_blocked", key, op: op.op, reason: "system_key", attempted_value: valueSummary });
-      return;
+      if (context !== "deep-reflect") {
+        return { ok: false, error: `Cannot write system key "${key}" during ${context}` };
+      }
+      // Allow in deep-reflect (simplified mock — real kernel has deliberation gates)
+      if (op.op === "put") await mock.kvWriteSafe(op.key, op.value, op.metadata);
+      else if (op.op === "delete") await mock.kvDeleteSafe(op.key);
+      return { ok: true };
     }
 
+    // Agent keys — check protection
     const { value: existing, metadata } = await mock.kvGetWithMeta(key);
     if (existing !== null && !metadata?.unprotected) {
-      await mock.karmaRecord({ event: "modification_blocked", key, op: op.op, reason: "protected_key", attempted_value: valueSummary });
-      return;
+      return { ok: false, error: `Cannot overwrite protected key "${key}"` };
     }
 
+    // Direct write
     switch (op.op) {
       case "put":
-        await mock.kvPutSafe(op.key, op.value, { unprotected: true, ...op.metadata });
+        await mock.kvWriteSafe(op.key, op.value, { unprotected: true, ...op.metadata });
         break;
       case "delete":
         await mock.kvDeleteSafe(op.key);
         break;
       case "patch": {
         const current = await mock.kvGet(op.key);
-        if (typeof current !== "string") break;
-        if (!current.includes(op.old_string)) break;
-        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) break;
+        if (typeof current !== "string") return { ok: false, error: `patch: key "${op.key}" is not a string` };
+        if (!current.includes(op.old_string)) return { ok: false, error: `patch: old_string not found in "${op.key}"` };
+        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) return { ok: false, error: `patch: old_string matches multiple locations in "${op.key}"` };
         const patched = current.replace(op.old_string, op.new_string);
-        await mock.kvPutSafe(op.key, patched, { unprotected: true, ...op.metadata });
+        await mock.kvWriteSafe(op.key, patched, { unprotected: true, ...op.metadata });
         break;
       }
     }
+    return { ok: true };
   });
 
   return mock;

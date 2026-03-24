@@ -1,4 +1,4 @@
-# Dashboard API & Operator Interface
+# Dashboard API & Patron Interface
 
 Separate Cloudflare Worker providing read (and limited write) access to
 the same KV namespace used by the kernel. Stateless — no database, no
@@ -10,12 +10,12 @@ session, just KV reads and CORS headers.
 
 ```
 ┌─────────────────────────┐     ┌──────────────────────────┐
-│  Operator SPA            │     │  Public Site              │
-│  site/operator/          │     │  site/                    │
+│  Patron SPA              │     │  Public Site              │
+│  site/patron/            │     │  site/                    │
 │  port 3001 (dev)         │     │  site/reflections/        │
 └──────────┬──────────────┘     └──────────┬───────────────┘
            │                               │
-           │ X-Operator-Key header         │ no auth
+           │ X-Patron-Key header         │ no auth
            ▼                               ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Dashboard API Worker                                     │
@@ -40,13 +40,13 @@ SQLite-backed store.
 
 ```js
 function auth(request, env) {
-  const key = request.headers.get("X-Operator-Key");
-  return key && key === env.OPERATOR_KEY;
+  const key = request.headers.get("X-Patron-Key");
+  return key && key === env.PATRON_KEY;
 }
 ```
 
-Single shared key via `X-Operator-Key` header. Compared against
-`env.OPERATOR_KEY` (set in `wrangler.toml` vars — `"test"` for local dev,
+Single shared key via `X-Patron-Key` header. Compared against
+`env.PATRON_KEY` (set in `wrangler.toml` vars — `"test"` for local dev,
 overridden by secret in production).
 
 - No rate limiting
@@ -64,7 +64,7 @@ All responses include:
 ```
 Access-Control-Allow-Origin: *
 Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS
-Access-Control-Allow-Headers: Content-Type, X-Operator-Key
+Access-Control-Allow-Headers: Content-Type, X-Patron-Key
 ```
 
 `OPTIONS` preflight requests return 204 with no auth check.
@@ -87,7 +87,7 @@ page.
 
 Response: `{ reflections: [...] }`
 
-### Authenticated (X-Operator-Key required)
+### Authenticated (X-Patron-Key required)
 
 #### GET /health
 
@@ -184,9 +184,9 @@ Response: `{ ok: true }`
 
 ---
 
-## Operator SPA
+## Patron SPA
 
-`site/operator/index.html` — Single-file React application.
+`site/patron/index.html` — Single-file React application.
 
 ### Stack
 
@@ -201,8 +201,8 @@ No build step. The entire app is one HTML file plus one config file.
 
 ### Login
 
-On load, prompts for operator key. Stored in component state (not
-persisted). All API calls include it as `X-Operator-Key` header.
+On load, prompts for patron key. Stored in component state (not
+persisted). All API calls include it as `X-Patron-Key` header.
 Local dev key: `"test"`.
 
 ### Tabs
@@ -211,7 +211,7 @@ Four tabs in the navigation:
 
 #### Timeline
 
-`TimelineTab` (`site/operator/index.html:403`)
+`TimelineTab` (`site/patron/index.html:403`)
 
 - Lists sessions from `GET /sessions`
 - Shows session type (orient vs deep_reflect), timestamp
@@ -223,7 +223,7 @@ Four tabs in the navigation:
 
 #### KV Explorer
 
-`KVExplorerTab` (`site/operator/index.html:780`)
+`KVExplorerTab` (`site/patron/index.html:780`)
 
 - Lists all KV keys via `GET /kv`, optionally filtered by prefix
 - Click a key to read its value via `GET /kv/:key`
@@ -232,7 +232,7 @@ Four tabs in the navigation:
 
 #### Reflections
 
-`ReflectionsTab` (`site/operator/index.html:885`)
+`ReflectionsTab` (`site/patron/index.html:885`)
 
 - Lists reflect outputs across all depths
 - Displays `reflection`, `note_to_future_self`, depth, session_id
@@ -240,15 +240,15 @@ Four tabs in the navigation:
 
 #### Modifications
 
-`MutationsTab` (`site/operator/index.html:984`)
+`MutationsTab` (`site/patron/index.html:984`)
 
-- Shows staged and inflight modifications
+- Shows staged and inflight proposals
 - Color-coded by status: yellow (staged), active (inflight)
 - Displays claims, ops, checks, and check results
 
 ### Config
 
-`site/operator/config.js` — loaded before the React app.
+`site/patron/config.js` — loaded before the React app.
 
 ```js
 window.DASHBOARD_CONFIG = {
@@ -306,5 +306,5 @@ Started by `scripts/start.sh` as part of the dev environment. The start
 script waits for port 3001 to be ready before reporting success.
 
 ```
-Dashboard SPA: http://localhost:3001/operator/
+Dashboard SPA: http://localhost:3001/patron/
 ```

@@ -11,17 +11,17 @@ Generated 2026-03-17. Covers every KV key, tool, and provider in the codebase.
 | Key | Stored type | Written by | Read by | Seeded | Protection |
 |-----|-------------|------------|---------|--------|------------|
 | `identity:did` | JSON `{ did, address, chain_id, chain_name, registry, ... }` | `scripts/seed-local-kv.mjs`, `scripts/generate-identity.js` | Agent via `kv_query` tool only — no runtime code reads this directly | Yes | System (`config:` would apply if prefix-matched, but this key is prefix `identity:` which is NOT in SYSTEM_KEY_PREFIXES — it is a regular key) |
-| `dharma` | Text (markdown) | `scripts/seed-local-kv.mjs` | `kernel.js:loadEagerConfig()` → injected into every LLM call via `callLLM()` | Yes | Immutable — `kvPut()`, `kvPutSafe()`, and `kvWritePrivileged()` all reject writes to `"dharma"` |
+| `dharma` | Text (markdown) | `scripts/seed-local-kv.mjs` | `kernel.js:loadEagerConfig()` → injected into every LLM call via `callLLM()` | Yes | Immutable — `kvWrite()`, `kvWriteSafe()`, and `kvWriteGated()` all reject writes to `"dharma"` |
 
 ### 1.2 Config
 
 | Key | Stored type | Written by | Read by | Seeded | Protection |
 |-----|-------------|------------|---------|--------|------------|
-| `config:defaults` | JSON (models, budgets, effort levels, execution limits) | `seed-local-kv.mjs`; agent via `kvWritePrivileged` | `kernel.js:loadEagerConfig()`, `act.js:wake()`, `reflect.js`, `hook-chat.js:handleChat()` | Yes | System (prefix `config:`) — requires `kvWritePrivileged` |
-| `config:models` | JSON (model list, pricing, alias_map, fallback_model) | `seed-local-kv.mjs`; agent via `kvWritePrivileged` | `kernel.js:loadEagerConfig()`, `act.js:wake()` | Yes | System |
-| `config:model_capabilities` | JSON (yama_capable, niyama_capable, comms_gate_capable flags per model) | `seed-local-kv.mjs`; agent via `kvWritePrivileged` (requires deliberation ≥200 chars + yama_capable model) | `kernel.js:loadEagerConfig()`, `isYamaCapable()`, `isNiyamaCapable()`, `isCommsGateCapable()` | Yes | System + extra gate (deliberation + model capability check) |
+| `config:defaults` | JSON (models, budgets, effort levels, execution limits) | `seed-local-kv.mjs`; agent via `kvWriteGated` | `kernel.js:loadEagerConfig()`, `act.js:wake()`, `reflect.js`, `hook-chat.js:handleChat()` | Yes | System (prefix `config:`) — requires `kvWriteGated` |
+| `config:models` | JSON (model list, pricing, alias_map, fallback_model) | `seed-local-kv.mjs`; agent via `kvWriteGated` | `kernel.js:loadEagerConfig()`, `act.js:wake()` | Yes | System |
+| `config:model_capabilities` | JSON (yama_capable, niyama_capable, comms_gate_capable flags per model) | `seed-local-kv.mjs`; agent via `kvWriteGated` (requires deliberation ≥200 chars + yama_capable model) | `kernel.js:loadEagerConfig()`, `isYamaCapable()`, `isNiyamaCapable()`, `isCommsGateCapable()` | Yes | System + extra gate (deliberation + model capability check) |
 | `config:resources` | JSON (KV limits, worker limits, OpenRouter/wallet/Slack endpoints) | `seed-local-kv.mjs` | `act.js:runSession()` | Yes | System |
-| `config:tool_registry` | JSON (tool definitions for function calling) | `seed-local-kv.mjs`; agent via `kvWritePrivileged` | `kernel.js:loadEagerConfig()`, `buildToolDefinitions()` | Yes | System |
+| `config:tool_registry` | JSON (tool definitions for function calling) | `seed-local-kv.mjs`; agent via `kvWriteGated` | `kernel.js:loadEagerConfig()`, `buildToolDefinitions()` | Yes | System |
 | `providers` | JSON (registered LLM providers with adapter bindings) | `seed-local-kv.mjs` | `kernel.js:checkBalance()` | Yes | System (exact match in `SYSTEM_KEY_EXACT`) |
 | `wallets` | JSON (registered crypto wallets with adapter bindings) | `seed-local-kv.mjs` | `kernel.js:checkBalance()` | Yes | System (exact match in `SYSTEM_KEY_EXACT`) |
 
@@ -57,7 +57,7 @@ Seeded provider names: `llm`, `llm_balance`, `wallet_balance`, `gmail`.
 | `kernel:active_session` | Text (session ID) | `kernel.js:executeHook()` (write), `kernel.js:executeHook()` (delete) | `kernel.js:detectPlatformKill()`, `act.js:detectCrash()`, `dashboard-api:GET /health` | No | Kernel-only |
 | `kernel:last_sessions` | JSON (array of last 5 sessions with outcome + timestamp) | `kernel.js:detectPlatformKill()`, `updateSessionOutcome()` | `kernel.js:checkHookSafety()` | No | Kernel-only |
 | `kernel:last_good_hook` | JSON `{ manifest, modules }` or `{ code }` | `kernel.js:updateSessionOutcome()` (on clean outcome) | `kernel.js:checkHookSafety()` (for auto-restore after tripwire) | No | Kernel-only |
-| `kernel:hook_dirty` | JSON boolean | `kernel.js:kvWritePrivileged()` (on any `hook:` write) | `kernel.js:updateSessionOutcome()` | No | Kernel-only |
+| `kernel:hook_dirty` | JSON boolean | `kernel.js:kvWriteGated()` (on any `hook:` write) | `kernel.js:updateSessionOutcome()` | No | Kernel-only |
 
 ### 1.6 Prompts
 
@@ -66,7 +66,7 @@ Seeded provider names: `llm`, `llm_balance`, `wallet_balance`, `gmail`.
 | `prompt:orient` | Text (markdown) | `seed-local-kv.mjs` | `act.js:runSession()`, `reflect.js:gatherReflectContext()` (passed as template var to deep reflect) | Yes | System (prefix `prompt:`) |
 | `prompt:reflect` | Text (markdown) | `seed-local-kv.mjs` | `reflect.js:executeReflect()` | Yes | System |
 | `prompt:reflect:1` | Text (markdown — deep reflect prompt for depth 1) | `seed-local-kv.mjs` | `reflect.js:loadReflectPrompt()`, `loadBelowPrompt()` | Yes | System |
-| `prompt:reflect:{depth}` | Text (markdown — deep reflect prompt for depth N) | Agent via `kvWritePrivileged` | `reflect.js:loadReflectPrompt()`, `loadBelowPrompt()` | Only depth 1 | System |
+| `prompt:reflect:{depth}` | Text (markdown — deep reflect prompt for depth N) | Agent via `kvWriteGated` | `reflect.js:loadReflectPrompt()`, `loadBelowPrompt()` | Only depth 1 | System |
 | `prompt:subplan` | Text (markdown) | `seed-local-kv.mjs` | `kernel.js:spawnSubplan()` | Yes | System |
 | `prompt:chat` | Text | `seed-local-kv.mjs` | `hook-chat.js:handleChat()` | Yes | System |
 
@@ -77,7 +77,7 @@ Seeded provider names: `llm`, `llm_balance`, `wallet_balance`, `gmail`.
 | `hook:wake:manifest` | JSON (filename → KV key mapping) | `seed-local-kv.mjs` | `kernel.js:runScheduled()`, `checkHookSafety()`, `updateSessionOutcome()` | Yes | System (prefix `hook:`) |
 | `hook:wake:code` | Text (JS — act.js source) | `seed-local-kv.mjs` | Via manifest; `kernel.js:runScheduled()` (fallback if no manifest) | Yes | System |
 | `hook:wake:reflect` | Text (JS — reflect.js source) | `seed-local-kv.mjs` | Via manifest | Yes | System |
-| `hook:wake:modifications` | Text (JS — kernel.js (proposal methods) source) | `seed-local-kv.mjs` | Via manifest | Yes | System |
+| `hook:wake:proposals` | Text (JS — kernel.js (proposal methods) source) | `seed-local-kv.mjs` | Via manifest | Yes | System |
 | `hook:wake:protect` | Text (JS — KV operation gating, now merged into kernel.js) | `seed-local-kv.mjs` | Via manifest | Deprecated | System |
 
 ### 1.8 Channel Adapters
@@ -91,20 +91,20 @@ Seeded provider names: `llm`, `llm_balance`, `wallet_balance`, `gmail`.
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `contact:{slug}` | JSON (name, relationship, platforms, chat config, etc.) | `seed-local-kv.mjs` (swami_kevala), `dashboard-api:POST /contacts` | `kernel.js:resolveContact()`, `loadPatronContext()`, `communicationGate()` | Yes (1 contact) | System (prefix `contact:`) + operator-only via `kvWritePrivileged` (rejects contact: writes) |
-| `contact_platform:{platform}:{userId}` | JSON `{ slug, approved }` | Dashboard API (`PATCH /contact-platform/:platform/:id/approve`), `kernel.js:resolveContact()` (cache miss) | `kernel.js:resolveContact()` | No (auto-created) | System (prefix `contact_platform:`) + operator-only |
+| `contact:{slug}` | JSON (name, relationship, platforms, chat config, etc.) | `seed-local-kv.mjs` (swami_kevala), `dashboard-api:POST /contacts` | `kernel.js:resolveContact()`, `loadPatronContext()`, `communicationGate()` | Yes (1 contact) | System (prefix `contact:`) + patron-only via `kvWriteGated` (rejects contact: writes) |
+| `contact_platform:{platform}:{userId}` | JSON `{ slug, approved }` | Dashboard API (`PATCH /contact-platform/:platform/:id/approve`), `kernel.js:resolveContact()` (cache miss) | `kernel.js:resolveContact()` | No (auto-created) | System (prefix `contact_platform:`) + patron-only |
 | `patron:contact` | Text (contact slug) | `seed-local-kv.mjs` | `kernel.js:loadPatronContext()` | Yes | System (exact match in `SYSTEM_KEY_EXACT`) |
-| `patron:public_key` | Text (SSH Ed25519 public key) | `seed-local-kv.mjs`; `kernel.js:rotatePatronKey()` (bypasses kvPut guard via direct kv.put) | `kernel.js:verifyPatronSignature()` | Yes | Immutable (`IMMUTABLE_KEYS`) — only rotatePatronKey can write (direct KV binding, requires Ed25519 sig) |
+| `patron:public_key` | Text (SSH Ed25519 public key) | `seed-local-kv.mjs`; `kernel.js:rotatePatronKey()` (bypasses kvWrite guard via direct kv.put) | `kernel.js:verifyPatronSignature()` | Yes | Immutable (`IMMUTABLE_KEYS`) — only rotatePatronKey can write (direct KV binding, requires Ed25519 sig) |
 | `patron:identity_snapshot` | JSON `{ name, platforms, verified_at }` | `kernel.js:loadPatronContext()` (first boot) | `kernel.js:loadPatronContext()` | No (auto-created on first boot) | System (exact match in `SYSTEM_KEY_EXACT`) |
 
 ### 1.10 Yamas & Niyamas (Operating Principles)
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `yama:{name}` | Text (principle text) | `seed-local-kv.mjs` (7 keys); agent via `kvWritePrivileged` | `kernel.js:loadYamasNiyamas()` → injected into every LLM call | Yes (7) | System (prefix `yama:`) + deliberation gate (min 200 chars) + yama_capable model required |
-| `yama:{name}:audit` | JSON array of audit entries | `kernel.js:kvWritePrivileged()` (auto-created on yama write) | `kernel.js:kvWritePrivileged()` (appends) | No | System |
-| `niyama:{name}` | Text (principle text) | `seed-local-kv.mjs` (7 keys); agent via `kvWritePrivileged` | `kernel.js:loadYamasNiyamas()` → injected into every LLM call | Yes (7) | System (prefix `niyama:`) + deliberation gate (min 100 chars) + niyama_capable model required |
-| `niyama:{name}:audit` | JSON array of audit entries | `kernel.js:kvWritePrivileged()` (auto-created on niyama write) | `kernel.js:kvWritePrivileged()` (appends) | No | System |
+| `yama:{name}` | Text (principle text) | `seed-local-kv.mjs` (7 keys); agent via `kvWriteGated` | `kernel.js:loadYamasNiyamas()` → injected into every LLM call | Yes (7) | System (prefix `yama:`) + deliberation gate (min 200 chars) + yama_capable model required |
+| `yama:{name}:audit` | JSON array of audit entries | `kernel.js:kvWriteGated()` (auto-created on yama write) | `kernel.js:kvWriteGated()` (appends) | No | System |
+| `niyama:{name}` | Text (principle text) | `seed-local-kv.mjs` (7 keys); agent via `kvWriteGated` | `kernel.js:loadYamasNiyamas()` → injected into every LLM call | Yes (7) | System (prefix `niyama:`) + deliberation gate (min 100 chars) + niyama_capable model required |
+| `niyama:{name}:audit` | JSON array of audit entries | `kernel.js:kvWriteGated()` (auto-created on niyama write) | `kernel.js:kvWriteGated()` (appends) | No | System |
 
 Seeded yamas: `care`, `truth`, `responsibility`, `discipline`, `rules`, `security`, `humility`.
 Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignment`, `nonidentification`, `organization`.
@@ -113,7 +113,7 @@ Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignme
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `wake_config` | JSON `{ next_wake_after, sleep_seconds, effort, ... }` | `act.js:writeSessionResults()`, `reflect.js:executeReflect()`, `applyReflectOutput()` | `act.js:wake()`, `dashboard-api:GET /health` | No | Regular (kvPutSafe) |
+| `wake_config` | JSON `{ next_wake_after, sleep_seconds, effort, ... }` | `act.js:writeSessionResults()`, `reflect.js:executeReflect()`, `applyReflectOutput()` | `act.js:wake()`, `dashboard-api:GET /health` | No | Regular (kvWriteSafe) |
 | `session_counter` | JSON number | `act.js:writeSessionResults()`, `kernel.js:runMinimalFallback()` | `kernel.js:getSessionCount()`, `dashboard-api:GET /health` | No | Regular |
 | `cache:session_ids` | JSON array of session ID strings | `act.js:writeSessionResults()` | `reflect.js:gatherReflectContext()`, `dashboard-api:GET /sessions` | No | Regular |
 | `karma:{sessionId}` | JSON array of karma entries | `kernel.js:karmaRecord()` (appended every event) | `act.js:detectCrash()`, `reflect.js:executeReflect()` (session karma), `dashboard-api` | No | Regular (prefix `karma:` is not in SYSTEM_KEY_PREFIXES) |
@@ -127,26 +127,26 @@ Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignme
 | `reflect:{depth}:{sessionId}` | JSON `{ reflection, note_to_future_self, depth, session_id, timestamp }` | `reflect.js:executeReflect()` (depth 0), `applyReflectOutput()` (depth 1+) | `reflect.js:loadReflectHistory()`, `dashboard-api:GET /reflections`, `GET /sessions` | No | System (prefix `reflect:` — though it's not listed in SYSTEM_KEY_PREFIXES; metadata type is `reflect_output`) |
 | `reflect:schedule:{depth}` | JSON `{ after_sessions, after_days, last_reflect, last_reflect_session, ... }` | `reflect.js:applyReflectOutput()` | `reflect.js:isReflectDue()` | No | See above |
 
-**Note:** The `reflect:` prefix is NOT in `SYSTEM_KEY_PREFIXES`. These keys are written via `kvPutSafe` (not `kvWritePrivileged`), so they're regular keys.
+**Note:** The `reflect:` prefix is NOT in `SYSTEM_KEY_PREFIXES`. These keys are written via `kvWriteSafe` (not `kvWriteGated`), so they're regular keys.
 
-### 1.13 Modification Protocol
+### 1.13 Proposal Protocol
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `proposal:{id}` | JSON (modification request: id, type, claims, ops, checks, validation, staged metadata) | `kernel.js (proposal methods):stageModification()`, `processReflectVerdicts()` ("modify"), `processDeepReflectVerdicts()` ("modify") | `kernel.js (proposal methods):loadStagedModifications()`, `acceptStaged()`, verdict processing | No | System (prefix `proposal:`) — written via `kvWritePrivileged` |
-| `proposal:{id}` | JSON (activated modification: full record + snapshots of original values) | `kernel.js (proposal methods):acceptStaged()`, `acceptDirect()` | `kernel.js (proposal methods):loadInflightModifications()`, `rollbackInflight()`, `findInflightConflict()`, `promoteInflight()`, `runCircuitBreaker()` | No | System (prefix `proposal:`) — written via `kvWritePrivileged` |
+| `proposal:{id}` | JSON (proposal request: id, type, claims, ops, checks, validation, staged metadata) | `kernel.js (proposal methods):stageModification()`, `processReflectVerdicts()` ("modify"), `processDeepReflectVerdicts()` ("modify") | `kernel.js (proposal methods):loadStagedModifications()`, `acceptStaged()`, verdict processing | No | System (prefix `proposal:`) — written via `kvWriteGated` |
+| `proposal:{id}` | JSON (activated proposal: full record + snapshots of original values) | `kernel.js (proposal methods):acceptStaged()`, `acceptDirect()` | `kernel.js (proposal methods):loadInflightModifications()`, `rollbackInflight()`, `findInflightConflict()`, `promoteInflight()`, `runCircuitBreaker()` | No | System (prefix `proposal:`) — written via `kvWriteGated` |
 
 ### 1.14 Git Sync
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `git_pending:{modificationId}` | JSON `{ modification_id, writes, deletes, message, created_at }` | `kernel.js (proposal methods):syncToGit()` | `kernel.js (proposal methods):attemptGitSync()`, `retryPendingGitSyncs()` | No | System (prefix `git_pending:`) — written via `kvWritePrivileged` |
+| `git_pending:{proposalId}` | JSON `{ proposal_id, writes, deletes, message, created_at }` | `kernel.js (proposal methods):syncToGit()` | `kernel.js (proposal methods):attemptGitSync()`, `retryPendingGitSyncs()` | No | System (prefix `git_pending:`) — written via `kvWriteGated` |
 
 ### 1.15 Chat
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `chat:state:{channel}:{chatId}` | JSON `{ messages, total_cost, created_at, turn_count, last_activity }` | `hook-chat.js:handleChat()` | `hook-chat.js:handleChat()` (same function) | No | Regular (kvPutSafe) |
+| `chat:state:{channel}:{chatId}` | JSON `{ messages, total_cost, created_at, turn_count, last_activity }` | `hook-chat.js:handleChat()` | `hook-chat.js:handleChat()` (same function) | No | Regular (kvWriteSafe) |
 
 ### 1.16 Dedup
 
@@ -158,7 +158,7 @@ Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignme
 
 | Key | Stored type | Written by | Read by | Seeded | Protection |
 |-----|-------------|------------|---------|--------|------------|
-| `doc:modification_guide` | Text (markdown) | `seed-local-kv.mjs` | Agent via `kv_query` tool | Yes | System (prefix `doc:`) |
+| `doc:proposal_guide` | Text (markdown) | `seed-local-kv.mjs` | Agent via `kv_query` tool | Yes | System (prefix `doc:`) |
 | `doc:architecture` | Text (markdown) | `seed-local-kv.mjs` | Agent via `kv_query` tool | Yes | System |
 
 ### 1.18 Wisdom (Communication)
@@ -166,9 +166,9 @@ Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignme
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
 | `upaya:comms:defaults` | JSON `{ text, type, created, sources }` | `seed-local-kv.mjs` | `kernel.js:loadCommsUpaya()` (prefix scan `upaya:comms:`) | Yes | System (prefix `upaya:`) |
-| `upaya:comms:{topic}` | JSON | Agent via `kvWritePrivileged` | `kernel.js:loadCommsUpaya()` | No | System |
-| `upaya:channel:{name}` | JSON | Agent via `kvWritePrivileged` | `kernel.js:loadCommsUpaya()` (prefix scan `upaya:channel:`) | No | System |
-| `prajna:*` | JSON | Agent via `kvWritePrivileged` | None (prefix reserved in SYSTEM_KEY_PREFIXES and kvPut metadata defaults, but no runtime code reads it) | No | System (prefix `prajna:`) |
+| `upaya:comms:{topic}` | JSON | Agent via `kvWriteGated` | `kernel.js:loadCommsUpaya()` | No | System |
+| `upaya:channel:{name}` | JSON | Agent via `kvWriteGated` | `kernel.js:loadCommsUpaya()` (prefix scan `upaya:channel:`) | No | System |
+| `prajna:*` | JSON | Agent via `kvWriteGated` | None (prefix reserved in SYSTEM_KEY_PREFIXES and kvWrite metadata defaults, but no runtime code reads it) | No | System (prefix `prajna:`) |
 
 ### 1.19 Tool Data (Scoped Tool Storage)
 
@@ -192,7 +192,7 @@ Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignme
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `secret:{name}` | JSON | Agent via `kvWritePrivileged` (or operator); also `kv:secret:{name}` references from provider config | `kernel.js:buildToolContext()` (for tools with `kv_secrets` in meta), `runAdapter()` | No | System (prefix `secret:`) |
+| `secret:{name}` | JSON | Agent via `kvWriteGated` (or patron); also `kv:secret:{name}` references from provider config | `kernel.js:buildToolContext()` (for tools with `kv_secrets` in meta), `runAdapter()` | No | System (prefix `secret:`) |
 
 ---
 
@@ -224,7 +224,7 @@ Total keys seeded by `seed-local-kv.mjs`: **~60** (exact count depends on tool/p
 | `prompt:chat` | Yes | `hook-chat.js:handleChat()` |
 | `hook:wake:code` | Yes | Via manifest or direct |
 | `hook:wake:reflect` | Yes | Via manifest |
-| `hook:wake:modifications` | Yes | Via manifest |
+| `hook:wake:proposals` | Yes | Via manifest |
 | `hook:wake:protect` | Yes | Via manifest |
 | `hook:wake:manifest` | Yes | `kernel.js:runScheduled()` |
 | `channel:slack:code` | Yes | `kernel.js:fetch()` (prod path) |
@@ -240,7 +240,7 @@ Total keys seeded by `seed-local-kv.mjs`: **~60** (exact count depends on tool/p
 | `patron:contact` | Yes | `kernel.js:loadPatronContext()` |
 | `patron:public_key` | Yes | `kernel.js:verifyPatronSignature()` |
 | `upaya:comms:defaults` | Yes | `kernel.js:loadCommsUpaya()` |
-| `doc:modification_guide` | **No direct reader** | Available via `kv_query` tool |
+| `doc:proposal_guide` | **No direct reader** | Available via `kv_query` tool |
 | `doc:architecture` | **No direct reader** | Available via `kv_query` tool |
 
 ### Orphaned seeds
@@ -248,14 +248,14 @@ Total keys seeded by `seed-local-kv.mjs`: **~60** (exact count depends on tool/p
 Keys seeded but with no code-level reader (only accessible via `kv_query` tool):
 
 1. **`identity:did`** — DID identity document. No runtime code reads this. Agent can query it.
-2. **`doc:modification_guide`** — Reference doc. No runtime code reads this. Agent can query it.
+2. **`doc:proposal_guide`** — Reference doc. No runtime code reads this. Agent can query it.
 3. **`doc:architecture`** — Reference doc. No runtime code reads this. Agent can query it.
 
 These are intentionally available for the agent to read via tools — they are not truly orphaned, just agent-facing reference data rather than code-consumed keys.
 
 ### Reserved prefixes (in SYSTEM_KEY_PREFIXES but no seeded keys)
 
-- `prajna:` — Wisdom prefix. In `SYSTEM_KEY_PREFIXES` and `kvPut` metadata defaults, but no code reads these keys and nothing is seeded. Reserved for future use.
+- `prajna:` — Wisdom prefix. In `SYSTEM_KEY_PREFIXES` and `kvWrite` metadata defaults, but no code reads these keys and nothing is seeded. Reserved for future use.
 - `secret:` — Agent-provisioned secrets. In `SYSTEM_KEY_PREFIXES`, read by `buildToolContext()` and `runAdapter()`, but nothing is seeded. Created at runtime if needed.
 
 ---
@@ -322,7 +322,7 @@ The LLM provider cascade is a three-tier fallback mechanism for making LLM calls
 
 | Tier | Name | KV keys | How populated | What happens on failure |
 |------|------|---------|---------------|------------------------|
-| 1 | **Dynamic** | `provider:llm:code`, `provider:llm:meta` | Seeded by `seed-local-kv.mjs`. Agent can modify via Modification Protocol (`kvWritePrivileged`). | Falls through to Tier 2. Logs `provider_fallback` karma event. |
+| 1 | **Dynamic** | `provider:llm:code`, `provider:llm:meta` | Seeded by `seed-local-kv.mjs`. Agent can modify via Proposal Protocol (`kvWriteGated`). | Falls through to Tier 2. Logs `provider_fallback` karma event. |
 | 2 | **Last working** | `provider:llm:last_working:code`, `provider:llm:last_working:meta` | Auto-snapshotted by kernel on first successful Tier 1 call per session (`callWithCascade()`, lines 1593–1603). | Falls through to Tier 3. Logs `provider_fallback` karma event. |
 | 3 | **Kernel fallback** | `kernel:llm_fallback`, `kernel:llm_fallback:meta` | Seeded by `seed-local-kv.mjs` (identical to `provider:llm:code` at seed time). Stored under `kernel:` prefix — agent cannot modify. | Returns `{ ok: false }`. Caller records `all_providers_failed` DANGER_SIGNAL. |
 
@@ -369,9 +369,9 @@ In `index.js`, `callWithCascade()` is overridden to make a direct `fetch()` call
 
 | KV key | Who can modify | Protection mechanism |
 |--------|---------------|---------------------|
-| `provider:llm:code` | Agent (via Modification Protocol + `kvWritePrivileged`) | System key prefix `provider:` — requires privileged write |
-| `provider:llm:last_working:code` | Kernel only (auto-snapshot) | System key prefix `provider:` — written by kernel's `kvPut()` directly |
-| `kernel:llm_fallback` | Operator only (seed script or manual) | Kernel-only prefix `kernel:` — `kvWritePrivileged` rejects kernel: writes |
+| `provider:llm:code` | Agent (via Proposal Protocol + `kvWriteGated`) | System key prefix `provider:` — requires privileged write |
+| `provider:llm:last_working:code` | Kernel only (auto-snapshot) | System key prefix `provider:` — written by kernel's `kvWrite()` directly |
+| `kernel:llm_fallback` | Patron only (seed script or manual) | Kernel-only prefix `kernel:` — `kvWriteGated` rejects kernel: writes |
 
 This means:
 - The agent **can** modify Tier 1 (dynamic adapter) — this is how it evolves its own provider code.

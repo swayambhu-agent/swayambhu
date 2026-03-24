@@ -30,7 +30,7 @@ class Kernel {
     this.dharma = null;
     this.toolsCache = {};      // Loaded tool code+meta, cached per session
     this.lastWorkingSnapshotted = false; // Only snapshot provider once per session
-    this.privilegedWriteCount = 0; // Counter for kvWritePrivileged calls
+    this.privilegedWriteCount = 0; // Counter for privileged writes (system + contact keys)
     this._alertConfigCache = undefined; // undefined = not loaded, null = doesn't exist
     this.yamas = null;         // Cached yama principles (loaded at boot)
     this.niyamas = null;       // Cached niyama principles (loaded at boot)
@@ -54,7 +54,8 @@ class Kernel {
     'contact_platform:',
     'sealed:',
   ];
-  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'operator:'];
+  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:'];
+  static KERNEL_ONLY_EXACT = ['patron:direct'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   static IMMUTABLE_KEYS = ['patron:public_key'];
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
@@ -67,6 +68,7 @@ class Kernel {
   }
 
   static isKernelOnly(key) {
+    if (Kernel.KERNEL_ONLY_EXACT.includes(key)) return true;
     return Kernel.KERNEL_ONLY_PREFIXES.some(p => key.startsWith(p));
   }
 
@@ -160,7 +162,7 @@ class Kernel {
         platforms: patronPlatforms,
         verified_at: new Date().toISOString(),
       };
-      await this.kvPut("patron:identity_snapshot", initial);
+      await this.kvWrite("patron:identity_snapshot", initial);
       this.patronSnapshot = initial;
       this.patronIdentityDisputed = false;
     } else {
@@ -258,7 +260,7 @@ class Kernel {
       timestamp: new Date().toISOString(),
     };
     // Kernel-internal write — not exposed via RPC
-    await this.kvPut(`comms_blocked:${id}`, record);
+    await this.kvWrite(`comms_blocked:${id}`, record);
     await this.karmaRecord({
       event: "comms_blocked",
       id, tool: toolName,
@@ -291,7 +293,7 @@ class Kernel {
       } else if (!recipientContact.approved) {
         return {
           verdict: 'block',
-          reasoning: `Contact "${recipient}" is not approved — all communication blocked until operator approves`,
+          reasoning: `Contact "${recipient}" is not approved — all communication blocked until patron approves`,
           mechanical: true,
         };
       }
@@ -355,7 +357,7 @@ class Kernel {
         recipient: record.recipient, verdict,
         revised: verdict === 'revise_and_send',
       });
-      await this.kvWritePrivileged([{ op: "delete", key }]);
+      await this.kv.delete(key);
       return { ok: true, result };
     }
 
@@ -365,7 +367,7 @@ class Kernel {
         recipient: record.recipient,
         reason: revision?.reason || 'dropped by deep reflect',
       });
-      await this.kvWritePrivileged([{ op: "delete", key }]);
+      await this.kv.delete(key);
       return { ok: true, dropped: true };
     }
 
@@ -385,11 +387,11 @@ class Kernel {
     // In chat mode, karma stays in-memory only — handleChat embeds it in the chat object.
     // In session mode, persist to KV after every event for crash recovery.
     if (this.mode !== 'chat') {
-      await this.kvPut(`karma:${this.sessionId}`, this.karma);
+      await this.kvWrite(`karma:${this.sessionId}`, this.karma);
     }
 
     if (Kernel.DANGER_SIGNALS.includes(entry.event)) {
-      await this.kvPut("last_danger", {
+      await this.kvWrite("last_danger", {
         t: record.t,
         event: entry.event,
         session_id: this.sessionId,
@@ -427,201 +429,23 @@ class Kernel {
 
   // ── KV write tiers (RPC-exposed) ─────────────────────────
 
-  async kvPutSafe(key, value, metadata) {
+  async kvWriteSafe(key, value, metadata) {
     if (key === "dharma") throw new Error("Cannot overwrite dharma — immutable key");
     if (Kernel.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
-    if (Kernel.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWritePrivileged`);
-    return this.kvPut(key, value, metadata);
+    if (Kernel.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
+    return this.kvWrite(key, value, metadata);
   }
 
   async kvDeleteSafe(key) {
     if (key === "dharma") throw new Error("Cannot delete dharma — immutable key");
     if (Kernel.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
-    if (Kernel.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWritePrivileged`);
+    if (Kernel.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
     return this.kv.delete(key);
   }
 
-  async kvWritePrivileged(ops) {
-    if (!Array.isArray(ops) || ops.length === 0) return;
-
-    // ── Pre-validation: reject entire batch before any writes ──
-    for (const op of ops) {
-      if (op.key === "dharma" || Kernel.IMMUTABLE_KEYS.includes(op.key)) {
-        throw new Error(`Cannot write "${op.key}" — immutable key`);
-      }
-      if (Kernel.isKernelOnly(op.key)) throw new Error(`Blocked: kernel-only key "${op.key}"`);
-
-      // Contact platform bindings: agent can create (always unapproved), cannot set approved: true
-      if (op.key.startsWith("contact_platform:")) {
-        if (op.op === "patch" && op.new_string?.includes('"approved"')) {
-          throw new Error(`Cannot patch "approved" field on platform bindings — use the dashboard`);
-        }
-        if (op.op === "delete") {
-          const existing = await this.kvGet(op.key);
-          if (existing?.approved) {
-            throw new Error(`Deletion of approved platform bindings is operator-only`);
-          }
-          // Unapproved or non-existent — allow delete, fall through
-        } else {
-          if (op.value?.approved === true) {
-            throw new Error(`Setting approved: true on platform bindings is operator-only`);
-          }
-          if (!op.value?.slug) {
-            throw new Error(`Platform binding must include a slug`);
-          }
-          op.value = { ...op.value, approved: false };
-          // Fall through to normal processing
-        }
-      }
-
-      // Contacts: agent can create and edit freely (identity metadata only, no approval field)
-      if (op.key.startsWith("contact:")) {
-        if (op.op === "delete") {
-          // Allow delete of any contact — platform bindings control approval now
-          // Fall through to normal processing
-        }
-        // No approval or platforms gating needed — those live in contact_platform: keys
-      }
-
-      // Model capabilities require deliberation + yama_capable model
-      if (op.key === "config:model_capabilities") {
-        if (!op.deliberation || op.deliberation.length < 200) {
-          throw new Error(`Model capability changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})`);
-        }
-        if (!this.isYamaCapable(this.lastCallModel)) {
-          throw new Error(`Model capability changes require a yama_capable model (last model: ${this.lastCallModel})`);
-        }
-      }
-
-      // Yama/Niyama gates — validate before any writes execute
-      if (Kernel.isPrincipleKey(op.key) && !Kernel.isPrincipleAuditKey(op.key)) {
-        const isYama = op.key.startsWith('yama:');
-        const type = isYama ? 'yama' : 'niyama';
-        const minChars = isYama ? 200 : 100;
-        const typeLabel = isYama ? 'Yama' : 'Niyama';
-
-        if (!op.deliberation || op.deliberation.length < minChars) {
-          throw new Error(`${typeLabel} modifications require deliberation (min ${minChars} chars, got ${op.deliberation?.length || 0})`);
-        }
-        const capCheck = isYama ? this.isYamaCapable(this.lastCallModel) : this.isNiyamaCapable(this.lastCallModel);
-        if (!capCheck) {
-          throw new Error(`${typeLabel} writes require a ${type}_capable model (last model: ${this.lastCallModel})`);
-        }
-      }
-    }
-
-    if (this.privilegedWriteCount + ops.length > Kernel.MAX_PRIVILEGED_WRITES) {
-      throw new Error(`Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded`);
-    }
-
-    const configKeys = ["config:defaults", "config:models", "config:tool_registry", "config:model_capabilities"];
-    const principleWarnings = [];
-    let touchedPrinciple = false;
-
-    for (const op of ops) {
-      // ── Yama/Niyama diff warning (gates already passed in pre-validation) ──
-      if (Kernel.isPrincipleKey(op.key) && !Kernel.isPrincipleAuditKey(op.key)) {
-        const isYama = op.key.startsWith('yama:');
-        const type = isYama ? 'yama' : 'niyama';
-
-        const currentValue = await this.kvGet(op.key);
-        const proposedValue = op.op === 'delete' ? null : (op.op === 'patch' ? `[patch: "${op.old_string}" → "${op.new_string}"]` : op.value);
-        const name = op.key.replace(`${type}:`, '');
-
-        const warningMsg = isYama
-          ? `WARNING: You are modifying yama "${name}".\n\nCAUTION: You are attempting to modify a yama — a core principle of how you act in the world. This requires extraordinary justification. How does this change better serve your dharma?\n\nCurrent value: ${currentValue ?? '(new)'}\nProposed value: ${proposedValue ?? '(delete)'}`
-          : `WARNING: You are modifying niyama "${name}".\n\nCAUTION: You are attempting to modify a niyama — a core principle that governs how you reflect and improve. This requires compelling justification. How does this change better serve your dharma?\n\nCurrent value: ${currentValue ?? '(new)'}\nProposed value: ${proposedValue ?? '(delete)'}`;
-
-        principleWarnings.push({
-          key: op.key,
-          name,
-          type,
-          current_value: currentValue,
-          proposed_value: proposedValue,
-          deliberation: op.deliberation,
-          model: this.lastCallModel,
-          message: warningMsg,
-        });
-
-        touchedPrinciple = true;
-      }
-
-      // Snapshot current value before writing
-      const { value: oldValue, metadata: oldMeta } = await this.kvGetWithMeta(op.key);
-      await this.karmaRecord({
-        event: "privileged_write",
-        key: op.key,
-        old_value: oldValue,
-        new_value: op.value,
-        op: op.op,
-      });
-
-      // Execute the operation
-      if (op.op === "delete") {
-        await this.kv.delete(op.key);
-      } else if (op.op === "patch") {
-        const current = await this.kvGet(op.key);
-        if (typeof current !== "string") {
-          throw new Error(`patch op: key "${op.key}" is not a string value`);
-        }
-        if (!current.includes(op.old_string)) {
-          throw new Error(`patch op: old_string not found in "${op.key}"`);
-        }
-        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) {
-          throw new Error(`patch op: old_string matches multiple locations in "${op.key}"`);
-        }
-        const patched = current.replace(op.old_string, op.new_string);
-        await this.kvPut(op.key, patched, op.metadata);
-      } else {
-        await this.kvPut(op.key, op.value, op.metadata);
-      }
-
-      this.privilegedWriteCount++;
-
-      // Audit trail for yama/niyama writes
-      if (Kernel.isPrincipleKey(op.key) && !Kernel.isPrincipleAuditKey(op.key)) {
-        const auditKey = `${op.key}:audit`;
-        const existing = await this.kvGet(auditKey) || [];
-        existing.push({
-          date: new Date().toISOString(),
-          model: this.lastCallModel,
-          deliberation: op.deliberation,
-          old_value: oldValue,
-          new_value: op.op === 'delete' ? null : (op.value ?? null),
-        });
-        await this.kvPut(auditKey, existing);
-      }
-
-      // Alert on hook: key writes
-      if (op.key.startsWith("hook:")) {
-        await this.sendKernelAlert("hook_write",
-          `Privileged write to ${op.key} in session ${this.sessionId}`);
-      }
-    }
-
-    // Auto-reload cached config after privileged writes to config keys
-    const touchedConfig = ops.some(op => configKeys.includes(op.key));
-    if (touchedConfig) {
-      if (ops.some(op => op.key === "config:defaults"))
-        this.defaults = await this.kvGet("config:defaults");
-      if (ops.some(op => op.key === "config:models"))
-        this.modelsConfig = await this.kvGet("config:models");
-      if (ops.some(op => op.key === "config:tool_registry"))
-        this.toolRegistry = await this.kvGet("config:tool_registry");
-      if (ops.some(op => op.key === "config:model_capabilities"))
-        this.modelCapabilities = await this.kvGet("config:model_capabilities");
-    }
-
-    // Reload principle cache after writes
-    if (touchedPrinciple) {
-      await this.loadYamasNiyamas();
-    }
-
-    // Return warnings for principle writes
-    if (principleWarnings.length > 0) {
-      return { warnings: principleWarnings };
-    }
-  }
+  // kvWritePrivileged — REMOVED. Functionality moved to kvWriteGated with context-based permissions.
+  // Contact gating → _gateContact(). System key gating → _gateSystem().
+  // processCommsVerdict uses direct kv.delete() for comms_blocked: cleanup.
 
   // ── Kernel interface (replaces KernelRPC) ───────────────────
   // Returns a K object with the same API hooks expect from KernelRPC.
@@ -645,9 +469,9 @@ class Kernel {
       kvList: async (opts) => kernel.kv.list(opts),
 
       // KV writes
-      kvPutSafe: async (key, value, metadata) => kernel.kvPutSafe(key, value, metadata),
+      kvWriteSafe: async (key, value, metadata) => kernel.kvWriteSafe(key, value, metadata),
       kvDeleteSafe: async (key) => kernel.kvDeleteSafe(key),
-      kvWritePrivileged: async (ops) => kernel.kvWritePrivileged(ops),
+      kvWriteGated: async (op, context) => kernel.kvWriteGated(op, context),
 
       // Agent loop
       runAgentLoop: async (opts) => kernel.runAgentLoop(opts),
@@ -685,8 +509,8 @@ class Kernel {
         exact: Kernel.SYSTEM_KEY_EXACT,
       }),
 
-      // KV operation gating (moved from hook-protect.js — immutable safety)
-      applyKVOperation: async (op) => kernel.applyKVOperation(op),
+      // KV operation gating — context-based permissions
+      // (kvWriteGated already exposed above in KV writes section)
 
       // Config utilities (used by both act.js and reflect.js)
       getMaxSteps: async (state, role, depth) => Kernel.getMaxSteps(state, role, depth),
@@ -719,77 +543,251 @@ class Kernel {
     };
   }
 
-  // ── KV operation gating (from hook-protect.js — kernel safety) ──
+  // ── KV write gating (context-based permissions for agent-originated writes) ──
 
-  async applyKVOperation(op) {
+  async kvWriteGated(op, context) {
     const key = op.key;
 
-    // Truncate value for karma logging
-    const valueSummary = op.value != null
-      ? (typeof op.value === 'string'
-          ? (op.value.length > 500 ? op.value.slice(0, 500) + '\u2026' : op.value)
-          : JSON.stringify(op.value).slice(0, 500))
-      : undefined;
+    // 1. Always blocked — immutable keys
+    if (key === "dharma" || Kernel.IMMUTABLE_KEYS.includes(key)) {
+      return { ok: false, error: `Cannot write "${key}" — immutable` };
+    }
 
-    // Contact and platform binding keys route through kvWritePrivileged (kernel-enforced rules)
+    // 2. Always blocked — kernel-only keys
+    if (Kernel.isKernelOnly(key)) {
+      return { ok: false, error: `Cannot write kernel key "${key}"` };
+    }
+
+    // 3. Always blocked — code keys go through proposal_requests
+    if (Kernel.isCodeKey(key)) {
+      return { ok: false, error: `Code key "${key}" requires proposal_requests` };
+    }
+
+    // 4. Contact keys — allowed in all contexts (with approval gating)
     if (key.startsWith("contact:") || key.startsWith("contact_platform:")) {
-      try {
-        await this.kvWritePrivileged([op]);
-      } catch (err) {
-        await this.karmaRecord({
-          event: "modification_blocked", key, op: op.op,
-          reason: err.message, attempted_value: valueSummary,
-        });
-      }
-      return;
+      return this._gateContact(op);
     }
 
+    // 5. System keys — deep-reflect only
     if (Kernel.isSystemKey(key)) {
-      await this.karmaRecord({
-        event: "modification_blocked", key, op: op.op,
-        reason: "system_key", attempted_value: valueSummary,
-      });
-      return;
+      if (context !== "deep-reflect") {
+        return { ok: false, error: `Cannot write system key "${key}" during ${context} — note in session_summary for deep reflect` };
+      }
+      return this._gateSystem(op);
     }
 
-    // Agent keys: new keys can be created freely; existing keys need unprotected flag
+    // 6. Agent keys — check protection
     const { value: existing, metadata } = await this.kvGetWithMeta(key);
     if (existing !== null && !metadata?.unprotected) {
-      await this.karmaRecord({
-        event: "modification_blocked", key, op: op.op,
-        reason: "protected_key", attempted_value: valueSummary,
-      });
-      return;
+      return { ok: false, error: `Cannot overwrite protected key "${key}"` };
     }
 
-    await this._applyKVOperationDirect(op);
+    // 7. Unprotected or new agent key — direct write
+    return this._kvWriteDirect(op);
   }
 
-  async _applyKVOperationDirect(op) {
+  // ── Contact key gating (approval rules for platform bindings) ──
+
+  async _gateContact(op) {
+    const key = op.key;
+
+    // Only put/delete/patch supported for contact keys
+    if (!["put", "delete", "patch"].includes(op.op)) {
+      return { ok: false, error: `Unsupported op "${op.op}" for contact key "${key}"` };
+    }
+
+    if (key.startsWith("contact_platform:")) {
+      if (op.op === "patch" && op.new_string?.includes('"approved"')) {
+        return { ok: false, error: `Cannot patch "approved" field on platform bindings — use the dashboard` };
+      }
+      if (op.op === "delete") {
+        const existing = await this.kvGet(key);
+        if (existing?.approved) {
+          return { ok: false, error: `Deletion of approved platform bindings is patron-only` };
+        }
+      } else if (op.op !== "patch") {
+        if (op.value?.approved === true) {
+          return { ok: false, error: `Setting approved: true on platform bindings is patron-only` };
+        }
+        if (!op.value?.slug) {
+          return { ok: false, error: `Platform binding must include a slug` };
+        }
+        op.value = { ...op.value, approved: false };
+      }
+    }
+
+    // Snapshot old value for karma
+    const { value: oldValue } = await this.kvGetWithMeta(key);
+
+    // Execute via raw write (bypasses system key check in kvWriteSafe)
+    if (op.op === "delete") {
+      await this.kv.delete(key);
+    } else if (op.op === "patch") {
+      const current = await this.kvGet(key);
+      if (typeof current !== "string") return { ok: false, error: `patch: key "${key}" is not a string` };
+      if (!current.includes(op.old_string)) return { ok: false, error: `patch: old_string not found in "${key}"` };
+      if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) return { ok: false, error: `patch: old_string matches multiple locations in "${key}"` };
+      await this.kvWrite(key, current.replace(op.old_string, op.new_string), op.metadata);
+    } else {
+      await this.kvWrite(key, op.value, op.metadata);
+    }
+
+    // Karma after successful write
+    await this.karmaRecord({
+      event: "privileged_write", key, old_value: oldValue,
+      new_value: op.value, op: op.op,
+    });
+    this.privilegedWriteCount++;
+    return { ok: true };
+  }
+
+  // ── System key gating (deep-reflect only, deliberation gates for principles) ──
+
+  async _gateSystem(op) {
+    const key = op.key;
+
+    // Only put/delete/patch supported for system keys
+    if (!["put", "delete", "patch"].includes(op.op)) {
+      return { ok: false, error: `Unsupported op "${op.op}" for system key "${key}"` };
+    }
+
+    // Model capabilities require deliberation + yama_capable model
+    if (key === "config:model_capabilities") {
+      if (!op.deliberation || op.deliberation.length < 200) {
+        return { ok: false, error: `Model capability changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
+      }
+      if (!this.isYamaCapable(this.lastCallModel)) {
+        return { ok: false, error: `Model capability changes require a yama_capable model (last model: ${this.lastCallModel})` };
+      }
+    }
+
+    // Yama/Niyama deliberation + capability gates
+    if (Kernel.isPrincipleKey(key) && !Kernel.isPrincipleAuditKey(key)) {
+      const isYama = key.startsWith('yama:');
+      const type = isYama ? 'yama' : 'niyama';
+      const minChars = isYama ? 200 : 100;
+      const typeLabel = isYama ? 'Yama' : 'Niyama';
+
+      if (!op.deliberation || op.deliberation.length < minChars) {
+        return { ok: false, error: `${typeLabel} modifications require deliberation (min ${minChars} chars, got ${op.deliberation?.length || 0})` };
+      }
+      const capCheck = isYama ? this.isYamaCapable(this.lastCallModel) : this.isNiyamaCapable(this.lastCallModel);
+      if (!capCheck) {
+        return { ok: false, error: `${typeLabel} writes require a ${type}_capable model (last model: ${this.lastCallModel})` };
+      }
+    }
+
+    // Per-session limit
+    if (this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
+      return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
+    }
+
+    // Principle diff warning
+    let principleWarning = null;
+    if (Kernel.isPrincipleKey(key) && !Kernel.isPrincipleAuditKey(key)) {
+      const isYama = key.startsWith('yama:');
+      const type = isYama ? 'yama' : 'niyama';
+      const currentValue = await this.kvGet(key);
+      const proposedValue = op.op === 'delete' ? null : (op.op === 'patch' ? `[patch: "${op.old_string}" → "${op.new_string}"]` : op.value);
+      const name = key.replace(`${type}:`, '');
+
+      const warningMsg = isYama
+        ? `WARNING: You are modifying yama "${name}".\n\nCAUTION: You are attempting to modify a yama — a core principle of how you act in the world. This requires extraordinary justification. How does this change better serve your dharma?\n\nCurrent value: ${currentValue ?? '(new)'}\nProposed value: ${proposedValue ?? '(delete)'}`
+        : `WARNING: You are modifying niyama "${name}".\n\nCAUTION: You are attempting to modify a niyama — a core principle that governs how you reflect and improve. This requires compelling justification. How does this change better serve your dharma?\n\nCurrent value: ${currentValue ?? '(new)'}\nProposed value: ${proposedValue ?? '(delete)'}`;
+
+      principleWarning = { key, name, type, current_value: currentValue, proposed_value: proposedValue, deliberation: op.deliberation, model: this.lastCallModel, message: warningMsg };
+    }
+
+    // Snapshot old value
+    const { value: oldValue } = await this.kvGetWithMeta(key);
+
+    // Execute
+    if (op.op === "delete") {
+      await this.kv.delete(key);
+    } else if (op.op === "patch") {
+      const current = await this.kvGet(key);
+      if (typeof current !== "string") return { ok: false, error: `patch: key "${key}" is not a string` };
+      if (!current.includes(op.old_string)) return { ok: false, error: `patch: old_string not found in "${key}"` };
+      if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) return { ok: false, error: `patch: old_string matches multiple locations in "${key}"` };
+      await this.kvWrite(key, current.replace(op.old_string, op.new_string), op.metadata);
+    } else {
+      await this.kvWrite(key, op.value, op.metadata);
+    }
+
+    // Karma after successful write
+    await this.karmaRecord({
+      event: "privileged_write", key, old_value: oldValue,
+      new_value: op.value, op: op.op,
+    });
+    this.privilegedWriteCount++;
+
+    // Audit trail for yama/niyama
+    if (Kernel.isPrincipleKey(key) && !Kernel.isPrincipleAuditKey(key)) {
+      const auditKey = `${key}:audit`;
+      const existing = await this.kvGet(auditKey) || [];
+      existing.push({
+        date: new Date().toISOString(),
+        model: this.lastCallModel,
+        deliberation: op.deliberation,
+        old_value: oldValue,
+        new_value: op.op === 'delete' ? null : (op.value ?? null),
+      });
+      await this.kvWrite(auditKey, existing);
+    }
+
+    // Alert on hook: key writes
+    if (key.startsWith("hook:")) {
+      await this.sendKernelAlert("hook_write",
+        `Privileged write to ${key} in session ${this.sessionId}`);
+    }
+
+    // Auto-reload cached config
+    const configKeys = ["config:defaults", "config:models", "config:tool_registry", "config:model_capabilities"];
+    if (configKeys.includes(key)) {
+      if (key === "config:defaults") this.defaults = await this.kvGet("config:defaults");
+      if (key === "config:models") this.modelsConfig = await this.kvGet("config:models");
+      if (key === "config:tool_registry") this.toolRegistry = await this.kvGet("config:tool_registry");
+      if (key === "config:model_capabilities") this.modelCapabilities = await this.kvGet("config:model_capabilities");
+    }
+
+    // Reload principle cache
+    if (Kernel.isPrincipleKey(key) && !Kernel.isPrincipleAuditKey(key)) {
+      await this.loadYamasNiyamas();
+    }
+
+    const result = { ok: true };
+    if (principleWarning) result.warning = principleWarning;
+    return result;
+  }
+
+  // ── Direct write for unprotected agent keys ──
+
+  async _kvWriteDirect(op) {
     switch (op.op) {
       case "put":
-        await this.kvPutSafe(op.key, op.value, { unprotected: true, ...op.metadata });
-        break;
+        await this.kvWriteSafe(op.key, op.value, { unprotected: true, ...op.metadata });
+        return { ok: true };
       case "delete":
         await this.kvDeleteSafe(op.key);
-        break;
+        return { ok: true };
       case "patch": {
         const current = await this.kvGet(op.key);
-        if (typeof current !== "string") break;
-        if (!current.includes(op.old_string)) break;
-        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) break;
+        if (typeof current !== "string") return { ok: false, error: `patch: key "${op.key}" is not a string` };
+        if (!current.includes(op.old_string)) return { ok: false, error: `patch: old_string not found in "${op.key}"` };
+        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) return { ok: false, error: `patch: old_string matches multiple locations in "${op.key}"` };
         const patched = current.replace(op.old_string, op.new_string);
-        await this.kvPutSafe(op.key, patched, { unprotected: true, ...op.metadata });
-        break;
+        await this.kvWriteSafe(op.key, patched, { unprotected: true, ...op.metadata });
+        return { ok: true };
       }
       case "rename": {
         const { value, metadata } = await this.kvGetWithMeta(op.key);
-        if (value !== null) {
-          await this.kvPutSafe(op.value, value, metadata);
-          await this.kvDeleteSafe(op.key);
-        }
-        break;
+        if (value === null) return { ok: false, error: `rename: key "${op.key}" does not exist` };
+        await this.kvWriteSafe(op.value, value, metadata);
+        await this.kvDeleteSafe(op.key);
+        return { ok: true };
       }
+      default:
+        return { ok: false, error: `Unknown op: ${op.op}` };
     }
   }
 
@@ -841,7 +839,7 @@ class Kernel {
       proposal.changes[op.key] = { op: op.op || "put", code: op.value, old_string: op.old_string, new_string: op.new_string };
     }
 
-    await this.kvPut(`proposal:${id}`, proposal);
+    await this.kvWrite(`proposal:${id}`, proposal);
     await this.karmaRecord({ event: "proposal_created", proposal_id: id, claims: request.claims, targets: proposal.targets });
     return id;
   }
@@ -871,13 +869,13 @@ class Kernel {
     record.status = newStatus;
     Object.assign(record, metadata);
     record[`${newStatus}_at`] = new Date().toISOString();
-    await this.kvPut(`proposal:${id}`, record);
+    await this.kvWrite(`proposal:${id}`, record);
     await this.karmaRecord({ event: `proposal_${newStatus}`, proposal_id: id });
   }
 
   async processProposalVerdicts(verdicts, depth) {
     for (const v of verdicts || []) {
-      const id = v.modification_id || v.proposal_id;
+      const id = v.proposal_id;
       if (!id) continue;
       switch (v.verdict) {
         case "accept":
@@ -904,7 +902,7 @@ class Kernel {
             if (v.updated_checks) record.checks = v.updated_checks;
             if (v.updated_claims) record.claims = v.updated_claims;
             record.modified_at = new Date().toISOString();
-            await this.kvPut(`proposal:${id}`, record);
+            await this.kvWrite(`proposal:${id}`, record);
             await this.karmaRecord({ event: "proposal_modified", proposal_id: id });
           }
           break;
@@ -918,7 +916,7 @@ class Kernel {
     // Signal governor if any proposals were accepted
     const hasAccepted = verdicts?.some(v => v.verdict === "accept");
     if (hasAccepted) {
-      await this.kvPut("deploy:pending", {
+      await this.kvWrite("deploy:pending", {
         requested_at: new Date().toISOString(),
         session_id: this.sessionId,
       });
@@ -1016,11 +1014,11 @@ class Kernel {
       const history = await this.kvGet("kernel:last_sessions") || [];
       history.unshift({ id: active.id, outcome: "killed", ts: new Date().toISOString() });
       while (history.length > 5) history.pop();
-      await this.kvPut("kernel:last_sessions", history);
+      await this.kvWrite("kernel:last_sessions", history);
     }
 
     // 2. Acquire lock — write marker before any work
-    await this.kvPut("kernel:active_session", {
+    await this.kvWrite("kernel:active_session", {
       id: this.sessionId,
       started_at: new Date().toISOString(),
     });
@@ -1045,7 +1043,7 @@ class Kernel {
     if (!allBad) return true;
 
     // Tripwire fires — signal governor to rollback
-    await this.kvPut("deploy:rollback_requested", {
+    await this.kvWrite("deploy:rollback_requested", {
       reason: "3_consecutive_crashes",
       last_sessions: last3,
       requested_at: new Date().toISOString(),
@@ -1120,7 +1118,7 @@ class Kernel {
         // Fall back to default sleep_seconds so we don't run every cron tick.
         const fallbackSleep = defaults?.wake?.sleep_seconds || 21600;
         const fallbackWake = new Date(Date.now() + fallbackSleep * 1000).toISOString();
-        await this.kvPutSafe("wake_config", { ...wakeConfig, next_wake_after: fallbackWake, sleep_seconds: fallbackSleep });
+        await this.kvWriteSafe("wake_config", { ...wakeConfig, next_wake_after: fallbackWake, sleep_seconds: fallbackSleep });
         return { skipped: true, reason: "not_time_yet", healed: true };
       }
       if (Date.now() < new Date(nextWake).getTime()) {
@@ -1162,16 +1160,16 @@ class Kernel {
         loadKeys.filter(k => !k.startsWith("sealed:"))
       );
 
-      // 7a. Check operator direct message (out-of-band console)
-      const directMsg = await this.kvGet("operator:direct");
+      // 7a. Check patron direct message (out-of-band console)
+      const directMsg = await this.kvGet("patron:direct");
       if (directMsg) {
         await this.karmaRecord({
           event: "direct_message",
-          from: "operator",
+          from: "patron",
           message: typeof directMsg === "string" ? directMsg : directMsg.message,
           sent_at: directMsg.sent_at || null,
         });
-        await this.kvDelete("operator:direct");
+        await this.kvDelete("patron:direct");
       }
 
       // 7b. Override effort for direct message sessions
@@ -1230,17 +1228,17 @@ class Kernel {
 
       // 11. Session bookkeeping — always runs regardless of act vs deep reflect
       const count = await this.getSessionCount();
-      await this.kvPutSafe(`session_counter`, count + 1);
+      await this.kvWriteSafe(`session_counter`, count + 1);
 
       const sessionIds = await this.kvGet("cache:session_ids") || [];
       sessionIds.push(this.sessionId);
-      await this.kvPutSafe("cache:session_ids", sessionIds);
+      await this.kvWriteSafe("cache:session_ids", sessionIds);
 
       const karma = this.karma;
       if (karma.length > 0) {
         const { summarizeKarma } = this.HOOKS.act || {};
         if (summarizeKarma) {
-          await this.kvPutSafe(`karma_summary:${this.sessionId}`, summarizeKarma(karma));
+          await this.kvWriteSafe(`karma_summary:${this.sessionId}`, summarizeKarma(karma));
         }
       }
 
@@ -1336,7 +1334,7 @@ class Kernel {
     const history = await this.kvGet("kernel:last_sessions") || [];
     history.unshift({ id: this.sessionId, outcome, ts: new Date().toISOString() });
     while (history.length > 5) history.pop();
-    await this.kvPut("kernel:last_sessions", history);
+    await this.kvWrite("kernel:last_sessions", history);
   }
 
   async runMinimalFallback() {
@@ -1373,9 +1371,9 @@ class Kernel {
       });
     }
 
-    // Write session counter via internal kvPut
+    // Write session counter via internal kvWrite
     const count = await this.getSessionCount();
-    await this.kvPut("session_counter", count + 1);
+    await this.kvWrite("session_counter", count + 1);
   }
 
   // ── Wake cycle ──────────────────────────────────────────────
@@ -1537,7 +1535,7 @@ class Kernel {
     // Validate the new key parses correctly
     Kernel.parseSSHEd25519(newPublicKey);
 
-    // Write directly to KV binding — bypasses kvPut immutability guard
+    // Write directly to KV binding — bypasses kvWrite immutability guard
     await this.kv.put("patron:public_key", newPublicKey, {
       metadata: {
         type: "identity", format: "text",
@@ -2021,7 +2019,7 @@ class Kernel {
                 const reason = !contact ? 'unknown sender' : 'unapproved sender';
                 const ts = Date.now();
                 const quarantineKey = `sealed:quarantine:${channel}:${encodeURIComponent(senderId)}:${ts}`;
-                await this.kvPut(quarantineKey, {
+                await this.kvWrite(quarantineKey, {
                   sender: senderId,
                   content: item[content_field],
                   tool: name,
@@ -2069,7 +2067,7 @@ class Kernel {
               conv.source_session = this.sessionId;
             }
             conv.last_activity = new Date().toISOString();
-            await this.kvPutSafe(chatKey, conv);
+            await this.kvWriteSafe(chatKey, conv);
           } catch (err) {
             // Non-fatal — chat seeding failure shouldn't break the tool call
             await this.karmaRecord({ event: "chat_seed_error", tool: name, error: err.message });
@@ -2320,7 +2318,7 @@ class Kernel {
     }
   }
 
-  async kvPut(key, value, metadata = {}) {
+  async kvWrite(key, value, metadata = {}) {
     // Protect immutable keys
     if (key === "dharma" || Kernel.IMMUTABLE_KEYS.includes(key)) {
       throw new Error(`Cannot write "${key}" — immutable key`);

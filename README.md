@@ -121,7 +121,7 @@ tracks versions and can roll back if crashes occur. Non-code changes
 (config, prompts, wisdom) go through KV write tiers with appropriate
 validation gates. Software engineering discipline applied to
 self-modification.
-([Modification Protocol](docs/dev/modification-protocol.md))
+([Proposal Protocol](docs/dev/proposal-protocol.md))
 
 ### Upaya and Prajna — Wisdom Through Experience
 
@@ -178,7 +178,7 @@ falls through to a known-good state automatically.
 └────────┬────────┘     │           │              │
          │              │  ┌────────┴───────────┐  │
 ┌────────┴────────┐     │  │    Governor        │  │
-│  Operator SPA   │     │  │  (build + deploy)  │  │
+│  Patron SPA     │     │  │  (build + deploy)  │  │
 │  (site/)        │     │  └────────────────────┘  │
 └─────────────────┘     └──────────────────────────┘
 ```
@@ -200,7 +200,7 @@ npm install
 2. Generate an identity: `node scripts/generate-identity.js --seed-kv`
 3. Seed local KV: `node scripts/seed-local-kv.mjs`
 4. Start everything: `source .env && bash scripts/start.sh --reset-all-state --wake`
-5. Open the dashboard: `http://localhost:3001/operator/` (key: `test`)
+5. Open the dashboard: `http://localhost:3001/patron/` (key: `test`)
 
 See [scripts reference](docs/dev/scripts-reference.md) for all dev tools
 and flags.
@@ -220,8 +220,8 @@ and flags.
 ├── providers/            # LLM and service adapters (4)
 ├── prompts/              # System prompts (orient, reflect, chat, subplan)
 ├── governor/             # Governor worker — build, deploy, rollback
-├── dashboard-api/        # Operator dashboard API (separate worker)
-├── site/                 # Static frontend (landing, reflections, operator SPA)
+├── dashboard-api/        # Patron dashboard API (separate worker)
+├── site/                 # Static frontend (landing, reflections, patron SPA)
 ├── scripts/              # Dev tools (seed, read, rollback, reset, serve)
 ├── tests/                # Vitest test suite
 ├── docs/dev/             # Developer documentation
@@ -237,13 +237,13 @@ and flags.
 - [Architecture](docs/dev/architecture.md) — two-worker architecture, KV protection tiers, kernel/module split
 - [KV Schema](docs/dev/kv-schema.md) — every key namespace, protection levels, lifecycle
 - [Entry Points](docs/dev/entry-points.md) — cron wake, HTTP chat, dashboard API call chains
-- [Modification Protocol](docs/dev/modification-protocol.md) — proposal system, governor deployment lifecycle
+- [Proposal Protocol](docs/dev/proposal-protocol.md) — proposal system, governor deployment lifecycle
 - [Reflection System](docs/dev/reflection-system.md) — session reflect, deep reflect, scheduling, wisdom
 - [Communication Gating](docs/dev/communication-gating.md) — inbound/outbound gates, contact system
 - [Chat System](docs/dev/chat-system.md) — webhook pipeline, tool filtering, conversation state
 - [Provider Cascade](docs/dev/provider-cascade.md) — three-tier LLM fallback
 - [Tools Reference](docs/dev/tools-reference.md) — all tools, providers, ScopedKV, availability matrix
-- [Dashboard](docs/dev/dashboard.md) — API endpoints, operator SPA, public site
+- [Dashboard](docs/dev/dashboard.md) — API endpoints, patron SPA, public site
 - [Scripts Reference](docs/dev/scripts-reference.md) — seed, read, rollback, startup
 - [Testing](docs/dev/testing.md) — test architecture, mocks, 339 tests across 4 suites
 - [Adding a Channel](docs/dev/adding-a-channel.md) — step-by-step integration guide
