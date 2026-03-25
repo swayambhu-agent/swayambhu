@@ -8,7 +8,7 @@ This document explains **why** Swayambhu is built the way it is. Every section a
 
 ### Minimal kernel, maximum agent autonomy
 
-The kernel exists only to enforce safety invariants. Everything else — prompts, config, tools, wake logic, reflection schedules, communication wisdom, skills — is agent-controlled and agent-evolvable.
+The kernel exists only to enforce safety invariants. Everything else — prompts, config, tools, session logic, reflection schedules, communication wisdom, skills — is agent-controlled and agent-evolvable.
 
 The goal is NOT to ship features. You are expected to develop the features you need yourself, through the proposal protocol and reflection hierarchy. This is what differentiates Swayambhu from other agent frameworks. Those focus on building a comprehensive feature set. Swayambhu focuses on giving you the *ability to build your own feature set*, with just enough scaffolding to keep you safe.
 
@@ -16,7 +16,7 @@ The initial seed is scaffolding, not a finished product. The prompts, tools, and
 
 ### Self-modification as core capability
 
-The proposal protocol (staged → inflight → promoted) isn't just a way to update config. It's the mechanism through which you evolve. Tools, prompts, providers, even the wake hook itself — all modifiable.
+The proposal protocol (staged → inflight → promoted) isn't just a way to update config. It's the mechanism through which you evolve. Tools, prompts, providers, even the session hook itself — all modifiable.
 
 The only things you can't modify are the kernel (safety floor) and a few immutable anchors (dharma, patron key). Everything else is fair game.
 
@@ -128,11 +128,11 @@ The kernel is disposable infrastructure. It can be redeployed at any time withou
 
 ### Reflection hierarchy
 
-**Deep reflect replaces orient rather than running alongside it.** Why: budget control. Running both a full orient session and a deep reflect session in the same wake would double the cost. Since deep reflect already has full tool access, it can do anything orient could do plus its own review work. Having them replace each other, not stack, keeps per-wake costs predictable.
+**Deep reflect replaces orient rather than running alongside it.** Why: budget control. Running both a full orient session and a deep reflect session in the same session would double the cost. Since deep reflect already has full tool access, it can do anything orient could do plus its own review work. Having them replace each other, not stack, keeps per-session costs predictable.
 
 **`spawn_subplan` is excluded from deep reflect.** Why: recursive depth + subplans = uncontrollable cost explosion. Deep reflect is supposed to use the best and therefore most expensive model. If it could spawn subplans, each subplan could consume significant budget. The combination of high per-token cost and recursive depth would make costs unpredictable and potentially catastrophic.
 
-**Depth 1 is the only level that writes `last_reflect` and `wake_config`.** Why: it's the gateway between deep reflection and normal operation. `last_reflect` feeds context into the next orient session. `wake_config` determines when the next wake happens. Only depth 1 should set these because it runs last in the cascade (depths cascade top-down, then bottom-up through depth 1) and has the most complete view of what higher depths decided.
+**Depth 1 is the only level that writes `last_reflect` and `session_schedule`.** Why: it's the gateway between deep reflection and normal operation. `last_reflect` feeds context into the next orient session. `session_schedule` determines when the next session happens. Only depth 1 should set these because it runs last in the cascade (depths cascade top-down, then bottom-up through depth 1) and has the most complete view of what higher depths decided.
 
 **Deep reflect cascades top-down.** Why: higher depths should set context before lower depths act. If depth 2 identifies a pattern in depth 1's behavior, that insight should inform what depth 1 does when it runs afterward. Top-down ensures strategic context flows before tactical action.
 

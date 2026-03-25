@@ -198,7 +198,7 @@ All `kernel:*` keys are blocked from both `kvWriteSafe` and
 
 ### Suppress Alerts
 
-When the agent writes to any `hook:wake:*` key (modifying its own wake
+When the agent writes to any `hook:wake:*` key (modifying its own session
 logic), the kernel sends an alert to Slack using `kernel:alert_config`.
 The agent cannot prevent this. The alert config is a kernel key — the
 agent cannot read or modify it.
@@ -251,7 +251,7 @@ Explorer.
 
 ### Modify Its Own Code
 
-The agent can rewrite its prompts, tools, configuration, and wake hook
+The agent can rewrite its prompts, tools, configuration, and session hook
 logic through the Proposal Protocol:
 
 1. **Staged** — The agent proposes a change with claims (why), operations
@@ -337,7 +337,7 @@ The circuit breaker automatically rolls back code proposals that
 cause problems.
 
 **How it works:** The kernel writes a `last_danger` key whenever a fatal
-error, parse error, or provider cascade failure occurs. On the next wake,
+error, parse error, or provider cascade failure occurs. On the next session,
 the hook checks `last_danger` against all inflight proposals. Any
 code proposal that was activated *before* the danger event is
 automatically rolled back — its snapshotted old values are restored.
@@ -458,7 +458,7 @@ pkill -f workerd
 If the agent's state is compromised or you need to start fresh:
 
 ```bash
-source .env && bash scripts/start.sh --reset-all-state --wake
+source .env && bash scripts/start.sh --reset-all-state --trigger
 ```
 
 This wipes all KV state — sessions, wisdom, proposals, config

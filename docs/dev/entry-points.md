@@ -4,7 +4,7 @@ Five entry points into the system. This document traces each from the external t
 
 ---
 
-## 1. Cron trigger (wake cycle)
+## 1. Cron trigger (scheduled session)
 
 **Trigger:** Cloudflare cron `* * * * *` (every minute) fires `scheduled()`.
 
@@ -31,7 +31,7 @@ kernel.runScheduled()                                kernel.js:881
 ├─► checkHookSafety()                               kernel.js:934
 │   │ Read kernel:last_sessions
 │   │ If last 3 are crash/killed:
-│   │   Delete all hook:wake:* keys
+│   │   Delete all hook:wake:* keys (hook storage)
 │   │   Try restore from kernel:last_good_hook
 │   │   If restored → delete snapshot (anti-loop), alert, return true
 │   │   If no snapshot → alert, return false
@@ -58,7 +58,7 @@ kernel.runScheduled()                                kernel.js:881
 │         │   │ env.LOADER.get() → create static import
 │         │   │   modules: hook source code from KV
 │         │   │   env.KERNEL: this.ctx.exports.K interface({})
-│         │   │ POST https://internal/wake { sessionId }
+│         │   │ POST https://internal/trigger { sessionId }
 │         │   │
 │         │   ▼ (inside module)
 │         │   act.js default export fetch()   act.js:278
@@ -67,8 +67,8 @@ kernel.runScheduled()                                kernel.js:881
 │         │   ▼
 │         │   wake(K, input)                        act.js:18
 │         │   │
-│         │   ├─► Sleep check                       act.js:44
-│         │   │   Read wake_config → check next_wake_after
+│         │   ├─► Schedule check                     act.js:44
+│         │   │   Read session_schedule → check next_session_after
 │         │   │   Return { skipped: true } if not time
 │         │   │
 │         │   ├─► detectCrash(K)                    act.js:136
@@ -118,7 +118,7 @@ kernel.runScheduled()                                kernel.js:881
 │         │   │           │   Process comms_verdicts (send/revise_and_send/drop)
 │         │   │           │   Apply proposal_requests via acceptDirect()
 │         │   │           │   Save reflect schedule + output
-│         │   │           │   If depth == 1: write last_reflect + wake_config
+│         │   │           │   If depth == 1: write last_reflect + session_schedule
 │         │   │           │
 │         │   │           │ [depth > 1?] → cascade: runReflect(K, state, depth-1, context)
 │         │   │
@@ -145,10 +145,10 @@ kernel.runScheduled()                                kernel.js:881
 │         │               │   │ Apply kv_operations via kvWriteGated
 │         │               │   │ Process proposal_verdicts (withdraw, modify only)
 │         │               │   │ Stage proposal_requests
-│         │               │   │ Apply next_wake_config if present
+│         │               │   │ Apply next_session_config if present
 │         │               │
 │         │               │ writeSessionResults()
-│         │               │   Save wake_config, increment session_counter, append cache:session_ids
+│         │               │   Save session_schedule, increment session_counter, append cache:session_ids
 │         │
 │         ├─► [catch] If hook crashed:
 │         │   outcome = "crash"
@@ -169,7 +169,7 @@ kernel.runScheduled()                                kernel.js:881
 │         │
 │         └─► Delete kernel:active_session
 │
-└─ NO → kernel.wake()                                 kernel.js:1112
+└─ NO → kernel.runFallbackSession()                    kernel.js:1112
           runMinimalFallback() + updateSessionOutcome("clean")
 ```
 
@@ -350,9 +350,9 @@ GET /reflections                        → public (no auth)
 │ Return { session_id, timestamp, reflection, note_to_future_self } for each
 
 GET /health                             → auth required
-│ Parallel read: session_counter, wake_config, last_reflect,
+│ Parallel read: session_counter, session_schedule, last_reflect,
 │   kernel:active_session, session
-│ Return { sessionCounter, wakeConfig, lastReflect, session }
+│ Return { sessionCounter, schedule, lastReflect, session }
 
 GET /sessions                           → auth required
 │ Parallel: kvListAll(karma:*), kvListAll(reflect:1:*), cache:session_ids
@@ -424,7 +424,7 @@ The SPA:
 
 Minimal Node.js HTTP server. Serves `site/` directory with `Cache-Control: no-store` on every response.
 
-Special route: `POST /wake` proxies to `http://localhost:8787/__scheduled` (triggers a wake cycle from the SPA).
+Special route: `POST /trigger` proxies to `http://localhost:8787/__scheduled` (triggers a session from the SPA).
 
 **NOTE:** In production, the SPA would need a different API base URL. The `localhost:8790` is hardcoded in the patron HTML.
 
@@ -440,7 +440,7 @@ One-script dev startup. Runs everything needed for local development.
 source .env && bash scripts/start.sh [options]
 
 Options:
-  --wake                    Trigger wake cycle after services start
+  --trigger                 Trigger a session after services start
   --reset-all-state         Wipe .wrangler/shared-state/, re-seed from scratch
   --yes                     Skip confirmation prompt
   --set path=value          Override config:defaults value after seeding (repeatable)
@@ -455,18 +455,18 @@ Execution flow:
    - `node scripts/seed-local-kv.mjs`
    - Apply `--set` overrides via Miniflare (read `config:defaults`, deep-set paths, write back)
 4. Else:
-   - `node scripts/reset-wake-timer.mjs` (set `wake_config.next_wake_after` to past)
+   - `node scripts/reset-schedule.mjs` (set `session_schedule.next_session_after` to past)
 5. Start kernel: `npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state`
 6. Start dashboard API: `cd dashboard-api && npx wrangler dev --port 8790 --persist-to ../.wrangler/shared-state`
 7. Start dashboard SPA: `node scripts/dev-serve.mjs 3001`
 8. Wait for kernel and dashboard API to respond
-9. If `--wake`: `curl http://localhost:8787/__scheduled`
+9. If `--trigger`: `curl http://localhost:8787/__scheduled`
 10. Print service URLs, wait for Ctrl+C
 11. On exit: kill all process groups
 
 ### `curl http://localhost:8787/__scheduled`
 
-Triggers a wake cycle manually. Wrangler's `--test-scheduled` flag enables this endpoint. This is the same code path as the cron trigger — `scheduled()` → `runScheduled()`.
+Triggers a session manually. Wrangler's `--test-scheduled` flag enables this endpoint. This is the same code path as the cron trigger — `scheduled()` → `runScheduled()`.
 
 ### `node scripts/seed-local-kv.mjs`
 
@@ -487,7 +487,7 @@ Logic: if the argument doesn't end with `:`, try reading as an exact key first. 
 
 ### `node scripts/rollback-session.mjs`
 
-Undoes the most recent wake session's KV changes by reading its karma log and reversing `privileged_write` entries.
+Undoes the most recent session's KV changes by reading its karma log and reversing `privileged_write` entries.
 
 ```bash
 node scripts/rollback-session.mjs            # roll back with confirmation
@@ -501,9 +501,9 @@ Prints session summaries by reading `cache:session_ids`, then for each session r
 
 Also prints the current tool registry at the end.
 
-### `node scripts/reset-wake-timer.mjs`
+### `node scripts/reset-schedule.mjs`
 
-Sets `wake_config.next_wake_after` to `"2020-01-01T00:00:00Z"` so the next wake cycle isn't skipped. Called automatically by `start.sh` when not resetting state. Uses `process.exit(0)` to force-exit because `mf.dispose()` can hang.
+Sets `session_schedule.next_session_after` to `"2020-01-01T00:00:00Z"` so the next session isn't skipped. Called automatically by `start.sh` when not resetting state. Uses `process.exit(0)` to force-exit because `mf.dispose()` can hang.
 
 ### `node scripts/generate-identity.js`
 
@@ -513,7 +513,7 @@ Generates a DID keypair via ethers. Used once during initial setup. Not part of 
 
 ## Agent loop detail
 
-Referenced by both the wake cycle and chat call chains. `runAgentLoop()` at `kernel.js:1819`.
+Referenced by both the session and chat call chains. `runAgentLoop()` at `kernel.js:1819`.
 
 ```
 runAgentLoop({ systemPrompt, initialContext, tools, model, effort,

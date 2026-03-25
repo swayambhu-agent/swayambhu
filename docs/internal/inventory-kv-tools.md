@@ -70,7 +70,7 @@ Seeded provider names: `llm`, `llm_balance`, `wallet_balance`, `gmail`.
 | `prompt:subplan` | Text (markdown) | `seed-local-kv.mjs` | `kernel.js:spawnSubplan()` | Yes | System |
 | `prompt:chat` | Text | `seed-local-kv.mjs` | `hook-chat.js:handleChat()` | Yes | System |
 
-### 1.7 Hook Modules (Wake Cycle)
+### 1.7 Hook Modules (Session Hooks)
 
 | Key | Stored type | Written by | Read by | Seeded | Protection |
 |-----|-------------|------------|---------|--------|------------|
@@ -113,7 +113,7 @@ Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignme
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `wake_config` | JSON `{ next_wake_after, sleep_seconds, effort, ... }` | `act.js:writeSessionResults()`, `reflect.js:executeReflect()`, `applyReflectOutput()` | `act.js:wake()`, `dashboard-api:GET /health` | No | Regular (kvWriteSafe) |
+| `session_schedule` | JSON `{ next_session_after, interval_seconds, effort, ... }` | `act.js:writeSessionResults()`, `reflect.js:executeReflect()`, `applyReflectOutput()` | `act.js:wake()`, `dashboard-api:GET /health` | No | Regular (kvWriteSafe) |
 | `session_counter` | JSON number | `act.js:writeSessionResults()`, `kernel.js:runMinimalFallback()` | `kernel.js:getSessionCount()`, `dashboard-api:GET /health` | No | Regular |
 | `cache:session_ids` | JSON array of session ID strings | `act.js:writeSessionResults()` | `reflect.js:gatherReflectContext()`, `dashboard-api:GET /sessions` | No | Regular |
 | `karma:{sessionId}` | JSON array of karma entries | `kernel.js:karmaRecord()` (appended every event) | `act.js:detectCrash()`, `reflect.js:executeReflect()` (session karma), `dashboard-api` | No | Regular (prefix `karma:` is not in SYSTEM_KEY_PREFIXES) |

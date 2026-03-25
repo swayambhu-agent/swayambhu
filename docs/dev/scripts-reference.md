@@ -160,7 +160,7 @@ Behavior:
 
 ## scripts/rollback-session.mjs — Session Rollback
 
-Undoes the most recent wake session's KV changes.
+Undoes the most recent session's KV changes.
 
 ```bash
 node scripts/rollback-session.mjs              # with confirmation prompt
@@ -183,7 +183,7 @@ node scripts/rollback-session.mjs --yes        # skip confirmation
 5. **Session counter** — decrements `session_counter`
 6. **Session ID list** — pops the last entry from `cache:session_ids`
 7. **Session history** — pops matching entry from `kernel:last_sessions`
-8. **KV index cache** — deletes `cache:kv_index` (rebuilt on next wake)
+8. **KV index cache** — deletes `cache:kv_index` (rebuilt on next session)
 9. **Last reflect** — restores from previous session's `reflect:0:{prevId}`
 10. **Danger signal** — deletes `last_danger` if set by this session
 
@@ -215,24 +215,24 @@ sessions. Prints the tool registry at the end.
 
 ---
 
-## scripts/reset-wake-timer.mjs — Reset Wake Timer
+## scripts/reset-schedule.mjs — Reset Schedule Timer
 
-Sets `wake_config.next_wake_after` to a past date so the next cron trigger
+Sets `session_schedule.next_session_after` to a past date so the next cron trigger
 runs immediately instead of being skipped.
 
 ```bash
-node scripts/reset-wake-timer.mjs
+node scripts/reset-schedule.mjs
 ```
 
-Reads the existing `wake_config`, updates `next_wake_after` to
-`"2020-01-01T00:00:00Z"`, writes it back. If no `wake_config` exists
+Reads the existing `session_schedule`, updates `next_session_after` to
+`"2020-01-01T00:00:00Z"`, writes it back. If no `session_schedule` exists
 (first run), skips.
 
 Uses `process.exit(0)` to force exit — Miniflare's `dispose()` can hang
 if the workerd subprocess won't quit.
 
 Called by `start.sh` when starting without `--reset-all-state` to ensure
-the wake timer doesn't block the next cycle.
+the schedule timer doesn't block the next session.
 
 ---
 
@@ -249,10 +249,10 @@ node scripts/dev-serve.mjs [port]    # default: 3001
 - Directory paths serve `index.html`
 - MIME types for html, js, mjs, css, json, png, jpg, svg, ico
 
-### /wake proxy
+### /trigger proxy
 
-`POST /wake` proxies to `http://localhost:8787/__scheduled` — triggers a
-wake cycle from the dashboard SPA. Returns `{ ok, status }` or
+`POST /trigger` proxies to `http://localhost:8787/__scheduled` — triggers a
+session from the dashboard SPA. Returns `{ ok, status }` or
 `{ ok: false, error }`.
 
 ---
@@ -299,7 +299,7 @@ source .env && bash scripts/start.sh [options]
 
 | Flag | Effect |
 |------|--------|
-| `--wake` | Trigger a wake cycle after services are ready |
+| `--trigger` | Trigger a session after services are ready |
 | `--reset-all-state` | Wipe `.wrangler/shared-state/`, re-seed from scratch |
 | `--yes` | Skip confirmation prompt for reset |
 | `--set path=value` | Override `config:defaults` value after seeding (can be repeated) |
@@ -312,14 +312,14 @@ source .env && bash scripts/start.sh [options]
 3. **Reset or preserve state**:
    - With `--reset-all-state`: deletes `.wrangler/shared-state/`, runs
      `seed-local-kv.mjs`, applies `--set` overrides
-   - Without reset: runs `reset-wake-timer.mjs` to ensure next wake runs
+   - Without reset: runs `reset-schedule.mjs` to ensure next session runs
 4. **Start services** (all via `setsid` for process group management):
    - Kernel: `npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state` (port 8787)
    - Dashboard API: `npx wrangler dev --port 8790 --persist-to ../.wrangler/shared-state` (from `dashboard-api/`)
    - Dashboard SPA: `node scripts/dev-serve.mjs 3001`
 5. **Wait for ready** — polls kernel and dashboard API with curl
    (up to 30s each)
-6. **Trigger wake** (if `--wake`): `curl http://localhost:8787/__scheduled`
+6. **Trigger session** (if `--trigger`): `curl http://localhost:8787/__scheduled`
 
 ### Config overrides
 

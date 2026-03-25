@@ -330,13 +330,13 @@ describe("applyReflectOutput", () => {
     );
   });
 
-  it("depth 1 writes last_reflect + wake_config", async () => {
+  it("depth 1 writes last_reflect + session_schedule", async () => {
     const K = makeMockK({}, { sessionId: "test_session" });
     const state = makeState();
     const output = {
       reflection: "depth 1 reflection",
       note_to_future_self: "keep going",
-      next_wake_config: { sleep_seconds: 3600, effort: "low" },
+      next_session_config: { interval_seconds: 3600, effort: "low" },
     };
 
     await applyReflectOutput(K, state, 1, output, {});
@@ -345,27 +345,27 @@ describe("applyReflectOutput", () => {
     expect(lastReflectCall).toBeTruthy();
     expect(lastReflectCall[1].was_deep_reflect).toBe(true);
 
-    const wakeConfigCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "wake_config");
-    expect(wakeConfigCall).toBeTruthy();
-    expect(wakeConfigCall[1].sleep_seconds).toBe(3600);
-    expect(wakeConfigCall[1]).toHaveProperty("next_wake_after");
+    const scheduleCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "session_schedule");
+    expect(scheduleCall).toBeTruthy();
+    expect(scheduleCall[1].interval_seconds).toBe(3600);
+    expect(scheduleCall[1]).toHaveProperty("next_session_after");
   });
 
-  it("depth > 1 does NOT write last_reflect or wake_config", async () => {
+  it("depth > 1 does NOT write last_reflect or session_schedule", async () => {
     const K = makeMockK({}, { sessionId: "test_session" });
     const state = makeState();
     const output = {
       reflection: "depth 2 reflection",
       note_to_future_self: "meta thoughts",
-      next_wake_config: { sleep_seconds: 3600 },
+      next_session_config: { interval_seconds: 3600 },
     };
 
     await applyReflectOutput(K, state, 2, output, {});
 
     const lastReflectCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflectCall).toBeUndefined();
-    const wakeConfigCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "wake_config");
-    expect(wakeConfigCall).toBeUndefined();
+    const scheduleCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "session_schedule");
+    expect(scheduleCall).toBeUndefined();
   });
 });
 
@@ -376,8 +376,8 @@ describe("evaluateTripwires", () => {
     expect(evaluateTripwires({ default_effort: "low" }, {})).toBe("low");
   });
 
-  it("returns wake.default_effort fallback", () => {
-    expect(evaluateTripwires({ wake: { default_effort: "medium" } }, {})).toBe("medium");
+  it("returns schedule.default_effort fallback", () => {
+    expect(evaluateTripwires({ schedule: { default_effort: "medium" } }, {})).toBe("medium");
   });
 
   it("overrides effort when tripwire fires", () => {
@@ -447,22 +447,22 @@ describe("detectCrash", () => {
 // ── 11. writeSessionResults ────────────────────────────────
 
 describe("writeSessionResults", () => {
-  it("writes default wake_config when reflect was skipped", async () => {
-    const K = makeMockK({}, { sessionCount: 5, defaults: { wake: { sleep_seconds: 3600 } } });
-    K.getDefaults = vi.fn(async () => ({ wake: { sleep_seconds: 3600 } }));
+  it("writes default session_schedule when reflect was skipped", async () => {
+    const K = makeMockK({}, { sessionCount: 5, defaults: { schedule: { interval_seconds: 3600 } } });
+    K.getDefaults = vi.fn(async () => ({ schedule: { interval_seconds: 3600 } }));
     await writeSessionResults(K, {}, { reflectRan: false });
 
-    const wakeCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "wake_config");
-    expect(wakeCall).toBeTruthy();
-    expect(wakeCall[1]).toHaveProperty("next_wake_after");
+    const scheduleCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "session_schedule");
+    expect(scheduleCall).toBeTruthy();
+    expect(scheduleCall[1]).toHaveProperty("next_session_after");
   });
 
-  it("does not write wake_config when reflect ran", async () => {
+  it("does not write session_schedule when reflect ran", async () => {
     const K = makeMockK({}, { sessionCount: 5 });
     await writeSessionResults(K, {});
 
-    const wakeCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "wake_config");
-    expect(wakeCall).toBeUndefined();
+    const scheduleCall = K.kvWriteSafe.mock.calls.find(([key]) => key === "session_schedule");
+    expect(scheduleCall).toBeUndefined();
   });
 
   it("does not increment session_counter (moved to kernel.runWake)", async () => {

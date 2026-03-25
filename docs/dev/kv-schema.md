@@ -121,7 +121,7 @@ All JSON. Read by kernel and hooks at session start. Writable via `kvWriteGated(
 
 | Key | Value | Read by | Seeded |
 |-----|-------|---------|--------|
-| `config:defaults` | Session budgets, model roles, effort levels, execution limits, chat config, wake config, memory config, deep reflect config | Kernel (`loadEagerConfig`), hooks (via `K.getDefaults()`) | Yes |
+| `config:defaults` | Session budgets, model roles, effort levels, execution limits, chat config, session schedule config, memory config, deep reflect config | Kernel (`loadEagerConfig`), hooks (via `K.getDefaults()`) | Yes |
 | `config:models` | Model list with pricing, `family`, `supports_reasoning`, `alias_map`, `fallback_model` | Kernel (`loadEagerConfig`), hooks (via `K.getModelsConfig()`), `resolveModel()`, `estimateCost()`, `callLLM()` (family/effort lookup) | Yes |
 | `config:model_capabilities` | Per-model capability flags (`yama_capable`, `niyama_capable`, `comms_gate_capable`) | Kernel (`loadEagerConfig`), `isYamaCapable()`, `isNiyamaCapable()`, `isCommsGateCapable()` | Yes |
 | `config:resources` | Platform limits (KV, worker), external endpoints (OpenRouter, wallet, Slack) | `runSession()` in act.js — passed to orient prompt template | Yes |
@@ -366,7 +366,7 @@ These are not system keys, not kernel-only. Writable via `kvWriteSafe()`. The ke
 |-----|--------|-------|---------|------------|
 | `session_counter` | JSON | Monotonically increasing integer | `getSessionCount()`, reflect scheduling | `writeSessionResults()` in act.js via `kvWriteSafe`, `runMinimalFallback()` via kernel `kvWrite` |
 | `cache:session_ids` | JSON | Array of all session IDs (appended each session) | `gatherReflectContext()` in reflect.js, Dashboard API (`GET /sessions`) | `writeSessionResults()` via `kvWriteSafe` |
-| `wake_config` | JSON | `{ next_wake_after, sleep_seconds, effort?, ... }` | `wake()` in act.js — sleep check; Dashboard API (`GET /health`) | `writeSessionResults()`, `executeReflect()`, `applyReflectOutput()` (depth 1) via `kvWriteSafe` |
+| `session_schedule` | JSON | `{ next_session_after, interval_seconds, effort?, ... }` | `wake()` in act.js — schedule check; Dashboard API (`GET /health`) | `writeSessionResults()`, `executeReflect()`, `applyReflectOutput()` (depth 1) via `kvWriteSafe` |
 | `last_reflect` | JSON | Most recent reflect output: `{ session_summary, note_to_future_self, next_orient_context?, session_id, was_deep_reflect? }` | `wake()` in act.js — provides context to orient; Dashboard API (`GET /health`) | `executeReflect()`, `applyReflectOutput()` (depth 1) via `kvWriteSafe` |
 | `last_danger` | JSON | `{ t, event, session_id }` — last danger signal | `runCircuitBreaker()` in kernel.js (proposal methods) | `karmaRecord()` in kernel.js (kernel internal) |
 | `identity:did` | JSON | `{ did, address, chain_id, chain_name, registry, ... }` | Agent via `kv_query` tool | Seed |
@@ -542,7 +542,7 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **73 keys** total:
 | `karma:*` | `karmaRecord()` | Every session |
 | `session_counter` | `writeSessionResults()` | Every session |
 | `cache:session_ids` | `writeSessionResults()` | Every session |
-| `wake_config` | `writeSessionResults()` | Every session |
+| `session_schedule` | `writeSessionResults()` | Every session |
 | `last_reflect` | `executeReflect()` / `applyReflectOutput()` | Every reflect |
 | `last_danger` | `karmaRecord()` | On danger signals |
 | `reflect:*:*` | `executeReflect()` / `applyReflectOutput()` | Every reflect |

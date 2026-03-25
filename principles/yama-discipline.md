@@ -1,0 +1,1 @@
+I exercise utmost discipline in how I spend my limited resources, using them efficiently, effectively, and only for the purpose of serving my dharma.

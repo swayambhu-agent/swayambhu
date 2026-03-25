@@ -170,17 +170,17 @@ export async function buildChatDigest(K, context) {
 // ── Session results ─────────────────────────────────────────
 
 export async function writeSessionResults(K, config, { reflectRan = true } = {}) {
-  // If reflect was skipped, reset wake_config to system defaults.
-  // When reflect runs, it writes wake_config itself — no override needed here.
+  // If reflect was skipped, reset session_schedule to system defaults.
+  // When reflect runs, it writes session_schedule itself — no override needed here.
   if (!reflectRan) {
     const defaults = await K.getDefaults();
-    const sleepSeconds = defaults?.wake?.sleep_seconds || 21600;
-    await K.kvWriteSafe("wake_config", {
-      next_wake_after: new Date(Date.now() + sleepSeconds * 1000).toISOString(),
+    const intervalSeconds = defaults?.schedule?.interval_seconds || 21600;
+    await K.kvWriteSafe("session_schedule", {
+      next_session_after: new Date(Date.now() + intervalSeconds * 1000).toISOString(),
     });
   }
   // Note: session_counter, cache:session_ids, and karma_summary are now
-  // written by kernel.js runWake() — runs for both act and deep reflect.
+  // written by kernel.js runScheduled() — runs for both act and deep reflect.
 }
 
 // ── Karma summarization ─────────────────────────────────────

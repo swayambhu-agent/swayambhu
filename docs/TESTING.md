@@ -9,7 +9,7 @@ Fast, no network, no Workers runtime. Uses vitest with mock KV and mock fetch.
 **What's tested:**
 - Kernel logic (kernel.test.js): parseAgentOutput, buildPrompt, budget
   enforcement, karma recording, tool definitions, session management
-- Wake hook (wake-hook.test.js): orient context, reflect scheduling, proposal
+- Session hook (wake-hook.test.js): orient context, reflect scheduling, proposal
   system, circuit breaker, tripwire evaluation
 - Tools (tools.test.js): each tool's execute() with mock context, module
   structure validation
@@ -24,7 +24,7 @@ kernel and hook, broken tool modules.
 Real LLM calls via OpenRouter, direct tool execution (statically imported), real KV.
 
 **What's tested:**
-- Full wake cycle: orient → tool calls → reflect → session results
+- Full session: orient → tool calls → reflect → session results
 - Tool execution with real network (Telegram, web fetch, balance checks)
 - KV read/write through actual Wrangler miniflare
 
@@ -33,7 +33,7 @@ wiring, KV serialization problems.
 
 **Run:**
 ```bash
-source .env && bash scripts/start.sh --reset-all-state --wake
+source .env && bash scripts/start.sh --reset-all-state --trigger
 ```
 
 ### Layer 2: Prod integration (`wrangler dev` with `wrangler.toml`)
@@ -70,5 +70,5 @@ Shared mocks live in `tests/helpers/`:
 
 - Tool tests go in `tests/tools.test.js`
 - Kernel tests go in `tests/kernel.test.js` (imports from `kernel.js`)
-- Wake hook tests go in `tests/wake-hook.test.js` (imports from `act.js`, `reflect.js`)
+- Session hook tests go in `tests/wake-hook.test.js` (imports from `act.js`, `reflect.js`)
 - Use shared helpers from `tests/helpers/` for mocks

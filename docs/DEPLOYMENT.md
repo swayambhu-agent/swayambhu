@@ -37,7 +37,7 @@ Add a CNAME DNS record in Cloudflare: `swayambhu.dev` → `<tunnel-id>.cfargotun
    trigger `/__scheduled` manually, watch `wrangler tail` for `[TOOL]` `[LLM]` `[HOOK]`
 2. **Slack webhook** — point Slack Event Subscriptions to
    `https://swayambhu.dev/channel/slack`, verify challenge + chat flow
-3. **Autonomous wake/sleep** — let cron run, verify reflect scheduling
+3. **Autonomous sessions** — let cron run, verify reflect scheduling
 4. **Reflection** — lower reflect interval, watch first depth-1 reflection
 
 ### DNS cutover to CF Workers
@@ -147,7 +147,7 @@ The governor reads module source from KV to build the runtime.
 4. Deploy runtime: `npx wrangler deploy`
 5. Deploy dashboard: `cd dashboard-api && npx wrangler deploy`
 6. Verify cron is firing: check Cloudflare dashboard for Worker invocations
-7. Verify the agent wakes: check karma logs in KV
+7. Verify the agent runs: check karma logs in KV
 
 ### Subsequent deploys
 

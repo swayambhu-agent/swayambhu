@@ -1,6 +1,6 @@
 # Getting Started
 
-Swayambhu is an autonomous agent that runs as a Cloudflare Worker on a 1-minute cron. It wakes, acts, reflects, and goes back to sleep. All state lives in Cloudflare KV. It communicates via Slack and Gmail.
+Swayambhu is an autonomous agent that runs as a Cloudflare Worker on a 1-minute cron. It runs sessions on a schedule — acting, reflecting, and going idle between sessions. All state lives in Cloudflare KV. It communicates via Slack and Gmail.
 
 ## Quick Start
 
@@ -24,7 +24,7 @@ The script handles: Wrangler login, KV namespace creation, wrangler.toml patchin
 | **Slack** | Real-time messaging | Free tier works |
 | **Gmail** | Email send/receive | Free |
 
-> **Cost tip:** Start with $5–10 on OpenRouter. Use DeepSeek for testing (~$0.10/M tokens vs $5–25/M for Claude). A typical wake cycle with DeepSeek costs less than $0.01.
+> **Cost tip:** Start with $5–10 on OpenRouter. Use DeepSeek for testing (~$0.10/M tokens vs $5–25/M for Claude). A typical session with DeepSeek costs less than $0.01.
 
 ---
 
@@ -39,7 +39,7 @@ The script is interactive — it prompts you at each step, lets you skip what yo
 5. **Contact config** — prompts for your name/timezone/Slack ID, generates `config/contacts.json`
 6. **Agent identity** — generates a unique DID, writes to `config/identity.json`
 7. **DHARMA.md** — reminds you to write/review the agent's identity document
-8. **Seed and run** — seeds local KV, starts all services, triggers first wake
+8. **Seed and run** — seeds local KV, starts all services, triggers first session
 
 ---
 
@@ -58,7 +58,7 @@ The script is interactive — it prompts you at each step, lets you skip what yo
 source .env && bash scripts/start.sh
 ```
 
-### Manual wake trigger
+### Manual trigger
 
 ```bash
 curl http://localhost:8787/__scheduled
@@ -250,7 +250,7 @@ Generate agent DID: `node scripts/generate-identity.js`
 | Problem | Fix |
 |---------|-----|
 | Port still in use | `lsof -i :8787` / `:8790` / `:3001` to find what's holding the port |
-| Agent never wakes | `node scripts/reset-wake-timer.mjs && curl http://localhost:8787/__scheduled` |
+| Agent never runs | `node scripts/reset-schedule.mjs && curl http://localhost:8787/__scheduled` |
 | LLM calls fail | Check OpenRouter balance; switch models with `--set act.model=haiku` |
 | Slack not receiving | Check webhook URL ends with `/channel/slack`, bot is invited, signing secret matches |
 | Agent crashes | Check `node scripts/read-kv.mjs karma:` for `fatal_error`. Nuclear: `--reset-all-state` |
@@ -264,7 +264,7 @@ Generate agent DID: `node scripts/generate-identity.js`
 | `scripts/push-secrets.sh` | Push `.env` secrets to production |
 | `scripts/read-kv.mjs` | Read KV keys / list by prefix |
 | `scripts/delete-kv.mjs <key>` | Delete a KV key |
-| `scripts/reset-wake-timer.mjs` | Force next wake cycle |
+| `scripts/reset-schedule.mjs` | Force next session |
 | `scripts/rollback-session.mjs` | Undo last session's KV changes |
 | `scripts/gmail-auth.mjs` | Generate Gmail refresh token |
 | `scripts/generate-identity.js` | Generate agent DID |

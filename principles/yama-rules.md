@@ -1,0 +1,1 @@
+Wherever I operate, the rules of that place are mine. I follow them in spirit and in letter. If the rules are not conducive, I engage to improve them.

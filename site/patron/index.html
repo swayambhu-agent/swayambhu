@@ -916,7 +916,7 @@
       if (loading) return <p className="text-gray-500 text-sm">Loading reflections...</p>;
       if (error) return <LoadError error={error} onRetry={loadReflections} />;
 
-      const fields = ['summary', 'note_to_future_self', 'mutation_requests', 'kv_operations', 'next_wake_config'];
+      const fields = ['summary', 'note_to_future_self', 'mutation_requests', 'kv_operations', 'next_session_config'];
 
       return (
         <div className="h-full overflow-y-auto scrollbar-thin space-y-6">
@@ -1548,7 +1548,7 @@
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') send(); if (e.key === 'Escape') { setEditing(false); setDraft(''); } }}
-              placeholder="Message to agent (read on next wake)..."
+              placeholder="Message to agent (read in next session)..."
               className="flex-1 bg-transparent border border-cyan-900/50 rounded px-2 py-1 text-cyan-200 placeholder-gray-600 focus:outline-none focus:border-cyan-700"
               autoFocus
             />
@@ -1641,11 +1641,11 @@
         return () => clearInterval(iv);
       }, [loadHealth]);
 
-      // Countdown timer for next wake
+      // Countdown timer for next session
       useEffect(() => {
-        const wakeAfter = health?.wakeConfig?.next_wake_after;
-        if (!wakeAfter) return;
-        const target = new Date(wakeAfter).getTime();
+        const nextSession = health?.schedule?.next_session_after;
+        if (!nextSession) return;
+        const target = new Date(nextSession).getTime();
         const tick = () => {
           const diff = target - Date.now();
           if (diff <= 0) { setCountdown('now'); return; }
@@ -1657,7 +1657,7 @@
         tick();
         const iv = setInterval(tick, 1000);
         return () => clearInterval(iv);
-      }, [health?.wakeConfig?.next_wake_after]);
+      }, [health?.schedule?.next_session_after]);
 
       if (!patronKey) return <LoginScreen onLogin={handleLogin} />;
 
@@ -1684,7 +1684,7 @@
                 {countdown && (
                   <>
                     <span className="text-gray-600">|</span>
-                    <span className="text-gray-500">Next wake:</span>
+                    <span className="text-gray-500">Next session:</span>
                     <span className={`font-semibold ${countdown === 'now' ? 'text-green-400' : 'text-blue-400'}`}>
                       {countdown}
                     </span>
@@ -1697,7 +1697,7 @@
                     : countdown === 'now'
                       ? 'bg-yellow-900/30 text-yellow-400'
                       : 'bg-gray-800 text-gray-500'
-                }`}>{health.session ? 'Awake' : countdown === 'now' ? 'Sleeping' : 'Asleep'}</span>
+                }`}>{health.session ? 'In session' : countdown === 'now' ? 'Starting' : 'Idle'}</span>
               </>
             )}
             <div className="flex items-center gap-2 ml-auto">

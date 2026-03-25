@@ -66,7 +66,7 @@ What attacks each protection prevents, what would happen if the defense were rem
 
 ## Self-destruct via bad proposal
 
-**Attack:** A proposal (possibly well-intentioned) that breaks the wake hook, corrupts critical config, or disables essential tools.
+**Attack:** A proposal (possibly well-intentioned) that breaks the session hook, corrupts critical config, or disables essential tools.
 
 **Defense:** Multiple layers:
 - **Circuit breaker** — auto-rolls back inflight code proposals when a fatal error follows

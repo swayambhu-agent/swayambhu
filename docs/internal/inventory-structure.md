@@ -11,13 +11,13 @@ Generated 2026-03-17. Covers every file in the project.
 | File | Purpose | Exports | Imports | Imported by |
 |------|---------|---------|---------|-------------|
 | `kernel.js` | Production kernel — all hardcoded primitives, safety, alerting, hook dispatch, LLM cascade, agent loop, tool execution, communication gate, inbound gate, KV write tiers, patron verification | `class ScopedKV` (WorkerEntrypoint), `class KernelRPC` (WorkerEntrypoint), `class Kernel`, `default` (fetch+scheduled handlers) | `cloudflare:workers` (WorkerEntrypoint), `./hook-chat.js` (handleChat) | `index.js` |
-| `index.js` | Dev-mode kernel subclass — direct imports instead of CF static imports, direct OpenRouter fetch instead of adapter cascade | `default` (fetch+scheduled handlers), `class Kernel` (implicit) | `./kernel.js` (Kernel), `./act.js` (wake), `./hook-chat.js` (handleChat), `./channels/slack.js`, all `./tools/*.js`, all `./providers/*.js` | None (entry point via `wrangler.dev.toml`) |
+| `index.js` | Dev-mode kernel subclass — direct imports instead of CF static imports, direct OpenRouter fetch instead of adapter cascade | `default` (fetch+scheduled handlers), `class Kernel` (implicit) | `./kernel.js` (Kernel), `./act.js` (session entry), `./hook-chat.js` (handleChat), `./channels/slack.js`, all `./tools/*.js`, all `./providers/*.js` | None (entry point via `wrangler.dev.toml`) |
 
-### Hook Modules (Wake Cycle Policy Layer)
+### Hook Modules (Session Policy Layer)
 
 | File | Purpose | KV Key | Exports | Imports | Imported by |
 |------|---------|--------|---------|---------|-------------|
-| `act.js` | Wake flow entry point — session control, crash detection, orient session, balance checking, tripwire evaluation | `hook:wake:code` | `wake`, `detectCrash`, `runSession`, `buildOrientContext`, `writeSessionResults`, `getBalances`, `evaluateTripwires`, `default` (static import export) | `./kernel.js (kvWriteGated)` (kvWriteGated), `./kernel.js (proposal methods)` (initTracking, runCircuitBreaker, retryPendingGitSyncs), `./reflect.js` (executeReflect, runReflect, highestReflectDepthDue, getMaxSteps) | `index.js` |
+| `act.js` | Session flow entry point — session control, crash detection, orient session, balance checking, tripwire evaluation | `hook:wake:code` | `wake`, `detectCrash`, `runSession`, `buildOrientContext`, `writeSessionResults`, `getBalances`, `evaluateTripwires`, `default` (static import export) | `./kernel.js (kvWriteGated)` (kvWriteGated), `./kernel.js (proposal methods)` (initTracking, runCircuitBreaker, retryPendingGitSyncs), `./reflect.js` (executeReflect, runReflect, highestReflectDepthDue, getMaxSteps) | `index.js` |
 | `reflect.js` | Reflection system — session reflect (depth 0), deep reflect (recursive depth 1+), scheduling, default prompts | `hook:wake:reflect` | `executeReflect`, `runReflect`, `gatherReflectContext`, `applyReflectOutput`, `loadReflectPrompt`, `loadBelowPrompt`, `loadReflectHistory`, `getReflectModel`, `getMaxSteps`, `isReflectDue`, `highestReflectDepthDue`, `defaultReflectPrompt`, `defaultDeepReflectPrompt` | `./kernel.js (kvWriteGated)` (kvWriteGated), `./kernel.js (proposal methods)` (loadStagedModifications, loadInflightModifications, stageModification, acceptDirect, processReflectVerdicts, processDeepReflectVerdicts) | `act.js` |
 | `kernel.js (proposal methods)` | Proposal Protocol — staging, inflight management, conflict detection, circuit breaker, verdict processing, git sync | `hook:wake:proposals` | `initTracking`, `evaluatePredicate`, `evaluateCheck`, `evaluateChecks`, `stageModification`, `acceptStaged`, `acceptDirect`, `promoteInflight`, `rollbackInflight`, `findInflightConflict`, `loadStagedModifications`, `loadInflightModifications`, `processReflectVerdicts`, `processDeepReflectVerdicts`, `runCircuitBreaker`, `kvToPath`, `syncToGit`, `attemptGitSync`, `retryPendingGitSyncs` | None (standalone) | `act.js`, `reflect.js` |
 | `kernel.js (kvWriteGated)` | KV operation protection gate — blocks writes to system/protected keys | `hook:wake:protect` | `kvWriteGated` | None (standalone, leaf module) | `act.js`, `reflect.js` |
@@ -75,18 +75,18 @@ Generated 2026-03-17. Covers every file in the project.
 | `scripts/read-kv.mjs` | Inspect local KV — list keys or read specific value | None (CLI) | `./shared.mjs` | Manual use |
 | `scripts/rollback-session.mjs` | Undo last session's KV changes — karma-guided rollback with dry-run and confirmation | None (CLI) | `./shared.mjs`, `readline` | Manual use |
 | `scripts/dump-sessions.mjs` | Print all session reflections and tool registry | None (CLI) | `./shared.mjs` | Manual use |
-| `scripts/reset-wake-timer.mjs` | Reset wake_config.next_wake_after to the past | None (CLI) | `./shared.mjs` | `scripts/start.sh` |
+| `scripts/reset-schedule.mjs` | Reset session_schedule.next_session_after to the past | None (CLI) | `./shared.mjs` | `scripts/start.sh` |
 | `scripts/generate-identity.js` | Generate Ed25519 DID keypair for did:ethr | `generateIdentity` (internal), `kvPayload` (internal) | `ethers`, `./shared.mjs` (optional) | Manual use |
 | `scripts/patron-sign.mjs` | Sign a message or rotation request with patron Ed25519 key | None (CLI) | `fs`, `node:crypto`, `path`, `os` | Manual use |
 | `scripts/sync-tool-grants.mjs` | Sync kernel:tool_grants from tool source files without full re-seed | None (CLI) | `./shared.mjs`, `path`, `url`, all tools/*.js | Manual use |
-| `scripts/dev-serve.mjs` | Zero-cache static file server for dashboard SPA, with /wake proxy | None (side-effect) | `http`, `fs`, `path`, `url` | `scripts/start.sh` |
-| `scripts/start.sh` | Start dev environment — kill stale workers, seed/reset, start all 3 services, wait, optionally trigger wake | N/A (bash) | `scripts/seed-local-kv.mjs`, `scripts/reset-wake-timer.mjs`, `scripts/dev-serve.mjs`, `wrangler` | Manual use |
+| `scripts/dev-serve.mjs` | Zero-cache static file server for dashboard SPA, with /trigger proxy | None (side-effect) | `http`, `fs`, `path`, `url` | `scripts/start.sh` |
+| `scripts/start.sh` | Start dev environment — kill stale workers, seed/reset, start all 3 services, wait, optionally trigger session | N/A (bash) | `scripts/seed-local-kv.mjs`, `scripts/reset-schedule.mjs`, `scripts/dev-serve.mjs`, `wrangler` | Manual use |
 
 ### Prompts
 
 | File | Purpose | KV Key | Used by |
 |------|---------|--------|---------|
-| `prompts/orient.md` | Orient session system prompt — shapes waking behavior | `prompt:orient` | `act.js` → `runSession()` |
+| `prompts/orient.md` | Orient session system prompt — shapes session behavior | `prompt:orient` | `act.js` → `runSession()` |
 | `prompts/reflect.md` | Session-level reflection prompt (depth 0) | `prompt:reflect` | `reflect.js` → `executeReflect()` |
 | `prompts/deep-reflect.md` | Deep reflection prompt (depth 1) — alignment, patterns, structures | `prompt:reflect:1` | `reflect.js` → `runReflect()` |
 | `prompts/subplan.md` | Subplan agent system prompt template | `prompt:subplan` | `kernel.js` → `spawnSubplan()` |
@@ -97,7 +97,7 @@ Generated 2026-03-17. Covers every file in the project.
 | File | Purpose | Test count | Imports |
 |------|---------|------------|---------|
 | `tests/kernel.test.js` | Kernel logic — KV tiers, tool execution, LLM calls, agent loop, communication gate, inbound gate, patron verification, hook safety | ~104 | `kernel.js`, `tests/helpers/mock-kv.js` |
-| `tests/wake-hook.test.js` | Wake flow, reflect, proposals, circuit breaker, git sync | ~62 | `act.js`, `reflect.js`, `kernel.js (proposal methods)`, `kernel.js (kvWriteGated)`, `tests/helpers/mock-kernel.js` |
+| `tests/wake-hook.test.js` | Session flow, reflect, proposals, circuit breaker, git sync | ~62 | `act.js`, `reflect.js`, `kernel.js (proposal methods)`, `kernel.js (kvWriteGated)`, `tests/helpers/mock-kernel.js` |
 | `tests/tools.test.js` | Tool/provider execute(), module structure, meta field validation | ~100 | All `tools/*.js`, all `providers/*.js` |
 | `tests/chat.test.js` | Chat system — conversation flow, budgets, commands, unknown contacts | ~12 | `hook-chat.js`, `tests/helpers/mock-kernel.js` |
 | `tests/helpers/mock-kv.js` | In-memory KV store mock (Map-backed) | N/A | `vitest` |
@@ -188,7 +188,7 @@ graph TD
         RKV[scripts/read-kv.mjs]
         RB[scripts/rollback-session.mjs]
         DS[scripts/dump-sessions.mjs]
-        RWT[scripts/reset-wake-timer.mjs]
+        RWT[scripts/reset-schedule.mjs]
         GI[scripts/generate-identity.js]
         PS[scripts/patron-sign.mjs]
         STG[scripts/sync-tool-grants.mjs]
@@ -240,11 +240,11 @@ graph TD
 
 ## 3. Entry Points
 
-### 3.1 Cron Trigger (Scheduled) — Wake Cycle
+### 3.1 Cron Trigger (Scheduled) — Session
 
 **Config:** `[triggers] crons = ["* * * * *"]` in both `wrangler.toml` and `wrangler.dev.toml`
 
-The cron fires every minute. The hook checks `wake_config.next_wake_after` and returns early if it's not time yet.
+The cron fires every minute. The hook checks `session_schedule.next_session_after` and returns early if it's not time yet.
 
 #### Production call chain (`kernel.js`)
 
@@ -262,7 +262,7 @@ CF Cron trigger
           → [CF static import static import]
             → act.js default.fetch()
               → wake(K, input)               // K = env.KERNEL (KernelRPC binding)
-                → K.kvGet("wake_config")     // check if time to wake
+                → K.kvGet("session_schedule") // check if time to run
                 → detectCrash(K)             // check stale active_session
                 → initTracking(staged, inflight)
                 → runCircuitBreaker(K)       // rollback on last_danger
@@ -375,7 +375,7 @@ HTTP request
     → [CORS preflight → 204]
     → [GET /reflections → public, no auth — reads reflect:1:* keys]
     → [auth check via X-Patron-Key header]
-    → GET /health        → session_counter, wake_config, last_reflect, active_session
+    → GET /health        → session_counter, session_schedule, last_reflect, active_session
     → GET /sessions      → karma:* keys, reflect:1:* keys, cache:session_ids
     → GET /kv            → kvListAll with optional ?prefix
     → GET /kv/multi      → batch read by ?keys=k1,k2,k3
@@ -391,7 +391,7 @@ HTTP request
 
 ```
 HTTP request
-  → POST /wake          → proxied to http://localhost:8787/__scheduled
+  → POST /trigger       → proxied to http://localhost:8787/__scheduled
   → GET /*              → static file from site/ directory (no-cache)
 ```
 
@@ -399,14 +399,14 @@ HTTP request
 
 **Route:** `GET /__scheduled` (enabled by `--test-scheduled` wrangler flag)
 
-Triggers the `scheduled()` handler manually — same as a cron trigger. This is the primary way to trigger a wake cycle during development.
+Triggers the `scheduled()` handler manually — same as a cron trigger. This is the primary way to trigger a session during development.
 
 ### 3.6 Summary of All Triggers
 
 | Trigger | Route/Mechanism | Handler | Code Path |
 |---------|----------------|---------|-----------|
-| Cron (every minute) | CF `scheduled` event | `kernel.js` or `index.js` `scheduled()` | Wake cycle |
+| Cron (every minute) | CF `scheduled` event | `kernel.js` or `index.js` `scheduled()` | Session |
 | HTTP webhook | `POST /channel/:channel` | `kernel.js` or `index.js` `fetch()` | Chat path |
-| Manual wake | `GET /__scheduled` (dev) | Same as cron | Wake cycle |
+| Manual trigger | `GET /__scheduled` (dev) | Same as cron | Session |
 | Dashboard API | Various HTTP routes | `dashboard-api/worker.js` `fetch()` | KV reads, contact management |
-| Dashboard SPA | Static + `/wake` proxy | `scripts/dev-serve.mjs` | Static files, wake proxy |
+| Dashboard SPA | Static + `/trigger` proxy | `scripts/dev-serve.mjs` | Static files, trigger proxy |

@@ -27,8 +27,8 @@ const MIME = {
 };
 
 createServer((req, res) => {
-  // Proxy /wake to kernel
-  if (req.url === "/wake" && req.method === "POST") {
+  // Proxy /trigger to kernel
+  if (req.url === "/trigger" && req.method === "POST") {
     import("http").then(({ default: http }) => {
       http.get("http://localhost:8787/__scheduled", (r) => {
         res.writeHead(200, { "Content-Type": "application/json" });

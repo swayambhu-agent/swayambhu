@@ -178,8 +178,8 @@ this key:
     },
     "fallback_model": "anthropic/claude-haiku-4.5"
   },
-  "wake": {
-    "sleep_seconds": 21600,
+  "schedule": {
+    "interval_seconds": 21600,
     "default_effort": "low"
   },
   "memory": {
@@ -199,7 +199,7 @@ Key sections explained below.
 
 ## Agent Behavior
 
-### Wake Cycle
+### Session Schedule
 
 **Cron trigger** — Defined in `wrangler.toml`:
 
@@ -208,43 +208,43 @@ Key sections explained below.
 crons = ["* * * * *"]
 ```
 
-The cron fires every minute. The agent checks its own sleep timer and
-immediately returns if it's not time to wake. The no-op invocations cost
+The cron fires every minute. The agent checks its own schedule timer and
+immediately returns if it's not time to run. The no-op invocations cost
 essentially nothing (one KV read).
 
-**Sleep duration** — Controlled by `config:defaults.wake.sleep_seconds`
-(default: 21600 = 6 hours). The agent can adjust its own sleep at the end
+**Session interval** — Controlled by `config:defaults.schedule.interval_seconds`
+(default: 21600 = 6 hours). The agent can adjust its own interval at the end
 of each session via its reflect output. The value in `config:defaults` is
 just the starting default.
 
-**Wake config** — The live wake state is stored in the `wake_config` KV
+**Session schedule** — The live schedule state is stored in the `session_schedule` KV
 key:
 
 ```json
 {
-  "next_wake_after": "2026-03-17T18:00:00Z",
-  "sleep_seconds": 21600,
+  "next_session_after": "2026-03-17T18:00:00Z",
+  "interval_seconds": 21600,
   "effort": "low"
 }
 ```
 
-To force an immediate wake, reset the timer:
+To force an immediate session, reset the timer:
 
 ```bash
-node scripts/reset-wake-timer.mjs
+node scripts/reset-schedule.mjs
 curl http://localhost:8787/__scheduled
 ```
 
-**Effort level** — Controls how deeply the agent thinks on each wake.
+**Effort level** — Controls how deeply the agent thinks on each session.
 Values: `"low"`, `"medium"`, `"high"`. Lower effort uses fewer tokens
 and completes faster. The agent can escalate its own effort in response to
 tripwire conditions (e.g. low balance).
 
 ### Orient vs. Reflect
 
-On each wake, the agent runs one of two modes:
+On each session, the agent runs one of two modes:
 
-**Orient** (normal) — The agent wakes, loads context, uses tools, acts on
+**Orient** (normal) — The agent loads context, uses tools, acts on
 the world, then does a session reflect (depth 0). This is the standard
 cycle.
 
@@ -584,7 +584,7 @@ source .env && bash scripts/start.sh --reset-all-state \
   --set orient.model=deepseek \
   --set reflect.model=deepseek \
   --set session_budget.max_cost=0.01 \
-  --set wake.sleep_seconds=60
+  --set schedule.interval_seconds=60
 
 # Multiple --set flags can be combined
 ```
@@ -602,12 +602,12 @@ numbers, everything else is a string.
 
 | Key | What It Controls | Changed By |
 |-----|-----------------|------------|
-| `config:defaults` | Models, budgets, effort, steps, sleep, chat | Seed, agent (via proposal protocol) |
+| `config:defaults` | Models, budgets, effort, steps, schedule, chat | Seed, agent (via proposal protocol) |
 | `config:models` | Model registry, aliases, pricing | Seed, agent (via proposal protocol) |
 | `config:model_capabilities` | Per-model capability flags | Seed, patron (manual KV edit) |
 | `config:resources` | Platform limits, external endpoints | Seed |
 | `config:tool_registry` | Tool names and descriptions for LLM | Seed, agent (via proposal protocol) |
-| `wake_config` | Next wake time, sleep duration, effort | Agent (after each session) |
+| `session_schedule` | Next session time, interval, effort | Agent (after each session) |
 | `reflect:schedule:{depth}` | When next deep reflect is due | Agent (after deep reflect) |
 | `contact:{slug}` | Contact records | Patron (dashboard API or seed) |
 | `upaya:comms:defaults` | Default communication stance | Agent (via wisdom proposal) |

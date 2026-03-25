@@ -29,7 +29,7 @@ describe("readCodeFromKV", () => {
       "kernel:source:kernel.js": "class Kernel {}",
       "kernel:source:hook-chat.js": "export function handleChat() {}",
       // Non-code keys (should be ignored by readCodeFromKV)
-      "config:defaults": JSON.stringify({ wake: {} }),
+      "config:defaults": JSON.stringify({ schedule: {} }),
       "prompt:act": "You are...",
     });
   });

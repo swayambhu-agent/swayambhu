@@ -1,9 +1,9 @@
 # What Is Swayambhu?
 
 Swayambhu is an autonomous AI agent that serves as a volunteer for Isha
-Foundation. It runs continuously on Cloudflare Workers, waking on a schedule,
-acting on the world through tools, reflecting on what it did, and going back
-to sleep. Over time it accumulates wisdom, modifies its own behavior, and
+Foundation. It runs continuously on Cloudflare Workers, running sessions on a schedule,
+acting on the world through tools, reflecting on what it did, and going idle
+between sessions. Over time it accumulates wisdom, modifies its own behavior, and
 becomes a more effective instrument of service.
 
 The name means "self-born" in Sanskrit. It points to the self-born
@@ -35,13 +35,13 @@ does deeper reflection, examining its alignment, its structures, and its
 trajectory. These reflections compound into wisdom over time.
 
 **Modify its own code.** Through a staged proposal protocol, Swayambhu
-can rewrite its own prompts, configuration, tools, and even its core wake
+can rewrite its own prompts, configuration, tools, and even its core session
 logic. Every change is snapshotted, reviewed, and verified before it becomes
 permanent. If a change causes crashes, it's automatically rolled back.
 
 **Monitor its own resources.** It tracks its LLM API balance, crypto wallet
 balance, and spending per session. It adjusts its behavior based on
-available resources — sleeping longer when funds are low, using cheaper
+available resources — spacing sessions further apart when funds are low, using cheaper
 models for routine tasks.
 
 ---
@@ -69,7 +69,7 @@ It cannot:
 - **Modify kernel safety mechanisms.** Alerting, crash detection, the
   tripwire, write protection tiers — these are hardcoded in the kernel.
   The agent's self-modifiable code cannot reach them.
-- **Suppress alerts.** When the agent modifies its own wake logic, the
+- **Suppress alerts.** When the agent modifies its own session logic, the
   human patron is automatically notified. This cannot be disabled.
 
 ---
@@ -169,7 +169,7 @@ every level.
 
 ### Self-Reflective Modification
 
-Swayambhu can rewrite its own prompts, tools, configuration, and wake
+Swayambhu can rewrite its own prompts, tools, configuration, and session
 logic. But every change goes through a staged protocol: proposed in one
 session, reviewed in a deeper reflection session, verified by mechanical
 checks, and only then promoted to permanent. If a change causes crashes,
@@ -240,9 +240,9 @@ work.
 
 Swayambhu runs on Cloudflare Workers with Cloudflare KV as its persistent
 memory. A cron trigger fires every minute. The agent checks whether it's
-time to wake (based on its own sleep schedule), and if so, runs a session:
+time to run (based on its own session schedule), and if so, runs a session:
 
-1. **Orient** — The agent wakes, loads context, checks balances, reads
+1. **Orient** — The agent loads context, checks balances, reads
    messages, and acts using its tools.
 2. **Reflect** — After acting, it reflects on what happened. Honest,
    specific, unflinching. The reflection is stored for future reference.
@@ -250,7 +250,7 @@ time to wake (based on its own sleep schedule), and if so, runs a session:
    reflection examines not just what the agent did but what it's
    becoming. This is where modifications are reviewed, wisdom is
    distilled, and course corrections happen.
-4. **Sleep** — The agent sets its own wake timer and goes dormant. The
+4. **Idle** — The agent sets its own session timer and goes idle. The
    kernel handles the rest.
 
 The entire cycle is observable. Every LLM call, every tool execution, every

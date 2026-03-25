@@ -24,6 +24,24 @@ Tracked ideas for future improvement. Not prioritized — just captured.
 
 - ~~**Rename "orient" to "act" throughout codebase**~~ — **Status: Done.** Completed via `scripts/migrate-orient-to-act.mjs` and manual sweep.
 
+## Contacts & Roles
+
+- **Support role**: Introduce a `support` contact role alongside `patron`. The patron is the non-technical person who funds and communicates with the agent. The support contact is the technical person who diagnoses and fixes platform bugs. Key design points:
+  - Support never touches the live agent's state directly — they export a KV snapshot, replicate locally, diagnose, fix the platform code, and deploy.
+  - The broken agent self-heals on next session (or the patron resets state via dashboard if needed).
+  - No special write permissions required — just read access (KV snapshot export) and a communication channel.
+  - Patron-granted: only the patron can designate a support contact.
+  - Scaling vision: the platform builder's own agent acts as support for other patrons' agents, via a skill.
+  - A "type 2" failure (agent gets itself into a bad state through self-modification) is really a "type 1" failure (platform bug in the guardrails/reflection/rollback system) — so the fix is always at the platform level.
+
+- **Platform update propagation**: Agents should periodically check the swayambhu GitHub repo for platform updates. Updates flow through three tiers:
+
+  **Tier 1 — Kernel-only (no interface changes):** Governor-managed, fully automated. Agent detects new version available, notifies patron. Patron approves via dashboard, governor pulls new kernel from GitHub, rebuilds with agent's existing KV code, deploys. Scales to millions of agents.
+
+  **Tier 2 — Advisory:** Published guidance rather than code pushes. E.g. "We improved how act context is built — here's the pattern." Agent reads advisories during normal sessions, evaluates them against its own (potentially divergent) codebase, and implements changes through its existing self-modification process (proposals → review → deploy). Uses the self-improvement system rather than bypassing it. Each agent adapts the advice to its own code. Free — the agent does its own work.
+
+  **Tier 3 — Breaking interface changes:** The agent can't self-fix because a kernel interface it depends on has changed. Requires migration by an authorized support agent. Support agent takes a KV snapshot, understands both old and new interfaces, performs the migration, patron approves the result. This is a paid service — the more an agent has diverged through self-modification, the more custom the migration, the more valuable the work. Support agents that have migrated many agents build expertise and efficiency. This is the natural revenue model: open source software, paid technical support.
+
 ## Tool Management
 
 - **First-class tool add/remove operations**: Currently adding or removing a tool requires updating multiple KV keys in sync (`tool:*:code`, `tool:*:meta`, `config:tool_registry`, `kernel:tool_grants`, and the governor rebuild). There's no atomic operation for this. A kernel-level `registerTool` / `deregisterTool` method would handle all keys atomically — update the registry, write/delete code+meta, trigger a governor rebuild. The agent could invoke these via `proposal_requests` in deep reflect, and the patron could use them via a script or dashboard action.

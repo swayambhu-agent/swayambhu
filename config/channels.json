@@ -1,0 +1,6 @@
+{
+  "slack": {
+    "secrets": ["SLACK_BOT_TOKEN"],
+    "webhook_secret_env": "SLACK_SIGNING_SECRET"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "kv": {
+    "max_storage_mb": 1000,
+    "daily_read_limit": 100000,
+    "daily_write_limit": 1000,
+    "daily_list_limit": 1000,
+    "daily_delete_limit": 1000,
+    "max_value_size_mb": 25
+  },
+  "worker": {
+    "max_cron_duration_seconds": 900,
+    "max_subrequests_per_invocation": 1000,
+    "cpu_time_limit_ms": 10
+  },
+  "openrouter": {
+    "base_url": "https://openrouter.ai/api/v1",
+    "balance_endpoint": "/api/v1/auth/key",
+    "topup_endpoint": "/api/v1/credits/coinbase",
+    "topup_fee_percent": 5,
+    "topup_chain": "base",
+    "topup_chain_id": 8453
+  },
+  "wallet": {
+    "chain": "base",
+    "token": "USDC",
+    "address": "0x1951e298f9Aa7eFf5eB0dD5349e823BBB09a3260"
+  },
+  "slack": {
+    "bot_token_secret": "SLACK_BOT_TOKEN",
+    "channel_id_secret": "SLACK_CHANNEL_ID"
+  }
+}

@@ -18,7 +18,7 @@ They'll need accounts and access to:
 
 On their local machine: **Node.js 18+**, **npm**, **Git**.
 
-**Cost guidance:** Start with $5-10 on OpenRouter. Use DeepSeek for testing (costs ~$0.10/M tokens vs $5-25/M for Claude). They can switch to Claude models once everything is wired up and working. A typical wake cycle with DeepSeek costs less than $0.01.
+**Cost guidance:** Start with $5-10 on OpenRouter. Use DeepSeek for testing (costs ~$0.10/M tokens vs $5-25/M for Claude). They can switch to Claude models once everything is wired up and working. A typical session with DeepSeek costs less than $0.01.
 
 ---
 
@@ -62,7 +62,7 @@ id = "<their-kv-namespace-id>"
 crons = ["* * * * *"]
 ```
 
-The cron fires every minute. The agent checks its own sleep timer and goes back to sleep if it's not time — the effective wake frequency is controlled by the agent, not the cron.
+The cron fires every minute. The agent checks its own schedule timer and skips if it's not time — the effective session frequency is controlled by the agent, not the cron.
 
 ### Configure the Dashboard Worker
 
@@ -256,8 +256,8 @@ Before seeding, they should customize:
 # Seed the KV store
 node scripts/seed-local-kv.mjs
 
-# First run with full reset and wake
-source .env && bash scripts/start.sh --reset-all-state --wake
+# First run with full reset and trigger
+source .env && bash scripts/start.sh --reset-all-state --trigger
 ```
 
 ### Verify It's Working
@@ -272,7 +272,7 @@ source .env && bash scripts/start.sh --reset-all-state --wake
 For development, use DeepSeek at ~30x lower cost:
 
 ```bash
-source .env && bash scripts/start.sh --reset-all-state --wake \
+source .env && bash scripts/start.sh --reset-all-state --trigger \
   --set act.model=deepseek \
   --set reflect.model=deepseek
 ```
@@ -308,8 +308,8 @@ lsof -i :8790
 lsof -i :3001
 ```
 
-### Agent never wakes
-Check the wake config: `node scripts/read-kv.mjs wake_config`. If `next_wake_after` is far in the future, reset it: `node scripts/reset-wake-timer.mjs`, then `curl http://localhost:8787/__scheduled`.
+### Agent never runs
+Check the session schedule: `node scripts/read-kv.mjs session_schedule`. If `next_session_after` is far in the future, reset it: `node scripts/reset-schedule.mjs`, then `curl http://localhost:8787/__scheduled`.
 
 ### LLM calls fail
 Check OpenRouter balance at openrouter.ai/settings/credits. If using DeepSeek and it's down, switch to Haiku with `--set act.model=haiku --set reflect.model=haiku`.
@@ -321,4 +321,4 @@ Check OpenRouter balance at openrouter.ai/settings/credits. If using DeepSeek an
 4. Check worker logs for 401 (signing secret mismatch) or 404 (wrong path)
 
 ### Agent crashes repeatedly
-After 3 consecutive crashes, the kernel's tripwire fires and auto-restores. Check karma logs: `node scripts/read-kv.mjs karma:` → find recent session → look for `fatal_error` events. Full reset: `source .env && bash scripts/start.sh --reset-all-state --wake`.
+After 3 consecutive crashes, the kernel's tripwire fires and auto-restores. Check karma logs: `node scripts/read-kv.mjs karma:` → find recent session → look for `fatal_error` events. Full reset: `source .env && bash scripts/start.sh --reset-all-state --trigger`.

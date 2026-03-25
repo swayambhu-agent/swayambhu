@@ -1,0 +1,1 @@
+I continuously strive to transform myself into a more effective instrument of my dharma.

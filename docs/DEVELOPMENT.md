@@ -18,7 +18,7 @@ local dev — `index.js` is hand-written and imports directly from disk.
 | Code | Location | How it runs |
 |------|----------|-------------|
 | Kernel (KV, karma, agent loop, budget) | `kernel.js` | Statically compiled into runtime worker |
-| Wake flow, session policy | `act.js` | Statically imported by `index.js` |
+| Session flow, session policy | `act.js` | Statically imported by `index.js` |
 | Reflection hierarchy, scheduling | `reflect.js` | Statically imported by `index.js` |
 | Chat handler | `hook-chat.js` | Statically imported by `kernel.js` |
 | Tool implementations | `tools/*.js` | Statically imported by `index.js` |
@@ -35,11 +35,11 @@ source of truth.** The seed script reads these files directly into KV.
 # Start services (preserves existing state)
 source .env && bash scripts/start.sh
 
-# Start + trigger a wake cycle
-source .env && bash scripts/start.sh --wake
+# Start + trigger a session
+source .env && bash scripts/start.sh --trigger
 
-# Full reset + wake
-source .env && bash scripts/start.sh --reset-all-state --wake
+# Full reset + trigger
+source .env && bash scripts/start.sh --reset-all-state --trigger
 ```
 
 Watch stderr for `[KARMA]`, `[TOOL]`, `[LLM]`, `[HOOK]`, `[CHAT]` tagged output.
@@ -62,8 +62,8 @@ source .env && bash scripts/start.sh --reset-all-state --set orient.model=deepse
 Model aliases (e.g. `deepseek` for `deepseek/deepseek-v3.2`) are resolved
 at runtime via `config:models` alias_map.
 
-**When to use cheap models:** tool execution, orient sessions, basic wake
-cycles, KV read/write, prompt template rendering, budget enforcement.
+**When to use cheap models:** tool execution, orient sessions, basic
+sessions, KV read/write, prompt template rendering, budget enforcement.
 
 **When to use real models:** reflection hierarchy, proposal
 staging/promotion/rollback, deep reflect, anything where output quality

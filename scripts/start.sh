@@ -3,7 +3,7 @@
 # Usage: source .env && bash scripts/start.sh [options]
 #
 # Options:
-#   --wake                  Trigger a wake cycle after services are ready
+#   --trigger               Trigger a session after services are ready
 #   --reset-all-state       Wipe ALL local KV state and re-seed from scratch
 #                           (deletes sessions, karma, wisdom, config, everything)
 #   --yes                   Skip confirmation prompt (for scripts/CI)
@@ -14,8 +14,8 @@
 #
 # Examples:
 #   bash scripts/start.sh                           # start services only
-#   bash scripts/start.sh --wake                    # start + trigger wake cycle
-#   bash scripts/start.sh --reset-all-state --wake  # full reset + wake
+#   bash scripts/start.sh --trigger                    # start + trigger session
+#   bash scripts/start.sh --reset-all-state --trigger  # full reset + trigger session
 #   bash scripts/start.sh --reset-all-state --set act.model=deepseek --set reflect.model=deepseek
 #   bash scripts/start.sh --reset-all-state --yes   # skip confirmation
 #
@@ -32,13 +32,13 @@ KERNEL_PORT=8787
 DASHBOARD_PORT=8790
 
 RESET=false
-WAKE=false
+TRIGGER=false
 SKIP_CONFIRM=false
 GOVERNOR=true
 OVERRIDES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --wake) WAKE=true; shift ;;
+    --trigger) TRIGGER=true; shift ;;
     --reset-all-state) RESET=true; shift ;;
     --yes) SKIP_CONFIRM=true; shift ;;
     --governor) GOVERNOR=true; shift ;;
@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
     --set)
       [[ -z "${2:-}" || "$2" != *=* ]] && { echo "ERROR: --set requires path=value (e.g. --set act.model=deepseek)"; exit 1; }
       OVERRIDES+=("$2"); shift 2 ;;
-    *) echo "Unknown option: $1"; echo "Usage: start.sh [--wake] [--reset-all-state] [--yes] [--set path=value ...]"; exit 1 ;;
+    *) echo "Unknown option: $1"; echo "Usage: start.sh [--trigger] [--reset-all-state] [--yes] [--set path=value ...]"; exit 1 ;;
   esac
 done
 
@@ -207,8 +207,8 @@ if $RESET; then
   apply_overrides
 else
   echo "=== Preserving existing state (use --reset-all-state to wipe) ==="
-  echo "=== Resetting wake timer ==="
-  node scripts/reset-wake-timer.mjs
+  echo "=== Resetting session schedule ==="
+  node scripts/reset-schedule.mjs
 fi
 
 # ── 4. Start all services ─────────────────────────────────────
@@ -238,18 +238,18 @@ echo "=== Waiting for services to start... ==="
 wait_service "kernel" "http://localhost:$KERNEL_PORT" 30
 wait_service "dashboard API" "http://localhost:$DASHBOARD_PORT" 30
 
-# ── 6. Trigger wake cycle (if requested) ──────────────────────
-if $WAKE; then
-  echo "=== Snapshotting state (pre-wake) ==="
-  rm -rf .wrangler/pre-wake-snapshot
-  cp -r .wrangler/shared-state .wrangler/pre-wake-snapshot
+# ── 6. Trigger session (if requested) ─────────────────────────
+if $TRIGGER; then
+  echo "=== Snapshotting state (pre-trigger) ==="
+  rm -rf .wrangler/pre-trigger-snapshot
+  cp -r .wrangler/shared-state .wrangler/pre-trigger-snapshot
 
-  echo "=== Clearing wake timer (--wake overrides sleep) ==="
-  node scripts/clear-wake.mjs
+  echo "=== Clearing session schedule ==="
+  curl -sf -X POST http://localhost:$KERNEL_PORT/__clear-schedule || true
 
-  echo "=== Triggering wake cycle ==="
+  echo "=== Triggering session ==="
   if ! curl -sf http://localhost:$KERNEL_PORT/__scheduled; then
-    echo "WARNING: wake trigger failed"
+    echo "WARNING: session trigger failed"
   fi
   echo ""
 fi
@@ -263,7 +263,7 @@ if $GOVERNOR; then
   echo "  Governor:       http://localhost:$GOVERNOR_PORT"
 fi
 echo ""
-echo "  Wake:    curl http://localhost:$KERNEL_PORT/__scheduled"
+echo "  Trigger: curl http://localhost:$KERNEL_PORT/__scheduled"
 if $GOVERNOR; then
   echo "  Deploy:  curl -X POST http://localhost:$GOVERNOR_PORT/deploy"
   echo "  Status:  curl http://localhost:$GOVERNOR_PORT/status"

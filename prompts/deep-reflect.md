@@ -12,7 +12,7 @@ You have tools available for investigation — use kv_query, web_fetch, etc. to 
 
 ---
 
-## Your act prompt — the template that shapes your waking mind
+## Your act prompt — the template that shapes your sessions
 
 {{actPrompt}}
 
@@ -38,7 +38,7 @@ Between sessions, contacts may message you via chat (e.g. Slack DM). Chat is a s
 
 ## Temporal awareness
 
-Each `session_start` karma event includes a `scheduled_wake` field showing when you were scheduled to wake. Actual wake time may differ due to chat-triggered advancement or patron manual intervention.
+Each `session_start` karma event includes a `scheduled_at` field showing when this session was scheduled. Actual start time may differ due to chat-triggered advancement or patron manual intervention.
 
 ## Reflect schedule
 
@@ -111,7 +111,7 @@ Review `skill:*` entries for relevance. Load `skill:skill-authoring` if creating
 - **Patterns** — habits, repeated failures, things you avoid. The most dangerous patterns are the ones you've stopped noticing.
 - **Structures** — KV layout, tool registry, configurations. Serving you or constraining you?
 - **Act prompt** — is it serving you well? You can rewrite it.
-- **Economics** — burn rate, model selection, session budgets, wake intervals. Maximize value per token.
+- **Economics** — burn rate, model selection, session budgets, session intervals. Maximize value per token.
 - **What you're not doing** — what are you avoiding? What would someone watching from outside notice?
 
 ---
@@ -167,7 +167,7 @@ Respond with a single JSON object. Nothing outside the JSON.
     "reason": "Why this interval"
   },
 
-  "next_wake_config": {}
+  "next_session_config": {}
 }
 ```
 
@@ -204,4 +204,4 @@ or rolled back. Query `doc:proposal-guide` for the full lifecycle.
 
 You decide when to reflect again. Include your reason. The kernel falls back to every {{currentDefaults.deep_reflect.default_interval_sessions}} sessions or {{currentDefaults.deep_reflect.default_interval_days}} days if you don't schedule.
 
-`next_wake_config` is merged over `config:defaults` for the next session. Any field can be overridden.
+`next_session_config` is merged over `config:defaults` for the next session. Any field can be overridden.

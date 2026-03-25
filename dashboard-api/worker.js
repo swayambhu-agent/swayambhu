@@ -69,15 +69,15 @@ export default {
 
     // GET /health — system status snapshot
     if (path === "/health") {
-      const [sessionCounter, wakeConfig, lastReflect, activeSession, session] =
+      const [sessionCounter, schedule, lastReflect, activeSession, session] =
         await Promise.all([
           env.KV.get("session_counter", "json"),
-          env.KV.get("wake_config", "json"),
+          env.KV.get("session_schedule", "json"),
           env.KV.get("last_reflect", "json"),
           env.KV.get("kernel:active_session", "text"),
           env.KV.get("session", "text"),
         ]);
-      return json({ sessionCounter, wakeConfig, lastReflect, session: activeSession || session });
+      return json({ sessionCounter, schedule, lastReflect, session: activeSession || session });
     }
 
     // GET /sessions — discover all sessions (act + deep reflect)

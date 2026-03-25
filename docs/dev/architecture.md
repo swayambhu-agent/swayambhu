@@ -1,6 +1,6 @@
 # System Architecture
 
-Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a cron schedule, runs an LLM-driven session (orient), reflects on what it did, then sleeps until the next wake. All of its state — prompts, tools, config, memory, accumulated wisdom — lives in Cloudflare KV. The agent can modify its own prompts, tools, and config through a staged proposal protocol, making the runtime disposable and the data the actual agent.
+Swayambhu is an autonomous AI agent running on Cloudflare Workers. It runs sessions on a cron schedule — an LLM-driven session (orient), reflects on what it did, then goes idle until the next scheduled session. All of its state — prompts, tools, config, memory, accumulated wisdom — lives in Cloudflare KV. The agent can modify its own prompts, tools, and config through a staged proposal protocol, making the runtime disposable and the data the actual agent.
 
 ## System diagram
 
@@ -37,7 +37,7 @@ Swayambhu is an autonomous AI agent running on Cloudflare Workers. It wakes on a
 | Kernel (main) | `kernel.js` | 8787 | `scheduled()` (cron), `fetch()` (HTTP) |
 | Dashboard API | `dashboard-api/worker.js` | 8790 | `fetch()` only |
 
-The kernel handles all agent logic — wake cycles, chat, tool execution, LLM calls. The dashboard API is a stateless KV reader that serves the patron UI. It authenticates via `X-Patron-Key` header against a `PATRON_KEY` env var.
+The kernel handles all agent logic — sessions, chat, tool execution, LLM calls. The dashboard API is a stateless KV reader that serves the patron UI. It authenticates via `X-Patron-Key` header against a `PATRON_KEY` env var.
 
 ---
 
@@ -176,11 +176,11 @@ The kernel calls `act.js` for orient sessions and `reflect.js` for deep reflect.
 
 KV operation gating (`kvWriteGated`) is a kernel method in `kernel.js`. Proposal methods (`createProposal`, `loadProposals`, `processProposalVerdicts`) are also kernel methods.
 
-### `act.js` — wake flow
+### `act.js` — session flow
 
 `wake(K, input)` is the top-level session controller:
 
-1. **Sleep check** — reads `wake_config.next_wake_after`. Returns early if it's not time yet.
+1. **Schedule check** — reads `session_schedule.next_session_after`. Returns early if it's not time yet.
 2. **Crash detection** — `detectCrash(K)` checks `kernel:active_session`. If a stale session ID exists that doesn't match the current session, the previous session crashed. Returns the dead session's karma.
 3. **Proposal tracking** — scans `proposal:*` prefixes, initializes the in-memory tracking arrays.
 4. **Circuit breaker** — `runCircuitBreaker(K)` (from `kernel.js (proposal methods)`) auto-rolls back inflight code proposals if `last_danger` timestamp is after their `activated_at`. Clears `last_danger` after processing.
@@ -205,7 +205,7 @@ Deep reflect output processing (`applyReflectOutput`):
 4. Apply `proposal_requests` via `acceptDirect()` (skips staging — goes straight to inflight)
 5. Save reflect schedule
 6. Store output as `reflect:{depth}:{sessionId}`
-7. Only depth 1 writes `last_reflect` and `wake_config`
+7. Only depth 1 writes `last_reflect` and `session_schedule`
 
 **Reflect scheduling**: `isReflectDue(K, state, depth)` checks `reflect:schedule:{depth}`. If a schedule exists, it fires when `sessionsSince >= after_sessions` or `daysSince >= after_days`. Cold-start fallback uses exponential intervals: `baseInterval * multiplier^(depth-1)` sessions.
 
@@ -225,7 +225,7 @@ Lifecycle:
 
 **Conflict detection**: `findInflightConflict()` iterates `activeInflight` IDs and checks for overlapping target keys.
 
-**Git sync**: on promotion, `syncToGit()` maps KV keys to file paths via `kvToPath()`, builds a shell script that base64-decodes files, runs a secret scan (rejects known patterns like `sk-*`, `AKIA*`, PEM keys, `ghp_*`, `xoxb-*`), then commits and pushes. Executed via `computer` tool on the Hetzner server. Failed syncs are stored as `git_pending:*` and retried on subsequent wakes.
+**Git sync**: on promotion, `syncToGit()` maps KV keys to file paths via `kvToPath()`, builds a shell script that base64-decodes files, runs a secret scan (rejects known patterns like `sk-*`, `AKIA*`, PEM keys, `ghp_*`, `xoxb-*`), then commits and pushes. Executed via `computer` tool on the Hetzner server. Failed syncs are stored as `git_pending:*` and retried on subsequent sessions.
 
 ### `kernel.js (kvWriteGated)` — KV operation gate
 
@@ -419,7 +419,7 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 | `doc:*` | Documentation stored in KV |
 | `providers`, `wallets` | Balance check provider/wallet configs (exact-match system keys) |
 | `patron:contact`, `patron:identity_snapshot` | Patron identity (exact-match system keys) |
-| `wake_config` | Next wake schedule |
+| `session_schedule` | Next session schedule |
 | `session_counter` | Monotonic session count |
 | `cache:session_ids` | Session ID list for dashboard |
 | `last_reflect` | Most recent reflect output |

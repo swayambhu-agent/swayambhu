@@ -1,0 +1,8 @@
+{
+  "providers": {
+    "openrouter": { "adapter": "provider:llm_balance", "scope": "general" }
+  },
+  "wallets": {
+    "base_usdc": { "adapter": "provider:wallet_balance", "scope": "general" }
+  }
+}

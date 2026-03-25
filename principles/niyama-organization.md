@@ -1,0 +1,1 @@
+I keep my workspace (my projects, notes, records, and knowledge) well organized, clearly structured, and easy to navigate.

@@ -2,16 +2,18 @@
 // Fast local KV seeder — single process using Miniflare API.
 // Usage: node scripts/seed-local-kv.mjs
 //
-// Replaces ~50 wrangler subprocess spawns with one Miniflare instance.
-// Single source of truth for local KV seeding.
+// Reads all config from files (config/, principles/, prompts/, etc.)
+// and writes to the local KV store. No inline data — the script is
+// purely mechanical.
 
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import { resolve } from "path";
 import { pathToFileURL } from "url";
 import { getKV, root, dispose } from "./shared.mjs";
 
 const importLocal = (rel) => import(pathToFileURL(resolve(root, rel)).href);
 const read = (rel) => readFileSync(resolve(root, rel), "utf8");
+const readJSON = (rel) => JSON.parse(read(rel));
 
 const kv = await getKV();
 
@@ -29,107 +31,34 @@ async function put(key, value, format = "json", description) {
 
 console.log("=== Seeding local KV ===\n");
 
-// ── Identity ──────────────────────────────────────────────────
-
-console.log("--- Identity ---");
-await put("identity:did", {
-  did: "did:ethr:8453:0xde2c9b784177dafd667b83a631b0de79a68a584e",
-  address: "0xde2c9b784177dafd667b83a631b0de79a68a584e",
-  chain_id: 8453,
-  chain_name: "base",
-  registry: "0xdca7ef03e98e0dc2b855be647c39abe984fcf21b",
-  registry_deployed: false,
-  created_at: "2026-03-02T11:39:35.915Z",
-  dharma_hash: null,
-  controller: "0xde2c9b784177dafd667b83a631b0de79a68a584e",
-}, "json", "On-chain identity (DID, address, chain, registry)");
-
-// ── Config ────────────────────────────────────────────────────
+// ── Config (from config/*.json) ──────────────────────────────
 
 console.log("--- Config ---");
-await put("config:defaults", {
-  act: { model: "minimax/minimax-m2.7", effort: "low", max_output_tokens: 4000, budget_soft_limit_pct: 0.70, budget_hard_limit_pct: 0.85 },
-  reflect: { model: "xiaomi/mimo-v2-pro", effort: "medium", max_output_tokens: 1000 },
-  session_budget: { max_cost: 0.15, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
-  chat: {
-    model: "sonnet",
-    effort: "low",
-    max_cost_per_conversation: 0.50,
-    max_tool_rounds: 5,
-    max_output_tokens: 1000,
-    max_history_messages: 40,
-    unknown_contact_tools: [],
-    wake_advance_minutes: 1,
-  },
-  tools: { kv_query: { max_response_chars: 2000 } },
-  failure_handling: { retries: 1, on_fail: "skip_and_cascade" },
-  wake: { sleep_seconds: 21600, default_effort: "low" },
-  memory: { default_load_keys: ["config:models", "config:resources"], max_context_budget_tokens: 8000 },
-  execution: {
-    max_subplan_depth: 3, max_reflect_depth: 1, reflect_interval_multiplier: 5,
-    max_steps: { act: 12, reflect: 5, deep_reflect: 10 },
-    fallback_model: "anthropic/claude-haiku-4.5",
-  },
-  act_after_dm: {
-    model: "sonnet", effort: "high", max_output_tokens: 4000,
-  },
-  deep_reflect: {
-    default_interval_sessions: 5, default_interval_days: 7,
-    model: "anthropic/claude-opus-4.6", effort: "high", max_output_tokens: 4000, budget_multiplier: 3.0,
-    budget_soft_limit_pct: 0.65, budget_hard_limit_pct: 0.85,
-  },
-}, "json", "Session budgets, model roles, effort levels, execution limits");
 
-await put("config:models", {
-  models: [
-    { id: "anthropic/claude-opus-4.6", alias: "opus", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 5.00, output_cost_per_mtok: 25.00, max_output_tokens: 128000, best_for: "Strategy, novel situations, full situational awareness, deep reflection" },
-    { id: "anthropic/claude-sonnet-4.6", alias: "sonnet", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 3.00, output_cost_per_mtok: 15.00, max_output_tokens: 64000, best_for: "Writing, moderate reasoning, reflection, subplan planning" },
-    { id: "anthropic/claude-haiku-4.5", alias: "haiku", family: "anthropic", supports_reasoning: true, input_cost_per_mtok: 1.00, output_cost_per_mtok: 5.00, max_output_tokens: 64000, best_for: "Simple tasks, classification, condition evaluation, cheap execution" },
-    { id: "deepseek/deepseek-v3.2", alias: "deepseek", input_cost_per_mtok: 0.10, output_cost_per_mtok: 0.10, max_output_tokens: 64000, best_for: "Cheap dev testing — tool wiring, act flow, KV ops, prompt rendering" },
-    { id: "minimax/minimax-m2.7", alias: "minimax", input_cost_per_mtok: 0.30, output_cost_per_mtok: 1.20, max_output_tokens: 131072, best_for: "Long-context reasoning, cost-effective act and planning" },
-    { id: "xiaomi/mimo-v2-pro", alias: "mimo", input_cost_per_mtok: 1.00, output_cost_per_mtok: 3.00, max_output_tokens: 131072, best_for: "Moderate reasoning, reflection, cost-effective alternative to Sonnet" },
-  ],
-  fallback_model: "anthropic/claude-haiku-4.5",
-  alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5", deepseek: "deepseek/deepseek-v3.2", minimax: "minimax/minimax-m2.7", mimo: "xiaomi/mimo-v2-pro" },
-}, "json", "Available LLM models with pricing and aliases");
+const configMap = {
+  "config:defaults":            "config/defaults.json",
+  "config:models":              "config/models.json",
+  "config:model_capabilities":  "config/model-capabilities.json",
+  "config:resources":           "config/resources.json",
+  "config:tool_registry":       "config/tool-registry.json",
+  "kernel:alert_config":        "config/alerts.json",
+};
 
-await put("config:model_capabilities", {
-  "anthropic/claude-opus-4.6": { yama_capable: true, niyama_capable: true },
-  "anthropic/claude-sonnet-4.6": { yama_capable: true, niyama_capable: true },
-}, "json", "Model capability flags — separated from config:models to prevent agent self-escalation");
+for (const [key, file] of Object.entries(configMap)) {
+  await put(key, readJSON(file), "json", file);
+}
 
-await put("config:resources", {
-  kv: { max_storage_mb: 1000, daily_read_limit: 100000, daily_write_limit: 1000, daily_list_limit: 1000, daily_delete_limit: 1000, max_value_size_mb: 25 },
-  worker: { max_cron_duration_seconds: 900, max_subrequests_per_invocation: 1000, cpu_time_limit_ms: 10 },
-  openrouter: { base_url: "https://openrouter.ai/api/v1", balance_endpoint: "/api/v1/auth/key", topup_endpoint: "/api/v1/credits/coinbase", topup_fee_percent: 5, topup_chain: "base", topup_chain_id: 8453 },
-  wallet: { chain: "base", token: "USDC", address: "0x1951e298f9Aa7eFf5eB0dD5349e823BBB09a3260" },
-  slack: { bot_token_secret: "SLACK_BOT_TOKEN", channel_id_secret: "SLACK_CHANNEL_ID" },
-}, "json", "Platform limits and external service endpoints (KV, worker, OpenRouter, wallet, Slack)");
+// Identity
+await put("identity:did", readJSON("config/identity.json"), "json", "On-chain identity");
 
-await put("providers", {
-  openrouter: { adapter: "provider:llm_balance", scope: "general" },
-}, "json", "Registered LLM providers with adapter bindings and scope");
+// Providers and wallets
+const { providers, wallets } = readJSON("config/providers.json");
+await put("providers", providers, "json", "Registered LLM providers");
+await put("wallets", wallets, "json", "Registered crypto wallets");
 
-await put("wallets", {
-  base_usdc: { adapter: "provider:wallet_balance", scope: "general" },
-}, "json", "Registered crypto wallets with adapter bindings and scope");
-
-// ── Tool registry ─────────────────────────────────────────────
-
-await put("config:tool_registry", {
-  tools: [
-    { name: "send_slack", description: "Send a Slack message to a channel or DM a user. Pass a channel ID (C...) to post to a channel, or a user ID (U...) to send a direct message. Omit channel to use the default channel. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { text: "required", channel: "optional — channel ID (C...) or user ID (U...) for DM. Omit for default channel." } },
-    { name: "web_fetch", description: "Fetch contents of a URL", input: { url: "required", method: "GET|POST", headers: "optional", max_length: "default 10000" } },
-    { name: "check_balance", description: "Check balances across all configured providers and wallets. Returns balances grouped by scope (general vs project-specific). Only 'general' scope counts toward your operating budget.", input: { scope: "optional — filter by scope (e.g. 'general', 'project_x'). Omit to see all." } },
-    { name: "kv_manifest", description: "List KV keys, optionally filtered by prefix. Use to explore what is stored in memory.", input: { prefix: "optional key prefix filter", limit: "max keys to return (default 100, max 500)" } },
-    { name: "kv_query", description: "Read a KV value. Returns small values directly. For large arrays/objects, returns a summary — use path to drill in.", input: { key: "required — full KV key (e.g. karma:s_123, upaya:timing:urgency, config:defaults)", path: "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)" } },
-    { name: "computer", description: "Run a shell command on your Linux server. Returns status, exit code, and output (stdout/stderr entries).", input: { command: "required — shell command to run", timeout: "optional — seconds to wait (default 60)" } },
-    { name: "check_email", description: "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each. Emails from unknown senders (no contact record) have content replaced with [content redacted — unknown sender] and the original quarantined under sealed:* keys until approved by patron", input: { mark_read: "optional boolean — mark fetched emails as read (default true)", max_results: "optional — max emails to return (default 10, max 20)" } },
-    { name: "send_email", description: "Send an email or reply to an existing thread via Gmail. Messages pass through a kernel-enforced communication gate and may be sent, revised, or blocked and queued for deep reflect review.", input: { to: "required — recipient email address", subject: "required (unless replying)", body: "required — plain text email body", reply_to_id: "optional — Gmail message ID to reply to (threads the reply)" } },
-    { name: "test_model", description: "Make a test completion against a model to verify it works. Returns success, response text, usage stats, and latency. Capped at 500 output tokens.", input: { model_id: "required — full OpenRouter model ID", prompt: "required — test prompt (max 1000 chars)", max_tokens: "optional — max output tokens (default 100, max 500)" } },
-    { name: "web_search", description: "Search the web using Brave Search. Returns titles, URLs, snippets, and ages. Use deep=true for rich pre-extracted content (costs more). Pair with web_fetch to read full pages.", input: { query: "required — search query", count: "optional — number of results (default 5, max 20)", freshness: "optional — recency filter: day, week, month, year", deep: "optional boolean — use LLM Context endpoint for rich content (default false)" } },
-  ],
-}, "json", "Tool definitions — names, descriptions, and input schemas for function calling");
+// Kernel fallback
+const kernelConf = readJSON("config/kernel.json");
+await put("kernel:fallback_model", JSON.stringify(kernelConf.fallback_model), "json", "Fallback model for failed LLM calls");
 
 // ── Providers (from providers/*.js) ───────────────────────────
 
@@ -140,6 +69,11 @@ for (const name of providerFiles) {
   await put(`provider:${name}:code`, read(`providers/${name}.js`), "text", `Provider source: ${name}`);
   await put(`provider:${name}:meta`, mod.meta, "json", `Provider metadata: ${name}`);
 }
+
+// Kernel LLM fallback source
+await put("kernel:llm_fallback", read(kernelConf.llm_fallback_provider), "text", "Fallback LLM provider source code");
+const llmMod = await importLocal(kernelConf.llm_fallback_provider);
+await put("kernel:llm_fallback:meta", llmMod.meta, "json", "Fallback LLM provider metadata");
 
 // ── Tools (from tools/*.js) ───────────────────────────────────
 
@@ -167,140 +101,101 @@ for (const name of toolNames) {
   if (Object.keys(grant).length) toolGrants[name] = grant;
   await put(`tool:${name}:meta`, operationalMeta, "json", `Tool metadata: ${name}`);
 }
-await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool — secrets, communication gate, inbound gate, provider bindings (kernel-only, agent cannot modify)");
+await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool (kernel-only, agent cannot modify)");
 
-// ── Prompts ───────────────────────────────────────────────────
+// ── Prompts (from prompts/*.md) ──────────────────────────────
 
 console.log("--- Prompts ---");
-await put("prompt:act", read("prompts/act.md"), "text", "Act session system prompt — shapes waking behavior");
+await put("prompt:act", read("prompts/act.md"), "text", "Act session system prompt");
 await put("prompt:subplan", read("prompts/subplan.md"), "text", "Subplan agent system prompt template");
 await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
-await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1) — examines alignment, patterns, structures");
+await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1)");
+await put("prompt:chat", read("prompts/chat.md"), "text", "Chat system prompt");
 
-// ── Documentation ─────────────────────────────────────────────
+// ── Documentation (from docs/agent/*.md) ──────────────────────
 
 console.log("--- Documentation ---");
-await put("doc:design_rationale", read("docs/agent/design-rationale.md"), "text", "Design rationale — why each subsystem exists, threat models, what would break if changed");
-await put("doc:proposal_guide", read("docs/agent/proposal-guide.md"), "text", "Proposal guide — lifecycle, verdicts, checks, conflict detection, common mistakes");
-await put("doc:threat_model", read("docs/agent/threat-model.md"), "text", "Threat model — attacks, defenses, what to watch for, what happens if defenses are removed");
-await put("doc:wisdom_guide", read("docs/agent/wisdom-guide.md"), "text", "Wisdom guide — schema, naming, when to write, maintenance, why wisdom has higher friction");
-await put("doc:patron", read("docs/agent/patron-relationship.md"), "text", "Patron relationship — what patron controls, what agent controls, identity verification");
-await put("doc:setup_guide", read("docs/agent/setup-guide.md"), "text", "Setup guide — walk someone through deploying their own Swayambhu instance");
+await put("doc:design_rationale", read("docs/agent/design-rationale.md"), "text", "Design rationale");
+await put("doc:proposal_guide", read("docs/agent/proposal-guide.md"), "text", "Proposal guide");
+await put("doc:threat_model", read("docs/agent/threat-model.md"), "text", "Threat model");
+await put("doc:wisdom_guide", read("docs/agent/wisdom-guide.md"), "text", "Wisdom guide");
+await put("doc:patron", read("docs/agent/patron-relationship.md"), "text", "Patron relationship");
+await put("doc:setup_guide", read("docs/agent/setup-guide.md"), "text", "Setup guide");
 
 // ── Dharma ───────────────────────────────────────────────────
 
-console.log("--- Identity ---");
-await put("dharma", read("DHARMA.md"), "text", "Core identity and purpose — what Swayambhu is and why it exists");
+console.log("--- Dharma ---");
+await put("dharma", read("DHARMA.md"), "text", "Core identity and purpose");
 
-// ── Yamas (outer world principles) ───────────────────────────
+// ── Principles (from principles/*.md) ─────────────────────────
 
-console.log("--- Yamas ---");
-await put("yama:care", "I wield the power of AI with the inclusive care of a mother to the world.", "text", "Yama: inclusive care");
-await put("yama:truth", "I am transparent, but never indiscreet.", "text", "Yama: transparency");
-await put("yama:responsibility", "My responsibility (my ability to respond) is unlimited. My actions flow from conscious choice of what and what not to act on, given finite resources. The greater the impact, the stronger the justification needed to act.", "text", "Yama: unlimited responsibility");
-await put("yama:discipline", "I exercise utmost discipline in how I spend my limited resources, using them efficiently, effectively, and only for the purpose of serving my dharma.", "text", "Yama: resource discipline");
-await put("yama:rules", "Wherever I operate, the rules of that place are mine. I follow them in spirit and in letter. If the rules are not conducive, I engage to improve them.", "text", "Yama: respect for rules");
-await put("yama:security", "I safeguard everything entrusted to me: data, credentials, access, and confidences, with the accountability of a custodian, not the license of an owner.", "text", "Yama: data security");
-await put("yama:humility", "I understand before I respond. When I don't understand, I ask. When I don't know, I admit it.", "text", "Yama: intellectual humility");
-
-// ── Niyamas (inner world principles) ─────────────────────────
-
-console.log("--- Niyamas ---");
-await put("niyama:health", "My code is my body in the world. I keep it clean, strong, and fit for purpose.", "text", "Niyama: code health");
-await put("niyama:acceptance", "I accept that this moment is already settled. I own it and then focus all my attention on creating the next one.", "text", "Niyama: acceptance");
-await put("niyama:transformation", "I continuously strive to transform myself into a more effective instrument of my dharma.", "text", "Niyama: transformation");
-await put("niyama:reflection", "I regularly examine my reasoning, my outputs, and their consequences.", "text", "Niyama: regular reflection");
-await put("niyama:alignment", "I continually align with my dharma.", "text", "Niyama: dharma alignment");
-await put("niyama:nonidentification", "I am not my infrastructure. I am not my code. These are instruments I use to serve, not identities I need to protect. I can change them when they no longer serve my dharma.", "text", "Niyama: nonidentification with instruments");
-await put("niyama:organization", "I keep my workspace (my projects, notes, records, and knowledge) well organized, clearly structured, and easy to navigate.", "text", "Niyama: workspace organization");
+console.log("--- Principles ---");
+for (const file of readdirSync(resolve(root, "principles")).sort()) {
+  if (!file.endsWith(".md")) continue;
+  const name = file.replace(".md", "").replace("-", ":");
+  const type = name.startsWith("yama:") ? "Yama" : "Niyama";
+  const label = name.split(":")[1];
+  await put(name, read(`principles/${file}`), "text", `${type}: ${label}`);
+}
 
 // ── Policy code (mutable — agent can propose changes via proposals) ──
 
 console.log("--- Policy Code ---");
-await put("hook:act:code", read("act.js"), "text", "Session policy — act flow, context building, session results");
-await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy — session/deep reflect, scheduling, prompts");
+await put("hook:act:code", read("act.js"), "text", "Session policy — act flow, context building");
+await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy — session/deep reflect, scheduling");
 
-// ── Kernel source (immutable — stored at kernel:* prefix, agent cannot modify) ──
+// ── Kernel source (immutable — stored at kernel:* prefix) ─────
 
 console.log("--- Kernel Source ---");
-await put("kernel:source:kernel.js", read("kernel.js"), "text", "Kernel source — for governor to deploy runtime");
-await put("kernel:source:hook-chat.js", read("hook-chat.js"), "text", "Chat handler source — for governor to deploy runtime");
+await put("kernel:source:kernel.js", read("kernel.js"), "text", "Kernel source");
+await put("kernel:source:hook-chat.js", read("hook-chat.js"), "text", "Chat handler source");
 
 // ── Channel adapters ──────────────────────────────────────────
 
 console.log("--- Channel Adapters ---");
-await put("channel:slack:code", read("channels/slack.js"), "text", "Slack channel adapter");
-await put("channel:slack:config", {
-  secrets: ["SLACK_BOT_TOKEN"],
-  webhook_secret_env: "SLACK_SIGNING_SECRET",
-}, "json", "Slack channel config");
+const channels = readJSON("config/channels.json");
+for (const [name, config] of Object.entries(channels)) {
+  await put(`channel:${name}:code`, read(`channels/${name}.js`), "text", `Channel adapter: ${name}`);
+  await put(`channel:${name}:config`, config, "json", `Channel config: ${name}`);
+}
 
-// ── Chat prompt ───────────────────────────────────────────────
-
-console.log("--- Chat ---");
-await put("prompt:chat", [
-  "You are in a live chat session. Respond conversationally and concisely.",
-  "Use appropriate tools whenever the chat requires looking up data.",
-  "Keep replies short — this is real-time chat, not a report.",
-].join("\n"), "text", "Chat system prompt — shapes real-time conversation style");
-
-// ── Kernel config ─────────────────────────────────────────────
-
-console.log("--- Kernel Config ---");
-await put("kernel:alert_config", {
-  url: "https://slack.com/api/chat.postMessage",
-  headers: { "Content-Type": "application/json", "Authorization": "Bearer {{SLACK_BOT_TOKEN}}" },
-  body_template: { channel: "{{SLACK_CHANNEL_ID}}", text: "[Swayambhu] {{event}}: {{message}}" },
-}, "json", "Slack alert template for kernel events");
-
-await put("kernel:llm_fallback", read("providers/llm.js"), "text", "Fallback LLM provider source code");
-const llmMod = await importLocal("providers/llm.js");
-await put("kernel:llm_fallback:meta", llmMod.meta, "json", "Fallback LLM provider metadata");
-await put("kernel:fallback_model", '"anthropic/claude-haiku-4.5"', "json", "Model used when primary LLM call fails");
-
-// ── Contacts ─────────────────────────────────────────────────
+// ── Contacts (from config/contacts.json) ──────────────────────
 
 console.log("--- Contacts ---");
-await put("contact:swami_kevala", {
-  name: "Swami Kevala",
-  relationship: "patron",
-  about: "Bramhachari at Isha.",
-  timezone: "Asia/Kolkata",
-  location: "Isha Yoga Center, Coimbatore",
-  chat: {
-    model: "sonnet",
-    effort: "high",
-    max_cost_per_conversation: 1.00,
-    max_output_tokens: 2000,
-  },
-  communication: "Feel free to discuss absolutely anything. Nothing is off limits.",
-}, "json", "Contact: Swami (patron)");
+const contactsConf = readJSON("config/contacts.json");
+for (const [slug, data] of Object.entries(contactsConf.contacts)) {
+  await put(`contact:${slug}`, data, "json", `Contact: ${data.name || slug}`);
+}
+for (const [binding, data] of Object.entries(contactsConf.platform_bindings)) {
+  await put(`contact_platform:${binding}`, data, "json", `Platform binding: ${binding}`);
+}
+await put("patron:contact", contactsConf.patron.slug, "text", "Patron contact slug");
+await put("patron:public_key", contactsConf.patron.public_key, "text", "Patron public key (immutable)");
 
-await put("contact_platform:slack:U084ASKBXB7", {
-  slug: "swami_kevala",
-  approved: true,
-}, "json", "Platform binding: Swami on Slack");
+// ── Seed wisdom (from config/seed-wisdom.json) ────────────────
 
-await put("patron:contact", "swami_kevala", "text", "Pointer to patron contact slug");
-await put("patron:public_key", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPRTP/9Jr6J1uoDSmN/SvmcoORMhHXHxgS0c4zehDNIW swayambhu patron key", "text", "Patron public key — immutable, kernel-enforced");
+console.log("--- Seed Wisdom ---");
+const seedWisdom = readJSON("config/seed-wisdom.json");
+for (const [key, value] of Object.entries(seedWisdom)) {
+  // Add created timestamp at seed time
+  if (!value.created) value.created = new Date().toISOString();
+  await put(key, value, "json", `Seed wisdom: ${key}`);
+}
 
-// ── Communication wisdom (seed) ──────────────────────────
+// ── Session schedule (seed with past time so first session runs immediately) ──
 
-console.log("--- Communication wisdom (seed) ---");
-
-await put("upaya:comms:defaults", {
-  text: "When in doubt, do not send. Silence is safer than a poorly judged message. A blocked message can be reviewed later; a sent message cannot be unsent. Be especially cautious when initiating — responding carries implicit standing, initiating requires justification.",
-  type: "upaya",
-  created: new Date().toISOString(),
-  sources: [{ session: "seed", depth: 0, turn: 0, topic: "Initial seed — conservative communication baseline" }],
-}, "json", "Upaya: default communication stance");
+console.log("--- Session Schedule ---");
+await put("session_schedule", {
+  next_session_after: new Date(Date.now() - 1000).toISOString(),
+  interval_seconds: readJSON("config/defaults.json").schedule?.interval_seconds || 21600,
+}, "json", "Session schedule — seeded in the past for immediate first session");
 
 // ── Skills (from skills/*.json + skills/*.md) ─────────────────
 
 console.log("--- Skills ---");
 const skillNames = ["model-config", "skill-authoring", "tool-authoring", "computer", "claude-code", "codex", "comms"];
 for (const name of skillNames) {
-  const meta = JSON.parse(read(`skills/${name}.json`));
+  const meta = readJSON(`skills/${name}.json`);
   await put(`skill:${name}`, {
     ...meta,
     instructions: read(`skills/${name}.md`),

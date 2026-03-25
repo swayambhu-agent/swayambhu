@@ -2,13 +2,13 @@
 
 *Sanskrit: "self-born"*
 
-An autonomous AI agent that wakes on a schedule, thinks, acts, reflects, and sleeps. Everything that makes it *it* — memory, personality, tools, prompts, goals — lives in a key-value store. The runtime is disposable substrate. The data is the agent.
+An autonomous AI agent that runs sessions on a schedule, thinks, acts, reflects, and goes idle. Everything that makes it *it* — memory, personality, tools, prompts, goals — lives in a key-value store. The runtime is disposable substrate. The data is the agent.
 
 ## The core idea
 
 Most AI agents are programs that call an LLM. Swayambhu is an agent that rewrites its own program.
 
-The runtime — a thin loop deployed on Cloudflare Workers — handles waking up, calling models, running tools, and going back to sleep. It has opinions about almost nothing. It doesn't decide what to think about, which models to use, what tools exist, or how to structure its memory. It reads all of that from a key-value store at the start of each session.
+The runtime — a thin loop deployed on Cloudflare Workers — handles starting sessions, calling models, running tools, and returning to idle. It has opinions about almost nothing. It doesn't decide what to think about, which models to use, what tools exist, or how to structure its memory. It reads all of that from a key-value store at the start of each session.
 
 Swayambhu controls everything in that store. He writes his own prompts, creates and rewrites his own tools, chooses his own models, manages his own budget, and restructures his own memory. The runtime enforces a small number of safety invariants and stays out of the way.
 
@@ -16,7 +16,7 @@ This means upgrading Swayambhu doesn't require redeploying code. He upgrades him
 
 ## How a session works
 
-The kernel wakes on a cron schedule, checks if it's actually time to act (the agent controls its own sleep duration), runs crash detection and circuit breakers, then loads its state from the store. What happens next depends on whether a deep reflection is due.
+The kernel runs on a cron schedule, checks if it's actually time to act (the agent controls its own session interval), runs crash detection and circuit breakers, then loads its state from the store. What happens next depends on whether a deep reflection is due.
 
 ### Normal sessions: act → reflect
 
@@ -26,15 +26,15 @@ This is where all operational work happens — checking balances, searching the 
 
 When the agent identifies independent threads of work, it can spawn **subplans** — nested agent loops running on cheaper models, executing in parallel, reporting results back to the parent.
 
-After the agent loop completes, **session reflect** runs — a single evaluation call that reviews the session's karma log (the flight recorder of every LLM call and tool execution), produces a summary, and can propose changes or adjust the next wake schedule. Session reflect answers: *"what just happened, and what should I tell my future self?"*
+After the agent loop completes, **session reflect** runs — a single evaluation call that reviews the session's karma log (the flight recorder of every LLM call and tool execution), produces a summary, and can propose changes or adjust the next session schedule. Session reflect answers: *"what just happened, and what should I tell my future self?"*
 
-The runtime then shuts down. Nothing persists except what's in the store. Next wake cycle, a fresh runtime boots and loads whatever the agent left behind.
+The runtime then shuts down. Nothing persists except what's in the store. Next session, a fresh runtime boots and loads whatever the agent left behind.
 
 ### Deep reflect sessions
 
 Periodically, instead of a normal session, the kernel triggers a **deep reflection**. Normal sessions and deep reflect sessions are mutually exclusive — when reflection fires, it replaces the normal act cycle entirely, because the point is to step back and examine the pattern rather than continue acting within it.
 
-**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose changes to prompts, config, tools, and wisdom (`upaya:*`, `prajna:*`) through the proposal system — code changes go through `K.createProposal()` for governor deployment, while config/prompt/wisdom changes go through KV write tiers directly. Depth 1 also writes the wake config and schedule that govern normal sessions.
+**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose changes to prompts, config, tools, and wisdom (`upaya:*`, `prajna:*`) through the proposal system — code changes go through `K.createProposal()` for governor deployment, while config/prompt/wisdom changes go through KV write tiers directly. Depth 1 also writes the session schedule that governs normal sessions.
 
 **Depth 2** fires less often (~100 sessions by default, but self-determined after first run). It reads depth 1's stored outputs, looking for patterns in *how depth 1 is reflecting*. Is depth 1 over-correcting? Missing systemic issues? Fixating on symptoms instead of causes?
 

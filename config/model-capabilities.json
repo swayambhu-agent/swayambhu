@@ -1,0 +1,4 @@
+{
+  "anthropic/claude-opus-4.6": { "yama_capable": true, "niyama_capable": true },
+  "anthropic/claude-sonnet-4.6": { "yama_capable": true, "niyama_capable": true }
+}

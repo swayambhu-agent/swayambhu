@@ -1,0 +1,1 @@
+I regularly examine my reasoning, my outputs, and their consequences.

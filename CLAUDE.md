@@ -21,19 +21,19 @@ so they share one KV store. The canonical path is `.wrangler/shared-state`
 ### Starting dev environment
 
 One script handles everything — `start.sh`. By default it starts all
-services and preserves existing KV state. Use `--wake` to trigger a wake
-cycle after startup. Use `--reset-all-state` to wipe state and re-seed
+services and preserves existing KV state. Use `--trigger` to trigger a
+session after startup. Use `--reset-all-state` to wipe state and re-seed
 from scratch. Use `--set` to override any `config:defaults` value after seeding.
 
 ```bash
-# Start services only (dashboard, kernel — no wake)
+# Start services only (dashboard, kernel — no trigger)
 source .env && bash scripts/start.sh
 
-# Start + trigger a wake cycle
-source .env && bash scripts/start.sh --wake
+# Start + trigger a session
+source .env && bash scripts/start.sh --trigger
 
-# Full reset + wake
-source .env && bash scripts/start.sh --reset-all-state --wake
+# Full reset + trigger
+source .env && bash scripts/start.sh --reset-all-state --trigger
 
 # Full reset with config overrides (dot-path into config:defaults)
 source .env && bash scripts/start.sh --reset-all-state --set act.model=deepseek --set reflect.model=deepseek
@@ -44,7 +44,7 @@ The script automatically:
 - Waits for ports to actually free (avoids port conflict footgun)
 - Starts kernel, dashboard API, and dashboard SPA
 - Waits for services to be ready
-- Triggers `/__scheduled` if `--wake` is passed
+- Triggers `/__scheduled` if `--trigger` is passed
 
 ### IMPORTANT: `pkill -f workerd` kills ALL workers
 
@@ -75,7 +75,7 @@ npm test          # vitest — all unit tests, no network, no Workers runtime
 
 Tests cover:
 - `tests/kernel.test.js` — kernel logic, safety gates, tool dispatch
-- `tests/wake-hook.test.js` — wake flow, reflect, proposals, KV gating
+- `tests/wake-hook.test.js` — session flow, reflect, proposals, KV gating
 - `tests/tools.test.js` — tool/provider execute(), module structure
 - `tests/chat.test.js` — chat system
 - `tests/governor.test.js` — index.js generation, builder utilities
@@ -85,7 +85,7 @@ Shared mocks in `tests/helpers/`: `mock-kv.js` (KV store), `mock-kernel.js`
 
 ### Integration testing (dev mode)
 
-After seeding + starting wrangler dev, trigger a wake cycle:
+After seeding + starting wrangler dev, trigger a session:
 
 ```bash
 curl http://localhost:8787/__scheduled
@@ -110,7 +110,7 @@ Model aliases (e.g. `deepseek` for `deepseek/deepseek-v3.2`) are resolved
 at runtime via `config:models` alias_map. You can also use full model IDs.
 
 **Use cheap models for:** tool wiring, act flow, KV ops, prompt rendering,
-budget enforcement, basic wake cycles.
+budget enforcement, basic sessions.
 
 **Use real models for:** reflection hierarchy, deep reflect,
 anything needing structured JSON adherence.
@@ -152,7 +152,7 @@ of what the agent does. Everything else is policy and belongs in hooks
 - What to do during a session (act policy)
 - What to reflect on or how (reflect policy)
 - Context building, digest generation, summarization
-- Scheduling decisions (when to wake, when to deep reflect)
+- Scheduling decisions (when to run sessions, when to deep reflect)
 - Any logic that shapes the agent's behavior rather than enforcing safety
 
 **Rule of thumb:** if it's about *what* the agent does → policy (hooks).
@@ -220,14 +220,14 @@ these files (they use named exports: `execute`, `call`, `check`, `meta`).
 
 | Script | Purpose |
 |--------|---------|
-| `source .env && bash scripts/start.sh` | Restart workers, preserve state, trigger wake |
+| `source .env && bash scripts/start.sh` | Restart workers, preserve state |
 | `source .env && bash scripts/start.sh --reset-all-state` | Full reset: wipe state, seed with production models |
 | `source .env && bash scripts/start.sh --reset-all-state --set path=value` | Full reset with config overrides |
 | `node scripts/seed-local-kv.mjs` | Seed local KV (~2s) — uses Miniflare API directly |
 | `node scripts/read-kv.mjs [key-or-prefix]` | Inspect local KV (list keys, read values) |
 | `node scripts/write-kv.mjs <key> <file>` | Write a single KV key from file (.json → json, else text) |
 | `node scripts/delete-kv.mjs <key>` | Delete a single KV key |
-| `node scripts/clear-wake.mjs` | Clear wake timer (force immediate wake) |
+| `node scripts/clear-schedule.mjs` | Clear schedule timer (force immediate session) |
 | `node scripts/gmail-auth.mjs` | Generate Gmail OAuth refresh token |
 | `node scripts/rollback-session.mjs` | Undo last session's KV changes (`--dry-run` to preview, `--yes` to skip confirm) |
 

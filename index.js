@@ -59,13 +59,13 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // Admin: set wake timer to past so next /__scheduled runs immediately
-    if (url.pathname === "/__clear-wake" && request.method === "POST") {
-      await env.KV.put("wake_config", JSON.stringify({
-        next_wake_after: new Date(Date.now() - 1000).toISOString(),
-        sleep_seconds: 21600,
+    // Admin: set schedule to past so next /__scheduled runs immediately
+    if (url.pathname === "/__clear-schedule" && request.method === "POST") {
+      await env.KV.put("session_schedule", JSON.stringify({
+        next_session_after: new Date(Date.now() - 1000).toISOString(),
+        interval_seconds: 21600,
       }));
-      return new Response("wake_config set to past", { status: 200 });
+      return new Response("session_schedule set to past", { status: 200 });
     }
 
     const match = url.pathname.match(/^\/channel\/(\w+)$/);

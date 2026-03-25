@@ -1041,7 +1041,7 @@ describe("isSystemKey / isKernelOnly", () => {
   });
 
   it("rejects non-system keys", () => {
-    expect(Kernel.isSystemKey("wake_config")).toBe(false);
+    expect(Kernel.isSystemKey("session_schedule")).toBe(false);
     expect(Kernel.isSystemKey("last_reflect")).toBe(false);
     expect(Kernel.isSystemKey("session_counter")).toBe(false);
   });
@@ -1081,7 +1081,7 @@ describe("kvWriteSafe", () => {
 
   it("allows non-system keys", async () => {
     const { kernel } = makeKernel();
-    await kernel.kvWriteSafe("wake_config", { sleep_seconds: 100 });
+    await kernel.kvWriteSafe("session_schedule", { interval_seconds: 100 });
     // Should not throw
   });
 });
@@ -1488,24 +1488,24 @@ describe("runScheduled hook execution flow", () => {
     const callOrder = [];
     kernel.checkHookSafety = vi.fn(async () => { callOrder.push("checkHookSafety"); return true; });
     kernel.executeHook = vi.fn(async () => callOrder.push("executeHook"));
-    kernel.wake = vi.fn(async () => callOrder.push("wake"));
+    kernel.runFallbackSession = vi.fn(async () => callOrder.push("fallback"));
 
     await kernel.runScheduled();
 
     expect(callOrder).toEqual(["checkHookSafety", "executeHook"]);
-    expect(kernel.wake).not.toHaveBeenCalled();
+    expect(kernel.runFallbackSession).not.toHaveBeenCalled();
   });
 
-  it("falls back to wake() when checkHookSafety returns false", async () => {
+  it("falls back to runFallbackSession() when checkHookSafety returns false", async () => {
     const { kernel } = makeKernel();
     kernel.checkHookSafety = vi.fn(async () => false);
     kernel.executeHook = vi.fn(async () => {});
-    kernel.wake = vi.fn(async () => {});
+    kernel.runFallbackSession = vi.fn(async () => {});
 
     await kernel.runScheduled();
 
     expect(kernel.executeHook).not.toHaveBeenCalled();
-    expect(kernel.wake).toHaveBeenCalled();
+    expect(kernel.runFallbackSession).toHaveBeenCalled();
   });
 
   it("writes active session marker before executing", async () => {

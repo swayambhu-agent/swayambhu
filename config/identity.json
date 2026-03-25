@@ -1,0 +1,11 @@
+{
+  "did": "did:ethr:8453:0xde2c9b784177dafd667b83a631b0de79a68a584e",
+  "address": "0xde2c9b784177dafd667b83a631b0de79a68a584e",
+  "chain_id": 8453,
+  "chain_name": "base",
+  "registry": "0xdca7ef03e98e0dc2b855be647c39abe984fcf21b",
+  "registry_deployed": false,
+  "created_at": "2026-03-02T11:39:35.915Z",
+  "dharma_hash": null,
+  "controller": "0xde2c9b784177dafd667b83a631b0de79a68a584e"
+}

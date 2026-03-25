@@ -1044,7 +1044,7 @@ class Kernel {
     if (hookSafe) {
       await this.executeHook();
     } else {
-      await this.wake();
+      await this.runFallbackSession();
     }
   }
 
@@ -1119,23 +1119,23 @@ class Kernel {
     };
 
     try {
-      // 0. Load defaults early — needed for wake check fallback
+      // 0. Load defaults early — needed for schedule check fallback
       defaults = await this.kvGet("config:defaults");
       this.defaults = defaults;
       state.defaults = defaults;
 
-      // 1. Check if it's actually time to wake up
-      const wakeConfig = await this.kvGet("wake_config");
-      const nextWake = wakeConfig?.next_wake_after;
-      if (!nextWake) {
-        // No valid wake time — policy code wrote bad data or first boot.
-        // Fall back to default sleep_seconds so we don't run every cron tick.
-        const fallbackSleep = defaults?.wake?.sleep_seconds || 21600;
-        const fallbackWake = new Date(Date.now() + fallbackSleep * 1000).toISOString();
-        await this.kvWriteSafe("wake_config", { ...wakeConfig, next_wake_after: fallbackWake, sleep_seconds: fallbackSleep });
+      // 1. Check if it's actually time to run a session
+      const schedule = await this.kvGet("session_schedule");
+      const nextSession = schedule?.next_session_after;
+      if (!nextSession) {
+        // No valid session time — policy code wrote bad data or first boot.
+        // Fall back to default interval_seconds so we don't run every cron tick.
+        const fallbackInterval = defaults?.schedule?.interval_seconds || 21600;
+        const fallbackTime = new Date(Date.now() + fallbackInterval * 1000).toISOString();
+        await this.kvWriteSafe("session_schedule", { ...schedule, next_session_after: fallbackTime, interval_seconds: fallbackInterval });
         return { skipped: true, reason: "not_time_yet", healed: true };
       }
-      if (Date.now() < new Date(nextWake).getTime()) {
+      if (Date.now() < new Date(nextSession).getTime()) {
         return { skipped: true, reason: "not_time_yet" };
       }
 
@@ -1147,7 +1147,7 @@ class Kernel {
       const lastReflect = await this.kvGet("last_reflect");
 
       // 4. Merge with defaults
-      const config = this.mergeDefaults(defaults, wakeConfig);
+      const config = this.mergeDefaults(defaults, schedule);
 
       // 4a. Cache stable values
       modelsConfig = await this.kvGet("config:models");
@@ -1224,7 +1224,7 @@ class Kernel {
         event: "session_start",
         session_id: this.sessionId,
         effort,
-        scheduled_wake: wakeConfig?.next_wake_after || null,
+        scheduled_at: schedule?.next_session_after || null,
         crash_detected: !!crashData,
         balances,
       });
@@ -1304,7 +1304,7 @@ class Kernel {
 
   static evaluateTripwires(config, liveData) {
     const alerts = config.alerts || [];
-    let effort = config.default_effort || config.wake?.default_effort || "low";
+    let effort = config.default_effort || config.schedule?.default_effort || "low";
     for (const alert of alerts) {
       const value = alert.field.split(".").reduce((o, k) => o?.[k], liveData) ?? null;
       if (value === null) continue;
@@ -1392,12 +1392,12 @@ class Kernel {
 
   // ── Wake cycle ──────────────────────────────────────────────
 
-  // ── Minimal fallback (no hook:wake:code in KV) ─────────────
+  // ── Minimal fallback (no hook code in KV) ───────────────────
   // Used when no hook is loaded, or after the hook safety tripwire fires.
   // Runs a hardcoded recovery session — does NOT load prompt:act
   // (could be corrupted). Does NOT process kv_operations from output.
 
-  async wake() {
+  async runFallbackSession() {
     await this.runMinimalFallback();
     await this.updateSessionOutcome("clean");
   }

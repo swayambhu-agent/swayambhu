@@ -32,7 +32,7 @@ jailbroken LLM session cannot exfiltrate data or bypass communication rules,
 because the kernel physically prevents it.
 
 Most AI agents are stateless between sessions. Swayambhu has a genuine
-inner life. It wakes on a schedule, orients itself, acts, reflects on what
+inner life. It runs sessions on a schedule, orients itself, acts, reflects on what
 it did, accumulates wisdom, and proposes modifications to its own code and
 behavior. These modifications go through a staged review process where a
 *different* session evaluates them before they go live. The agent reviews
@@ -47,8 +47,8 @@ through experience.
 
 The agent runs on Cloudflare Workers. Its lifecycle:
 
-1. **Wake** — A cron trigger fires every minute. The kernel checks if it's
-   time to act (the agent controls its own sleep duration).
+1. **Schedule** — A cron trigger fires every minute. The kernel checks if it's
+   time to act (the agent controls its own session interval).
 
 2. **Orient** — The agent reads its context — recent reflections, pending
    tasks, balances, tripwire alerts — and decides what to do. It has
@@ -199,7 +199,7 @@ npm install
 1. Set up a `.env` file with `OPENROUTER_API_KEY` (and optionally Slack/Gmail credentials)
 2. Generate an identity: `node scripts/generate-identity.js --seed-kv`
 3. Seed local KV: `node scripts/seed-local-kv.mjs`
-4. Start everything: `source .env && bash scripts/start.sh --reset-all-state --wake`
+4. Start everything: `source .env && bash scripts/start.sh --reset-all-state --trigger`
 5. Open the dashboard: `http://localhost:3001/patron/` (key: `test`)
 
 See [scripts reference](docs/dev/scripts-reference.md) for all dev tools
@@ -236,7 +236,7 @@ and flags.
 **Developer docs** — [docs/dev/](docs/dev/)
 - [Architecture](docs/dev/architecture.md) — two-worker architecture, KV protection tiers, kernel/module split
 - [KV Schema](docs/dev/kv-schema.md) — every key namespace, protection levels, lifecycle
-- [Entry Points](docs/dev/entry-points.md) — cron wake, HTTP chat, dashboard API call chains
+- [Entry Points](docs/dev/entry-points.md) — cron trigger, HTTP chat, dashboard API call chains
 - [Proposal Protocol](docs/dev/proposal-protocol.md) — proposal system, governor deployment lifecycle
 - [Reflection System](docs/dev/reflection-system.md) — session reflect, deep reflect, scheduling, wisdom
 - [Communication Gating](docs/dev/communication-gating.md) — inbound/outbound gates, contact system
@@ -272,8 +272,8 @@ agent does flows from this:
 
 ```bash
 npm test                                              # 339 tests, no network
-source .env && bash scripts/start.sh --wake           # start + trigger wake
-source .env && bash scripts/start.sh --reset-all-state --wake  # full reset
+source .env && bash scripts/start.sh --trigger           # start + trigger session
+source .env && bash scripts/start.sh --reset-all-state --trigger  # full reset
 node scripts/read-kv.mjs [key-or-prefix]              # inspect KV
 node scripts/rollback-session.mjs --dry-run            # preview rollback
 ```

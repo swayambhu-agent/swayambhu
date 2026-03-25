@@ -430,11 +430,11 @@ describe("_evaluateChecks", () => {
 
   it("kv_assert with path — drills into nested value", async () => {
     const { kernel } = makeKernel({
-      "config:defaults": JSON.stringify({ wake: { interval: 3600 } }),
+      "config:defaults": JSON.stringify({ schedule: { interval: 3600 } }),
     });
 
     const result = await kernel._evaluateChecks([
-      { type: "kv_assert", key: "config:defaults", path: "wake.interval", predicate: "gt", expected: 1000 },
+      { type: "kv_assert", key: "config:defaults", path: "schedule.interval", predicate: "gt", expected: 1000 },
     ]);
 
     expect(result.all_passed).toBe(true);

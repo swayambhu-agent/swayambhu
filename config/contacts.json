@@ -1,0 +1,25 @@
+{
+  "patron": {
+    "slug": "swami_kevala",
+    "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPRTP/9Jr6J1uoDSmN/SvmcoORMhHXHxgS0c4zehDNIW swayambhu patron key"
+  },
+  "contacts": {
+    "swami_kevala": {
+      "name": "Swami Kevala",
+      "relationship": "patron",
+      "about": "Bramhachari at Isha.",
+      "timezone": "Asia/Kolkata",
+      "location": "Isha Yoga Center, Coimbatore",
+      "chat": {
+        "model": "sonnet",
+        "effort": "high",
+        "max_cost_per_conversation": 1.00,
+        "max_output_tokens": 2000
+      },
+      "communication": "Feel free to discuss absolutely anything. Nothing is off limits."
+    }
+  },
+  "platform_bindings": {
+    "slack:U084ASKBXB7": { "slug": "swami_kevala", "approved": true }
+  }
+}

@@ -192,11 +192,11 @@ and environment.
 Tests the hook modules (`act.js`, `reflect.js`,
 `kernel.js (proposal methods)`, `kernel.js (kvWriteGated)`) using `makeMockK`.
 
-**Wake flow helpers:**
+**Session flow helpers:**
 - `buildOrientContext` (1 test) — JSON structure
 - `evaluateTripwires` (3 tests) — effort resolution, alert conditions
 - `detectCrash` (2 tests) — null without stale session, crash data return
-- `writeSessionResults` (1 test) — wake_config + session_counter
+- `writeSessionResults` (1 test) — session_schedule + session_counter
 - `getBalances` (1 test) — delegates to checkBalance
 
 **Reflection:**

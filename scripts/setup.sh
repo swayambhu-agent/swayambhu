@@ -124,7 +124,7 @@ if [ "${1:-}" = "--status" ]; then
   if [ "$MISSING" -eq 0 ]; then
     green "  Ready to run!"
     echo ""
-    echo "  source .env && bash scripts/start.sh --reset-all-state --wake"
+    echo "  source .env && bash scripts/start.sh --reset-all-state --trigger"
   else
     echo "  $MISSING required item(s) still missing."
     echo "  Run $(bold 'bash scripts/setup.sh') to continue setup."
@@ -574,20 +574,20 @@ if [ "$READY" = true ]; then
     echo "  Seeding and starting..."
     echo ""
     set -a; source "$ROOT/.env"; set +a
-    bash scripts/start.sh --reset-all-state --wake --set act.model=deepseek --set reflect.model=deepseek
+    bash scripts/start.sh --reset-all-state --trigger --set act.model=deepseek --set reflect.model=deepseek
     echo ""
     green "  ✓ Agent is running!"
     echo ""
     echo "  Dashboard: http://localhost:3001/patron/ (key: test)"
     echo "  Kernel:    http://localhost:8787"
-    echo "  Manual wake: curl http://localhost:8787/__scheduled"
+    echo "  Manual trigger: curl http://localhost:8787/__scheduled"
     echo ""
     echo "  Using DeepSeek models for development (~30x cheaper than Claude)."
     echo "  To switch to production models, restart without --set flags."
   else
     echo ""
     echo "  To start later:"
-    echo "    source .env && bash scripts/start.sh --reset-all-state --wake"
+    echo "    source .env && bash scripts/start.sh --reset-all-state --trigger"
   fi
 else
   echo "  Not ready to run yet. Missing:"

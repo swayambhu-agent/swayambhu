@@ -31,6 +31,7 @@ function mockFetch(response) {
   return vi.fn(async () => ({
     ok: true,
     status: 200,
+    headers: { get: (name) => name === "content-type" ? "application/json" : null },
     json: async () => response,
     text: async () => JSON.stringify(response),
   }));

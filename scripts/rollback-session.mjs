@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Roll back the most recent wake session's KV changes.
+// Roll back the most recent session's KV changes.
 //
 // Usage:
 //   node scripts/rollback-session.mjs              # roll back last session (with confirmation)
@@ -183,7 +183,7 @@ if (Array.isArray(lastSessions) && lastSessions.length > 0) {
   }
 }
 
-// 8. Delete cache:kv_index (will be rebuilt next wake)
+// 8. Delete cache:kv_index (will be rebuilt next session)
 plan.deletes.push("cache:kv_index");
 
 // 9. Restore last_reflect from previous session's reflect:0:{prevId}
@@ -213,7 +213,7 @@ if (lastDanger && lastDanger.session_id !== targetId) {
     plan.warnings.push(
       `Orphan session ${orphanId} left last_danger (event: ${lastDanger.event}) ` +
       `but is not in cache:session_ids. This will trigger the circuit breaker on ` +
-      `the next wake. Consider deleting last_danger and karma:${orphanId} manually.`
+      `the next session. Consider deleting last_danger and karma:${orphanId} manually.`
     );
   } else if (lastDanger) {
     plan.warnings.push(

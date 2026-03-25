@@ -142,14 +142,14 @@ export async function executeReflect(K, state, step) {
     }
   }
 
-  if (output.next_wake_config) {
-    const wakeConf = { ...output.next_wake_config };
-    if (wakeConf.sleep_seconds) {
-      wakeConf.next_wake_after = new Date(
-        Date.now() + wakeConf.sleep_seconds * 1000
+  if (output.next_session_config) {
+    const scheduleConf = { ...output.next_session_config };
+    if (scheduleConf.interval_seconds) {
+      scheduleConf.next_session_after = new Date(
+        Date.now() + scheduleConf.interval_seconds * 1000
       ).toISOString();
     }
-    await K.kvWriteSafe("wake_config", wakeConf);
+    await K.kvWriteSafe("session_schedule", scheduleConf);
   }
 }
 
@@ -371,7 +371,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   if (output.vikalpas) reflectRecord.vikalpas = output.vikalpas;
   await K.kvWriteSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
-  // 6. Only depth 1: write last_reflect and wake_config
+  // 6. Only depth 1: write last_reflect and session_schedule
   if (depth === 1) {
     await K.kvWriteSafe("last_reflect", {
       session_summary: output.reflection,
@@ -381,13 +381,13 @@ export async function applyReflectOutput(K, state, depth, output, context) {
       session_id: sessionId,
     });
 
-    const wakeConf = output.next_wake_config || {};
-    if (wakeConf.sleep_seconds) {
-      wakeConf.next_wake_after = new Date(
-        Date.now() + wakeConf.sleep_seconds * 1000
+    const scheduleConf = output.next_session_config || {};
+    if (scheduleConf.interval_seconds) {
+      scheduleConf.next_session_after = new Date(
+        Date.now() + scheduleConf.interval_seconds * 1000
       ).toISOString();
     }
-    await K.kvWriteSafe("wake_config", wakeConf);
+    await K.kvWriteSafe("session_schedule", scheduleConf);
   }
 
   // 7. Refresh defaults after every depth (cascade visibility)
@@ -480,7 +480,7 @@ Review the session karma log and cost provided in the user message.
 
 Produce a JSON object with: session_summary, note_to_future_self,
 next_act_context (with load_keys array), and optionally
-next_wake_config, kv_operations, proposal_verdicts, and proposal_requests.`;
+next_session_config, kv_operations, proposal_verdicts, and proposal_requests.`;
 }
 
 export function defaultDeepReflectPrompt(depth) {
@@ -501,9 +501,9 @@ and do not appear in session karma. Use kv_query to read chat history if relevan
 
 ## Temporal awareness
 
-Session timing: each session_start event includes a scheduled_wake field
-showing when you were scheduled to wake. Actual wake time may differ due
-to chat-triggered advancement (contacts messaging you brings the next wake
+Session timing: each session_start event includes a scheduled_at field
+showing when this session was scheduled. Actual start time may differ due
+to chat-triggered advancement (contacts messaging you brings the next session
 forward) or patron manual intervention. Don't assume irregular intervals
 indicate broken scheduling.
 
@@ -529,7 +529,7 @@ Examine your karma, your act prompt, your patterns. Produce a JSON object:
   "proposal_requests": [],
   "proposal_verdicts": [],
   "next_reflect": { "after_sessions": 20, "after_days": 7, "reason": "..." },
-  "next_wake_config": { "sleep_seconds": 21600, "effort": "low" }
+  "next_session_config": { "interval_seconds": 21600, "effort": "low" }
 }
 
 kv_operations: write to any key including system keys (config, prompts, wisdom). Yama/niyama require deliberation field.

@@ -283,9 +283,9 @@ cumulative cost.
 
 ---
 
-## Differences from Wake Cycle
+## Differences from Scheduled Sessions
 
-| Aspect | Chat | Wake (orient) |
+| Aspect | Chat | Session (orient) |
 |--------|------|---------------|
 | **Trigger** | Inbound HTTP message | Cron schedule (`/__scheduled`) |
 | **Prompt** | `prompt:chat` | `prompt:orient` |

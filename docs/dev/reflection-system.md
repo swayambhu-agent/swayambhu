@@ -4,7 +4,7 @@ How Swayambhu examines its own behavior, schedules recursive
 self-examination, and accumulates operating principles.
 
 All reflection code lives in `reflect.js` (KV key
-`hook:wake:reflect`). Wake flow integration is in `act.js`.
+`hook:wake:reflect`). Session flow integration is in `act.js`.
 Principle enforcement (yamas, niyamas) is kernel-level in `kernel.js`.
 
 ---
@@ -12,7 +12,7 @@ Principle enforcement (yamas, niyamas) is kernel-level in `kernel.js`.
 ## Reflection Hierarchy
 
 ```
-wake()
+session entry
   │
   ├─ reflectDepth > 0?
   │     YES → runReflect(depth)     [deep reflect — replaces orient]
@@ -30,9 +30,9 @@ wake()
   │                         └─ limited verdicts (withdraw/modify only)
 ```
 
-The wake flow chooses between deep reflect and a normal session at
+The session flow chooses between deep reflect and a normal session at
 `act.js:116`. They are **mutually exclusive** — a deep reflect
-wake does not run orient, and a normal session does not run deep reflect.
+session does not run orient, and a normal session does not run deep reflect.
 
 ---
 
@@ -78,8 +78,8 @@ On success, processes in order:
    only)
 5. **proposal_requests** — each request passed to `stageModification`
    at depth 0
-6. **next_wake_config** — converts `sleep_seconds` to absolute
-   `next_wake_after` timestamp, writes `wake_config`
+6. **next_session_config** — converts `interval_seconds` to absolute
+   `next_session_after` timestamp, writes `session_schedule`
 
 ### Session reflect output fields
 
@@ -88,7 +88,7 @@ On success, processes in order:
 | `session_summary` / `reflection` | yes | What happened this session |
 | `note_to_future_self` | yes | Carried into next session's context |
 | `next_orient_context.load_keys` | no | KV keys to load for next orient |
-| `next_wake_config` | no | Sleep duration, effort for next wake |
+| `next_session_config` | no | Session interval, effort for next session |
 | `kv_operations` | no | Direct KV writes (context-based permissions via `kvWriteGated`) |
 | `proposal_verdicts` | no | Verdicts on staged proposals |
 | `proposal_requests` | no | New code proposals to stage |
@@ -149,7 +149,7 @@ prompt-level convention, not a kernel-enforced constraint.
 
 `reflect.js:338`
 
-Checks whether a given depth should run this wake. Two paths:
+Checks whether a given depth should run this session. Two paths:
 
 **With schedule** (`reflect:schedule:{depth}` exists):
 - Computes `sessionsSince = currentCount - schedule.last_reflect_session`
@@ -171,7 +171,7 @@ Checks whether a given depth should run this wake. Two paths:
 `reflect.js:364`
 
 Scans from `max_reflect_depth` (default 1) down to 1. Returns the highest
-depth that is due, or 0 if none. The wake flow uses this to decide whether
+depth that is due, or 0 if none. The session flow uses this to decide whether
 to run deep reflect or orient (`act.js:88, 116`).
 
 ### Schedule updates
@@ -216,7 +216,7 @@ Injected as `{{belowPrompt}}` in the deep reflect prompt template.
 
 Session reflect fallback. Minimal prompt asking for JSON with:
 `session_summary`, `note_to_future_self`, `next_orient_context`,
-and optionally `next_wake_config`, `kv_operations`,
+and optionally `next_session_config`, `kv_operations`,
 `proposal_verdicts`, `proposal_requests`.
 
 ### defaultDeepReflectPrompt(depth)
@@ -394,7 +394,7 @@ uncapped.
 Processes: `kv_operations` (via `kvWriteGated(op, "reflect")`),
 `proposal_verdicts` (via `processReflectVerdicts` — withdraw/modify only),
 `proposal_requests` (code-only, via `stageModification` at depth 0),
-`next_wake_config`.
+`next_session_config`.
 
 ### Deep reflect — applyReflectOutput(K, state, depth, output, context)
 
@@ -413,18 +413,18 @@ Processes in this order (order matters for conflict resolution):
    with `after_sessions`, `after_days`, plus `last_reflect` timestamp and
    `last_reflect_session` count
 6. **reflect:{depth}:{sessionId}** — stores reflection output
-7. **last_reflect + wake_config** — only at depth 1 (the lowest deep
+7. **last_reflect + session_schedule** — only at depth 1 (the lowest deep
    reflect level). Writes `last_reflect` with `was_deep_reflect: true`.
-   Writes `wake_config` from `next_wake_config` or empty object.
+   Writes `session_schedule` from `next_session_config` or empty object.
 8. **state.refreshDefaults()** — reloads `config:defaults` so lower-depth
    reflections see changes made by higher depths
 9. **Karma** — records `reflect_complete` with depth, session_id, and
    end balances
 
-> **NOTE:** At depth 1, `wake_config` is written even if `next_wake_config`
+> **NOTE:** At depth 1, `session_schedule` is written even if `next_session_config`
 > is absent in the output — it writes `{}` as the default
-> (`reflect.js:274`). This effectively clears any previous wake
-> config, including sleep timers.
+> (`reflect.js:274`). This effectively clears any previous session
+> schedule, including interval timers.
 
 ---
 

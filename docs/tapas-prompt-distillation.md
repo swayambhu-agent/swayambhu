@@ -89,8 +89,8 @@ For each task type, compare cheap model output vs Opus output.
 
 #### Reflect Fitness
 
-- **sleepMatch** — Similar wake timing scheduled?
-- **effortMatch** — Same effort level for next wake?
+- **sleepMatch** — Similar session timing scheduled?
+- **effortMatch** — Same effort level for next session?
 - **loadKeysMatch** — Overlap in `next_orient_context.load_keys`
 - **verdictMatch** — Same accept/reject/defer on proposals
 - **kvOpsMatch** — Similar KV operations proposed

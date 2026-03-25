@@ -8,9 +8,9 @@ compatibility_flags = ["nodejs_compat"]
 binding = "KV"
 id = "05720444f9654ed4985fb67af4aea24d"
 
-# Cron trigger — every minute. The hook checks wake_config.next_wake_after
-# and goes back to sleep if it's not time yet. This gives the agent
-# fine-grained control over its own wake frequency via sleep_seconds.
+# Cron trigger — every minute. The kernel checks session_schedule.next_session_after
+# and skips if it's not time yet. This gives the agent fine-grained control
+# over its own session frequency via interval_seconds.
 [triggers]
 crons = ["* * * * *"]
 

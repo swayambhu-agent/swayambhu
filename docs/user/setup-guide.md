@@ -74,8 +74,8 @@ id = "<your-kv-namespace-id>"
 crons = ["* * * * *"]
 ```
 
-The cron fires every minute. The agent checks its own sleep timer and goes
-back to sleep if it's not time to wake — so the effective wake frequency
+The cron fires every minute. The agent checks its own schedule timer and
+skips if it's not time to run — so the effective session frequency
 is controlled by the agent, not the cron.
 
 ### Configure the Dashboard Worker
@@ -404,12 +404,12 @@ confirming each category.
 ## 9. Local Development
 
 The start script handles everything — killing stale processes, seeding
-state, starting all services, and optionally triggering a wake cycle.
+state, starting all services, and optionally triggering a session.
 
 ### First Run (Full Reset)
 
 ```bash
-source .env && bash scripts/start.sh --reset-all-state --wake
+source .env && bash scripts/start.sh --reset-all-state --trigger
 ```
 
 This:
@@ -419,7 +419,7 @@ This:
    - **Kernel** at `http://localhost:8787` — the agent
    - **Dashboard API** at `http://localhost:8790` — KV reader for the dashboard
    - **Dashboard SPA** at `http://localhost:3001/patron/` — the patron dashboard
-4. Triggers a wake cycle (the agent orients, acts, and reflects).
+4. Triggers a session (the agent orients, acts, and reflects).
 
 ### Using Cheap Models for Development
 
@@ -427,13 +427,13 @@ Production models (Claude) work well but cost real money. For development
 and testing, use DeepSeek at ~30x lower cost:
 
 ```bash
-source .env && bash scripts/start.sh --reset-all-state --wake \
+source .env && bash scripts/start.sh --reset-all-state --trigger \
   --set orient.model=deepseek \
   --set reflect.model=deepseek
 ```
 
 DeepSeek is fine for testing tool wiring, orient flow, KV operations,
-prompt rendering, and basic wake cycles. Use real Claude models when
+prompt rendering, and basic sessions. Use real Claude models when
 testing the reflection hierarchy, proposal protocol, or anything
 requiring structured JSON adherence.
 
@@ -444,12 +444,12 @@ source .env && bash scripts/start.sh
 ```
 
 This preserves existing KV state (sessions, wisdom, proposals) and
-just restarts the services. Add `--wake` to trigger a wake cycle after
+just restarts the services. Add `--trigger` to trigger a session after
 startup.
 
 ### What to Expect
 
-On first wake, watch the terminal output. You'll see tagged log lines:
+On the first session, watch the terminal output. You'll see tagged log lines:
 
 - `[KARMA]` — session lifecycle events
 - `[TOOL]` — tool executions
@@ -457,7 +457,7 @@ On first wake, watch the terminal output. You'll see tagged log lines:
 - `[HOOK]` — hook lifecycle
 
 The agent will orient itself, possibly check email and balances, reflect on
-what it found, set a sleep timer, and go dormant.
+what it found, set a session timer, and go idle.
 
 ### Verify It's Working
 
@@ -471,9 +471,9 @@ development). You should see:
 
 **Check Slack.** If Slack is configured, send a message to the bot in the
 channel you configured. The agent will respond via the chat system (no
-wake cycle needed — chat is handled as a webhook).
+scheduled session needed — chat is handled as a webhook).
 
-**Trigger another wake manually:**
+**Trigger another session manually:**
 
 ```bash
 curl http://localhost:8787/__scheduled
@@ -566,20 +566,20 @@ You should see:
 ```json
 {
   "sessionCounter": 1,
-  "wakeConfig": { "next_wake_after": "...", "sleep_seconds": 21600 },
+  "schedule": { "next_session_after": "...", "interval_seconds": 21600 },
   "lastReflect": { ... },
   "session": null
 }
 ```
 
 **Check that the cron is firing.** After deployment, the cron trigger fires
-every minute. On the first fire, the agent will run a full wake cycle
-(orient + reflect). Subsequent fires will be no-ops until the sleep timer
+every minute. On the first fire, the agent will run a full session
+(orient + reflect). Subsequent fires will be no-ops until the session timer
 expires. Check the Cloudflare dashboard under **Workers & Pages** >
 **your worker** > **Logs** to see cron invocations.
 
 **Check Slack.** If configured, the agent may send a message on its first
-wake. You can also message it directly to test the chat system.
+session. You can also message it directly to test the chat system.
 
 ---
 
@@ -595,7 +595,7 @@ Once running, these scripts help you inspect and manage the system:
 | `node scripts/dump-sessions.mjs` | Print summaries of all sessions |
 | `node scripts/rollback-session.mjs --dry-run` | Preview rolling back the last session's KV changes |
 | `node scripts/rollback-session.mjs --yes` | Roll back the last session (skip confirmation) |
-| `node scripts/reset-wake-timer.mjs` | Force the next cron trigger to run a wake cycle |
+| `node scripts/reset-schedule.mjs` | Force the next cron trigger to run a session |
 | `npm test` | Run all unit tests (no network, no Workers runtime) |
 
 ---
@@ -637,7 +637,7 @@ All routes except `/reflections` require the `X-Patron-Key` header.
 
 | Route | Method | Description |
 |-------|--------|-------------|
-| `/health` | GET | Session counter, wake config, last reflection, active session |
+| `/health` | GET | Session counter, session schedule, last reflection, active session |
 | `/sessions` | GET | All sessions with type (orient or deep_reflect) |
 | `/kv?prefix=` | GET | List KV keys, optional prefix filter |
 | `/kv/multi?keys=k1,k2` | GET | Batch read multiple keys |
@@ -661,19 +661,19 @@ lsof -i :8790
 lsof -i :3001
 ```
 
-### Agent never wakes
+### Agent never runs
 
-The cron fires every minute, but the agent only wakes when its sleep timer
-expires. Check the wake config:
+The cron fires every minute, but the agent only runs when its session timer
+expires. Check the session schedule:
 
 ```bash
-node scripts/read-kv.mjs wake_config
+node scripts/read-kv.mjs session_schedule
 ```
 
-If `next_wake_after` is far in the future, reset it:
+If `next_session_after` is far in the future, reset it:
 
 ```bash
-node scripts/reset-wake-timer.mjs
+node scripts/reset-schedule.mjs
 ```
 
 Then trigger manually:
@@ -691,7 +691,7 @@ If the balance is zero, add credit.
 If using DeepSeek for development and it's down, switch to Haiku:
 
 ```bash
-source .env && bash scripts/start.sh --reset-all-state --wake \
+source .env && bash scripts/start.sh --reset-all-state --trigger \
   --set orient.model=haiku --set reflect.model=haiku
 ```
 
@@ -734,5 +734,5 @@ Look for `fatal_error` or `hook_execution_error` events.
 To do a full reset and start fresh:
 
 ```bash
-source .env && bash scripts/start.sh --reset-all-state --wake
+source .env && bash scripts/start.sh --reset-all-state --trigger
 ```

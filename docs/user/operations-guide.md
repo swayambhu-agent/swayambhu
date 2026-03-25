@@ -11,7 +11,7 @@ mistakes, and handling emergencies.
 ### Slack
 
 **Direct message** the bot, or **mention it** in a channel where it's been
-invited. It responds in real time — no wake cycle needed. Chat messages
+invited. It responds in real time — no scheduled session needed. Chat messages
 are handled as webhooks: the message arrives, the agent processes it
 (possibly using tools), and replies in the same thread.
 
@@ -28,7 +28,7 @@ restricted experience (see [Managing Contacts](#managing-contacts)).
 ### Email
 
 Send to the Gmail address configured for Swayambhu. The agent checks for
-unread emails during its orient sessions (wake cycles), not in real time.
+unread emails during its orient sessions (scheduled sessions), not in real time.
 It can reply to threads, maintaining the email conversation.
 
 Emails from unknown senders are redacted before the agent sees them — the
@@ -39,8 +39,8 @@ content is quarantined for patron review (see
 
 The agent processes your message, may call tools to look things up or take
 actions, and replies. In Slack, you'll see the response within a few
-seconds. For email, the response comes on the next wake cycle (could be
-minutes to hours, depending on the sleep timer).
+seconds. For email, the response comes on the next scheduled session (could be
+minutes to hours, depending on the session interval).
 
 The agent has full conversation context within a session. It remembers what
 you said earlier in the chat. Conversation history is trimmed to the
@@ -72,9 +72,9 @@ Response:
 ```json
 {
   "sessionCounter": 47,
-  "wakeConfig": {
-    "next_wake_after": "2026-03-17T18:00:00Z",
-    "sleep_seconds": 21600,
+  "schedule": {
+    "next_session_after": "2026-03-17T18:00:00Z",
+    "interval_seconds": 21600,
     "effort": "low"
   },
   "lastReflect": {
@@ -89,8 +89,8 @@ Response:
 | Field | What It Tells You |
 |-------|------------------|
 | `sessionCounter` | Total sessions run since last reset |
-| `wakeConfig.next_wake_after` | When the agent will next wake |
-| `wakeConfig.sleep_seconds` | Current sleep interval |
+| `schedule.next_session_after` | When the agent will next run a session |
+| `schedule.interval_seconds` | Current session interval |
 | `lastReflect` | Summary of the most recent session |
 | `session` | If non-null, a session is actively running right now |
 
@@ -98,7 +98,7 @@ Response:
 
 The dashboard's **Timeline** tab shows every session the agent has run,
 with type labels:
-- **orient** — normal sessions (wake, act, reflect)
+- **orient** — normal sessions (act, reflect)
 - **deep_reflect** — periodic self-examination sessions
 
 Click a session to see its karma log — every event that happened during
@@ -397,7 +397,7 @@ then redeploy:
 npx wrangler deploy
 ```
 
-The worker stays up for webhooks but stops waking autonomously.
+The worker stays up for webhooks but stops running sessions autonomously.
 
 **Option 3: Kill local processes**
 
@@ -416,7 +416,7 @@ Wipes everything — sessions, wisdom, proposals, config overrides —
 and re-seeds from the canonical seed script:
 
 ```bash
-source .env && bash scripts/start.sh --reset-all-state --wake
+source .env && bash scripts/start.sh --reset-all-state --trigger
 ```
 
 This is the nuclear option. Use it when state is corrupted or you want a
@@ -436,19 +436,19 @@ curl -H "X-Patron-Key: your-key" https://your-dashboard-api/health
 
 Look for:
 - `session` is non-null → a session is currently stuck or running
-- `sessionCounter` hasn't increased → the agent isn't waking
+- `sessionCounter` hasn't increased → the agent isn't running sessions
 
-**Step 2: Check the wake config.**
+**Step 2: Check the session schedule.**
 
 ```bash
-node scripts/read-kv.mjs wake_config
+node scripts/read-kv.mjs session_schedule
 ```
 
-If `next_wake_after` is in the far future, the agent is sleeping too long.
+If `next_session_after` is in the far future, the session interval is too long.
 Reset it:
 
 ```bash
-node scripts/reset-wake-timer.mjs
+node scripts/reset-schedule.mjs
 ```
 
 **Step 3: Check for crash loops.**
@@ -493,17 +493,17 @@ In the Cloudflare dashboard, go to **Workers & Pages** > your worker >
 
 ## Common Issues
 
-### Agent Not Waking
+### Agent Not Running
 
 1. **Check the cron is enabled.** In the Cloudflare dashboard, verify the
    cron trigger is active on your worker.
-2. **Check the wake timer.** Run `node scripts/read-kv.mjs wake_config`.
-   If `next_wake_after` is in the future, the agent is sleeping. Reset
-   with `node scripts/reset-wake-timer.mjs`.
+2. **Check the session schedule.** Run `node scripts/read-kv.mjs session_schedule`.
+   If `next_session_after` is in the future, the agent is idle. Reset
+   with `node scripts/reset-schedule.mjs`.
 3. **Check for a stuck session.** Run
    `node scripts/read-kv.mjs kernel:active_session`. If this key exists,
    a previous session didn't clean up. Delete it manually or wait — the
-   next wake will detect the stale marker and handle it.
+   next session will detect the stale marker and handle it.
 
 ### Agent Not Responding to Slack
 
@@ -525,8 +525,8 @@ In the Cloudflare dashboard, go to **Workers & Pages** > your worker >
 3. **Lower the session budget** in `config:defaults.session_budget.max_cost`.
 4. **Use cheaper models.** Switch orient to Haiku ($1/$5 per Mtok) or
    DeepSeek ($0.10/$0.10 per Mtok) for routine tasks.
-5. **Increase sleep time.** If the agent wakes more often than needed,
-   increase `config:defaults.wake.sleep_seconds`.
+5. **Increase session interval.** If the agent runs sessions more often than needed,
+   increase `config:defaults.schedule.interval_seconds`.
 
 ### Agent Making Bad Decisions
 
@@ -536,7 +536,7 @@ In the Cloudflare dashboard, go to **Workers & Pages** > your worker >
    These are the agent's accumulated wisdom — if a upaya entry is
    misleading, it will affect future behavior.
 3. **Check the orient prompt.** Read `prompt:orient` to see what
-   instructions shape the agent's behavior on each wake.
+   instructions shape the agent's behavior on each session.
 4. **Correct via message.** Tell the agent what went wrong in Slack. Be
    specific. The correction enters the karma log and gets processed
    during reflection.

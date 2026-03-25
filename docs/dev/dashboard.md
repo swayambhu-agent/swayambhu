@@ -96,7 +96,7 @@ System status snapshot. Reads 5 keys in parallel:
 | Key | Field | Description |
 |-----|-------|-------------|
 | `session_counter` | `sessionCounter` | Total session count |
-| `wake_config` | `wakeConfig` | Current sleep/wake configuration |
+| `session_schedule` | `schedule` | Current session schedule configuration |
 | `last_reflect` | `lastReflect` | Most recent reflection output |
 | `kernel:active_session` | `session` | Currently running session ID (if any) |
 | `session` | `session` (fallback) | Legacy session key |
@@ -294,10 +294,10 @@ reflect) and JetBrains Mono + system sans-serif fonts.
 - Directory paths serve `index.html`
 - MIME types for html, js, mjs, css, json, png, jpg, svg, ico
 
-### /wake proxy
+### /trigger proxy
 
-`POST /wake` is proxied to `http://localhost:8787/__scheduled` — triggers
-a wake cycle from the dashboard. Returns `{ ok: true, status }` on
+`POST /trigger` is proxied to `http://localhost:8787/__scheduled` — triggers
+a session from the dashboard. Returns `{ ok: true, status }` on
 success or `{ ok: false, error }` on failure.
 
 ### Startup

@@ -1,0 +1,11 @@
+{
+  "url": "https://slack.com/api/chat.postMessage",
+  "headers": {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer {{SLACK_BOT_TOKEN}}"
+  },
+  "body_template": {
+    "channel": "{{SLACK_CHANNEL_ID}}",
+    "text": "[Swayambhu] {{event}}: {{message}}"
+  }
+}

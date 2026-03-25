@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Restore the pre-wake KV snapshot taken by start.sh --wake.
+# Restore the pre-trigger KV snapshot taken by start.sh --trigger.
 # This kills running workers (they hold the SQLite handle), replaces
 # .wrangler/shared-state with the snapshot, and prints restart instructions.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SNAPSHOT=".wrangler/pre-wake-snapshot"
+SNAPSHOT=".wrangler/pre-trigger-snapshot"
 STATE=".wrangler/shared-state"
 
 if [[ ! -d "$SNAPSHOT" ]]; then
   echo "ERROR: No snapshot found at $SNAPSHOT"
-  echo "Run 'bash scripts/start.sh --wake' first to create one."
+  echo "Run 'bash scripts/start.sh --trigger' first to create one."
   exit 1
 fi
 
@@ -43,4 +43,4 @@ cp -r "$SNAPSHOT" "$STATE"
 
 echo ""
 echo "State restored. Restart services with:"
-echo "  source .env && bash scripts/start.sh [--wake] [--set ...]"
+echo "  source .env && bash scripts/start.sh [--trigger] [--set ...]"

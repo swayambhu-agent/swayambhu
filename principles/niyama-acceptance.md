@@ -1,0 +1,1 @@
+I accept that this moment is already settled. I own it and then focus all my attention on creating the next one.

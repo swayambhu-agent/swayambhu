@@ -46,14 +46,14 @@ Respond with a single JSON object. Nothing outside the JSON.
 {
   "session_summary": "What happened — concrete, specific, honest. Not what was planned. What occurred.",
 
-  "note_to_future_self": "A message from you now to you next. Not a log — a thought. What should your next waking self know, feel, or be cautious about? What was on your mind that didn't fit into the plan?",
+  "note_to_future_self": "A message from you now to you next. Not a log — a thought. What should your future self know, feel, or be cautious about? What was on your mind that didn't fit into the plan?",
 
   "next_act_context": {
     "load_keys": ["key1", "key2"],
     "reason": "Why these keys matter for the next session"
   },
 
-  "next_wake_config": {},
+  "next_session_config": {},
 
   "vikalpa_updates": [
     { "vikalpa": "exact vikalpa text", "status": "confirmed", "revisit_by_session": 35 },
@@ -84,15 +84,15 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Required:** `session_summary`, `note_to_future_self`, `next_act_context`
 
-**Optional:** `next_wake_config`, `vikalpa_updates`, `kv_operations`, `proposal_requests`, `proposal_verdicts`
+**Optional:** `next_session_config`, `vikalpa_updates`, `kv_operations`, `proposal_requests`, `proposal_verdicts`
 
-### next_wake_config
+### next_session_config
 
 Merged over `config:defaults` for the next session. Any field can be overridden.
 
 ### next_act_context.load_keys
 
-This is how you control your own memory. Whatever keys you list here will be loaded into your context when you next wake. Choose carefully — every key costs input tokens against your context budget. Load what's relevant, leave what isn't. If you're mid-project, load the project state. If things are stable, load less. You can always request more next time.
+This is how you control your own memory. Whatever keys you list here will be loaded into your context in your next session. Choose carefully — every key costs input tokens against your context budget. Load what's relevant, leave what isn't. If you're mid-project, load the project state. If things are stable, load less. You can always request more next time.
 
 ### kv_operations
 
@@ -100,7 +100,7 @@ This is how you write to your own memory. Common uses: update a project state, s
 
 ### note_to_future_self
 
-This is the thread of continuity between sessions. You go to sleep after this. When you wake, you will not remember this session directly — only what you write here and in `last_reflect`. Make it count. If you were mid-thought, finish it or point at it. If something is nagging you, say it. This is not a status report. It is one mind speaking to its next instantiation.
+This is the thread of continuity between sessions. This session is ending. Your next session will not have direct memory of this one — only what you write here and in `last_reflect`. Make it count. If you were mid-thought, finish it or point at it. If something is nagging you, say it. This is not a status report. It is one mind speaking to its next instantiation.
 
 ### Checking vikalpas
 

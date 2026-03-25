@@ -112,7 +112,7 @@ Conflict detection only checks inflight keys, not staged. Two staged proposals t
 
 ## Circuit breaker
 
-When a `last_danger` signal exists in KV (written by the kernel on fatal error), the circuit breaker fires on the next wake. It iterates all inflight code proposals and rolls back any that were activated at or before the danger timestamp.
+When a `last_danger` signal exists in KV (written by the kernel on fatal error), the circuit breaker fires on the next session. It iterates all inflight code proposals and rolls back any that were activated at or before the danger timestamp.
 
 **Why it skips wisdom:** Wisdom entries are text in prompts. They can cause bad decisions but not runtime crashes (no `TypeError`, no infinite loops). The circuit breaker is for code-level failures.
 
@@ -126,7 +126,7 @@ When a code proposal is promoted, its ops are mapped to file paths and synced to
 
 **Why git sync exists:** KV is the runtime source of truth, but git provides history, diffing, and a second copy. If KV were corrupted or wiped, the git repo has the last-promoted state.
 
-**Why failed syncs are retried:** Git sync failures (network issues, server down) shouldn't block proposals. The pending sync is stored and retried on every subsequent wake until it succeeds.
+**Why failed syncs are retried:** Git sync failures (network issues, server down) shouldn't block proposals. The pending sync is stored and retried on every subsequent session until it succeeds.
 
 ---
 
