@@ -1,6 +1,8 @@
 # Secrets
 .env
 .dev.vars
+patron_key
+patron_key.pub
 
 # Dependencies
 node_modules/

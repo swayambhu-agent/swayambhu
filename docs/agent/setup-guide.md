@@ -10,7 +10,7 @@ They'll need accounts and access to:
 
 | Service | What It's For | Cost |
 |---------|---------------|------|
-| **Cloudflare** (Workers paid plan) | Runs the agent and dashboard, stores all state in KV | $5/month |
+| **Cloudflare** (free plan works) | Runs the agent and dashboard, stores all state in KV | Free |
 | **OpenRouter** | Routes LLM calls to Claude, DeepSeek, etc. | Pay-as-you-go |
 | **Slack workspace** | Real-time messaging channel | Free tier works |
 | **Gmail account** | Email send/receive | Free |
