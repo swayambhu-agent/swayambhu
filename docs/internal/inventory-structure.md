@@ -17,10 +17,8 @@ Generated 2026-03-17. Covers every file in the project.
 
 | File | Purpose | KV Key | Exports | Imports | Imported by |
 |------|---------|--------|---------|---------|-------------|
-| `act.js` | Session flow entry point — session control, crash detection, orient session, balance checking, tripwire evaluation | `hook:wake:code` | `wake`, `detectCrash`, `runSession`, `buildOrientContext`, `writeSessionResults`, `getBalances`, `evaluateTripwires`, `default` (static import export) | `./kernel.js (kvWriteGated)` (kvWriteGated), `./kernel.js (proposal methods)` (initTracking, runCircuitBreaker, retryPendingGitSyncs), `./reflect.js` (executeReflect, runReflect, highestReflectDepthDue, getMaxSteps) | `index.js` |
-| `reflect.js` | Reflection system — session reflect (depth 0), deep reflect (recursive depth 1+), scheduling, default prompts | `hook:wake:reflect` | `executeReflect`, `runReflect`, `gatherReflectContext`, `applyReflectOutput`, `loadReflectPrompt`, `loadBelowPrompt`, `loadReflectHistory`, `getReflectModel`, `getMaxSteps`, `isReflectDue`, `highestReflectDepthDue`, `defaultReflectPrompt`, `defaultDeepReflectPrompt` | `./kernel.js (kvWriteGated)` (kvWriteGated), `./kernel.js (proposal methods)` (loadStagedModifications, loadInflightModifications, stageModification, acceptDirect, processReflectVerdicts, processDeepReflectVerdicts) | `act.js` |
-| `kernel.js (proposal methods)` | Proposal Protocol — staging, inflight management, conflict detection, circuit breaker, verdict processing, git sync | `hook:wake:proposals` | `initTracking`, `evaluatePredicate`, `evaluateCheck`, `evaluateChecks`, `stageModification`, `acceptStaged`, `acceptDirect`, `promoteInflight`, `rollbackInflight`, `findInflightConflict`, `loadStagedModifications`, `loadInflightModifications`, `processReflectVerdicts`, `processDeepReflectVerdicts`, `runCircuitBreaker`, `kvToPath`, `syncToGit`, `attemptGitSync`, `retryPendingGitSyncs` | None (standalone) | `act.js`, `reflect.js` |
-| `kernel.js (kvWriteGated)` | KV operation protection gate — blocks writes to system/protected keys | `hook:wake:protect` | `kvWriteGated` | None (standalone, leaf module) | `act.js`, `reflect.js` |
+| `act.js` | Session flow entry point — session control, crash detection, orient session, balance checking, tripwire evaluation | `hook:act:code` | `wake`, `detectCrash`, `runSession`, `buildOrientContext`, `writeSessionResults`, `getBalances`, `evaluateTripwires`, `default` (static import export) | `./kernel.js` (kvWriteGated, proposal methods), `./reflect.js` (executeReflect, runReflect, highestReflectDepthDue, getMaxSteps) | `index.js` |
+| `reflect.js` | Reflection system — session reflect (depth 0), deep reflect (recursive depth 1+), scheduling, default prompts | `hook:reflect:code` | `executeReflect`, `runReflect`, `gatherReflectContext`, `applyReflectOutput`, `loadReflectPrompt`, `loadBelowPrompt`, `loadReflectHistory`, `getReflectModel`, `getMaxSteps`, `isReflectDue`, `highestReflectDepthDue`, `defaultReflectPrompt`, `defaultDeepReflectPrompt` | `./kernel.js` (kvWriteGated, proposal methods) | `act.js` |
 
 ### Chat System
 
@@ -255,7 +253,7 @@ CF Cron trigger
     → kernel.runScheduled()
       → kernel.detectPlatformKill()          // check for stale kernel:active_session
       → kernel.checkHookSafety()             // 3-consecutive-failure tripwire
-      → kernel.kvGet("hook:wake:manifest")   // load module manifest
+      → [static imports — act.js, reflect.js compiled into index.js by governor]
       → kernel.executeHook(modules, mainModule)
         → kernel.kvWrite("kernel:active_session", sessionId)
         → kernel._invokeHookModules(modules, mainModule)

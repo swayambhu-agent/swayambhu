@@ -4,7 +4,7 @@ How Swayambhu examines its own behavior, schedules recursive
 self-examination, and accumulates operating principles.
 
 All reflection code lives in `reflect.js` (KV key
-`hook:wake:reflect`). Session flow integration is in `act.js`.
+`hook:reflect:code`). Session flow integration is in `act.js`.
 Principle enforcement (yamas, niyamas) is kernel-level in `kernel.js`.
 
 ---

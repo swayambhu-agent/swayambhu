@@ -31,7 +31,7 @@ kernel.runScheduled()                                kernel.js:881
 ├─► checkHookSafety()                               kernel.js:934
 │   │ Read kernel:last_sessions
 │   │ If last 3 are crash/killed:
-│   │   Delete all hook:wake:* keys (hook storage)
+│   │   Delete hook:act:code and hook:reflect:code
 │   │   Try restore from kernel:last_good_hook
 │   │   If restored → delete snapshot (anti-loop), alert, return true
 │   │   If no snapshot → alert, return false
@@ -39,12 +39,9 @@ kernel.runScheduled()                                kernel.js:881
 │   │
 │
 ├─► Load hook modules                               kernel.js:893
-│   │ Read hook:wake:manifest
-│   │ If manifest:
-│   │   Read each KV key in manifest → modules map
-│   │   mainModule = "main" (or first key)
-│   │ Else:
-│   │   Read hook:wake:code → single module
+│   │ Static imports — act.js and reflect.js compiled into index.js
+│   │ Governor reads hook:act:code and hook:reflect:code from KV
+│   │ Governor generates index.js and deploys
 │   │
 │
 ▼

@@ -151,15 +151,12 @@ Seeded tools: `send_slack`, `web_fetch`, `kv_write`, `kv_manifest`, `kv_query`, 
 
 Seeded providers: `llm`, `llm_balance`, `wallet_balance`, `gmail`.
 
-### Hooks (`hook:wake:*`)
+### Hooks (`hook:*:code`)
 
 | Key | Format | Value | Read by | Seeded |
 |-----|--------|-------|---------|--------|
-| `hook:wake:manifest` | JSON | Maps filenames to KV keys: `{ "main": "hook:wake:code", "reflect.js": "hook:wake:reflect", ... }` | `runScheduled()` in kernel.js | Yes |
-| `hook:wake:code` | text | Main hook module source (`act.js`) | `runScheduled()` via manifest | Yes |
-| `hook:wake:reflect` | text | Reflect module source (`reflect.js`) | Loaded via manifest | Yes |
-| `hook:wake:proposals` | text | Proposals module source (`kernel.js (proposal methods)`) | Loaded via manifest | Yes |
-| `hook:wake:protect` | text | Protect module source (`kernel.js (kvWriteGated)`) | Loaded via manifest | Yes |
+| `hook:act:code` | text | Session policy source (`act.js`) | Governor (builds index.js) | Yes |
+| `hook:reflect:code` | text | Reflection policy source (`reflect.js`) | Governor (builds index.js) | Yes |
 
 Written by seed. Can be modified via `kv_operations` in deep-reflect context or via the Proposal Protocol. Writes to `hook:*` keys trigger kernel alerts and set `kernel:hook_dirty`.
 
@@ -329,7 +326,7 @@ Prefix `kernel:` is in `KERNEL_ONLY_PREFIXES`. `kvWriteSafe()` and `kvWriteGated
 |-----|--------|-------|---------|------------|
 | `kernel:active_session` | text | Current session ID (e.g. `"s_1710000000000_abc123"`) | `detectCrash()` in act.js, Dashboard API (`GET /health`) | `executeHook()` — writes at start, deletes at end. `detectPlatformKill()` deletes stale markers. |
 | `kernel:last_sessions` | JSON | Array of last 5 `{ id, outcome, ts }` — newest first. `outcome` is `"clean"`, `"crash"`, or `"killed"`. | `checkHookSafety()`, `detectPlatformKill()` | `updateSessionOutcome()`, `detectPlatformKill()` |
-| `kernel:hook_dirty` | JSON | `true` when a hook key was written via `kvWriteGated()` | `updateSessionOutcome()` — checks if snapshot needed | `kvWriteGated()` — set on `hook:wake:*` writes; `updateSessionOutcome()` — deletes after snapshotting |
+| `kernel:hook_dirty` | JSON | `true` when a hook key was written via `kvWriteGated()` | `updateSessionOutcome()` — checks if snapshot needed | `kvWriteGated()` — set on `hook:*` writes; `updateSessionOutcome()` — deletes after snapshotting |
 | `kernel:last_good_hook` | JSON | `{ manifest, modules: { kvKey: code } }` or `{ code }` — last hook version that completed cleanly | `checkHookSafety()` — restores on tripwire | `updateSessionOutcome()` — snapshots on clean outcome when dirty or no existing snapshot |
 | `kernel:alert_config` | JSON | `{ url, headers, body_template }` — template for kernel alerts via Slack | `sendKernelAlert()` — cached after first load | Seed |
 | `kernel:llm_fallback` | text | LLM provider adapter source code (copy of `providers/llm.js`) | `callViaKernelFallback()` — tier 3 of provider cascade | Seed |
@@ -487,11 +484,8 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **73 keys** total:
 | 26 | `niyama:alignment` | Principles |
 | 27 | `niyama:nonidentification` | Principles |
 | 28 | `niyama:organization` | Principles |
-| 29 | `hook:wake:code` | Hooks |
-| 30 | `hook:wake:reflect` | Hooks |
-| 31 | `hook:wake:proposals` | Hooks |
-| 32 | `hook:wake:protect` | Hooks |
-| 33 | `hook:wake:manifest` | Hooks |
+| 29 | `hook:act:code` | Hooks |
+| 30 | `hook:reflect:code` | Hooks |
 | 34 | `channel:slack:code` | Channels |
 | 35 | `channel:slack:config` | Channels |
 | 36 | `kernel:alert_config` | Kernel |

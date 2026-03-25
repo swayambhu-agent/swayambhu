@@ -568,9 +568,10 @@ if (key === 'wisdom') return 'wisdom.md';
 
 ### 12. Update hook manifest
 
-The wake hook manifest (`hook:wake:manifest`) maps filenames to KV keys. Update:
-- `kernel.js (proposal methods)` → `kernel.js (proposal methods)`
-- KV key: `hook:wake:mutations` → `hook:wake:proposals`
+Hook keys use the direct-key architecture (no manifest):
+- `hook:act:code` — act.js source
+- `hook:reflect:code` — reflect.js source
+- Proposal mechanics and kvWriteGated are in kernel.js (no separate hook keys)
 
 Update imports in `act.js` and `reflect.js` accordingly.
 

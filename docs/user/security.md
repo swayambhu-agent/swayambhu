@@ -198,7 +198,7 @@ All `kernel:*` keys are blocked from both `kvWriteSafe` and
 
 ### Suppress Alerts
 
-When the agent writes to any `hook:wake:*` key (modifying its own session
+When the agent writes to any `hook:*` key (modifying its own session
 logic), the kernel sends an alert to Slack using `kernel:alert_config`.
 The agent cannot prevent this. The alert config is a kernel key — the
 agent cannot read or modify it.
@@ -267,8 +267,8 @@ logic through the Proposal Protocol:
 4. **Promoted** — After running clean, the agent can promote the change.
    The snapshot is deleted and the change becomes permanent.
 
-Every write to a `hook:wake:*` key triggers an alert to Slack. You see
-what changed.
+Every write to a `hook:act:code` or `hook:reflect:code` key triggers an
+alert to Slack. You see what changed.
 
 ### Write Wisdom
 
@@ -357,7 +357,7 @@ through normal reflection.
 
 If the agent crashes three times in a row, the kernel's tripwire fires:
 
-1. Deletes the current hook code (all `hook:wake:*` keys)
+1. Deletes the current hook code (`hook:act:code` and `hook:reflect:code`)
 2. Restores from `kernel:last_good_hook` (the last version that ran
    clean)
 3. Sends an alert to Slack
@@ -483,6 +483,6 @@ agent starts over with its original configuration.
 | **Modification protocol** | Prompts, tools, config, hook code | Staged review, inflight snapshots, rollback |
 | **Circuit breaker** | Bad code proposals | Auto-rollback on danger signals |
 | **Tripwire** | Repeated crashes | Auto-restore last good hook, then minimal fallback |
-| **Hook write alerts** | Self-modification visibility | Slack alert on every hook:wake:* write |
+| **Hook write alerts** | Self-modification visibility | Slack alert on every `hook:act:code` / `hook:reflect:code` write |
 | **Karma logging** | Full audit trail | Every event recorded, viewable in dashboard |
 | **Contact approval** | Who the agent can communicate with | Three-tier gate (unknown/unapproved/approved); agent creates stubs, patron approves |

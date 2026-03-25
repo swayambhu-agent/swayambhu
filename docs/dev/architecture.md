@@ -397,7 +397,7 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 | `prompt:*` | `orient`, `reflect`, `reflect:1`, `subplan`, `chat` |
 | `tool:*:code`, `tool:*:meta` | Tool source and metadata |
 | `provider:*:code`, `provider:*:meta` | Provider adapter source and metadata |
-| `hook:wake:*` | Hook modules and manifest |
+| `hook:act:code`, `hook:reflect:code` | Hook module source (act + reflect) |
 | `channel:*:code`, `channel:*:config` | Channel adapter code and config |
 | `karma:*` | Session karma logs (flight recorder) |
 | `reflect:*:*` | Reflection outputs by depth and session |

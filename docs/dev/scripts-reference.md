@@ -50,7 +50,7 @@ Seeds 70 keys into local KV. Runs in ~2s via Miniflare API (replacing
 | Dharma | 1 | `dharma` — from `DHARMA.md` |
 | Yamas | 7 | `yama:care`, `yama:truth`, `yama:responsibility`, `yama:discipline`, `yama:rules`, `yama:security`, `yama:humility` — inline text |
 | Niyamas | 7 | `niyama:health`, `niyama:acceptance`, `niyama:transformation`, `niyama:reflection`, `niyama:alignment`, `niyama:nonidentification`, `niyama:organization` — inline text |
-| Wake hook | 5 | `hook:wake:code`, `hook:wake:reflect`, `hook:wake:proposals`, `hook:wake:protect` (from source files) + `hook:wake:manifest` (inline JSON) |
+| Hooks | 2 | `hook:act:code`, `hook:reflect:code` (from `act.js` and `reflect.js` source files) |
 | Channel | 2 | `channel:slack:code` (from file), `channel:slack:config` (inline) |
 | Kernel | 5 | `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`, `kernel:fallback_model`, `kernel:tool_grants` |
 | Docs | 2 | `doc:proposal_guide`, `doc:architecture` — from `docs/doc-*.md` |

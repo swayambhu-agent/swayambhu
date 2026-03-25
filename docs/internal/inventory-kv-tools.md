@@ -74,11 +74,8 @@ Seeded provider names: `llm`, `llm_balance`, `wallet_balance`, `gmail`.
 
 | Key | Stored type | Written by | Read by | Seeded | Protection |
 |-----|-------------|------------|---------|--------|------------|
-| `hook:wake:manifest` | JSON (filename → KV key mapping) | `seed-local-kv.mjs` | `kernel.js:runScheduled()`, `checkHookSafety()`, `updateSessionOutcome()` | Yes | System (prefix `hook:`) |
-| `hook:wake:code` | Text (JS — act.js source) | `seed-local-kv.mjs` | Via manifest; `kernel.js:runScheduled()` (fallback if no manifest) | Yes | System |
-| `hook:wake:reflect` | Text (JS — reflect.js source) | `seed-local-kv.mjs` | Via manifest | Yes | System |
-| `hook:wake:proposals` | Text (JS — kernel.js (proposal methods) source) | `seed-local-kv.mjs` | Via manifest | Yes | System |
-| `hook:wake:protect` | Text (JS — KV operation gating, now merged into kernel.js) | `seed-local-kv.mjs` | Via manifest | Deprecated | System |
+| `hook:act:code` | Text (JS — act.js source) | `seed-local-kv.mjs` | Governor (builds index.js) | Yes | System (prefix `hook:`) |
+| `hook:reflect:code` | Text (JS — reflect.js source) | `seed-local-kv.mjs` | Governor (builds index.js) | Yes | System |
 
 ### 1.8 Channel Adapters
 
@@ -222,11 +219,8 @@ Total keys seeded by `seed-local-kv.mjs`: **~60** (exact count depends on tool/p
 | `prompt:reflect` | Yes | `reflect.js:executeReflect()` |
 | `prompt:reflect:1` | Yes | `reflect.js:loadReflectPrompt()` |
 | `prompt:chat` | Yes | `hook-chat.js:handleChat()` |
-| `hook:wake:code` | Yes | Via manifest or direct |
-| `hook:wake:reflect` | Yes | Via manifest |
-| `hook:wake:proposals` | Yes | Via manifest |
-| `hook:wake:protect` | Yes | Via manifest |
-| `hook:wake:manifest` | Yes | `kernel.js:runScheduled()` |
+| `hook:act:code` | Yes | Governor (builds index.js) |
+| `hook:reflect:code` | Yes | Governor (builds index.js) |
 | `channel:slack:code` | Yes | `kernel.js:fetch()` (prod path) |
 | `channel:slack:config` | Yes | `kernel.js:fetch()` (prod path) |
 | `kernel:tool_grants` | Yes | `kernel.js:loadEagerConfig()` |

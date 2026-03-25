@@ -274,10 +274,9 @@ Statuses: `proposed` → `accepted` → `deploying` → `deployed` → `stable` 
 ### Update seed script
 
 - `scripts/seed-local-kv.mjs`:
-  - Remove `hook:wake:manifest`, `hook:wake:proposals`, `hook:wake:protect` seeding
-  - Remove `hook:wake:code` (was hook-main.js source)
-  - Add `hook:act:code` ← seeds act.js source (governor reads this key)
-  - Change `hook:wake:reflect` → `hook:reflect:code` ← seeds reflect.js source
+  - Seed `hook:act:code` ← act.js source (governor reads this key)
+  - Seed `hook:reflect:code` ← reflect.js source (governor reads this key)
+  - No manifest, proposals, or protect keys — those are gone
   - Proposal mechanics are kernel methods — no separate file to seed
   - Add `kernel:source:kernel.js` ← seeds kernel.js source (governor reads this, agent can't modify kernel:* keys)
   - Add `kernel:source:hook-chat.js` ← seeds hook-chat.js source (same protection)
