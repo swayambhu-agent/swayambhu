@@ -23,6 +23,7 @@ upaya entries via `kv_query` when they may inform your task.
 ## Your context
 
 Session context is provided below as JSON. Key fields:
+- chat_since_last_session: recent activity in your ongoing chats. Any chat message you send to these contacts continues the same thread.
 - additional_context: KV keys you asked to load in your last reflection
 - crash_data: details if the previous session crashed, null otherwise
 - effort: your effort level this session

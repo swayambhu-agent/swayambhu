@@ -148,7 +148,21 @@ export async function handleChat(K, channel, inbound, adapter) {
     break;
   }
 
-  if (!reply) reply = "(no response)";
+  if (!reply) {
+    // Tool rounds exhausted — force a text reply with tools disabled
+    const finalResponse = await K.callLLM({
+      model,
+      effort: chatConfig.effort || "low",
+      maxTokens: chatConfig.max_output_tokens || 1000,
+      systemPrompt,
+      messages: conv.messages,
+      tools: [],
+      step: `chat_${channel}_t${conv.turn_count}_final`,
+    });
+    conv.total_cost += finalResponse.cost || 0;
+    reply = finalResponse.content || "(no response)";
+    conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
+  }
 
   // Send via channel adapter
   await adapter.sendReply(chatId, reply);

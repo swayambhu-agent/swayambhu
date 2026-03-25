@@ -27,7 +27,20 @@ export async function execute({ command, timeout, secrets, fetch }) {
 
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    return { ok: false, error: `${resp.status} ${resp.statusText}`, detail: body };
+    return { ok: false, error: `${resp.status} ${resp.statusText}`, detail: body.slice(0, 500) };
+  }
+
+  const ct = resp.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    const body = await resp.text().catch(() => "");
+    const isCfAccess = body.includes("cloudflareaccess") || body.includes("CF-Access");
+    return {
+      ok: false,
+      error: isCfAccess
+        ? "Cloudflare Access rejected the request — check CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET"
+        : `unexpected response content-type: ${ct}`,
+      detail: body.slice(0, 500),
+    };
   }
 
   const data = await resp.json();
