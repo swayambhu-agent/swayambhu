@@ -136,26 +136,30 @@ export async function buildChatDigest(K, context) {
     if (lastSessionEnd && chat.last_activity <= lastSessionEnd) continue;
 
     const msgs = chat.messages || [];
-    const lastAgentMsg = [...msgs].reverse().find(m => m.role === 'assistant' && m.content);
-    const lastContactMsg = [...msgs].reverse().find(m => m.role === 'user' && m.content);
+    const platform = k.name.split(':')[1] || 'slack';
 
-    // Resolve contact name from userId
+    // Resolve contact name from most recent user message
+    const lastContactMsg = [...msgs].reverse().find(m => m.role === 'user');
     const userId = lastContactMsg?.userId;
     let contactName = userId || 'unknown';
     if (userId) {
-      const platform = k.name.split(':')[1] || 'slack';
       const contact = await K.resolveContact(platform, userId);
       if (contact?.name) contactName = contact.name;
     }
 
+    // Last N content messages in thread order
+    const digestMsgCount = defaults?.chat?.digest_message_count || 4;
+    const contentMsgs = msgs.filter(m => (m.role === 'assistant' || m.role === 'user') && m.content);
+    const lastMessages = contentMsgs.slice(-digestMsgCount).map(m => ({
+      from: m.role === 'assistant' ? 'Swayambhu' : contactName,
+      text: truncate(m.content),
+    }));
+
     entries.push({
       contact: contactName,
-      channel: k.name.split(':')[1] || 'unknown',
+      channel: platform,
       turn_count: chat.turn_count || 0,
-      last_exchange: {
-        agent: truncate(lastAgentMsg?.content || ''),
-        contact: truncate(lastContactMsg?.content || ''),
-      },
+      last_messages: lastMessages,
       ts: chat.last_activity,
     });
   }
