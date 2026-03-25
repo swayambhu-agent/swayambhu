@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swayambhu — Getting Started</title>
+  <meta name="description" content="Set up your own Swayambhu agent from scratch.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="icon" type="image/png" href="../avatar.png">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #0a0a0a;
+      --bg-subtle: #111111;
+      --bg-card: #141414;
+      --text: #d0d0d0;
+      --text-dim: #777;
+      --text-bright: #f0f0f0;
+      --accent: #f59e0b;
+      --accent-dim: rgba(245, 158, 11, 0.10);
+      --green: #22c55e;
+      --green-dim: rgba(34, 197, 94, 0.10);
+      --red: #ef4444;
+      --border: #1e1e1e;
+      --mono: 'JetBrains Mono', monospace;
+      --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+
+    /* --- Header --- */
+
+    header {
+      padding: 40px 0 32px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 48px;
+    }
+
+    header .container { display: flex; align-items: center; gap: 16px; }
+
+    header img { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border); }
+
+    header h1 {
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    header a {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      text-decoration: none;
+      margin-left: auto;
+      letter-spacing: 0.05em;
+    }
+
+    header a:hover { color: var(--accent); }
+
+    /* --- Step sections --- */
+
+    .step {
+      padding-bottom: 48px;
+      margin-bottom: 48px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .step:last-of-type { border-bottom: none; }
+
+    .step-number {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      font-family: var(--mono);
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text-bright);
+      margin-bottom: 16px;
+    }
+
+    h3 {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin: 28px 0 12px;
+    }
+
+    p { margin-bottom: 14px; }
+    p:last-child { margin-bottom: 0; }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    strong { color: var(--text-bright); font-weight: 600; }
+
+    em { color: var(--text-bright); font-style: italic; }
+
+    /* --- Code blocks --- */
+
+    pre {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px 20px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      line-height: 1.6;
+      color: var(--text);
+      margin: 12px 0 16px;
+    }
+
+    code {
+      font-family: var(--mono);
+      font-size: 0.85em;
+      background: var(--bg-card);
+      padding: 2px 6px;
+      border-radius: 3px;
+      color: var(--text-bright);
+    }
+
+    pre code { background: none; padding: 0; }
+
+    .comment { color: var(--text-dim); }
+
+    /* --- Lists --- */
+
+    ul, ol { margin: 12px 0 16px 24px; }
+    li { margin-bottom: 8px; }
+
+    /* --- Tables --- */
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 16px;
+      font-size: 0.9rem;
+    }
+
+    th {
+      text-align: left;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    /* --- Callouts --- */
+
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: var(--accent-dim);
+      padding: 12px 16px;
+      border-radius: 0 6px 6px 0;
+      margin: 16px 0;
+      font-size: 0.9rem;
+    }
+
+    .callout-green {
+      border-left-color: var(--green);
+      background: var(--green-dim);
+    }
+
+    .callout .label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+
+    .callout-green .label { color: var(--green); }
+
+    /* --- Checklist --- */
+
+    .checklist {
+      list-style: none;
+      margin-left: 0;
+      padding: 0;
+    }
+
+    .checklist li {
+      position: relative;
+      padding-left: 28px;
+      margin-bottom: 10px;
+    }
+
+    .checklist li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 6px;
+      width: 14px;
+      height: 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 3px;
+    }
+
+    /* --- Nav --- */
+
+    nav {
+      position: sticky;
+      top: 0;
+      background: rgba(10, 10, 10, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      z-index: 100;
+      padding: 10px 0;
+    }
+
+    nav .container {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    nav .container::-webkit-scrollbar { display: none; }
+
+    nav a {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      text-decoration: none;
+      white-space: nowrap;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: color 0.2s, background 0.2s;
+    }
+
+    nav a:hover { color: var(--text-bright); background: var(--bg-card); }
+
+    /* --- Footer --- */
+
+    footer {
+      padding: 48px 0;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+
+    /* --- Responsive --- */
+
+    @media (max-width: 640px) {
+      pre { font-size: 0.75rem; padding: 12px 14px; }
+      table { font-size: 0.8rem; }
+      th, td { padding: 6px 8px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <img src="../avatar.png" alt="Swayambhu">
+    <h1>Getting Started</h1>
+    <a href="../">&larr; home</a>
+  </div>
+</header>
+
+<nav>
+  <div class="container">
+    <a href="#prereqs">Prereqs</a>
+    <a href="#clone">Clone</a>
+    <a href="#cloudflare">Cloudflare</a>
+    <a href="#openrouter">OpenRouter</a>
+    <a href="#slack">Slack</a>
+    <a href="#gmail">Gmail</a>
+    <a href="#customize">Customize</a>
+    <a href="#seed-and-run">Run</a>
+    <a href="#deploy">Deploy</a>
+    <a href="#troubleshooting">Troubleshooting</a>
+  </div>
+</nav>
+
+<main class="container">
+
+<!-- ──────────── Overview ──────────── -->
+
+<div class="step" style="padding-top: 48px;">
+  <p>Swayambhu is an autonomous agent that runs as a Cloudflare Worker on a 1-minute cron. It wakes, acts, reflects, and goes back to sleep. All state lives in Cloudflare KV. It communicates via Slack and Gmail.</p>
+  <p>This guide walks you through setting up your own instance from scratch. Budget about 30&ndash;60 minutes for the full setup.</p>
+
+  <div class="callout">
+    <div class="label">What you'll need</div>
+    <ul class="checklist">
+      <li>A Cloudflare account (Workers paid plan, $5/month)</li>
+      <li>An OpenRouter account (pay-as-you-go LLM routing)</li>
+      <li>A Slack workspace you can add apps to</li>
+      <li>A Gmail account (for email send/receive)</li>
+      <li>Node.js 18+ and Git on your machine</li>
+    </ul>
+  </div>
+
+  <table>
+    <tr><th>Service</th><th>What It's For</th><th>Cost</th></tr>
+    <tr><td><strong>Cloudflare Workers</strong></td><td>Runs the agent + stores all state</td><td>$5/month</td></tr>
+    <tr><td><strong>OpenRouter</strong></td><td>Routes LLM calls (Claude, DeepSeek, etc.)</td><td>Pay-as-you-go</td></tr>
+    <tr><td><strong>Slack</strong></td><td>Real-time messaging</td><td>Free tier works</td></tr>
+    <tr><td><strong>Gmail</strong></td><td>Email send/receive</td><td>Free</td></tr>
+  </table>
+
+  <div class="callout-green callout">
+    <div class="label">Cost tip</div>
+    Start with $5&ndash;10 on OpenRouter. Use DeepSeek for testing (~$0.10/M tokens vs $5&ndash;25/M for Claude). A typical wake cycle with DeepSeek costs less than $0.01.
+  </div>
+</div>
+
+<!-- ──────────── Step 1: Clone ──────────── -->
+
+<div class="step" id="clone">
+  <div class="step-number">Step 1</div>
+  <h2>Clone and Install</h2>
+
+<pre><code>git clone &lt;repo-url&gt; swayambhu
+cd swayambhu
+npm install</code></pre>
+
+  <p>This installs Wrangler (Cloudflare's CLI) and Vitest (test runner) as project dependencies. Verify everything is healthy:</p>
+
+<pre><code>npm test</code></pre>
+
+  <p>All tests should pass. If they don't, something is wrong with your Node version or environment.</p>
+</div>
+
+<!-- ──────────── Step 2: Cloudflare ──────────── -->
+
+<div class="step" id="cloudflare">
+  <div class="step-number">Step 2</div>
+  <h2>Cloudflare Setup</h2>
+
+  <h3>Log in to Wrangler</h3>
+
+<pre><code>npx wrangler login</code></pre>
+
+  <p>This opens a browser window. Sign in to your Cloudflare account and authorize Wrangler.</p>
+
+  <h3>Create a KV namespace</h3>
+
+<pre><code>npx wrangler kv namespace create KV</code></pre>
+
+  <p>This prints a namespace ID (a long hex string). Copy it.</p>
+
+  <h3>Configure the main worker</h3>
+
+  <p>Edit <code>wrangler.toml</code> in the project root. Replace the KV namespace ID:</p>
+
+<pre><code><span class="comment"># wrangler.toml</span>
+name = "swayambhu-cns"        <span class="comment"># or your preferred worker name</span>
+main = "index.js"
+compatibility_date = "2025-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[kv_namespaces]]
+binding = "KV"
+id = "<span style="color:var(--accent)">&lt;your-kv-namespace-id&gt;</span>"
+
+[triggers]
+crons = ["* * * * *"]         <span class="comment"># agent controls its own sleep timer</span></code></pre>
+
+  <h3>Configure the dashboard worker</h3>
+
+  <p>Edit <code>dashboard-api/wrangler.toml</code>. Use the <strong>same</strong> KV namespace ID:</p>
+
+<pre><code><span class="comment"># dashboard-api/wrangler.toml</span>
+name = "swayambhu-dashboard-api"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+[vars]
+PATRON_KEY = "test"           <span class="comment"># local dev only — override with secret for prod</span>
+
+[[kv_namespaces]]
+binding = "KV"
+id = "<span style="color:var(--accent)">&lt;your-kv-namespace-id&gt;</span>"</code></pre>
+
+  <h3>Create .env for local development</h3>
+
+  <p>Create a <code>.env</code> file in the project root (it's in <code>.gitignore</code>, never committed):</p>
+
+<pre><code><span class="comment"># .env — local development secrets</span>
+OPENROUTER_API_KEY=sk-or-v1-...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_CHANNEL_ID=C0...
+SLACK_SIGNING_SECRET=...
+GMAIL_CLIENT_ID=...
+GMAIL_CLIENT_SECRET=...
+GMAIL_REFRESH_TOKEN=...</code></pre>
+
+  <p>You'll fill in each value as you set up the services below.</p>
+</div>
+
+<!-- ──────────── Step 3: OpenRouter ──────────── -->
+
+<div class="step" id="openrouter">
+  <div class="step-number">Step 3</div>
+  <h2>OpenRouter Setup</h2>
+
+  <ol>
+    <li>Create an account at <a href="https://openrouter.ai" target="_blank">openrouter.ai</a></li>
+    <li>Go to <strong>Settings &rarr; Keys</strong> and generate an API key</li>
+    <li>Go to <strong>Settings &rarr; Credits</strong> and add $5&ndash;10</li>
+  </ol>
+
+  <p>Add the key to your <code>.env</code>:</p>
+
+<pre><code>OPENROUTER_API_KEY=sk-or-v1-...</code></pre>
+
+  <p>For production deployment later:</p>
+
+<pre><code>echo -n "sk-or-v1-..." | npx wrangler secret put OPENROUTER_API_KEY</code></pre>
+</div>
+
+<!-- ──────────── Step 4: Slack ──────────── -->
+
+<div class="step" id="slack">
+  <div class="step-number">Step 4</div>
+  <h2>Slack Setup</h2>
+
+  <h3>Create a Slack app</h3>
+
+  <ol>
+    <li>Go to <a href="https://api.slack.com/apps" target="_blank">api.slack.com/apps</a> &rarr; <strong>Create New App</strong> &rarr; <strong>From scratch</strong></li>
+    <li>Name it (e.g. "Swayambhu") and select your workspace</li>
+  </ol>
+
+  <h3>Set bot token scopes</h3>
+
+  <p>Go to <strong>OAuth &amp; Permissions</strong> &rarr; <strong>Bot Token Scopes</strong> and add:</p>
+
+  <ul>
+    <li><code>chat:write</code> &mdash; send messages</li>
+    <li><code>channels:history</code> &mdash; read public channels</li>
+    <li><code>im:history</code> &mdash; read DMs</li>
+    <li><code>channels:read</code> &mdash; list channels</li>
+  </ul>
+
+  <h3>Install to workspace</h3>
+
+  <p><strong>Install App</strong> &rarr; <strong>Install to Workspace</strong>. Copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>).</p>
+
+  <h3>Enable event subscriptions</h3>
+
+  <ol>
+    <li><strong>Event Subscriptions</strong> &rarr; toggle on</li>
+    <li>Set <strong>Request URL</strong> to: <code>https://&lt;your-worker-name&gt;.&lt;your-subdomain&gt;.workers.dev/channel/slack</code></li>
+    <li>Under <strong>Subscribe to bot events</strong>, add: <code>message.channels</code>, <code>message.im</code></li>
+  </ol>
+
+  <div class="callout">
+    <div class="label">Note</div>
+    The Request URL won't verify until the worker is deployed. You can set this up after deployment (Step 8) and come back here.
+  </div>
+
+  <h3>Get the signing secret</h3>
+
+  <p>App settings &rarr; <strong>Basic Information</strong> &rarr; <strong>App Credentials</strong> &rarr; copy <strong>Signing Secret</strong>.</p>
+
+  <h3>Get the channel ID</h3>
+
+  <p>In Slack, right-click the channel &rarr; <strong>View channel details</strong>. The ID is at the bottom (starts with <code>C</code>).</p>
+
+  <h3>Invite the bot</h3>
+
+  <p>In the target channel, type: <code>/invite @Swayambhu</code></p>
+
+  <h3>Save the secrets</h3>
+
+  <p>Add to your <code>.env</code>:</p>
+
+<pre><code>SLACK_BOT_TOKEN=xoxb-...
+SLACK_CHANNEL_ID=C0...
+SLACK_SIGNING_SECRET=...</code></pre>
+</div>
+
+<!-- ──────────── Step 5: Gmail ──────────── -->
+
+<div class="step" id="gmail">
+  <div class="step-number">Step 5</div>
+  <h2>Gmail Setup</h2>
+
+  <h3>Create OAuth credentials</h3>
+
+  <ol>
+    <li>Go to <a href="https://console.cloud.google.com" target="_blank">Google Cloud Console</a></li>
+    <li>Create a project (or use an existing one)</li>
+    <li><strong>APIs &amp; Services &rarr; Library</strong> &rarr; search for <strong>Gmail API</strong> &rarr; <strong>Enable</strong></li>
+    <li><strong>APIs &amp; Services &rarr; OAuth consent screen</strong> &rarr; configure (External is fine, add your email as a test user)</li>
+    <li><strong>APIs &amp; Services &rarr; Credentials &rarr; Create Credentials &rarr; OAuth client ID</strong></li>
+    <li>Application type: <strong>Web application</strong></li>
+    <li>Add <code>http://localhost:8089</code> as an authorized redirect URI</li>
+    <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong></li>
+  </ol>
+
+  <h3>Generate a refresh token</h3>
+
+  <p>Add the Client ID and Secret to your <code>.env</code> first, then run the helper script:</p>
+
+<pre><code>source .env && node scripts/gmail-auth.mjs</code></pre>
+
+  <p>This will:</p>
+  <ol>
+    <li>Print a URL &mdash; open it in your browser</li>
+    <li>Sign in with the Gmail account and grant access</li>
+    <li>Redirect back to localhost with an auth code</li>
+    <li>Print the refresh token &mdash; paste it into <code>.env</code></li>
+  </ol>
+
+  <p>Your <code>.env</code> should now have:</p>
+
+<pre><code>GMAIL_CLIENT_ID=...
+GMAIL_CLIENT_SECRET=...
+GMAIL_REFRESH_TOKEN=...</code></pre>
+</div>
+
+<!-- ──────────── Step 6: Customize ──────────── -->
+
+<div class="step" id="customize">
+  <div class="step-number">Step 6</div>
+  <h2>Customize Your Instance</h2>
+
+  <p>Before seeding and running, customize these files:</p>
+
+  <h3>1. DHARMA.md &mdash; the agent's core identity</h3>
+
+  <p>This is the agent's immutable identity document &mdash; who it is, what it's for, what it values. Write your own. Once seeded, the kernel protects it from modification.</p>
+
+  <h3>2. config/contacts.json &mdash; patron and contacts</h3>
+
+  <p>Replace with your own details:</p>
+
+<pre><code>{
+  "patron": {
+    "slug": "your_name",
+    "public_key": "ssh-ed25519 AAAA..."
+  },
+  "contacts": {
+    "your_name": {
+      "name": "Your Name",
+      "relationship": "patron",
+      "about": "...",
+      "timezone": "America/New_York",
+      "chat": {
+        "model": "sonnet",
+        "effort": "high",
+        "max_cost_per_conversation": 1.00,
+        "max_output_tokens": 2000
+      },
+      "communication": "..."
+    }
+  },
+  "platform_bindings": {
+    "slack:U_YOUR_SLACK_ID": {
+      "slug": "your_name",
+      "approved": true
+    }
+  }
+}</code></pre>
+
+  <p>Your Slack user ID: click your profile in Slack &rarr; the ID is at the bottom (starts with <code>U</code>).</p>
+
+  <h3>3. Patron Ed25519 keypair</h3>
+
+  <p>Generate a keypair for identity verification:</p>
+
+<pre><code>ssh-keygen -t ed25519 -C "swayambhu patron key" -f patron_key</code></pre>
+
+  <p>Put the <strong>public key</strong> contents in <code>config/contacts.json</code> under <code>patron.public_key</code>. Keep the private key safe &mdash; you'll use it to verify your identity to the agent.</p>
+
+  <h3>4. Agent identity (DID)</h3>
+
+<pre><code>node scripts/generate-identity.js</code></pre>
+
+  <p>This generates a unique decentralized identity. Copy the output into <code>config/identity.json</code>, or use <code>--seed-kv</code> to write directly.</p>
+
+  <h3>5. Dashboard config (optional)</h3>
+
+  <p>Edit <code>site/patron/config.js</code> to set your timezone and locale:</p>
+
+<pre><code>window.DASHBOARD_CONFIG = {
+  timezone: "America/New_York",
+  locale: "en-US",
+  <span class="comment">// ...</span>
+};</code></pre>
+</div>
+
+<!-- ──────────── Step 7: Seed and Run ──────────── -->
+
+<div class="step" id="seed-and-run">
+  <div class="step-number">Step 7</div>
+  <h2>Seed and Run Locally</h2>
+
+<pre><code><span class="comment"># Full reset: wipe local KV, seed fresh, start services, trigger first wake</span>
+source .env && bash scripts/start.sh --reset-all-state --wake</code></pre>
+
+  <p>This will:</p>
+  <ol>
+    <li>Kill any stale workers</li>
+    <li>Seed ~70 keys into local KV (config, prompts, tools, providers, dharma, contacts...)</li>
+    <li>Start the kernel (port 8787), dashboard API (port 8790), and dashboard SPA (port 3001)</li>
+    <li>Trigger the first wake cycle</li>
+  </ol>
+
+  <h3>Verify it's working</h3>
+
+  <ul>
+    <li>Open <code>http://localhost:3001/patron/</code> &mdash; enter <code>test</code> as the patron key</li>
+    <li><strong>Timeline tab</strong> should show the first session</li>
+    <li><strong>KV Explorer</strong> should show 70+ keys</li>
+    <li>Send a Slack DM to the bot &mdash; it should respond (if Slack is configured with a tunnel)</li>
+  </ul>
+
+  <h3>Use cheap models for development</h3>
+
+<pre><code><span class="comment"># DeepSeek for everything (~30x cheaper than Claude)</span>
+source .env && bash scripts/start.sh --reset-all-state --wake \
+  --set act.model=deepseek --set reflect.model=deepseek</code></pre>
+
+  <h3>Manual wake trigger</h3>
+
+<pre><code>curl http://localhost:8787/__scheduled</code></pre>
+
+  <h3>Inspect KV state</h3>
+
+<pre><code><span class="comment"># List all keys</span>
+node scripts/read-kv.mjs
+
+<span class="comment"># Read a specific key</span>
+node scripts/read-kv.mjs config:defaults
+
+<span class="comment"># List keys by prefix</span>
+node scripts/read-kv.mjs karma:</code></pre>
+</div>
+
+<!-- ──────────── Step 8: Deploy ──────────── -->
+
+<div class="step" id="deploy">
+  <div class="step-number">Step 8</div>
+  <h2>Deploy to Production</h2>
+
+  <h3>Deploy the workers</h3>
+
+<pre><code><span class="comment"># Main worker (kernel + agent)</span>
+npx wrangler deploy
+
+<span class="comment"># Dashboard API</span>
+cd dashboard-api && npx wrangler deploy && cd ..</code></pre>
+
+  <h3>Set production secrets</h3>
+
+  <p>Set each secret for the <strong>main worker</strong>:</p>
+
+<pre><code>echo -n "sk-or-v1-..." | npx wrangler secret put OPENROUTER_API_KEY
+echo -n "xoxb-..."      | npx wrangler secret put SLACK_BOT_TOKEN
+echo -n "C0..."         | npx wrangler secret put SLACK_CHANNEL_ID
+echo -n "..."           | npx wrangler secret put SLACK_SIGNING_SECRET
+echo -n "..."           | npx wrangler secret put GMAIL_CLIENT_ID
+echo -n "..."           | npx wrangler secret put GMAIL_CLIENT_SECRET
+echo -n "..."           | npx wrangler secret put GMAIL_REFRESH_TOKEN</code></pre>
+
+  <p>Set the patron key for the <strong>dashboard worker</strong>:</p>
+
+<pre><code>cd dashboard-api
+echo -n "your-strong-password" | npx wrangler secret put PATRON_KEY
+cd ..</code></pre>
+
+  <h3>Seed production KV</h3>
+
+  <p>The seed script writes to local KV. For production, you can bulk-upload via Wrangler:</p>
+
+<pre><code><span class="comment"># Example: seed dharma</span>
+npx wrangler kv key put --namespace-id &lt;id&gt; "dharma" "$(cat DHARMA.md)"
+
+<span class="comment"># Example: seed a JSON config</span>
+npx wrangler kv key put --namespace-id &lt;id&gt; "config:defaults" "$(cat config/defaults.json)"</code></pre>
+
+  <div class="callout">
+    <div class="label">Tip</div>
+    A production seed script is planned but not yet built. For now, seed locally and verify everything works before deploying.
+  </div>
+
+  <h3>Update Slack webhook URL</h3>
+
+  <p>Go back to your Slack app settings &rarr; <strong>Event Subscriptions</strong> and update the Request URL to your deployed worker:</p>
+
+<pre><code>https://&lt;your-worker-name&gt;.&lt;your-subdomain&gt;.workers.dev/channel/slack</code></pre>
+
+  <p>Slack will send a verification challenge. The worker handles it automatically.</p>
+
+  <h3>Update dashboard SPA API URL</h3>
+
+  <p>Edit <code>site/patron/index.html</code> and update the production API URL to point to your deployed dashboard worker:</p>
+
+<pre><code><span class="comment">// In the API_URL detection block:</span>
+: 'https://&lt;your-dashboard-worker&gt;.&lt;your-subdomain&gt;.workers.dev';</code></pre>
+
+  <h3>Host the dashboard</h3>
+
+  <p>The <code>site/</code> directory is static HTML. Host it anywhere &mdash; Cloudflare Pages, GitHub Pages, S3, or just open <code>site/patron/index.html</code> locally.</p>
+</div>
+
+<!-- ──────────── Troubleshooting ──────────── -->
+
+<div class="step" id="troubleshooting">
+  <div class="step-number">Reference</div>
+  <h2>Troubleshooting</h2>
+
+  <h3>"Port still in use" on startup</h3>
+  <p>The start script kills stale workers automatically. If ports are still busy:</p>
+<pre><code>lsof -i :8787   <span class="comment"># kernel</span>
+lsof -i :8790   <span class="comment"># dashboard API</span>
+lsof -i :3001   <span class="comment"># dashboard SPA</span></code></pre>
+
+  <h3>Agent never wakes</h3>
+  <p>Check the wake timer: <code>node scripts/read-kv.mjs wake_config</code>. If <code>next_wake_after</code> is far in the future, reset it:</p>
+<pre><code>node scripts/reset-wake-timer.mjs
+curl http://localhost:8787/__scheduled</code></pre>
+
+  <h3>LLM calls fail</h3>
+  <p>Check your OpenRouter balance. If using DeepSeek and it's down, switch to Haiku:</p>
+<pre><code>source .env && bash scripts/start.sh --reset-all-state --wake \
+  --set act.model=haiku --set reflect.model=haiku</code></pre>
+
+  <h3>Slack messages aren't received</h3>
+  <ol>
+    <li>Verify webhook URL ends with <code>/channel/slack</code></li>
+    <li>Check the bot is invited to the channel</li>
+    <li>Check <code>SLACK_SIGNING_SECRET</code> matches the app's Basic Information page</li>
+    <li>Check worker logs for 401 (signing secret mismatch) or 404 (wrong path)</li>
+  </ol>
+
+  <h3>Agent crashes repeatedly</h3>
+  <p>After 3 consecutive crashes, the kernel's tripwire fires and auto-restores. Check karma logs:</p>
+<pre><code>node scripts/read-kv.mjs karma:  <span class="comment"># find recent session, look for fatal_error</span></code></pre>
+  <p>Nuclear option: <code>source .env && bash scripts/start.sh --reset-all-state --wake</code></p>
+
+  <h3>Useful scripts</h3>
+
+  <table>
+    <tr><th>Script</th><th>Purpose</th></tr>
+    <tr><td><code>scripts/start.sh</code></td><td>Start all local services</td></tr>
+    <tr><td><code>scripts/read-kv.mjs</code></td><td>Read KV keys / list by prefix</td></tr>
+    <tr><td><code>scripts/delete-kv.mjs &lt;key&gt;</code></td><td>Delete a KV key</td></tr>
+    <tr><td><code>scripts/reset-wake-timer.mjs</code></td><td>Force next wake cycle</td></tr>
+    <tr><td><code>scripts/rollback-session.mjs</code></td><td>Undo last session's KV changes</td></tr>
+    <tr><td><code>scripts/gmail-auth.mjs</code></td><td>Generate Gmail refresh token</td></tr>
+    <tr><td><code>scripts/generate-identity.js</code></td><td>Generate agent DID</td></tr>
+  </table>
+</div>
+
+</main>
+
+<footer>
+  <div class="container">
+    <p>Swayambhu &mdash; self-created</p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -50,7 +50,7 @@ Edit `wrangler.toml` in the project root. Replace the KV namespace ID:
 
 ```toml
 name = "swayambhu-cns"
-main = "kernel.js"
+main = "index.js"
 compatibility_date = "2025-06-01"
 compatibility_flags = ["nodejs_compat"]
 
@@ -242,7 +242,7 @@ Before seeding, they should customize:
 
 1. **DHARMA.md** — The agent's core identity and purpose. This is immutable once seeded. They should write their own that reflects what they want their agent to be and do.
 
-2. **Patron contact** — In the seed script, update the contact record with their own name, platforms, and Slack user ID.
+2. **Patron contact** — In `config/contacts.json`, update the contact record with their own name, Slack user ID (as a platform binding), and details.
 
 3. **Patron keypair** — Generate an Ed25519 keypair for identity verification. The public key goes in KV at `patron:public_key`.
 
@@ -273,7 +273,7 @@ For development, use DeepSeek at ~30x lower cost:
 
 ```bash
 source .env && bash scripts/start.sh --reset-all-state --wake \
-  --set orient.model=deepseek \
+  --set act.model=deepseek \
   --set reflect.model=deepseek
 ```
 
@@ -312,7 +312,7 @@ lsof -i :3001
 Check the wake config: `node scripts/read-kv.mjs wake_config`. If `next_wake_after` is far in the future, reset it: `node scripts/reset-wake-timer.mjs`, then `curl http://localhost:8787/__scheduled`.
 
 ### LLM calls fail
-Check OpenRouter balance at openrouter.ai/settings/credits. If using DeepSeek and it's down, switch to Haiku with `--set orient.model=haiku --set reflect.model=haiku`.
+Check OpenRouter balance at openrouter.ai/settings/credits. If using DeepSeek and it's down, switch to Haiku with `--set act.model=haiku --set reflect.model=haiku`.
 
 ### Slack messages aren't received
 1. Verify webhook URL points to `/channel/slack`
