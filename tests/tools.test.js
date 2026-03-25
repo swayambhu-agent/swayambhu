@@ -1473,6 +1473,7 @@ describe("channel:slack", () => {
         userId: "U456",
         command: null,
         msgId: "msg-1",
+        sentTs: null,
       });
     });
 

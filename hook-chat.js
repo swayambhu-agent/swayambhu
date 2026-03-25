@@ -10,7 +10,7 @@
 // Karma (audit trail) is embedded in the chat object, not in karma:{sessionId}.
 
 export async function handleChat(K, channel, inbound, adapter) {
-  const { chatId, text, command, userId, resolvedChatKey } = inbound;
+  const { chatId, text, command, userId, resolvedChatKey, sentTs } = inbound;
   const convKey = `chat:${channel}:${resolvedChatKey || chatId}`;
 
   // Load or init conversation state
@@ -68,15 +68,23 @@ export async function handleChat(K, channel, inbound, adapter) {
     sessionContext,
   ].join("\n\n").trim();
 
-  // Deduplicate: if the last message is from the same user with identical text, skip
-  const lastMsg = conv.messages[conv.messages.length - 1];
-  if (lastMsg?.role === "user" && lastMsg.content === text) {
-    await K.kvWriteSafe(convKey, conv);
-    return { ok: true, reason: "duplicate" };
+  // Deduplicate layer 1: same Slack timestamp = same message re-delivered
+  if (sentTs && conv.messages.some(m => m.sentTs === sentTs)) {
+    return { ok: true, reason: "duplicate_ts" };
   }
 
-  // Append user message
-  conv.messages.push({ role: "user", content: text, userId, ts: new Date().toISOString() });
+  // Deduplicate layer 2: same text with no intervening reply = double-send
+  // Find where this message belongs chronologically using Slack's sent timestamp
+  const lastUserMsg = [...conv.messages].reverse().find(m => m.role === "user");
+  const lastNonUserMsg = [...conv.messages].reverse().find(m => m.role !== "user");
+  const lastUserIsNewer = lastUserMsg && (!lastNonUserMsg || lastUserMsg.ts > (lastNonUserMsg.ts || ""));
+  if (lastUserIsNewer && lastUserMsg.content === text) {
+    return { ok: true, reason: "duplicate_content" };
+  }
+
+  // Append user message (use Slack's sent timestamp for correct ordering)
+  const ts = sentTs ? new Date(parseFloat(sentTs) * 1000).toISOString() : new Date().toISOString();
+  conv.messages.push({ role: "user", content: text, userId, ts, sentTs });
 
   // Resolve model + tools (unapproved/unknown contacts get no tools — mechanical jailbreak prevention)
   const chatModel = chatConfig.model || defaults?.act?.model || "sonnet";

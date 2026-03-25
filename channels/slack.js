@@ -62,6 +62,7 @@ export function parseInbound(body) {
     userId: event.user,
     command,
     msgId: event.client_msg_id || null,
+    sentTs: event.ts || null,
   };
 }
 
