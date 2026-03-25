@@ -118,6 +118,8 @@ The same gearing works in reverse for mistakes, which is why the dharma and prop
 
 **The karma log is the source of truth.** Every LLM call and tool execution is recorded with full request/response, flushed to the store after each entry. If the runtime crashes mid-session, the log survives up to the point of death. The next session's crash detection picks up exactly where things went wrong.
 
+**Debug logs complement karma.** When errors occur in background processing (e.g. chat handler failures), full details (stack traces, inbound payloads) are written to `log:{category}:{timestamp}` keys with a 7-day TTL. Karma records reference these via a `log_ref` field, keeping the audit trail lightweight while preserving debuggability. Logs auto-expire — karma entries outlive them, documenting that the error occurred even after details age out.
+
 ## Two-worker architecture
 
 The system consists of two Cloudflare Workers sharing one KV namespace:

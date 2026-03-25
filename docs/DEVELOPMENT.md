@@ -42,7 +42,7 @@ source .env && bash scripts/start.sh --wake
 source .env && bash scripts/start.sh --reset-all-state --wake
 ```
 
-Watch stderr for `[KARMA]`, `[TOOL]`, `[LLM]`, `[HOOK]` tagged output.
+Watch stderr for `[KARMA]`, `[TOOL]`, `[LLM]`, `[HOOK]`, `[CHAT]` tagged output.
 
 ### Switching models for cheap testing
 
@@ -130,8 +130,16 @@ Examples: changing how `send_slack` works, adding a new tool.
 
 Examples: changing `prompt:orient`, `config:defaults`, `config:models`.
 
-**Edit:** `scripts/seed-local-kv.mjs` (or the referenced file, e.g. `prompts/reflect.md`)
-**Propagation:** Re-seed. Both tools read these from KV.
+**Edit:** The source file (e.g. `prompts/reflect.md`, `config/defaults.json`)
+**Propagation:** Write the single key to KV, or re-seed for bulk changes:
+```bash
+# Single key update (no full reseed needed)
+node scripts/write-kv.mjs prompt:act prompts/act.md
+node scripts/write-kv.mjs config:defaults config/defaults.json
+
+# Full reseed
+node scripts/seed-local-kv.mjs
+```
 **Nothing to change in index.js.**
 
 ### 6. Provider adapters
@@ -282,3 +290,36 @@ node scripts/read-kv.mjs --json providers
 
 The script uses Miniflare's API to read the same SQLite store that
 `wrangler dev` and the seed script use.
+
+### Writing individual KV keys
+
+To update a single key without a full reseed:
+
+```bash
+# From a file (.json → json, .md/other → text)
+node scripts/write-kv.mjs prompt:act prompts/act.md
+node scripts/write-kv.mjs config:defaults config/defaults.json
+
+# Inline JSON value
+node scripts/write-kv.mjs my:key '{"foo": "bar"}'
+
+# From stdin
+echo '{"foo": "bar"}' | node scripts/write-kv.mjs my:key --stdin
+```
+
+## Debug logging
+
+Background processing errors (e.g. chat handler failures) are written to
+`log:{category}:{timestamp}` keys with a 7-day TTL. Karma records reference
+these via `log_ref` to keep the audit trail lightweight.
+
+```bash
+# List recent logs
+node scripts/read-kv.mjs log:
+
+# Read a specific log entry
+node scripts/read-kv.mjs log:chat:1711352400000
+```
+
+Errors also output to stderr with category tags (e.g. `[CHAT]`) for
+real-time visibility during local dev.
