@@ -68,6 +68,13 @@ export async function handleChat(K, channel, inbound, adapter) {
     sessionContext,
   ].join("\n\n").trim();
 
+  // Deduplicate: if the last message is from the same user with identical text, skip
+  const lastMsg = conv.messages[conv.messages.length - 1];
+  if (lastMsg?.role === "user" && lastMsg.content === text) {
+    await K.kvWriteSafe(convKey, conv);
+    return { ok: true, reason: "duplicate" };
+  }
+
   // Append user message
   conv.messages.push({ role: "user", content: text, userId, ts: new Date().toISOString() });
 
