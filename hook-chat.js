@@ -176,7 +176,7 @@ export async function handleChat(K, channel, inbound, adapter) {
   conv.last_activity = new Date().toISOString();
   const maxMsgs = chatConfig.max_history_messages || 40;
   if (conv.messages.length > maxMsgs) {
-    conv.messages = conv.messages.slice(-maxMsgs);
+    conv.messages = trimByTurns(conv.messages, maxMsgs);
   }
   await K.kvWriteSafe(convKey, conv);
 
@@ -199,4 +199,29 @@ export async function handleChat(K, channel, inbound, adapter) {
   }
 
   return { ok: true, turn: conv.turn_count };
+}
+
+// Trim messages by turn boundaries, keeping the most recent turns.
+// A turn is: a user/system message, a standalone assistant message,
+// or an assistant message with tool_calls + all its tool results.
+function trimByTurns(messages, maxMsgs) {
+  // Find turn boundaries (indices where a new turn starts)
+  const boundaries = [0];
+  for (let i = 1; i < messages.length; i++) {
+    const msg = messages[i];
+    // tool results belong to the preceding assistant turn
+    if (msg.role === 'tool') continue;
+    boundaries.push(i);
+  }
+
+  // Walk backwards through turns until we hit the limit
+  let startIdx = messages.length;
+  for (let b = boundaries.length - 1; b >= 0; b--) {
+    const turnStart = boundaries[b];
+    const turnSize = startIdx - turnStart;
+    if (messages.length - turnStart > maxMsgs && turnStart < startIdx) break;
+    startIdx = turnStart;
+  }
+
+  return messages.slice(startIdx);
 }
