@@ -58,6 +58,16 @@ export default {
 
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // Admin: set wake timer to past so next /__scheduled runs immediately
+    if (url.pathname === "/__clear-wake" && request.method === "POST") {
+      await env.KV.put("wake_config", JSON.stringify({
+        next_wake_after: new Date(Date.now() - 1000).toISOString(),
+        sleep_seconds: 21600,
+      }));
+      return new Response("wake_config set to past", { status: 200 });
+    }
+
     const match = url.pathname.match(/^\/channel\/(\w+)$/);
     if (!match || request.method !== "POST") {
       return new Response("Not found", { status: 404 });
@@ -113,7 +123,16 @@ export default {
         const K = kernel.buildKernelInterface();
         await handleChat(K, channel, inbound, adapter);
       } catch (err) {
-        kernel.karmaRecord({ event: "chat_error", channel, error: err.message });
+        console.error(`[CHAT] error: ${err.message}`, err.stack);
+        try {
+          const logRef = await kernel.writeLog("chat", {
+            error: err.message,
+            stack: err.stack,
+            channel,
+            inbound: { chatId: inbound.chatId, userId: inbound.userId, text: inbound.text?.slice(0, 500) },
+          });
+          await kernel.karmaRecord({ event: "chat_error", channel, log_ref: logRef });
+        } catch {}
       }
     })();
     if (ctx?.waitUntil) ctx.waitUntil(work);

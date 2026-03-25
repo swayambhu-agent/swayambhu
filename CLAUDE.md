@@ -183,6 +183,24 @@ Non-code changes (config, prompts, wisdom) go through `kv_operations`
 with context-based permissions — in deep-reflect context, system keys
 are writable via `kvWriteGated`. No deployment needed.
 
+### Debug logging
+
+Errors in background processing (e.g. chat handler failures) are logged to
+`log:{category}:{timestamp}` keys with a 7-day TTL. Karma records reference
+these via `log_ref` to keep the audit trail lightweight while preserving
+full error details (stack traces, inbound payloads) for debugging.
+
+```
+# Karma entry (what the agent sees)
+{ event: "chat_error", channel: "slack", log_ref: "log:chat:1711352400000" }
+
+# Log key (full details, auto-expires after 7 days)
+log:chat:1711352400000 → { error, stack, inbound, timestamp }
+```
+
+Errors also output to stderr (`[CHAT]` tag) for real-time dev visibility.
+Query logs: `node scripts/read-kv.mjs log:`.
+
 ### Yamas and Niyamas (operating principles)
 
 `yama:*` (outer world) and `niyama:*` (inner world) keys in KV. Kernel-injected
@@ -207,6 +225,7 @@ these files (they use named exports: `execute`, `call`, `check`, `meta`).
 | `source .env && bash scripts/start.sh --reset-all-state --set path=value` | Full reset with config overrides |
 | `node scripts/seed-local-kv.mjs` | Seed local KV (~2s) — uses Miniflare API directly |
 | `node scripts/read-kv.mjs [key-or-prefix]` | Inspect local KV (list keys, read values) |
+| `node scripts/write-kv.mjs <key> <file>` | Write a single KV key from file (.json → json, else text) |
 | `node scripts/delete-kv.mjs <key>` | Delete a single KV key |
 | `node scripts/clear-wake.mjs` | Clear wake timer (force immediate wake) |
 | `node scripts/gmail-auth.mjs` | Generate Gmail OAuth refresh token |

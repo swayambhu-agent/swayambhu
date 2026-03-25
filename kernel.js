@@ -374,6 +374,19 @@ class Kernel {
     return { error: `Unknown verdict: ${verdict}` };
   }
 
+  // ── Debug log (durable, auto-expiring) ──────────────────────
+
+  static LOG_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+
+  async writeLog(category, details) {
+    const key = `log:${category}:${Date.now()}`;
+    await this.kv.put(key, JSON.stringify({
+      ...details,
+      timestamp: new Date().toISOString(),
+    }), { expirationTtl: Kernel.LOG_TTL_SECONDS });
+    return key;
+  }
+
   // ── Karma log ────────────────────────────────────────────────
 
   async karmaRecord(entry) {
@@ -489,8 +502,9 @@ class Kernel {
       // Balance
       checkBalance: async (args) => kernel.checkBalance(args),
 
-      // Karma
+      // Karma & logging
       karmaRecord: async (entry) => kernel.karmaRecord(entry),
+      writeLog: async (category, details) => kernel.writeLog(category, details),
 
       // Utility
       resolveModel: async (m) => kernel.resolveModel(m),
