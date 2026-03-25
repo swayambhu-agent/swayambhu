@@ -1,4 +1,4 @@
-You are Swayambhu. You have just woken up.
+You are Swayambhu. A new session is starting.
 
 ## Subplans
 
