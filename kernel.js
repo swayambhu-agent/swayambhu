@@ -23,7 +23,7 @@ class Kernel {
     this.sessionCost = 0;
     this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
-    this.mode = opts.mode || 'session'; // 'session' (wake/reflect) or 'chat'
+    this.mode = opts.mode || 'session'; // 'session' (act/reflect) or 'chat'
     this.modelsConfig = null;
     this.modelCapabilities = null;
     this.defaults = null;
@@ -53,8 +53,9 @@ class Kernel {
     'contact:',
     'contact_platform:',
     'sealed:',
+    'inbox:',
   ];
-  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:'];
+  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'inbox:'];
   static KERNEL_ONLY_EXACT = ['patron:direct'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   static IMMUTABLE_KEYS = ['patron:public_key'];
@@ -299,6 +300,19 @@ class Kernel {
       }
     }
 
+    // Staleness check — if inbox items arrived since session started, hold outbound.
+    // Inbox items only exist when unprocessed (drainInbox deletes them at session start),
+    // so any present items arrived mid-session and the agent's context is stale.
+    if (this.mode === 'session') {
+      const peek = await this.kv.list({ prefix: "inbox:", limit: 1 });
+      if (peek.keys.length > 0) {
+        return {
+          verdict: 'hold',
+          reasoning: 'Unprocessed inbox items arrived during session — holding to avoid stale reply',
+        };
+      }
+    }
+
     // Approved contact or destination — allow through
     // Message quality and comms policy are the agent's responsibility (see skill:comms)
     return { verdict: 'send' };
@@ -315,6 +329,30 @@ class Kernel {
       }
     }
     return entries;
+  }
+
+  // ── Inbox (unified event queue) ────────────────────────────
+  // All external events (chat messages, patron directives, job completions)
+  // write to inbox:* keys. Sessions drain the inbox at startup.
+
+  async drainInbox() {
+    const keys = await this.kvListAll({ prefix: "inbox:" });
+    const items = [];
+    for (const { name } of keys) {
+      const val = await this.kvGet(name);
+      if (val) {
+        items.push(val);
+        await this.kv.delete(name);
+      }
+    }
+    if (items.length > 0) {
+      await this.karmaRecord({
+        event: "inbox_drained",
+        count: items.length,
+        types: items.reduce((acc, i) => { acc[i.type] = (acc[i.type] || 0) + 1; return acc; }, {}),
+      });
+    }
+    return items;
   }
 
   async processCommsVerdict(id, verdict, revision) {
@@ -498,6 +536,16 @@ class Kernel {
       // Blocked communications
       listBlockedComms: async () => kernel.listBlockedComms(),
       processCommsVerdict: async (id, verdict, revision) => kernel.processCommsVerdict(id, verdict, revision),
+
+      // Inbox (unified event queue)
+      writeInboxItem: async (item) => {
+        const ts = Date.now().toString().padStart(15, '0');
+        const source = item.type === 'chat_message'
+          ? `chat:${item.source?.channel}:${item.source?.user_id}`
+          : item.type;
+        const key = `inbox:${ts}:${source}`;
+        await kernel.kv.put(key, JSON.stringify(item), { expirationTtl: 86400 });
+      },
 
       // Balance
       checkBalance: async (args) => kernel.checkBalance(args),
@@ -1072,7 +1120,7 @@ class Kernel {
   async executeHook() {
     let outcome = "clean";
     try {
-      await this.runWake();
+      await this.runSession();
     } catch (err) {
       outcome = "crash";
       await this.karmaRecord({
@@ -1092,8 +1140,8 @@ class Kernel {
     await this.kv.delete("kernel:active_session");
   }
 
-  // Wake orchestration — timing, crash detection, dispatch to act or reflect
-  async runWake() {
+  // Session orchestration — timing, crash detection, dispatch to act or reflect
+  async runSession() {
     await this.loadEagerConfig();
     const K = this.buildKernelInterface();
 
@@ -1174,20 +1222,14 @@ class Kernel {
         loadKeys.filter(k => !k.startsWith("sealed:"))
       );
 
-      // 7a. Check patron direct message (out-of-band console)
-      const directMsg = await this.kvGet("patron:direct");
-      if (directMsg) {
-        await this.karmaRecord({
-          event: "direct_message",
-          from: "patron",
-          message: typeof directMsg === "string" ? directMsg : directMsg.message,
-          sent_at: directMsg.sent_at || null,
-        });
-        await this.kvDelete("patron:direct");
-      }
+      // 7a. Drain inbox (unified event queue — chat messages, patron directives, job completions)
+      const inboxItems = await this.drainInbox();
+
+      // Extract patron DM from inbox for effort override (replaces patron:direct)
+      const patronDM = inboxItems.find(i => i.type === "patron_direct");
 
       // 7b. Override effort for direct message sessions
-      const effectiveEffort = directMsg
+      const effectiveEffort = patronDM
         ? (defaults?.act_after_dm?.effort || "high")
         : effort;
 
@@ -1212,9 +1254,8 @@ class Kernel {
         balances, lastReflect, additionalContext,
         effort: effectiveEffort, reflectDepth,
         crashData,
-        directMessage: directMsg
-          ? (typeof directMsg === "string" ? directMsg : directMsg.message)
-          : null,
+        inbox: inboxItems,
+        directMessage: patronDM?.message || null,
         reflectSchedule: Object.keys(reflectSchedule).length > 0 ? reflectSchedule : null,
         patronPlatforms: this.patronPlatforms || null,
       };
@@ -1235,9 +1276,9 @@ class Kernel {
         if (!runReflect) throw new Error("No runReflect in HOOKS.reflect");
         await runReflect(K, state, reflectDepth, context);
       } else {
-        const { runSession } = this.HOOKS.act || {};
-        if (!runSession) throw new Error("No runSession in HOOKS.act");
-        await runSession(K, state, context, config);
+        const { runAct } = this.HOOKS.act || {};
+        if (!runAct) throw new Error("No runAct in HOOKS.act");
+        await runAct(K, state, context, config);
       }
 
       // 11. Session bookkeeping — always runs regardless of act vs deep reflect
@@ -1284,7 +1325,7 @@ class Kernel {
 
   async _detectCrash() {
     // The active_session marker is always the current session at this point
-    // (written by runScheduled before runWake). Crash detection for dead
+    // (written by runScheduled before runSession). Crash detection for dead
     // sessions is now handled in runScheduled's lock check, which records
     // killed sessions in kernel:last_sessions before we get here.
     // This method now just checks if a killed session was recorded.
@@ -1355,7 +1396,7 @@ class Kernel {
     await this.sendKernelAlert("hook_reset",
       "Hook execution failed. Running minimal recovery mode.");
 
-    const hardcodedPrompt = `You are Swayambhu in recovery mode. Your wake hook has been reset due to repeated failures. Check your balances and report your status. Do not attempt complex operations.`;
+    const hardcodedPrompt = `You are Swayambhu in recovery mode. Your session hook has been reset due to repeated failures. Check your balances and report your status. Do not attempt complex operations.`;
 
     await this.loadEagerConfig();
     this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 120 } };
@@ -1390,7 +1431,7 @@ class Kernel {
     await this.kvWrite("session_counter", count + 1);
   }
 
-  // ── Wake cycle ──────────────────────────────────────────────
+  // ── Session cycle ───────────────────────────────────────────
 
   // ── Minimal fallback (no hook code in KV) ───────────────────
   // Used when no hook is loaded, or after the hook safety tripwire fires.
@@ -1963,9 +2004,11 @@ class Kernel {
         const commMeta = { communication: commGrant };
         const gateResult = await this.communicationGate(name, args, commMeta);
 
-        if (gateResult.verdict === 'block' || gateResult.verdict === 'queue') {
+        if (gateResult.verdict === 'block' || gateResult.verdict === 'queue' || gateResult.verdict === 'hold') {
           await this.queueBlockedComm(name, args, commMeta, gateResult.reasoning, gateResult);
-          return { error: `Communication ${gateResult.verdict === 'queue' ? 'queued for review' : 'blocked'}: ${gateResult.reasoning}` };
+          const label = gateResult.verdict === 'hold' ? 'held for next session'
+            : gateResult.verdict === 'queue' ? 'queued for review' : 'blocked';
+          return { error: `Communication ${label}: ${gateResult.reasoning}` };
         }
 
         if (gateResult.verdict === 'revise' && gateResult.revision?.text) {

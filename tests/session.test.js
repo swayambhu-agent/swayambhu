@@ -4,7 +4,7 @@ import {
   detectCrash,
   writeSessionResults,
   getBalances,
-  runSession,
+  runAct,
   summarizeKarma,
 } from "../act.js";
 import { Kernel } from "../kernel.js";
@@ -465,7 +465,7 @@ describe("writeSessionResults", () => {
     expect(scheduleCall).toBeUndefined();
   });
 
-  it("does not increment session_counter (moved to kernel.runWake)", async () => {
+  it("does not increment session_counter (moved to kernel.runAct)", async () => {
     const K = makeMockK({}, { sessionCount: 5 });
     await writeSessionResults(K, {});
 
@@ -597,9 +597,9 @@ describe("getRelevantSessionIds", () => {
   });
 });
 
-// ── 16. runSession — reflect_reserve_pct ─────────────────
+// ── 16. runAct — reflect_reserve_pct ─────────────────
 
-describe("runSession reflect_reserve_pct", () => {
+describe("runAct reflect_reserve_pct", () => {
   function makeRunSessionFixture(budgetOverrides = {}) {
     const defaults = {
       act: { model: "test/act", effort: "low", max_output_tokens: 1000 },
@@ -609,7 +609,7 @@ describe("runSession reflect_reserve_pct", () => {
     };
     const state = makeState({ defaults });
     const K = makeMockK();
-    // runSession calls executeReflect which calls many K methods — stub them
+    // runAct calls executeReflect which calls many K methods — stub them
     K.runAgentLoop = vi.fn(async () => ({ session_summary: "done" }));
     K.getKarma = vi.fn(async () => []);
     K.getSessionCost = vi.fn(async () => 0);
@@ -626,7 +626,7 @@ describe("runSession reflect_reserve_pct", () => {
 
   it("passes budgetCap to act when reflect_reserve_pct is set", async () => {
     const { K, state, context, config } = makeRunSessionFixture({ reflect_reserve_pct: 0.33 });
-    await runSession(K, state, context, config);
+    await runAct(K, state, context, config);
 
     const actCall = K.runAgentLoop.mock.calls[0][0];
     // 0.15 * (1 - 0.33) = 0.1005
@@ -636,7 +636,7 @@ describe("runSession reflect_reserve_pct", () => {
 
   it("does not pass budgetCap when reflect_reserve_pct is 0", async () => {
     const { K, state, context, config } = makeRunSessionFixture({ reflect_reserve_pct: 0 });
-    await runSession(K, state, context, config);
+    await runAct(K, state, context, config);
 
     const actCall = K.runAgentLoop.mock.calls[0][0];
     expect(actCall.budgetCap).toBeUndefined();
@@ -646,7 +646,7 @@ describe("runSession reflect_reserve_pct", () => {
     const { K, state, context, config } = makeRunSessionFixture({});
     // Remove reflect_reserve_pct entirely
     delete state.defaults.session_budget.reflect_reserve_pct;
-    await runSession(K, state, context, config);
+    await runAct(K, state, context, config);
 
     const actCall = K.runAgentLoop.mock.calls[0][0];
     expect(actCall.budgetCap).toBeUndefined();
@@ -656,7 +656,7 @@ describe("runSession reflect_reserve_pct", () => {
     const { K, state, context, config } = makeRunSessionFixture({ reflect_reserve_pct: 0.33 });
     K.runAgentLoop = vi.fn(async () => ({ budget_exceeded: true, reason: "Budget exceeded: cost" }));
 
-    await runSession(K, state, context, config);
+    await runAct(K, state, context, config);
 
     // reflect uses runAgentLoop internally via executeReflect,
     // but we can check that runAgentLoop was called at least for act
@@ -669,7 +669,7 @@ describe("runSession reflect_reserve_pct", () => {
     const { K, state, context, config } = makeRunSessionFixture({ reflect_reserve_pct: 0 });
     K.runAgentLoop = vi.fn(async () => ({ budget_exceeded: true, reason: "Budget exceeded: cost" }));
 
-    await runSession(K, state, context, config);
+    await runAct(K, state, context, config);
 
     // runAgentLoop called once (act only), reflect skipped
     expect(K.runAgentLoop).toHaveBeenCalledTimes(1);
@@ -923,7 +923,7 @@ describe("summarizeKarma", () => {
 // ── writeSessionResults karma summary ──────────────────────
 
 describe("writeSessionResults karma summary (moved to kernel)", () => {
-  it("does not write karma_summary (moved to kernel.runWake)", async () => {
+  it("does not write karma_summary (moved to kernel.runAct)", async () => {
     const K = makeMockK({}, { sessionCount: 5, sessionId: "s_test" });
     K.getKarma = vi.fn(async () => [
       { event: "llm_call", cost: 0.03, model: "opus", duration_ms: 500 },

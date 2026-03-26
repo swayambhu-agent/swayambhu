@@ -40,6 +40,9 @@ export function makeMockK(kvInit = {}, opts = {}) {
     listBlockedComms: vi.fn(async () => []),
     processCommsVerdict: vi.fn(async () => ({ ok: true })),
 
+    // Inbox (unified event queue)
+    writeInboxItem: vi.fn(async () => {}),
+
     // Agent loop
     runAgentLoop: vi.fn(async () => ({})),
     executeToolCall: vi.fn(async () => ({})),
@@ -72,7 +75,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'proposal:', 'hook:', 'doc:',
         'yama:', 'niyama:', 'upaya:', 'prajna:', 'comms_blocked:',
-        'contact:', 'contact_platform:', 'sealed:',
+        'contact:', 'contact_platform:', 'sealed:', 'inbox:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
       if (exact.includes(key)) return true;
@@ -83,7 +86,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'proposal:', 'hook:', 'doc:',
         'yama:', 'niyama:', 'upaya:', 'prajna:', 'comms_blocked:',
-        'contact:', 'contact_platform:', 'sealed:',
+        'contact:', 'contact_platform:', 'sealed:', 'inbox:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
     })),
@@ -137,10 +140,10 @@ export function makeMockK(kvInit = {}, opts = {}) {
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'proposal:', 'hook:', 'doc:',
     'yama:', 'niyama:', 'upaya:', 'prajna:', 'skill:', 'comms_blocked:',
-    'contact:', 'contact_platform:', 'sealed:',
+    'contact:', 'contact_platform:', 'sealed:', 'inbox:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
-  const _KERNEL_ONLY = ['kernel:', 'sealed:', 'karma:'];
+  const _KERNEL_ONLY = ['kernel:', 'sealed:', 'karma:', 'inbox:'];
   const _KERNEL_ONLY_EXACT = ['patron:direct'];
   const _CODE_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
   function _isSystemKey(key) {

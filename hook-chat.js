@@ -195,14 +195,28 @@ export async function handleChat(K, channel, inbound, adapter) {
   }
   await K.kvWriteSafe(convKey, conv);
 
+  // Write inbox item for next session
+  try {
+    await K.writeInboxItem({
+      type: "chat_message",
+      source: { channel, user_id: userId },
+      contact_name: contact?.name || userId,
+      contact_approved: !!contact?.approved,
+      summary: text.slice(0, 300),
+      timestamp: new Date().toISOString(),
+      ref: convKey,
+    });
+  } catch {}
+
   // Advance next session for approved contacts — conversation is a signal to run sooner
   if (contact?.approved) {
     try {
-      const advanceMins = chatConfig.session_advance_minutes ?? 1;
+      const advanceSecs = chatConfig.session_advance_seconds
+        ?? (chatConfig.session_advance_minutes ? chatConfig.session_advance_minutes * 60 : 30);
       const schedule = await K.kvGet("session_schedule");
       if (schedule?.next_session_after) {
         const sessionAt = new Date(schedule.next_session_after).getTime();
-        const advanceTo = Date.now() + advanceMins * 60 * 1000;
+        const advanceTo = Date.now() + advanceSecs * 1000;
         if (sessionAt > advanceTo) {
           await K.kvWriteSafe("session_schedule", {
             ...schedule,

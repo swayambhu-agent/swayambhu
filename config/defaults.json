@@ -24,7 +24,7 @@
     "max_output_tokens": 1000,
     "max_history_messages": 40,
     "unknown_contact_tools": [],
-    "session_advance_minutes": 1
+    "session_advance_seconds": 30
   },
   "tools": {
     "kv_query": { "max_response_chars": 2000 }

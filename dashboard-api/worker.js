@@ -196,28 +196,44 @@ export default {
       return json(results);
     }
 
-    // GET /direct — check pending patron direct message
+    // GET /direct — check pending patron direct messages in inbox
     if (path === "/direct" && request.method === "GET") {
-      const val = await env.KV.get("patron:direct", "json");
-      return json({ pending: !!val, message: val });
+      const allKeys = await kvListAll(env.KV, { prefix: "inbox:" });
+      const patronItems = [];
+      for (const k of allKeys) {
+        if (k.name.includes(":patron:direct")) {
+          const val = await env.KV.get(k.name, "json");
+          if (val) patronItems.push(val);
+        }
+      }
+      return json({ pending: patronItems.length > 0, messages: patronItems });
     }
 
-    // POST /direct — send a direct message to the agent (consumed on next wake)
+    // POST /direct — send a direct message to the agent via inbox (consumed on next session)
     if (path === "/direct" && request.method === "POST") {
       const body = await request.json().catch(() => null);
       if (!body?.message || typeof body.message !== "string" || !body.message.trim()) {
         return json({ error: "message required" }, 400);
       }
-      await env.KV.put("patron:direct", JSON.stringify({
+      const ts = Date.now().toString().padStart(15, '0');
+      await env.KV.put(`inbox:${ts}:patron:direct`, JSON.stringify({
+        type: "patron_direct",
+        source: { channel: "console" },
         message: body.message.trim(),
-        sent_at: new Date().toISOString(),
-      }));
+        summary: body.message.trim().slice(0, 300),
+        timestamp: new Date().toISOString(),
+      }), { expirationTtl: 86400 });
       return json({ ok: true });
     }
 
-    // DELETE /direct — clear pending direct message
+    // DELETE /direct — clear pending patron direct messages from inbox
     if (path === "/direct" && request.method === "DELETE") {
-      await env.KV.delete("patron:direct");
+      const allKeys = await kvListAll(env.KV, { prefix: "inbox:" });
+      for (const k of allKeys) {
+        if (k.name.includes(":patron:direct")) {
+          await env.KV.delete(k.name);
+        }
+      }
       return json({ ok: true });
     }
 

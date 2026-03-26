@@ -8,7 +8,7 @@ import { executeReflect } from './reflect.js';
 
 // ── Normal session ──────────────────────────────────────────
 
-export async function runSession(K, state, context, config) {
+export async function runAct(K, state, context, config) {
   const { defaults, modelsConfig } = state;
 
   const actPrompt = await K.kvGet("prompt:act");
@@ -41,9 +41,7 @@ export async function runSession(K, state, context, config) {
     skill_manifest: skill_manifest.length ? skill_manifest : null,
   });
 
-  // Build chat digest — conversations since last session
-  const chatDigest = await buildChatDigest(K, context);
-  const initialContext = buildActContext({ ...context, chatDigest });
+  const initialContext = buildActContext(context);
 
   // Use act_after_dm config when a direct message is present
   const dmConfig = context.directMessage ? defaults?.act_after_dm : null;
@@ -106,8 +104,8 @@ export function buildActContext(context) {
   return JSON.stringify({
     // Patron direct message — first so the agent reads it immediately
     ...(context.directMessage ? { direct_message: context.directMessage } : {}),
-    // Chat digest — conversations active since last session
-    ...(context.chatDigest?.length ? { chat_since_last_session: context.chatDigest } : {}),
+    // Inbox — all events since last session (chat messages, job completions, etc.)
+    ...(context.inbox?.length ? { inbox: context.inbox } : {}),
     ...(context.patronPlatforms ? { patron_platforms: context.patronPlatforms } : {}),
     additional_context: context.additionalContext,
     last_reflect: context.lastReflect,
@@ -117,54 +115,6 @@ export function buildActContext(context) {
     balances: context.balances,
     current_time: new Date().toISOString(),
   });
-}
-
-// ── Chat digest builder ──────────────────────────────────────
-
-export async function buildChatDigest(K, context) {
-  const lastSessionEnd = context.lastReflect?.timestamp || null;
-  const defaults = await K.getDefaults();
-  const digestMaxChars = defaults?.chat?.digest_max_chars || 200;
-  const truncate = (s) => s && s.length > digestMaxChars ? s.slice(0, digestMaxChars) + '...' : s;
-
-  const chatKeys = await K.kvList({ prefix: "chat:" });
-  const entries = [];
-
-  for (const k of chatKeys.keys) {
-    const chat = await K.kvGet(k.name);
-    if (!chat?.last_activity) continue;
-    if (lastSessionEnd && chat.last_activity <= lastSessionEnd) continue;
-
-    const msgs = chat.messages || [];
-    const platform = k.name.split(':')[1] || 'slack';
-
-    // Resolve contact name from most recent user message
-    const lastContactMsg = [...msgs].reverse().find(m => m.role === 'user');
-    const userId = lastContactMsg?.userId;
-    let contactName = userId || 'unknown';
-    if (userId) {
-      const contact = await K.resolveContact(platform, userId);
-      if (contact?.name) contactName = contact.name;
-    }
-
-    // Last N content messages in thread order
-    const digestMsgCount = defaults?.chat?.digest_message_count || 4;
-    const contentMsgs = msgs.filter(m => (m.role === 'assistant' || m.role === 'user') && m.content);
-    const lastMessages = contentMsgs.slice(-digestMsgCount).map(m => ({
-      from: m.role === 'assistant' ? 'Swayambhu' : contactName,
-      text: truncate(m.content),
-    }));
-
-    entries.push({
-      contact: contactName,
-      channel: platform,
-      turn_count: chat.turn_count || 0,
-      last_messages: lastMessages,
-      ts: chat.last_activity,
-    });
-  }
-
-  return entries;
 }
 
 // ── Session results ─────────────────────────────────────────
