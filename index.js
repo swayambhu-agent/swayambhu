@@ -12,6 +12,7 @@ import * as reflect from './reflect.js';
 
 // Channel adapters
 import * as slackAdapter from './channels/slack.js';
+import * as whatsappAdapter from './channels/whatsapp.js';
 
 // Tool modules
 import * as send_slack from './tools/send_slack.js';
@@ -25,6 +26,8 @@ import * as test_model from './tools/test_model.js';
 import * as web_search from './tools/web_search.js';
 import * as start_job from './tools/start_job.js';
 import * as collect_jobs from './tools/collect_jobs.js';
+import * as send_whatsapp from './tools/send_whatsapp.js';
+import * as google_docs from './tools/google_docs.js';
 
 // Provider adapter modules
 import * as llm from './providers/llm.js';
@@ -38,7 +41,7 @@ import * as compute from './providers/compute.js';
 const TOOLS = {
   send_slack, web_fetch, kv_manifest, kv_query,
   computer, check_email, send_email, test_model, web_search,
-  start_job, collect_jobs,
+  start_job, collect_jobs, send_whatsapp, google_docs,
 };
 
 const PROVIDERS = {
@@ -49,7 +52,7 @@ const PROVIDERS = {
   'provider:compute': compute,
 };
 
-const CHANNELS = { slack: slackAdapter };
+const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
 
 const HOOKS = { act, reflect };
 
@@ -125,18 +128,37 @@ export default {
     }
 
     const match = url.pathname.match(/^\/channel\/(\w+)$/);
-    if (!match || request.method !== "POST") {
+    if (!match) {
       return new Response("Not found", { status: 404 });
     }
 
     const channel = match[1];
-    const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, mode: 'chat' });
-
-    // Load adapter from static imports
     const adapterMod = CHANNELS[channel];
     if (!adapterMod) return new Response(`Unknown channel: ${channel}`, { status: 404 });
 
-    const body = await request.json();
+    // GET: webhook verification (e.g. WhatsApp hub.challenge)
+    if (request.method === "GET") {
+      if (!adapterMod.verifyWebhook) return new Response("Not found", { status: 404 });
+      const challenge = adapterMod.verifyWebhook(url, env);
+      if (challenge) return new Response(challenge, { status: 200 });
+      return new Response("Forbidden", { status: 403 });
+    }
+
+    if (request.method !== "POST") {
+      return new Response("Not found", { status: 404 });
+    }
+
+    // Read raw body for signature verification, then parse
+    const rawBody = await request.text();
+
+    // Verify webhook signature if adapter supports it
+    if (adapterMod.verify) {
+      const valid = await adapterMod.verify(request.headers, rawBody, env);
+      if (!valid) return new Response("Invalid signature", { status: 401 });
+    }
+
+    const body = JSON.parse(rawBody);
+    const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, mode: 'chat' });
 
     // Parse inbound message via adapter
     const inbound = adapterMod.parseInbound(body);
@@ -169,7 +191,7 @@ export default {
         const adapter = {
           sendReply: async (chatId, text) => {
             const secrets = {};
-            for (const s of (adapterMod.meta?.secrets || ['SLACK_BOT_TOKEN'])) {
+            for (const s of (adapterMod.config?.secrets || [])) {
               if (env[s] !== undefined) secrets[s] = env[s];
             }
             await adapterMod.sendReply(chatId, text, secrets, fetch);

@@ -16,9 +16,12 @@ import * as test_model from "../tools/test_model.js";
 import * as web_search from "../tools/web_search.js";
 import * as start_job from "../tools/start_job.js";
 import * as collect_jobs from "../tools/collect_jobs.js";
+import * as send_whatsapp from "../tools/send_whatsapp.js";
+import * as google_docs from "../tools/google_docs.js";
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
+import * as whatsapp from "../channels/whatsapp.js";
 
 // ── Provider modules ─────────────────────────────────────────
 
@@ -110,7 +113,7 @@ function mockKV(initial = {}) {
 const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
-  start_job, collect_jobs,
+  start_job, collect_jobs, send_whatsapp, google_docs,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail, compute };
