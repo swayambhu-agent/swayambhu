@@ -85,6 +85,25 @@
         "freshness": "optional — recency filter: day, week, month, year",
         "deep": "optional boolean — use LLM Context endpoint for rich content (default false)"
       }
+    },
+    {
+      "name": "start_job",
+      "description": "Start a long-running background job on the compute server. Packs context from KV into a tarball, transfers it, and starts the process. Returns immediately with a job ID. The job calls back on completion, triggering a session.",
+      "input": {
+        "type": "required — cc_analysis | custom",
+        "prompt": "required — the analysis/task prompt (for cc_analysis: the prompt sent to Claude Code)",
+        "context_keys": "required — array of KV key patterns to pack as context files (e.g. [\"karma:*\", \"config:defaults\"])",
+        "command": "optional — shell command to run (required for custom type)",
+        "include_code": "optional boolean — include tool/hook/provider source code in context"
+      }
+    },
+    {
+      "name": "collect_jobs",
+      "description": "Check status of background jobs. Primarily useful for mid-session checks — job completion callbacks handle normal notification via inbox. Use to poll a specific job or check all jobs.",
+      "input": {
+        "job_id": "optional — specific job to check. Omit to check all.",
+        "wait_seconds": "optional — short poll, wait up to N seconds for completion (max 30)"
+      }
     }
   ]
 }

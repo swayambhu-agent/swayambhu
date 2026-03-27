@@ -1639,7 +1639,7 @@ class Kernel {
     ctx.fetch = (...args) => fetch(...args);
 
     if (meta.kv_access && meta.kv_access !== "none") {
-      ctx.kv = this._buildScopedKV(toolName, meta.kv_access);
+      ctx.kv = this._buildScopedKV(toolName, meta.kv_access, meta.kv_write_prefixes);
     }
     // Provider binding comes from grants (kernel-controlled), not meta
     const grant = this.toolGrants?.[toolName];
@@ -1675,7 +1675,7 @@ class Kernel {
 
   // ── Scoped KV wrapper (replaces Worker Loader ScopedKV RPC) ───
 
-  _buildScopedKV(toolName, kvAccess) {
+  _buildScopedKV(toolName, kvAccess, writePrefixes = []) {
     const kv = this.kv;
     const scope = `tooldata:${toolName}:`;
     return {
@@ -1686,10 +1686,12 @@ class Kernel {
         catch { try { return await kv.get(resolved, "text"); } catch { return null; } }
       },
       async put(key, value) {
-        const resolved = `${scope}${key}`;  // writes always scoped
+        // Allow writes to declared prefixes (e.g., job:, job_result:) without scoping
+        const allowedPrefix = writePrefixes.find(p => key.startsWith(p));
+        const resolved = allowedPrefix ? key : `${scope}${key}`;
         const fmt = typeof value === "string" ? "text" : "json";
         await kv.put(resolved, typeof value === "string" ? value : JSON.stringify(value), {
-          metadata: { type: "tooldata", format: fmt, updated_at: new Date().toISOString() },
+          metadata: { type: allowedPrefix ? "job" : "tooldata", format: fmt, updated_at: new Date().toISOString() },
         });
       },
       async list(opts = {}) {

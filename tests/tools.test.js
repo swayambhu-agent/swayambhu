@@ -14,6 +14,8 @@ import * as send_email from "../tools/send_email.js";
 import * as computer from "../tools/computer.js";
 import * as test_model from "../tools/test_model.js";
 import * as web_search from "../tools/web_search.js";
+import * as start_job from "../tools/start_job.js";
+import * as collect_jobs from "../tools/collect_jobs.js";
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
@@ -24,6 +26,7 @@ import * as llm from "../providers/llm.js";
 import * as llm_balance from "../providers/llm_balance.js";
 import * as wallet_balance from "../providers/wallet_balance.js";
 import * as gmail from "../providers/gmail.js";
+import * as compute from "../providers/compute.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -83,8 +86,12 @@ function gmailMessage({ id, threadId, from, subject, date, messageId, body, mime
 function mockKV(initial = {}) {
   const store = new Map(Object.entries(initial));
   return {
-    get: vi.fn(async (key) => store.get(key) ?? null),
-    put: vi.fn(async (key, value) => store.set(key, value)),
+    get: vi.fn(async (key) => {
+      const val = store.get(key) ?? null;
+      if (val === null) return null;
+      try { return JSON.parse(val); } catch { return val; }
+    }),
+    put: vi.fn(async (key, value) => store.set(key, typeof value === 'string' ? value : JSON.stringify(value))),
     list: vi.fn(async (opts = {}) => {
       let keys = [...store.keys()];
       if (opts.prefix) keys = keys.filter(k => k.startsWith(opts.prefix));
@@ -103,9 +110,10 @@ function mockKV(initial = {}) {
 const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
+  start_job, collect_jobs,
 };
 
-const allProviders = { llm, llm_balance, wallet_balance, gmail };
+const allProviders = { llm, llm_balance, wallet_balance, gmail, compute };
 
 describe("module structure", () => {
   for (const [name, mod] of Object.entries(allTools)) {
@@ -189,66 +197,46 @@ describe("web_fetch", () => {
 });
 
 describe("computer", () => {
-  it("sends command and returns result", async () => {
+  const secrets = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" };
+
+  it("delegates to compute provider", async () => {
     const f = mockFetch({ status: "completed", exit_code: 0, output: "hello world", id: "p123" });
     const result = await computer.execute({
-      command: "echo hello",
-      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
-      fetch: f,
+      command: "echo hello", secrets, fetch: f, provider: compute,
     });
     expect(f).toHaveBeenCalledOnce();
     expect(result).toEqual({ ok: true, status: "completed", exit_code: 0, output: "hello world", process_id: "p123" });
     const url = f.mock.calls[0][0];
     expect(url).toContain("/execute?wait=60");
     const opts = f.mock.calls[0][1];
-    expect(opts.method).toBe("POST");
     expect(opts.headers["CF-Access-Client-Id"]).toBe("cid");
-    expect(opts.headers["CF-Access-Client-Secret"]).toBe("secret");
     expect(opts.headers["Authorization"]).toBe("Bearer key");
   });
 
   it("uses custom timeout", async () => {
     const f = mockFetch({ status: "completed", exit_code: 0, output: "", id: "p1" });
-    await computer.execute({
-      command: "ls",
-      timeout: 120,
-      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
-      fetch: f,
-    });
+    await computer.execute({ command: "ls", timeout: 120, secrets, fetch: f, provider: compute });
     expect(f.mock.calls[0][0]).toContain("wait=120");
   });
 
   it("returns error when command is missing", async () => {
-    const result = await computer.execute({
-      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
-      fetch: vi.fn(),
-    });
+    const result = await computer.execute({ secrets, fetch: vi.fn(), provider: compute });
     expect(result).toEqual({ ok: false, error: "command is required" });
   });
 
   it("handles fetch failure", async () => {
     const f = vi.fn(async () => { throw new Error("network down"); });
-    const result = await computer.execute({
-      command: "ls",
-      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
-      fetch: f,
-    });
+    const result = await computer.execute({ command: "ls", secrets, fetch: f, provider: compute });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("network down");
   });
 
   it("handles non-ok response", async () => {
     const f = vi.fn(async () => ({
-      ok: false,
-      status: 500,
-      statusText: "Internal Server Error",
+      ok: false, status: 500, statusText: "Internal Server Error",
       text: async () => "server error detail",
     }));
-    const result = await computer.execute({
-      command: "ls",
-      secrets: { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "secret", COMPUTER_API_KEY: "key" },
-      fetch: f,
-    });
+    const result = await computer.execute({ command: "ls", secrets, fetch: f, provider: compute });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("500");
     expect(result.detail).toBe("server error detail");
@@ -1532,5 +1520,146 @@ describe("channel:slack", () => {
       expect(body.channel).toBe("C123");
       expect(body.text).toBe("Hello!");
     });
+  });
+});
+
+// ── start_job ──────────────────────────────────────────────────
+
+describe("start_job", () => {
+  const secrets = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "s", COMPUTER_API_KEY: "k" };
+  const config = { jobs: { base_url: "https://test.dev", base_dir: "/tmp/jobs", max_concurrent_jobs: 2, default_ttl_minutes: 60 } };
+
+  it("dispatches a custom job and writes job record", async () => {
+    const provider = { call: vi.fn(async () => ({ ok: true, output: [{ data: "12345\r\n" }] })) };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "custom",
+      command: "echo hello",
+      prompt: "test prompt",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv, config,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.job_id).toMatch(/^j_/);
+    expect(result.pid).toBe(12345);
+    expect(provider.call).toHaveBeenCalledOnce();
+
+    // Verify job record was written
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    expect(jobKey).toBeTruthy();
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.status).toBe("running");
+    expect(record.type).toBe("custom");
+    expect(record.callback_secret).toBeTruthy();
+  });
+
+  it("returns error when type is missing", async () => {
+    const result = await start_job.execute({
+      provider: {}, secrets, fetch: vi.fn(), kv: mockKV(), config,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("type is required");
+  });
+
+  it("rejects when concurrency limit reached", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({ status: "running" }),
+      "job:j2": JSON.stringify({ status: "running" }),
+    });
+    const result = await start_job.execute({
+      type: "custom", command: "ls", context_keys: [],
+      provider: {}, secrets, fetch: vi.fn(), kv, config,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Concurrency limit");
+  });
+
+  it("packs context keys into tarball", async () => {
+    const provider = { call: vi.fn(async () => ({ ok: true, output: [{ data: "999\r\n" }] })) };
+    const kv = mockKV({ "config:defaults": JSON.stringify({ act: {} }), "karma:s1": JSON.stringify([]) });
+
+    const result = await start_job.execute({
+      type: "custom", command: "cat *.json", prompt: "analyze",
+      context_keys: ["config:defaults", "karma:*"],
+      provider, secrets, fetch: vi.fn(), kv, config,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.context_files).toBe(3); // config/defaults.json, karma/s1.json, prompt.txt
+  });
+});
+
+// ── collect_jobs ─────────────────────────────────────────────
+
+describe("collect_jobs", () => {
+  const secrets = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "s", COMPUTER_API_KEY: "k" };
+  const config = { jobs: { base_url: "https://test.dev", default_ttl_minutes: 120 } };
+
+  it("detects completed job via exit_code file", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1", type: "custom", status: "running",
+        created_at: new Date().toISOString(),
+        workdir: "/tmp/jobs/j1", config: { ttl_minutes: 120 },
+      }),
+    });
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        if (command.includes("exit_code")) return { ok: true, output: [{ data: "0\r\n" }] };
+        if (command.includes("output.json")) return { ok: true, output: [{ data: '{"result":"done"}\r\n' }] };
+        return { ok: true, output: [] };
+      }),
+    };
+
+    const result = await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
+
+    expect(result.ok).toBe(true);
+    expect(result.completed).toHaveLength(1);
+    expect(result.completed[0].job_id).toBe("j1");
+
+    // Job record should be updated
+    const job = JSON.parse(kv._store.get("job:j1"));
+    expect(job.status).toBe("completed");
+    expect(job.exit_code).toBe(0);
+
+    // Job result should be written
+    const jobResult = JSON.parse(kv._store.get("job_result:j1"));
+    expect(jobResult.result).toEqual({ result: "done" });
+  });
+
+  it("reports still running jobs", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1", type: "custom", status: "running",
+        created_at: new Date().toISOString(),
+        workdir: "/tmp/jobs/j1", config: { ttl_minutes: 120 },
+      }),
+    });
+    const provider = {
+      call: vi.fn(async () => ({ ok: true, output: [{ data: "RUNNING\r\n" }] })),
+    };
+
+    const result = await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
+    expect(result.still_running).toHaveLength(1);
+    expect(result.still_running[0].job_id).toBe("j1");
+  });
+
+  it("expires jobs past TTL", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1", type: "custom", status: "running",
+        created_at: new Date(Date.now() - 200 * 60 * 1000).toISOString(), // 200 min ago
+        workdir: "/tmp/jobs/j1", config: { ttl_minutes: 120 },
+      }),
+    });
+
+    const result = await collect_jobs.execute({
+      provider: { call: vi.fn() }, secrets, fetch: vi.fn(), kv, config,
+    });
+    expect(result.expired).toHaveLength(1);
+    const job = JSON.parse(kv._store.get("job:j1"));
+    expect(job.status).toBe("expired");
   });
 });

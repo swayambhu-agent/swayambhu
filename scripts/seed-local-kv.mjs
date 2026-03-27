@@ -63,7 +63,7 @@ await put("kernel:fallback_model", JSON.stringify(kernelConf.fallback_model), "j
 // ── Providers (from providers/*.js) ───────────────────────────
 
 console.log("--- Providers ---");
-const providerFiles = ["llm", "llm_balance", "wallet_balance", "gmail"];
+const providerFiles = ["llm", "llm_balance", "wallet_balance", "gmail", "compute"];
 for (const name of providerFiles) {
   const mod = await importLocal(`providers/${name}.js`);
   await put(`provider:${name}:code`, read(`providers/${name}.js`), "text", `Provider source: ${name}`);
@@ -82,7 +82,7 @@ const toolNames = [
   "send_slack", "web_fetch",
   "kv_manifest", "kv_query", "computer",
   "check_email", "send_email", "test_model",
-  "web_search",
+  "web_search", "start_job", "collect_jobs",
 ];
 const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];
 const toolGrants = {};

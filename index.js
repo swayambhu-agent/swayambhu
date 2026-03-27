@@ -23,18 +23,22 @@ import * as check_email from './tools/check_email.js';
 import * as send_email from './tools/send_email.js';
 import * as test_model from './tools/test_model.js';
 import * as web_search from './tools/web_search.js';
+import * as start_job from './tools/start_job.js';
+import * as collect_jobs from './tools/collect_jobs.js';
 
 // Provider adapter modules
 import * as llm from './providers/llm.js';
 import * as llm_balance from './providers/llm_balance.js';
 import * as wallet_balance from './providers/wallet_balance.js';
 import * as gmail from './providers/gmail.js';
+import * as compute from './providers/compute.js';
 
 // ── Wire modules ──────────────────────────────────────────────
 
 const TOOLS = {
   send_slack, web_fetch, kv_manifest, kv_query,
   computer, check_email, send_email, test_model, web_search,
+  start_job, collect_jobs,
 };
 
 const PROVIDERS = {
@@ -42,6 +46,7 @@ const PROVIDERS = {
   'provider:llm_balance': llm_balance,
   'provider:wallet_balance': wallet_balance,
   'provider:gmail': gmail,
+  'provider:compute': compute,
 };
 
 const CHANNELS = { slack: slackAdapter };
@@ -66,6 +71,57 @@ export default {
         interval_seconds: 21600,
       }));
       return new Response("session_schedule set to past", { status: 200 });
+    }
+
+    // Job completion callback — compute target calls back when a job finishes
+    const jobMatch = url.pathname.match(/^\/job-complete\/(.+)$/);
+    if (jobMatch && request.method === "POST") {
+      const jobId = jobMatch[1];
+      const jsonHeaders = { "Content-Type": "application/json" };
+      try {
+        const body = await request.json();
+        const job = await env.KV.get(`job:${jobId}`, "json");
+        if (!job) return new Response(JSON.stringify({ error: "unknown job" }), { status: 404, headers: jsonHeaders });
+        if (job.status !== "running") return new Response(JSON.stringify({ error: "job not running" }), { status: 409, headers: jsonHeaders });
+
+        const auth = request.headers.get("Authorization")?.replace("Bearer ", "");
+        if (auth !== job.callback_secret) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: jsonHeaders });
+
+        job.status = body.exit_code === 0 ? "completed" : "failed";
+        job.completed_at = new Date().toISOString();
+        job.exit_code = body.exit_code;
+        if (body.artifacts) job.artifacts = body.artifacts;
+        await env.KV.put(`job:${jobId}`, JSON.stringify(job));
+
+        // Write inbox item
+        const ts = Date.now().toString().padStart(15, '0');
+        await env.KV.put(`inbox:${ts}:job:${jobId}`, JSON.stringify({
+          type: "job_complete",
+          source: { job_id: jobId },
+          summary: `Job ${jobId} (${job.type}) ${job.status}`,
+          ref: `job:${jobId}`,
+          result_key: `job_result:${jobId}`,
+          timestamp: new Date().toISOString(),
+        }), { expirationTtl: 86400 });
+
+        // Advance session schedule (same pattern as chat handler)
+        try {
+          const schedule = await env.KV.get("session_schedule", "json");
+          if (schedule?.next_session_after) {
+            const advanceTo = Date.now() + 30 * 1000;
+            if (new Date(schedule.next_session_after).getTime() > advanceTo) {
+              await env.KV.put("session_schedule", JSON.stringify({
+                ...schedule,
+                next_session_after: new Date(advanceTo).toISOString(),
+              }));
+            }
+          }
+        } catch {}
+
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: jsonHeaders });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: jsonHeaders });
+      }
     }
 
     const match = url.pathname.match(/^\/channel\/(\w+)$/);

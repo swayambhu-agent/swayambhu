@@ -62,5 +62,12 @@
     "budget_multiplier": 3.0,
     "budget_soft_limit_pct": 0.65,
     "budget_hard_limit_pct": 0.85
+  },
+  "jobs": {
+    "base_url": "https://akash.swayambhu.dev",
+    "base_dir": "/home/swayambhu/jobs",
+    "default_ttl_minutes": 120,
+    "max_concurrent_jobs": 2,
+    "callback_advance_seconds": 30
   }
 }
