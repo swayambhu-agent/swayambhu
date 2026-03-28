@@ -1260,10 +1260,17 @@ class Kernel {
         patronPlatforms: this.patronPlatforms || null,
       };
 
-      // 9. Record session start
+      // 9. Record session start + increment counter
+      const count = await this.getSessionCount();
+      await this.kvWriteSafe("session_counter", count + 1);
+      const sessionIds = await this.kvGet("cache:session_ids") || [];
+      sessionIds.push(this.sessionId);
+      await this.kvWriteSafe("cache:session_ids", sessionIds);
+
       await this.karmaRecord({
         event: "session_start",
         session_id: this.sessionId,
+        session_number: count + 1,
         effort,
         scheduled_at: schedule?.next_session_after || null,
         crash_detected: !!crashData,
@@ -1282,13 +1289,6 @@ class Kernel {
       }
 
       // 11. Session bookkeeping — always runs regardless of act vs deep reflect
-      const count = await this.getSessionCount();
-      await this.kvWriteSafe(`session_counter`, count + 1);
-
-      const sessionIds = await this.kvGet("cache:session_ids") || [];
-      sessionIds.push(this.sessionId);
-      await this.kvWriteSafe("cache:session_ids", sessionIds);
-
       const karma = this.karma;
       if (karma.length > 0) {
         const { summarizeKarma } = this.HOOKS.act || {};
