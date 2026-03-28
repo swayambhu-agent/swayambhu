@@ -54,8 +54,9 @@ class Kernel {
     'contact_platform:',
     'sealed:',
     'inbox:',
+    'event:', 'event_dead:',
   ];
-  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'inbox:'];
+  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'inbox:', 'event:', 'event_dead:'];
   static KERNEL_ONLY_EXACT = ['patron:direct'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   static IMMUTABLE_KEYS = ['patron:public_key'];
@@ -545,6 +546,20 @@ class Kernel {
           : item.type;
         const key = `inbox:${ts}:${source}`;
         await kernel.kv.put(key, JSON.stringify(item), { expirationTtl: 86400 });
+      },
+
+      // Event bus
+      emitEvent: async (type, payload) => {
+        const ts = Date.now().toString().padStart(15, '0');
+        const key = `event:${ts}:${type}`;
+        const event = {
+          type,
+          ...payload,
+          timestamp: payload.timestamp || new Date().toISOString(),
+        };
+        await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+        await kernel.karmaRecord({ event: "event_emitted", type, key });
+        return { key };
       },
 
       // Balance

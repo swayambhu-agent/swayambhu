@@ -2949,3 +2949,74 @@ describe("loadKeys size guard", () => {
     expect(result.small).toBe("ok");
   });
 });
+
+// ── emitEvent ────────────────────────────────────────────────
+
+describe("emitEvent", () => {
+  it("writes a key with format event:{15-digit-timestamp}:{type}", async () => {
+    const { kernel, env } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const result = await K.emitEvent("chat_message", { source: "slack", text: "hello" });
+
+    expect(result).toHaveProperty("key");
+    const key = result.key;
+    expect(key).toMatch(/^event:\d{15}:chat_message$/);
+
+    const stored = JSON.parse(await env.KV.get(key));
+    expect(stored.type).toBe("chat_message");
+    expect(stored.source).toBe("slack");
+    expect(stored.text).toBe("hello");
+    expect(stored.timestamp).toBeDefined();
+  });
+
+  it("writes event with 24h TTL (86400)", async () => {
+    const { kernel, env } = makeKernel();
+    const K = kernel.buildKernelInterface();
+
+    const putSpy = vi.spyOn(env.KV, "put");
+    await K.emitEvent("session_end", { session_id: "s_123" });
+
+    expect(putSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^event:\d{15}:session_end$/),
+      expect.any(String),
+      { expirationTtl: 86400 }
+    );
+  });
+
+  it("preserves payload timestamp if provided", async () => {
+    const { kernel, env } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const ts = "2026-01-01T00:00:00.000Z";
+    const result = await K.emitEvent("test_event", { timestamp: ts, foo: "bar" });
+
+    const stored = JSON.parse(await env.KV.get(result.key));
+    expect(stored.timestamp).toBe(ts);
+  });
+
+  it("sets timestamp to current ISO string if not provided", async () => {
+    const { kernel, env } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const before = new Date().toISOString();
+    const result = await K.emitEvent("test_event", { foo: "bar" });
+    const after = new Date().toISOString();
+
+    const stored = JSON.parse(await env.KV.get(result.key));
+    expect(stored.timestamp >= before).toBe(true);
+    expect(stored.timestamp <= after).toBe(true);
+  });
+
+  it("records a karma event with event_emitted and the type", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const K = kernel.buildKernelInterface();
+    const result = await K.emitEvent("chat_message", { source: "slack" });
+
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "event_emitted",
+        type: "chat_message",
+        key: result.key,
+      })
+    );
+  });
+});
