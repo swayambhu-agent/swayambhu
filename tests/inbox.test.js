@@ -69,34 +69,34 @@ describe("drainInbox", () => {
   });
 });
 
-// ── 4. buildActContext with inbox ────────────────────────────
+// ── 4. buildActContext with events ────────────────────────────
 
-describe("buildActContext with inbox", () => {
-  it("includes inbox items in context", () => {
+describe("buildActContext with events", () => {
+  it("includes events items in context", () => {
     const context = {
       balances: { providers: {}, wallets: {} },
       lastReflect: null,
       additionalContext: {},
       effort: "medium",
       crashData: null,
-      inbox: [
+      events: [
         { type: "chat_message", contact_name: "Swami", summary: "explore on your own" },
         { type: "patron_direct", message: "check balances" },
       ],
     };
     const result = JSON.parse(buildActContext(context));
-    expect(result.inbox).toHaveLength(2);
-    expect(result.inbox[0].type).toBe("chat_message");
-    expect(result.inbox[1].type).toBe("patron_direct");
+    expect(result.events).toHaveLength(2);
+    expect(result.events[0].type).toBe("chat_message");
+    expect(result.events[1].type).toBe("patron_direct");
   });
 
-  it("omits inbox key when inbox is empty", () => {
+  it("omits events key when events is empty", () => {
     const context = {
       balances: {}, lastReflect: null, additionalContext: {},
-      effort: "low", crashData: null, inbox: [],
+      effort: "low", crashData: null, events: [],
     };
     const result = JSON.parse(buildActContext(context));
-    expect(result).not.toHaveProperty("inbox");
+    expect(result).not.toHaveProperty("events");
   });
 });
 
