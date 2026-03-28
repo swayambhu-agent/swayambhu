@@ -1876,9 +1876,18 @@ class Kernel {
 
   // ── Agent loop (tool-calling execution primitive) ──────────
 
-  buildToolDefinitions(extraTools = []) {
+  buildToolDefinitions(extraTools = [], opts) {
     const registry = this.toolRegistry || { tools: [] };
-    const defs = registry.tools.map(t => ({
+    let registryTools = registry.tools;
+
+    if (opts?.context) {
+      registryTools = registryTools.filter(t => {
+        if (!t.context) return true;  // No context = available everywhere
+        return t.context.includes(opts.context);
+      });
+    }
+
+    const defs = registryTools.map(t => ({
       type: 'function',
       function: {
         name: t.name,

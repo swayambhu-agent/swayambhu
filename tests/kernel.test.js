@@ -184,6 +184,59 @@ describe("buildToolDefinitions", () => {
   });
 });
 
+// ── 2b. buildToolDefinitions context filtering ───────────────
+
+describe("buildToolDefinitions context filtering", () => {
+  const registryWithContexts = {
+    tools: [
+      { name: "send_slack", description: "Send Slack message", input: {}, context: ["communication"] },
+      { name: "emit_event", description: "Emit an event", input: {}, context: ["act", "reflect"] },
+      { name: "web_search", description: "Search the web", input: {}, context: ["act", "communication", "reflect"] },
+    ],
+  };
+
+  it("excludes communication-only tools from act context", () => {
+    const { kernel } = makeKernel({}, { toolRegistry: registryWithContexts });
+    const defs = kernel.buildToolDefinitions([], { context: "act" });
+    const names = defs.map(d => d.function.name);
+    expect(names).not.toContain("send_slack");
+    expect(names).toContain("emit_event");
+    expect(names).toContain("web_search");
+  });
+
+  it("includes communication-only tools in communication context", () => {
+    const { kernel } = makeKernel({}, { toolRegistry: registryWithContexts });
+    const defs = kernel.buildToolDefinitions([], { context: "communication" });
+    const names = defs.map(d => d.function.name);
+    expect(names).toContain("send_slack");
+    expect(names).not.toContain("emit_event");
+    expect(names).toContain("web_search");
+  });
+
+  it("includes all tools when no context filter specified", () => {
+    const { kernel } = makeKernel({}, { toolRegistry: registryWithContexts });
+    const defs = kernel.buildToolDefinitions();
+    const names = defs.map(d => d.function.name);
+    expect(names).toContain("send_slack");
+    expect(names).toContain("emit_event");
+    expect(names).toContain("web_search");
+  });
+
+  it("includes tools with no context field in all contexts", () => {
+    const registry = {
+      tools: [
+        { name: "no_context_tool", description: "No context set", input: {} },
+        { name: "act_only_tool", description: "Act only", input: {}, context: ["act"] },
+      ],
+    };
+    const { kernel } = makeKernel({}, { toolRegistry: registry });
+    const defs = kernel.buildToolDefinitions([], { context: "communication" });
+    const names = defs.map(d => d.function.name);
+    expect(names).toContain("no_context_tool");
+    expect(names).not.toContain("act_only_tool");
+  });
+});
+
 // ── 3. callLLM ──────────────────────────────────────────────
 
 describe("callLLM", () => {
