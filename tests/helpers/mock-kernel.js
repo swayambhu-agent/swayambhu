@@ -36,13 +36,6 @@ export function makeMockK(kvInit = {}, opts = {}) {
     }),
     // kvWritePrivileged removed — functionality moved to kvWriteGated with context
 
-    // Blocked communications
-    listBlockedComms: vi.fn(async () => []),
-    processCommsVerdict: vi.fn(async () => ({ ok: true })),
-
-    // Inbox (unified event queue)
-    writeInboxItem: vi.fn(async () => {}),
-
     // Event bus
     emitEvent: vi.fn(async (type, payload) => {
       const ts = Date.now().toString().padStart(15, '0');
@@ -83,8 +76,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'proposal:', 'hook:', 'doc:',
-        'yama:', 'niyama:', 'upaya:', 'prajna:', 'comms_blocked:',
-        'contact:', 'contact_platform:', 'sealed:', 'inbox:',
+        'yama:', 'niyama:', 'upaya:', 'prajna:',
+        'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -95,8 +88,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'proposal:', 'hook:', 'doc:',
-        'yama:', 'niyama:', 'upaya:', 'prajna:', 'comms_blocked:',
-        'contact:', 'contact_platform:', 'sealed:', 'inbox:',
+        'yama:', 'niyama:', 'upaya:', 'prajna:',
+        'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
@@ -150,12 +143,12 @@ export function makeMockK(kvInit = {}, opts = {}) {
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'proposal:', 'hook:', 'doc:',
-    'yama:', 'niyama:', 'upaya:', 'prajna:', 'skill:', 'comms_blocked:',
-    'contact:', 'contact_platform:', 'sealed:', 'inbox:',
+    'yama:', 'niyama:', 'upaya:', 'prajna:', 'skill:',
+    'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
-  const _KERNEL_ONLY = ['kernel:', 'sealed:', 'karma:', 'inbox:', 'event:', 'event_dead:'];
+  const _KERNEL_ONLY = ['kernel:', 'sealed:', 'karma:', 'event:', 'event_dead:'];
   const _KERNEL_ONLY_EXACT = ['patron:direct'];
   const _CODE_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
   function _isSystemKey(key) {

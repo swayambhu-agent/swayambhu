@@ -195,10 +195,9 @@ export async function handleChat(K, channel, inbound, adapter) {
   }
   await K.kvWriteSafe(convKey, conv);
 
-  // Write inbox item for next session
+  // Emit event for next session
   try {
-    await K.writeInboxItem({
-      type: "chat_message",
+    await K.emitEvent("chat_message", {
       source: { channel, user_id: userId },
       contact_name: contact?.name || userId,
       contact_approved: !!contact?.approved,

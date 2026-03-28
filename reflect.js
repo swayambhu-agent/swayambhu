@@ -248,7 +248,6 @@ export async function gatherReflectContext(K, state, depth, context) {
 
   const actPrompt = await K.kvGet("prompt:act");
   const proposals = await K.loadProposals();
-  const blockedComms = await K.listBlockedComms();
   const systemKeyPatterns = await K.getSystemKeyPatterns();
 
   const recentSessionIds = await getRelevantSessionIds(K, depth);
@@ -262,9 +261,6 @@ export async function gatherReflectContext(K, state, depth, context) {
     currentDefaults: defaults,
     models: modelsConfig,
     proposals,
-    blockedComms: blockedComms.length > 0
-      ? JSON.stringify(blockedComms, null, 2)
-      : '(none)',
     patron_contact: patronContact ? JSON.stringify(patronContact, null, 2) : '(no patron configured)',
     patron_id: patronId || null,
     patron_identity_disputed: patronIdentityDisputed,
@@ -396,17 +392,6 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   // 2. Verdicts BEFORE new requests — clears conflicts first
   if (output.proposal_verdicts) {
     await K.processProposalVerdicts(output.proposal_verdicts, depth);
-  }
-
-  // 2b. Communication verdicts
-  if (output.comms_verdicts) {
-    for (const cv of output.comms_verdicts) {
-      try {
-        await K.processCommsVerdict(cv.id, cv.verdict, cv.revision);
-      } catch (err) {
-        await K.karmaRecord({ event: "comms_verdict_error", id: cv.id, error: err.message });
-      }
-    }
   }
 
   // 3. Code proposals — proposal_requests is for code changes only

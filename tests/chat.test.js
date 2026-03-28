@@ -47,18 +47,18 @@ describe("handleChat", () => {
     expect(K.callLLM).toHaveBeenCalledOnce();
   });
 
-  it("writes inbox item after handling message", async () => {
+  it("emits chat_message event after handling message", async () => {
     await handleChat(K, "slack", {
       chatId: "123", text: "Hello world", userId: "user1",
     }, adapter);
 
-    expect(K.writeInboxItem).toHaveBeenCalledOnce();
-    const item = K.writeInboxItem.mock.calls[0][0];
-    expect(item.type).toBe("chat_message");
-    expect(item.source.channel).toBe("slack");
-    expect(item.source.user_id).toBe("user1");
-    expect(item.summary).toBe("Hello world");
-    expect(item.ref).toBe("chat:slack:123");
+    expect(K.emitEvent).toHaveBeenCalledOnce();
+    const [type, payload] = K.emitEvent.mock.calls[0];
+    expect(type).toBe("chat_message");
+    expect(payload.source.channel).toBe("slack");
+    expect(payload.source.user_id).toBe("user1");
+    expect(payload.summary).toBe("Hello world");
+    expect(payload.ref).toBe("chat:slack:123");
   });
 
   it("persists conversation state across turns", async () => {
