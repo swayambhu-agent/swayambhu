@@ -69,12 +69,16 @@ export async function executeReflect(K, state, step) {
     step: "reflect",
   });
 
-  // Detect parse failure
+  // Detect parse failure — preserve previous last_reflect state
   if (output.raw !== undefined) {
+    const prevLastReflect = await K.kvGet("last_reflect");
     await K.kvWriteSafe("last_reflect", {
-      raw: output.raw,
-      parse_error: true,
-      session_id: sessionId,
+      ...prevLastReflect,
+      _parse_error: {
+        session_id: sessionId,
+        depth: 0,
+        raw_length: output.raw?.length,
+      },
     });
     await K.kvWriteSafe(`reflect:0:${sessionId}`, {
       raw: output.raw,
@@ -83,6 +87,7 @@ export async function executeReflect(K, state, step) {
       session_id: sessionId,
       timestamp: new Date().toISOString(),
     });
+    await K.karmaRecord({ event: "reflect_parse_error", depth: 0, raw_length: output.raw?.length });
     return;
   }
 
@@ -315,6 +320,30 @@ export async function gatherReflectContext(K, state, depth, context) {
 
 export async function applyReflectOutput(K, state, depth, output, context) {
   const sessionId = await K.getSessionId();
+
+  // 0. Detect parse failure — preserve previous last_reflect state
+  if (output.raw !== undefined) {
+    if (depth === 1) {
+      const prevLastReflect = await K.kvGet("last_reflect");
+      await K.kvWriteSafe("last_reflect", {
+        ...prevLastReflect,
+        _parse_error: {
+          session_id: sessionId,
+          depth,
+          raw_length: output.raw?.length,
+        },
+      });
+    }
+    await K.kvWriteSafe(`reflect:${depth}:${sessionId}`, {
+      raw: output.raw,
+      parse_error: true,
+      depth,
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+    });
+    await K.karmaRecord({ event: "reflect_parse_error", depth, raw_length: output.raw?.length });
+    return;
+  }
 
   // 1. KV operations (context-based gating — deep-reflect can write system keys)
   if (output.kv_operations?.length) {

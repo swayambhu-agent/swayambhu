@@ -266,6 +266,13 @@ foundation first rather than applying a quick fix. Use specific situations
 as a lens to examine the underlying design — the immediate need serves the
 broader goal of getting the foundations right.
 
+**Self-improving agent principle.** Swayambhu is designed to improve and
+fix itself. When you find a bug or limitation, don't just fix the
+immediate issue — ask: what is preventing the agent from seeing this
+problem and fixing it itself? The goal is to close the loop so the agent
+can detect, diagnose, and resolve similar problems autonomously in the
+future. Fix the meta-problem, not just the problem.
+
 ## Development Philosophy
 
 This is v0.1 — no backwards compatibility needed. Feel free to change data

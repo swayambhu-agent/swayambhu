@@ -1819,6 +1819,7 @@ class Kernel {
       out_tokens: result.usage.completion_tokens,
       thinking_tokens: result.usage.thinking_tokens || 0,
       cost,
+      ...(result.finish_reason === "length" ? { truncated: true } : {}),
       response: result.content || null,
       tool_calls: result.toolCalls || [],
       tools_available: tools?.map(t => ({ name: t.function?.name, description: t.function?.description })) || [],
@@ -1828,7 +1829,7 @@ class Kernel {
     this.sessionLLMCalls++;
     this.lastCallModel = model;
 
-    return { content: result.content, usage: result.usage, cost, toolCalls: result.toolCalls };
+    return { content: result.content, usage: result.usage, cost, toolCalls: result.toolCalls, finish_reason: result.finish_reason };
   }
 
   async callWithCascade(request, step) {
@@ -1899,13 +1900,15 @@ class Kernel {
       throw new Error(JSON.stringify(data.error || data));
     }
 
-    const msg = data.choices?.[0]?.message;
+    const choice = data.choices?.[0];
+    const msg = choice?.message;
     const usage = data.usage || {};
     return {
       ok: true,
       content: msg?.content || "",
       usage,
       toolCalls: msg?.tool_calls || null,
+      finish_reason: choice?.finish_reason || null,
       tier: "hardcoded",
     };
   }

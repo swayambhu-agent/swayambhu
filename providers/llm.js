@@ -22,10 +22,12 @@ export async function call({ model, messages, max_tokens, effort, family, tools,
   });
   const data = await resp.json();
   if (!resp.ok || data.error) throw new Error(JSON.stringify(data.error));
-  const msg = data.choices?.[0]?.message;
+  const choice = data.choices?.[0];
+  const msg = choice?.message;
   return {
     content: (msg?.content || "").trim(),
     usage: data.usage || {},
     toolCalls: msg?.tool_calls || null,
+    finish_reason: choice?.finish_reason || null,
   };
 }
