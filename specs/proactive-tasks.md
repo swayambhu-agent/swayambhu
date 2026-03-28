@@ -170,6 +170,10 @@ No changes. The act prompt already receives `last_reflect` as context, which wil
 - **No automatic scheduling changes.** If deep reflect decides sessions should be less frequent, it already has `next_session_config` for that.
 - **No priority-based ordering in code.** Priority is guidance for the act model, not kernel logic. Act reads the tasks and uses judgment.
 
+## Future: Dedicated task KV keys
+
+Currently tasks live as an array inside `last_reflect`. If tasks become more central to the system, consider promoting them to dedicated `task:{id}` KV keys. Benefits: independently queryable, full history preserved (done/dropped tasks stay with outcomes instead of being pruned), audit trail (created/updated/completed timestamps), dashboard can display as first-class entities, other systems can reference task IDs. The `task:` prefix should be reserved in `SYSTEM_KEY_PREFIXES` in anticipation.
+
 ## Files changed
 
 | File | Change |

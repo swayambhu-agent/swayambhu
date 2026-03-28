@@ -46,7 +46,7 @@ class Kernel {
   static SYSTEM_KEY_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'proposal:', 'hook:', 'doc:',
-    'yama:', 'niyama:',
+    'yama:', 'niyama:', 'task:',
     'upaya:', 'prajna:',
     'skill:',
     'comms_blocked:',
