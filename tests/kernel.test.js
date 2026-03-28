@@ -1799,6 +1799,102 @@ describe("callLLM budgetCap", () => {
   });
 });
 
+// ── executeAdapter contact safety ──────────────────────────
+
+describe("executeAdapter contact safety", () => {
+  function makeEmailAdapter(recipientType = "person") {
+    return {
+      meta: {
+        secrets: [],
+        communication: {
+          channel: "email",
+          recipient_field: "to",
+          recipient_type: recipientType,
+        },
+      },
+      execute: vi.fn(async () => ({ sent: true })),
+    };
+  }
+
+  function makeSlackAdapter() {
+    return {
+      meta: {
+        secrets: [],
+        communication: {
+          channel: "slack",
+          recipient_field: "channel",
+          recipient_type: "destination",
+        },
+      },
+      execute: vi.fn(async () => ({ ok: true })),
+    };
+  }
+
+  function makeLLMAdapter() {
+    return {
+      meta: { secrets: [] },
+      call: vi.fn(async () => ({ content: "response" })),
+    };
+  }
+
+  it("blocks sending to unapproved person-targeted contact", async () => {
+    const emailAdapter = makeEmailAdapter("person");
+    const { kernel } = makeKernel(
+      {
+        "contact_platform:email:bob@example.com": JSON.stringify({ slug: "bob", approved: false }),
+        "contact:bob": JSON.stringify({ name: "Bob" }),
+      },
+      { PROVIDERS: { email: emailAdapter } }
+    );
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    await expect(
+      kernel.executeAdapter("email", { to: "bob@example.com", subject: "Hi", body: "Hello" })
+    ).rejects.toThrow("Cannot send to unapproved contact: bob@example.com");
+
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "adapter_contact_blocked", recipient: "bob@example.com" })
+    );
+  });
+
+  it("allows sending to approved person-targeted contact", async () => {
+    const emailAdapter = makeEmailAdapter("person");
+    const { kernel } = makeKernel(
+      {
+        "contact_platform:email:alice@example.com": JSON.stringify({ slug: "alice", approved: true }),
+        "contact:alice": JSON.stringify({ name: "Alice" }),
+      },
+      { PROVIDERS: { email: emailAdapter } }
+    );
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAdapter("email", { to: "alice@example.com", subject: "Hi", body: "Hello" });
+    expect(result).toEqual({ sent: true });
+    expect(emailAdapter.execute).toHaveBeenCalled();
+  });
+
+  it("allows destination-targeted sends without contact check", async () => {
+    const slackAdapter = makeSlackAdapter();
+    const { kernel } = makeKernel({}, { PROVIDERS: { slack: slackAdapter } });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    // No contact_platform entry, but should not block — destination type
+    const result = await kernel.executeAdapter("slack", { text: "hello", channel: "C_GENERAL" });
+    expect(result).toEqual({ ok: true });
+    expect(slackAdapter.execute).toHaveBeenCalled();
+  });
+
+  it("allows adapters with no communication meta (e.g. llm_balance)", async () => {
+    const llmAdapter = makeLLMAdapter();
+    const { kernel } = makeKernel({}, { PROVIDERS: { "provider:llm": llmAdapter } });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAdapter("provider:llm", { model: "claude" });
+    expect(result).toEqual({ content: "response" });
+    expect(llmAdapter.call).toHaveBeenCalled();
+  });
+});
+
 // ── Yamas and Niyamas ──────────────────────────────────────
 
 describe("Yamas and Niyamas", () => {

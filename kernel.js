@@ -1460,6 +1460,26 @@ class Kernel {
     const mod = this.PROVIDERS[adapterKey];
     if (!mod) throw new Error(`Unknown adapter: ${adapterKey}`);
 
+    // Constitutional safety: self-contained contact check for person-targeted adapters
+    // Kernel derives recipient from the actual args — does NOT trust caller metadata
+    const commsMeta = mod.meta?.communication;
+    if (commsMeta?.recipient_type === "person") {
+      const recipientField = commsMeta.recipient_field;
+      const recipientId = recipientField ? input[recipientField] : null;
+      if (recipientId) {
+        const contact = await this.resolveContact(commsMeta.channel, recipientId);
+        if (!contact?.approved) {
+          await this.karmaRecord({
+            event: "adapter_contact_blocked",
+            adapter: adapterKey,
+            recipient: recipientId,
+            reason: "unapproved_contact",
+          });
+          throw new Error(`Cannot send to unapproved contact: ${recipientId}`);
+        }
+      }
+    }
+
     // Providers inject secrets from their own meta.secrets, not from toolGrants
     const secrets = {};
     for (const name of (mod.meta?.secrets || [])) {
