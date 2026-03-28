@@ -33,3 +33,4 @@ screenshots/
 # Temp / test artifacts
 tmp/
 test-results/
+.worktrees/
