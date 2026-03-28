@@ -159,7 +159,7 @@ await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy �
 
 console.log("--- Kernel Source ---");
 await put("kernel:source:kernel.js", read("kernel.js"), "text", "Kernel source");
-await put("kernel:source:hook-chat.js", read("hook-chat.js"), "text", "Chat handler source");
+await put("kernel:source:hook-communication.js", read("hook-communication.js"), "text", "Communication handler source");
 
 // ── Channel adapters ──────────────────────────────────────────
 

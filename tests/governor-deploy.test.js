@@ -27,7 +27,7 @@ describe("readCodeFromKV", () => {
       "hook:reflect:code": "export async function reflect() {}",
       // Kernel source (immutable)
       "kernel:source:kernel.js": "class Kernel {}",
-      "kernel:source:hook-chat.js": "export function handleChat() {}",
+      "kernel:source:hook-communication.js": "export function handleChat() {}",
       // Non-code keys (should be ignored by readCodeFromKV)
       "config:defaults": JSON.stringify({ schedule: {} }),
       "prompt:act": "You are...",
@@ -45,7 +45,7 @@ describe("readCodeFromKV", () => {
     expect(files["act.js"]).toBe("export async function runAct() {}");
     expect(files["reflect.js"]).toBe("export async function reflect() {}");
     expect(files["kernel.js"]).toBe("class Kernel {}");
-    expect(files["hook-chat.js"]).toBe("export function handleChat() {}");
+    expect(files["hook-communication.js"]).toBe("export function handleChat() {}");
   });
 
   it("populates metadata arrays correctly", async () => {

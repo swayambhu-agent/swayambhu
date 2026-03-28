@@ -240,30 +240,6 @@ class Kernel {
     return args[comm.reply_field] ? 'responding' : 'initiating';
   }
 
-  // ── Inbox (unified event queue) ────────────────────────────
-  // All external events (chat messages, patron directives, job completions)
-  // write to inbox:* keys. Sessions drain the inbox at startup.
-
-  async drainInbox() {
-    const keys = await this.kvListAll({ prefix: "inbox:" });
-    const items = [];
-    for (const { name } of keys) {
-      const val = await this.kvGet(name);
-      if (val) {
-        items.push(val);
-        await this.kv.delete(name);
-      }
-    }
-    if (items.length > 0) {
-      await this.karmaRecord({
-        event: "inbox_drained",
-        count: items.length,
-        types: items.reduce((acc, i) => { acc[i.type] = (acc[i.type] || 0) + 1; return acc; }, {}),
-      });
-    }
-    return items;
-  }
-
   // ── Event Bus ───────────────────────────────────────────────
   // Structured event queue replacing the inbox. Events are routed to
   // named handlers configured in config:event_handlers. Failed events
