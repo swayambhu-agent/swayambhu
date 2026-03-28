@@ -6,7 +6,8 @@
       "input": {
         "text": "required",
         "channel": "optional — channel ID (C...) or user ID (U...) for DM. Omit for default channel."
-      }
+      },
+      "context": ["communication"]
     },
     {
       "name": "web_fetch",
@@ -16,14 +17,16 @@
         "method": "GET|POST",
         "headers": "optional",
         "max_length": "default 10000"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "check_balance",
       "description": "Check balances across all configured providers and wallets. Returns balances grouped by scope (general vs project-specific). Only 'general' scope counts toward your operating budget.",
       "input": {
         "scope": "optional — filter by scope (e.g. 'general', 'project_x'). Omit to see all."
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "kv_manifest",
@@ -31,7 +34,8 @@
       "input": {
         "prefix": "optional key prefix filter",
         "limit": "max keys to return (default 100, max 500)"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "kv_query",
@@ -39,7 +43,8 @@
       "input": {
         "key": "required — full KV key (e.g. karma:s_123, upaya:timing:urgency, config:defaults)",
         "path": "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "computer",
@@ -47,7 +52,8 @@
       "input": {
         "command": "required — shell command to run",
         "timeout": "optional — seconds to wait (default 60)"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "check_email",
@@ -55,7 +61,8 @@
       "input": {
         "mark_read": "optional boolean — mark fetched emails as read (default true)",
         "max_results": "optional — max emails to return (default 10, max 20)"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "send_email",
@@ -65,7 +72,8 @@
         "subject": "required (unless replying)",
         "body": "required — plain text email body",
         "reply_to_id": "optional — Gmail message ID to reply to (threads the reply)"
-      }
+      },
+      "context": ["communication"]
     },
     {
       "name": "test_model",
@@ -74,7 +82,8 @@
         "model_id": "required — full OpenRouter model ID",
         "prompt": "required — test prompt (max 1000 chars)",
         "max_tokens": "optional — max output tokens (default 100, max 500)"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "web_search",
@@ -84,7 +93,8 @@
         "count": "optional — number of results (default 5, max 20)",
         "freshness": "optional — recency filter: day, week, month, year",
         "deep": "optional boolean — use LLM Context endpoint for rich content (default false)"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "start_job",
@@ -95,7 +105,8 @@
         "context_keys": "required — array of KV key patterns to pack as context files (e.g. [\"karma:*\", \"config:defaults\"])",
         "command": "optional — shell command to run (required for custom type)",
         "include_code": "optional boolean — include tool/hook/provider source code in context"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
     },
     {
       "name": "collect_jobs",
@@ -103,7 +114,19 @@
       "input": {
         "job_id": "optional — specific job to check. Omit to check all.",
         "wait_seconds": "optional — short poll, wait up to N seconds for completion (max 30)"
-      }
+      },
+      "context": ["act", "communication", "reflect"]
+    },
+    {
+      "name": "emit_event",
+      "description": "Emit an event for the communication system or other subscribers. Use to signal work completion, deliver results, or flag issues. The communication system will decide how and when to present this to the contact.",
+      "input": {
+        "type": "required — event type (e.g. work_complete, job_complete, error)",
+        "contact": "optional — contact identifier (e.g. Slack user ID, email)",
+        "content": "optional — description of what happened",
+        "attachments": "optional — array of { type, url } objects"
+      },
+      "context": ["act", "reflect"]
     }
   ]
 }
