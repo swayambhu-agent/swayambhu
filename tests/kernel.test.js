@@ -3020,3 +3020,131 @@ describe("emitEvent", () => {
     );
   });
 });
+
+// ── drainEvents ─────────────────────────────────────────────
+
+describe("drainEvents", () => {
+  it("returns empty arrays when no event:* keys exist", async () => {
+    const { kernel } = makeKernel();
+    const result = await kernel.drainEvents({});
+    expect(result).toEqual({ processed: [], actContext: [] });
+  });
+
+  it("routes event to configured handler and deletes event on success", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['onChat'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hello' }),
+    });
+    const onChat = vi.fn(async () => {});
+    await kernel.drainEvents({ onChat });
+    // Event key should be deleted after successful handling
+    expect(await env.KV.get('event:0001:chat_message')).toBeNull();
+  });
+
+  it("adds act-relevant events to actContext", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({}),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hi' }),
+      'event:0002:job_complete': JSON.stringify({ type: 'job_complete', job_id: 'j1' }),
+      'event:0003:other_event': JSON.stringify({ type: 'other_event', data: 'x' }),
+    });
+    const { actContext } = await kernel.drainEvents({});
+    const types = actContext.map(e => e.type);
+    expect(types).toContain('chat_message');
+    expect(types).toContain('job_complete');
+    expect(types).not.toContain('other_event');
+  });
+
+  it("does not add non-act-relevant events to actContext", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({}),
+      'event:0001:other_event': JSON.stringify({ type: 'other_event' }),
+    });
+    const { actContext } = await kernel.drainEvents({});
+    expect(actContext).toHaveLength(0);
+  });
+
+  it("records karma warning for unknown handler name, still deletes event", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['nonExistentHandler'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message' }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.drainEvents({});
+    // Unknown handler — continue is called, so allHandlersSucceeded stays true, event is deleted
+    expect(await env.KV.get('event:0001:chat_message')).toBeNull();
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'event_handler_unknown', handler: 'nonExistentHandler' })
+    );
+  });
+
+  it("increments fail count when handler throws, does not delete event", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['failHandler'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message' }),
+    });
+    const failHandler = vi.fn(async () => { throw new Error('boom'); });
+    await kernel.drainEvents({ failHandler });
+    // Event should still exist
+    expect(await env.KV.get('event:0001:chat_message')).not.toBeNull();
+    // Fail count should be stored
+    const failCount = JSON.parse(await env.KV.get('event_fail_count:event:0001:chat_message'));
+    expect(failCount).toBe(1);
+  });
+
+  it("dead-letters event after 3 failures", async () => {
+    const eventKey = 'event:0001:chat_message';
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['failHandler'] }),
+      [eventKey]: JSON.stringify({ type: 'chat_message', text: 'x' }),
+      [`event_fail_count:${eventKey}`]: JSON.stringify(2),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    const failHandler = vi.fn(async () => { throw new Error('third failure'); });
+    await kernel.drainEvents({ failHandler });
+
+    // Original event deleted
+    expect(await env.KV.get(eventKey)).toBeNull();
+    // Fail count key deleted
+    expect(await env.KV.get(`event_fail_count:${eventKey}`)).toBeNull();
+    // Dead letter written
+    const deadKey = eventKey.replace('event:', 'event_dead:');
+    const deadVal = JSON.parse(await env.KV.get(deadKey));
+    expect(deadVal).not.toBeNull();
+    expect(deadVal.fail_count).toBe(3);
+    // Karma recorded
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'event_dead_lettered', key: eventKey })
+    );
+  });
+
+  it("records events_drained karma with count and type breakdown", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({}),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message' }),
+      'event:0002:chat_message': JSON.stringify({ type: 'chat_message' }),
+      'event:0003:job_complete': JSON.stringify({ type: 'job_complete' }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.drainEvents({});
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'events_drained',
+        count: 3,
+        types: { chat_message: 2, job_complete: 1 },
+      })
+    );
+  });
+
+  it("returns processed list of successfully handled events", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['onChat'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hello' }),
+      'event:0002:chat_message': JSON.stringify({ type: 'chat_message', text: 'world' }),
+    });
+    const onChat = vi.fn(async () => {});
+    const { processed } = await kernel.drainEvents({ onChat });
+    expect(processed).toHaveLength(2);
+    expect(processed.every(e => e.type === 'chat_message')).toBe(true);
+  });
+});

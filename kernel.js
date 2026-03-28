@@ -63,6 +63,7 @@ class Kernel {
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
   static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
+  static ACT_RELEVANT_EVENTS = ['chat_message', 'job_complete', 'patron_direct'];
 
   static isSystemKey(key) {
     if (Kernel.SYSTEM_KEY_EXACT.includes(key)) return true;
@@ -354,6 +355,85 @@ class Kernel {
       });
     }
     return items;
+  }
+
+  // ── Event Bus ───────────────────────────────────────────────
+  // Structured event queue replacing the inbox. Events are routed to
+  // named handlers configured in config:event_handlers. Failed events
+  // are retried up to 3 times then dead-lettered.
+
+  async drainEvents(handlers) {
+    const handlerConfig = await this.kvGet('config:event_handlers') || {};
+    const listResult = await this.kvListAll({ prefix: 'event:' });
+    const events = [];
+
+    for (const { name } of listResult) {
+      const val = await this.kv.get(name, 'json');
+      if (val) events.push({ key: name, ...val });
+    }
+
+    if (events.length === 0) return { processed: [], actContext: [] };
+
+    const processed = [];
+    const actContext = [];
+
+    for (const event of events) {
+      if (Kernel.ACT_RELEVANT_EVENTS.includes(event.type)) {
+        actContext.push(event);
+      }
+
+      const handlerNames = handlerConfig[event.type] || [];
+      let allHandlersSucceeded = true;
+
+      for (const handlerName of handlerNames) {
+        const handlerFn = handlers[handlerName];
+        if (!handlerFn) {
+          await this.karmaRecord({
+            event: "event_handler_unknown",
+            handler: handlerName,
+            event_type: event.type,
+            event_key: event.key,
+          });
+          continue;
+        }
+        try {
+          await handlerFn(this.buildKernelInterface(), event);
+        } catch (err) {
+          allHandlersSucceeded = false;
+          await this.karmaRecord({
+            event: "event_handler_error",
+            handler: handlerName,
+            event_type: event.type,
+            error: err.message,
+          });
+        }
+      }
+
+      if (allHandlersSucceeded) {
+        await this.kv.delete(event.key);
+        processed.push(event);
+      } else {
+        const failKey = `event_fail_count:${event.key}`;
+        const failCount = ((await this.kvGet(failKey)) || 0) + 1;
+        if (failCount >= 3) {
+          const deadKey = event.key.replace('event:', 'event_dead:');
+          await this.kv.put(deadKey, JSON.stringify({ ...event, fail_count: failCount }), { expirationTtl: 604800 });
+          await this.kv.delete(event.key);
+          await this.kv.delete(failKey);
+          await this.karmaRecord({ event: "event_dead_lettered", type: event.type, key: event.key });
+        } else {
+          await this.kv.put(failKey, JSON.stringify(failCount), { expirationTtl: 86400 });
+        }
+      }
+    }
+
+    if (events.length > 0) {
+      const typeCounts = {};
+      for (const e of events) typeCounts[e.type] = (typeCounts[e.type] || 0) + 1;
+      await this.karmaRecord({ event: "events_drained", count: events.length, types: typeCounts });
+    }
+
+    return { processed, actContext };
   }
 
   async processCommsVerdict(id, verdict, revision) {
