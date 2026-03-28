@@ -90,18 +90,23 @@ export async function executeReflect(K, state, step) {
   const prevLastReflect = await K.kvGet("last_reflect");
   let vikalpas = prevLastReflect?.vikalpas || [];
   if (output.vikalpa_updates) {
+    const missed = [];
     for (const update of output.vikalpa_updates) {
-      if (update.status === "resolved") {
-        const existing = vikalpas.find(a => a.vikalpa === update.vikalpa);
-        if (existing) {
-          existing.status = "resolved";
-          if (update.evidence) existing.evidence = update.evidence;
-          existing.resolved_session = sessionId;
-        }
-      } else if (update.status === "confirmed") {
-        const existing = vikalpas.find(a => a.vikalpa === update.vikalpa);
-        if (existing) existing.revisit_by_session = update.revisit_by_session;
+      const existing = vikalpas.find(a => a.id === update.id);
+      if (!existing) {
+        missed.push(update);
+        continue;
       }
+      if (update.status === "resolved") {
+        existing.status = "resolved";
+        if (update.evidence) existing.evidence = update.evidence;
+        existing.resolved_session = sessionId;
+      } else if (update.status === "confirmed") {
+        existing.revisit_by_session = update.revisit_by_session;
+      }
+    }
+    if (missed.length) {
+      await K.karmaRecord({ event: "vikalpa_updates_missed", missed });
     }
   }
 

@@ -1715,7 +1715,7 @@ class Kernel {
 
   async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap }) {
     const budget = this.defaults?.session_budget;
-    const costLimit = budgetCap ?? budget?.max_cost;
+    const costLimit = budgetCap ?? (this.mode === 'chat' ? null : budget?.max_cost);
     if (costLimit && this.sessionCost >= costLimit)
       throw new Error("Budget exceeded: cost");
     if (budget?.max_duration_seconds && this.elapsed() > budget.max_duration_seconds * 1000)
@@ -1819,7 +1819,6 @@ class Kernel {
       out_tokens: result.usage.completion_tokens,
       thinking_tokens: result.usage.thinking_tokens || 0,
       cost,
-      request: msgs,
       response: result.content || null,
       tool_calls: result.toolCalls || [],
       tools_available: tools?.map(t => ({ name: t.function?.name, description: t.function?.description })) || [],
@@ -2424,9 +2423,20 @@ class Kernel {
   }
 
   async loadKeys(keys) {
+    const MAX_CHARS = 100_000;
     const context = {};
     for (const key of keys) {
-      context[key] = await this.kvGet(key);
+      const value = await this.kvGet(key);
+      if (value === null || value === undefined) continue;
+      const serialized = typeof value === "string" ? value : JSON.stringify(value);
+      if (serialized.length > MAX_CHARS) {
+        context[key] = {
+          _truncated: true,
+          _reason: `Value too large for act context (${serialized.length} chars, limit ${MAX_CHARS})`,
+        };
+      } else {
+        context[key] = value;
+      }
     }
     return context;
   }

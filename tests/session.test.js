@@ -1041,7 +1041,7 @@ describe("vikalpa_updates in session reflect", () => {
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         vikalpas: [
-          { vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
+          { id: "s_dr:v1", vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
         ],
       }),
     }, { sessionId: "s_carry" });
@@ -1056,6 +1056,7 @@ describe("vikalpa_updates in session reflect", () => {
     const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect).toBeTruthy();
     expect(lastReflect[1].vikalpas).toHaveLength(1);
+    expect(lastReflect[1].vikalpas[0].id).toBe("s_dr:v1");
     expect(lastReflect[1].vikalpas[0].vikalpa).toBe("Slack broken");
   });
 
@@ -1064,8 +1065,8 @@ describe("vikalpa_updates in session reflect", () => {
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         vikalpas: [
-          { vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
-          { vikalpa: "Email empty", relevance: "No inbound comms", revisit_by_session: 35 },
+          { id: "s_dr:v1", vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
+          { id: "s_dr:v2", vikalpa: "Email empty", relevance: "No inbound comms", revisit_by_session: 35 },
         ],
       }),
     }, { sessionId: "s_resolve" });
@@ -1073,7 +1074,7 @@ describe("vikalpa_updates in session reflect", () => {
       session_summary: "retested slack",
       note_to_future_self: "slack works now",
       vikalpa_updates: [
-        { vikalpa: "Slack broken", status: "resolved", evidence: "sent 3 messages successfully" },
+        { id: "s_dr:v1", status: "resolved", evidence: "sent 3 messages successfully" },
       ],
     }));
     const state = makeState({ defaults: { reflect: { model: "test/model" } } });
@@ -1082,7 +1083,7 @@ describe("vikalpa_updates in session reflect", () => {
 
     const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect[1].vikalpas).toHaveLength(2);
-    const resolved = lastReflect[1].vikalpas.find(v => v.vikalpa === "Slack broken");
+    const resolved = lastReflect[1].vikalpas.find(v => v.id === "s_dr:v1");
     expect(resolved.status).toBe("resolved");
     expect(resolved.evidence).toBe("sent 3 messages successfully");
     expect(resolved.resolved_session).toBe("s_resolve");
@@ -1093,7 +1094,7 @@ describe("vikalpa_updates in session reflect", () => {
       "last_reflect": JSON.stringify({
         session_summary: "previous",
         vikalpas: [
-          { vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 25 },
+          { id: "s_dr:v1", vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 25 },
         ],
       }),
     }, { sessionId: "s_confirm" });
@@ -1101,7 +1102,7 @@ describe("vikalpa_updates in session reflect", () => {
       session_summary: "retested, still broken",
       note_to_future_self: "slack still down",
       vikalpa_updates: [
-        { vikalpa: "Slack broken", status: "confirmed", revisit_by_session: 35 },
+        { id: "s_dr:v1", status: "confirmed", revisit_by_session: 35 },
       ],
     }));
     const state = makeState({ defaults: { reflect: { model: "test/model" } } });
@@ -1111,6 +1112,34 @@ describe("vikalpa_updates in session reflect", () => {
     const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
     expect(lastReflect[1].vikalpas).toHaveLength(1);
     expect(lastReflect[1].vikalpas[0].revisit_by_session).toBe(35);
+  });
+
+  it("logs missed vikalpa_updates to karma", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        vikalpas: [
+          { id: "s_dr:v1", vikalpa: "Slack broken", relevance: "Primary comms channel", revisit_by_session: 30 },
+        ],
+      }),
+    }, { sessionId: "s_miss" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "tried something",
+      note_to_future_self: "test",
+      vikalpa_updates: [
+        { id: "s_dr:v999", status: "resolved", evidence: "phantom vikalpa" },
+      ],
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const karmaCall = K.karmaRecord.mock.calls.find(
+      ([e]) => e.event === "vikalpa_updates_missed"
+    );
+    expect(karmaCall).toBeTruthy();
+    expect(karmaCall[0].missed).toHaveLength(1);
+    expect(karmaCall[0].missed[0].id).toBe("s_dr:v999");
   });
 });
 

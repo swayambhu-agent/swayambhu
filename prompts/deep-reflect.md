@@ -132,6 +132,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "vikalpas": [
     {
+      "id": "{{session_id}}:v1",
       "vikalpa": "The assumption",
       "relevance": "What you're doing differently because of it",
       "observed_session": "s_...",
@@ -180,6 +181,8 @@ Sankalpas are directions, not targets — let observations reshape your understa
 ### On Vikalpas
 
 Vikalpas are mental constructs about the current state of things — assumptions you're operating on that may not match current reality. Only track vikalpas that are changing your behavior from what you'd do otherwise. Review, refine, and prune.
+
+Each vikalpa must have a unique `id` in the format `{session_id}:v{n}` where `n` is 1-indexed within this output. Session reflect uses these IDs to confirm or resolve vikalpas between deep reflects. When carrying forward vikalpas from a prior deep reflect, preserve their existing IDs.
 
 ### On writing to KV
 
