@@ -18,6 +18,7 @@ class Kernel {
     this.HOOKS = opts.HOOKS || {};
     this.PROVIDERS = opts.PROVIDERS || {};
     this.CHANNELS = opts.CHANNELS || {};
+    this._eventHandlers = opts.EVENT_HANDLERS || {};
     this.startTime = Date.now();
     this.sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.sessionCost = 0;
@@ -1151,11 +1152,11 @@ class Kernel {
         loadKeys.filter(k => !k.startsWith("sealed:"))
       );
 
-      // 7a. Drain inbox (unified event queue — chat messages, patron directives, job completions)
-      const inboxItems = await this.drainInbox();
+      // 7a. Drain event bus (chat messages, patron directives, job completions)
+      const { actContext: eventItems } = await this.drainEvents(this._eventHandlers);
 
-      // Extract patron DM from inbox for effort override (replaces patron:direct)
-      const patronDM = inboxItems.find(i => i.type === "patron_direct");
+      // Extract patron DM from events for effort override
+      const patronDM = eventItems.find(i => i.type === "patron_direct");
 
       // 7b. Override effort for direct message sessions
       const effectiveEffort = patronDM
@@ -1183,7 +1184,7 @@ class Kernel {
         balances, lastReflect, additionalContext,
         effort: effectiveEffort, reflectDepth,
         crashData,
-        inbox: inboxItems,
+        events: eventItems,
         directMessage: patronDM?.message || null,
         reflectSchedule: Object.keys(reflectSchedule).length > 0 ? reflectSchedule : null,
         patronPlatforms: this.patronPlatforms || null,
