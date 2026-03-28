@@ -41,6 +41,7 @@ const configMap = {
   "config:model_capabilities":  "config/model-capabilities.json",
   "config:resources":           "config/resources.json",
   "config:tool_registry":       "config/tool-registry.json",
+  "config:subagents":           "config/subagents.json",
   "kernel:alert_config":        "config/alerts.json",
 };
 
@@ -83,6 +84,7 @@ const toolNames = [
   "kv_manifest", "kv_query", "computer",
   "check_email", "send_email", "test_model",
   "web_search", "start_job", "collect_jobs",
+  "google_docs", "send_whatsapp",
 ];
 const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];
 const toolGrants = {};

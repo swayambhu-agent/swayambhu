@@ -1,0 +1,16 @@
+[
+  {
+    "name": "claude-code",
+    "invoke": "claude -p --dangerously-skip-permissions --model sonnet --max-budget-usd 1",
+    "strengths": "Research, writing, multi-step investigation, codebase exploration, file operations, data analysis",
+    "cost": "zero marginal (subscription)",
+    "skill": "skill:agent:claude-code"
+  },
+  {
+    "name": "codex",
+    "invoke": "codex --full-auto --quiet",
+    "strengths": "Code generation, code review, implementation, refactoring",
+    "cost": "zero marginal (subscription)",
+    "skill": "skill:agent:codex"
+  }
+]

@@ -13,6 +13,7 @@ export async function runAct(K, state, context, config) {
 
   const actPrompt = await K.kvGet("prompt:act");
   const resources = await K.kvGet("config:resources");
+  const subagents = await K.kvGet("config:subagents");
 
   // Build skill manifest for act prompt injection
   const skillList = await K.kvList({ prefix: "skill:", limit: 100 });
@@ -39,6 +40,7 @@ export async function runAct(K, state, context, config) {
     resources,
     config,
     skill_manifest: skill_manifest.length ? skill_manifest : null,
+    subagents: subagents || null,
   });
 
   const initialContext = buildActContext(context);
