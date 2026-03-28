@@ -226,4 +226,4 @@ or rolled back. Query `doc:proposal-guide` for the full lifecycle.
 
 You decide when to reflect again. Include your reason. The kernel falls back to every {{currentDefaults.deep_reflect.default_interval_sessions}} sessions or {{currentDefaults.deep_reflect.default_interval_days}} days if you don't schedule.
 
-`next_session_config` is merged over `config:defaults` for the next session. Any field can be overridden.
+`next_session_config` is merged over `config:defaults` for the next session. Any field can be overridden. Use `interval_seconds` to control when the next act session runs — e.g. `"interval_seconds": 300` wakes in 5 minutes. The default is `wake.sleep_seconds` (currently {{currentDefaults.wake.sleep_seconds}}s). If you've created urgent tasks, set a shorter interval so they get executed promptly.

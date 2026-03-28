@@ -102,7 +102,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 ### next_session_config
 
-Merged over `config:defaults` for the next session. Any field can be overridden.
+Merged over `config:defaults` for the next session. Any field can be overridden. Use `interval_seconds` to control when the next session runs — e.g. `"interval_seconds": 300` wakes in 5 minutes. If you've created new tasks or there are pending high-priority tasks, consider a shorter interval.
 
 ### next_act_context.load_keys
 
