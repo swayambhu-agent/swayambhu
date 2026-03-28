@@ -342,6 +342,17 @@ export async function applyReflectOutput(K, state, depth, output, context) {
       timestamp: new Date().toISOString(),
     });
     await K.karmaRecord({ event: "reflect_parse_error", depth, raw_length: output.raw?.length });
+    // Still update the schedule so a failed DR doesn't immediately re-trigger
+    if (depth >= 1) {
+      const sessionCount = await K.getSessionCount();
+      const prevSchedule = await K.kvGet(`reflect:schedule:${depth}`) || {};
+      await K.kvWriteSafe(`reflect:schedule:${depth}`, {
+        ...prevSchedule,
+        last_reflect: new Date().toISOString(),
+        last_reflect_session: sessionCount,
+        last_reflect_session_id: sessionId,
+      });
+    }
     return;
   }
 
