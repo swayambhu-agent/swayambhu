@@ -1143,6 +1143,143 @@ describe("vikalpa_updates in session reflect", () => {
   });
 });
 
+// ── task lifecycle in session reflect ──────────────────────
+
+describe("task lifecycle in session reflect", () => {
+  it("carries forward tasks from previous deep reflect", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        tasks: [
+          { id: "s_dr:t1", task: "Check Slack", why: "Comms health", priority: "medium", status: "pending" },
+        ],
+      }),
+    }, { sessionId: "s_carry_task" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "nothing to do",
+      note_to_future_self: "test",
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
+    expect(lastReflect[1].tasks).toHaveLength(1);
+    expect(lastReflect[1].tasks[0].id).toBe("s_dr:t1");
+    expect(lastReflect[1].tasks[0].status).toBe("pending");
+  });
+
+  it("marks a task as done via task_updates", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        tasks: [
+          { id: "s_dr:t1", task: "Check Slack", why: "Comms health", priority: "medium", status: "pending" },
+          { id: "s_dr:t2", task: "Test web_fetch", why: "Tool health", priority: "low", status: "pending" },
+        ],
+      }),
+    }, { sessionId: "s_done_task" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "checked slack",
+      note_to_future_self: "done",
+      task_updates: [
+        { id: "s_dr:t1", status: "done", result: "Slack is working, sent test message" },
+      ],
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
+    expect(lastReflect[1].tasks).toHaveLength(2);
+    const done = lastReflect[1].tasks.find(t => t.id === "s_dr:t1");
+    expect(done.status).toBe("done");
+    expect(done.result).toBe("Slack is working, sent test message");
+    expect(done.done_session).toBe("s_done_task");
+  });
+
+  it("marks a task as dropped via task_updates", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        tasks: [
+          { id: "s_dr:t1", task: "Test Google Docs", why: "Tool health", priority: "low", status: "pending" },
+        ],
+      }),
+    }, { sessionId: "s_drop_task" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "google docs still broken",
+      note_to_future_self: "don't bother",
+      task_updates: [
+        { id: "s_dr:t1", status: "dropped", reason: "OAuth still not configured" },
+      ],
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
+    const dropped = lastReflect[1].tasks.find(t => t.id === "s_dr:t1");
+    expect(dropped.status).toBe("dropped");
+    expect(dropped.reason).toBe("OAuth still not configured");
+  });
+
+  it("logs missed task_updates to karma", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        tasks: [
+          { id: "s_dr:t1", task: "Check Slack", why: "test", priority: "low", status: "pending" },
+        ],
+      }),
+    }, { sessionId: "s_miss_task" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "test",
+      note_to_future_self: "test",
+      task_updates: [
+        { id: "s_dr:t999", status: "done", result: "phantom task" },
+      ],
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const karmaCall = K.karmaRecord.mock.calls.find(
+      ([e]) => e.event === "task_updates_missed"
+    );
+    expect(karmaCall).toBeTruthy();
+    expect(karmaCall[0].missed).toHaveLength(1);
+    expect(karmaCall[0].missed[0].id).toBe("s_dr:t999");
+  });
+
+  it("appends new_tasks from session reflect", async () => {
+    const K = makeMockK({
+      "last_reflect": JSON.stringify({
+        session_summary: "previous",
+        tasks: [
+          { id: "s_dr:t1", task: "Existing task", why: "test", priority: "low", status: "pending" },
+        ],
+      }),
+    }, { sessionId: "s_new_task" });
+    K.runAgentLoop = vi.fn(async () => ({
+      session_summary: "swami asked for something",
+      note_to_future_self: "follow up",
+      new_tasks: [
+        { id: "s_new_task:t1", task: "Send Swami the report", why: "He asked for it", priority: "high" },
+      ],
+    }));
+    const state = makeState({ defaults: { reflect: { model: "test/model" } } });
+
+    await executeReflect(K, state, { model: "test/model" });
+
+    const lastReflect = K.kvWriteSafe.mock.calls.find(([key]) => key === "last_reflect");
+    expect(lastReflect[1].tasks).toHaveLength(2);
+    const newTask = lastReflect[1].tasks.find(t => t.id === "s_new_task:t1");
+    expect(newTask.status).toBe("pending");
+    expect(newTask.task).toBe("Send Swami the report");
+  });
+});
+
 // ── applyReflectOutput new fields ──────────────────────────
 
 describe("applyReflectOutput conditional fields", () => {

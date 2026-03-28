@@ -60,6 +60,20 @@ Respond with a single JSON object. Nothing outside the JSON.
     { "id": "s_...:v2", "status": "resolved", "evidence": "what you saw this session" }
   ],
 
+  "task_updates": [
+    { "id": "s_...:t1", "status": "done", "result": "what happened" },
+    { "id": "s_...:t2", "status": "dropped", "reason": "why" }
+  ],
+
+  "new_tasks": [
+    {
+      "id": "{{session_id}}:t1",
+      "task": "Concrete instruction act can follow",
+      "why": "Why this matters",
+      "priority": "high|medium|low"
+    }
+  ],
+
   "kv_operations": [],
 
   "proposal_requests": [
@@ -84,7 +98,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Required:** `session_summary`, `note_to_future_self`, `next_act_context`
 
-**Optional:** `next_session_config`, `vikalpa_updates`, `kv_operations`, `proposal_requests`, `proposal_verdicts`
+**Optional:** `next_session_config`, `vikalpa_updates`, `task_updates`, `new_tasks`, `kv_operations`, `proposal_requests`, `proposal_verdicts`
 
 ### next_session_config
 
@@ -111,6 +125,14 @@ If this session's karma shows evidence about an existing vikalpa, update it via 
 - `resolved` — evidence suggests it no longer holds. Include `evidence` explaining what you saw. The vikalpa is marked but not removed — deep reflect evaluates your evidence and makes the final call.
 
 Only reference vikalpas that exist in the `last_reflect.vikalpas` array. Updates referencing a non-existent ID are silently dropped.
+
+### Checking tasks
+
+If `last_reflect` contains a `tasks` array with pending items, check whether this session's karma shows progress on any of them. Update via `task_updates`:
+- `done` — task was completed this session. Include `result`.
+- `dropped` — task is no longer relevant. Include `reason`.
+
+You can also create new tasks via `new_tasks` when this session revealed something that needs follow-up — a request from a contact, a tool failure worth retesting, a time-sensitive action. Keep tasks concrete and actionable. Use IDs in the format `{session_id}:t{n}`. Deep reflect will review and prune on its next run.
 
 ### proposal_requests
 

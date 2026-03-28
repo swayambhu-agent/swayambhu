@@ -110,9 +110,39 @@ export async function executeReflect(K, state, step) {
     }
   }
 
+  // Carry forward tasks, apply updates, append new tasks
+  let tasks = prevLastReflect?.tasks || [];
+  if (output.task_updates) {
+    const missedTasks = [];
+    for (const update of output.task_updates) {
+      const existing = tasks.find(t => t.id === update.id);
+      if (!existing) {
+        missedTasks.push(update);
+        continue;
+      }
+      if (update.status === "done") {
+        existing.status = "done";
+        if (update.result) existing.result = update.result;
+        existing.done_session = sessionId;
+      } else if (update.status === "dropped") {
+        existing.status = "dropped";
+        if (update.reason) existing.reason = update.reason;
+      }
+    }
+    if (missedTasks.length) {
+      await K.karmaRecord({ event: "task_updates_missed", missed: missedTasks });
+    }
+  }
+  if (output.new_tasks) {
+    for (const task of output.new_tasks) {
+      tasks.push({ ...task, status: "pending" });
+    }
+  }
+
   await K.kvWriteSafe("last_reflect", {
     ...output,
     vikalpas,
+    tasks,
     session_id: sessionId,
   });
 
@@ -348,6 +378,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   if (output.sankalpas) reflectRecord.sankalpas = output.sankalpas;
   if (output.proposal_observations) reflectRecord.proposal_observations = output.proposal_observations;
   if (output.vikalpas) reflectRecord.vikalpas = output.vikalpas;
+  if (output.tasks) reflectRecord.tasks = output.tasks;
   await K.kvWriteSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 6. Only depth 1: write last_reflect and session_schedule
@@ -355,6 +386,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     await K.kvWriteSafe("last_reflect", {
       session_summary: output.reflection,
       vikalpas: output.vikalpas || [],
+      tasks: output.tasks || [],
       was_deep_reflect: true,
       depth,
       session_id: sessionId,

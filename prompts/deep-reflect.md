@@ -140,6 +140,15 @@ Respond with a single JSON object. Nothing outside the JSON.
     }
   ],
 
+  "tasks": [
+    {
+      "id": "{{session_id}}:t1",
+      "task": "What to do, concretely enough that act can execute it",
+      "why": "Why this matters — connects to sankalpas, dharma, or observed gaps",
+      "priority": "high|medium|low"
+    }
+  ],
+
   "sankalpas": [
     {
       "sankalpa": "What you're committed to working toward",
@@ -172,7 +181,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 }
 ```
 
-**Required:** `reflection`, `vikalpas`
+**Required:** `reflection`, `vikalpas`, `tasks`
 
 **Everything else is optional.** Only include what you're actually changing. Omitting a field means "no change."
 
@@ -183,6 +192,16 @@ Sankalpas are directions, not targets — let observations reshape your understa
 Vikalpas are mental constructs about the current state of things — assumptions you're operating on that may not match current reality. Only track vikalpas that are changing your behavior from what you'd do otherwise. Review, refine, and prune.
 
 Each vikalpa must have a unique `id` in the format `{session_id}:v{n}` where `n` is 1-indexed within this output. Session reflect uses these IDs to confirm or resolve vikalpas between deep reflects. When carrying forward vikalpas from a prior deep reflect, preserve their existing IDs.
+
+### On Tasks
+
+When there is no pending inbound work, act sessions have nothing to do. Tasks are how you give them something to do. Look at your sankalpas, your vikalpas, your observations about system health and capability gaps, and generate tasks that advance your dharma or improve your effectiveness.
+
+Tasks should be concrete enough that an act session can execute them with tools — not aspirational, not meta. "Research current Isha Foundation news and send a summary to Swami via Slack" is a task. "Become more proactive" is not.
+
+Use your judgment on quantity and type. If the system is healthy and there's genuinely nothing useful to do, an empty task list is fine. The task list you emit replaces the previous one — include only pending tasks you want to keep and new ones. Completed and dropped tasks from session reflects are visible to you but don't need to be carried forward.
+
+Each task must have a unique `id` in the format `{session_id}:t{n}`. Session reflect may also create tasks between deep reflects — you'll see those in the current task list.
 
 ### On writing to KV
 
