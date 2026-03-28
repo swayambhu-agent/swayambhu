@@ -412,6 +412,21 @@ export async function applyReflectOutput(K, state, depth, output, context) {
 
   // 6. Only depth 1: write last_reflect and session_schedule
   if (depth === 1) {
+    // Track vikalpas/tasks dropped by deep reflect
+    const prevLastReflect = await K.kvGet("last_reflect");
+    const prevVikalpas = prevLastReflect?.vikalpas || [];
+    const prevTasks = prevLastReflect?.tasks || [];
+    const newVikalpaIds = new Set((output.vikalpas || []).map(v => v.id));
+    const newTaskIds = new Set((output.tasks || []).map(t => t.id));
+    const droppedVikalpas = prevVikalpas.filter(v => v.id && !newVikalpaIds.has(v.id));
+    const droppedTasks = prevTasks.filter(t => t.id && !newTaskIds.has(t.id));
+    if (droppedVikalpas.length) {
+      await K.karmaRecord({ event: "vikalpas_dropped", dropped: droppedVikalpas.map(v => ({ id: v.id, vikalpa: v.vikalpa })) });
+    }
+    if (droppedTasks.length) {
+      await K.karmaRecord({ event: "tasks_dropped", dropped: droppedTasks.map(t => ({ id: t.id, task: t.task, status: t.status })) });
+    }
+
     await K.kvWriteSafe("last_reflect", {
       session_summary: output.reflection,
       vikalpas: output.vikalpas || [],
