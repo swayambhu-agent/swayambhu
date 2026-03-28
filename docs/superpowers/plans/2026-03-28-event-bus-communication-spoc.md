@@ -660,7 +660,37 @@ git mv hook-chat.js hook-communication.js
 git mv prompts/chat.md prompts/communication.md
 ```
 
-- [ ] **Step 2: Update `hook-communication.js` — replace writeInboxItem with emitEvent**
+- [ ] **Step 2: Remove adapter parameter, use K.executeAdapter for sends**
+
+Update the function signature (line 12):
+
+```javascript
+// Before:
+export async function handleChat(K, channel, inbound, adapter)
+
+// After:
+export async function handleChat(K, channel, inbound)
+```
+
+Replace all `adapter.sendReply(chatId, text)` calls (lines 32, 37, 49, 183)
+with `K.executeAdapter()` calls. The channel adapter name comes from the
+`channel` parameter:
+
+```javascript
+// Before:
+await adapter.sendReply(chatId, reply);
+
+// After:
+await K.executeAdapter(channel, { text: reply, channel: chatId });
+```
+
+Apply this to all 4 call sites:
+- Line 32 (budget refill reply)
+- Line 37 (conversation cleared reply)
+- Line 49 (budget exhausted reply)
+- Line 183 (main LLM reply)
+
+- [ ] **Step 3: Replace writeInboxItem with emitEvent**
 
 In `hook-communication.js`, replace the `writeInboxItem` block (lines 199-209):
 
@@ -677,7 +707,7 @@ try {
 } catch {}
 ```
 
-- [ ] **Step 3: Add delivery mode export**
+- [ ] **Step 4: Add delivery mode export**
 
 Add a new exported function at the bottom of `hook-communication.js`:
 
@@ -786,7 +816,7 @@ export async function handleDelivery(K, events) {
 }
 ```
 
-- [ ] **Step 4: Update `prompts/communication.md`**
+- [ ] **Step 5: Update `prompts/communication.md`**
 
 Add delivery guidance at the end of the existing prompt content:
 
@@ -808,7 +838,7 @@ You might:
 - Adjust tone and detail level to match the contact's style
 ```
 
-- [ ] **Step 5: Update tests/chat.test.js**
+- [ ] **Step 6: Update tests/chat.test.js**
 
 Update the import to use the new file name:
 
@@ -874,17 +904,17 @@ describe("handleDelivery", () => {
 });
 ```
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 7: Run tests**
 
 Run: `npm test -- tests/chat.test.js`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add hook-communication.js prompts/communication.md tests/chat.test.js
 git rm hook-chat.js prompts/chat.md  # git mv already handled this
-git commit -m "feat: rename chat hook to communication hook, add delivery mode"
+git commit -m "feat: rename chat hook to communication hook, add delivery mode, remove adapter arg"
 ```
 
 ---
@@ -992,7 +1022,24 @@ async scheduled(event, env, ctx) {
 },
 ```
 
-- [ ] **Step 4: Update job-complete endpoint to use emitEvent**
+- [ ] **Step 4: Update chat webhook to stop passing adapter to hook**
+
+In `index.js`, find the chat webhook handler (around line 203) where
+`handleChat` is called:
+
+```javascript
+// Before:
+await handleChat(K, channel, inbound, adapter);
+
+// After:
+await handleChat(K, channel, inbound);
+```
+
+The hook now uses `K.executeAdapter(channel, ...)` internally for sends.
+The adapter is still used in `index.js` for inbound parsing (signature
+verification, payload extraction) — that stays unchanged.
+
+- [ ] **Step 5: Update job-complete endpoint to use emitEvent**
 
 In `index.js`, replace the inbox write in the job-complete handler (lines 100-109):
 
@@ -1016,16 +1063,16 @@ const K = kernel.buildKernelInterface();
 
 Keep the session advance logic (lines 112-123) as-is — it will also be triggered by the `sessionWake` handler on next cron drain, but immediate advance on callback is a good optimization.
 
-- [ ] **Step 5: Run full test suite**
+- [ ] **Step 6: Run full test suite**
 
 Run: `npm test`
 Expected: PASS — verify no broken references to old inbox/comms methods
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add index.js kernel.js
-git commit -m "feat: wire event bus into cron flow and job-complete endpoint"
+git commit -m "feat: wire event bus into cron flow, stop passing adapter to hook"
 ```
 
 ---
@@ -1310,11 +1357,15 @@ git commit -m "feat: context-based tool filtering from registry"
 
 ---
 
-### Task 10: Adapter-Level Contact Safety Check
+### Task 10: Self-Contained Contact Safety in `executeAdapter`
 
 **Files:**
-- Modify: `kernel.js:1536-1555` (`executeAdapter` — add contact approval check)
+- Modify: `kernel.js:1536-1555` (`executeAdapter` — add self-contained contact approval check)
 - Test: `tests/kernel.test.js`
+
+The kernel does NOT trust caller-supplied metadata about contact identity.
+It uses the adapter's own `meta.communication.recipient_field` to extract
+the actual recipient from the call args, then resolves the contact itself.
 
 - [ ] **Step 1: Write failing test**
 
@@ -1327,16 +1378,27 @@ describe("executeAdapter contact safety", () => {
       HOOKS: {},
       PROVIDERS: {
         slack: {
-          meta: { secrets: [], communication: { recipient_type: "person" } },
+          meta: {
+            secrets: [],
+            communication: {
+              channel: "slack",
+              recipient_type: "person",
+              recipient_field: "channel",
+            },
+          },
           execute: vi.fn(async () => ({ ok: true })),
         },
       },
       CHANNELS: {},
     });
-    kernel.resolveContact = async () => ({ approved: false, name: "Unknown" });
+    // Kernel resolves contact itself from the recipient field
+    kernel.resolveContact = async (platform, userId) => {
+      if (userId === "U_UNAPPROVED") return { approved: false, name: "Unknown" };
+      return null;
+    };
 
     await expect(
-      kernel.executeAdapter("slack", { text: "hello", channel: "U_UNAPPROVED", _contactId: "U_UNAPPROVED", _isInitiating: true })
+      kernel.executeAdapter("slack", { text: "hello", channel: "U_UNAPPROVED" })
     ).rejects.toThrow(/unapproved/i);
   });
 
@@ -1348,7 +1410,14 @@ describe("executeAdapter contact safety", () => {
       HOOKS: {},
       PROVIDERS: {
         slack: {
-          meta: { secrets: [], communication: { recipient_type: "person" } },
+          meta: {
+            secrets: [],
+            communication: {
+              channel: "slack",
+              recipient_type: "person",
+              recipient_field: "channel",
+            },
+          },
           execute: sent,
         },
       },
@@ -1356,7 +1425,7 @@ describe("executeAdapter contact safety", () => {
     });
     kernel.resolveContact = async () => ({ approved: true, name: "Swami" });
 
-    await kernel.executeAdapter("slack", { text: "hello", channel: "U_APPROVED", _contactId: "U_APPROVED" });
+    await kernel.executeAdapter("slack", { text: "hello", channel: "U_APPROVED" });
     expect(sent).toHaveBeenCalled();
   });
 
@@ -1368,7 +1437,14 @@ describe("executeAdapter contact safety", () => {
       HOOKS: {},
       PROVIDERS: {
         slack: {
-          meta: { secrets: [], communication: { recipient_type: "destination" } },
+          meta: {
+            secrets: [],
+            communication: {
+              channel: "slack",
+              recipient_type: "destination",
+              recipient_field: "channel",
+            },
+          },
           execute: sent,
         },
       },
@@ -1378,6 +1454,25 @@ describe("executeAdapter contact safety", () => {
     await kernel.executeAdapter("slack", { text: "log message", channel: "C_CHANNEL" });
     expect(sent).toHaveBeenCalled();
   });
+
+  it("allows sends with no communication meta (non-comms adapters)", async () => {
+    const kv = makeKVStore();
+    const called = vi.fn(async () => ({ balance: 100 }));
+    const kernel = new Kernel({ KV: kv }, {
+      TOOLS: {},
+      HOOKS: {},
+      PROVIDERS: {
+        llm_balance: {
+          meta: { secrets: [] },
+          check: called,
+        },
+      },
+      CHANNELS: {},
+    });
+
+    await kernel.executeAdapter("llm_balance", {});
+    expect(called).toHaveBeenCalled();
+  });
 });
 ```
 
@@ -1386,30 +1481,32 @@ describe("executeAdapter contact safety", () => {
 Run: `npm test -- tests/kernel.test.js -t "contact safety"`
 Expected: FAIL
 
-- [ ] **Step 3: Implement safety check in `executeAdapter`**
+- [ ] **Step 3: Implement self-contained safety check in `executeAdapter`**
 
 In `kernel.js`, in `executeAdapter()` (around line 1536), add before the `fn(ctx)` call:
 
 ```javascript
-// Constitutional safety: block initiating contact with unapproved persons
+// Constitutional safety: self-contained contact check for person-targeted adapters
+// Kernel derives recipient from the actual args — does NOT trust caller metadata
 const commsMeta = mod.meta?.communication;
-if (commsMeta?.recipient_type === "person" && input._contactId) {
-  const contact = await this.resolveContact(null, input._contactId);
-  const isInitiating = input._isInitiating !== false; // default to initiating
-  if (isInitiating && (!contact || !contact.approved)) {
-    await this._karmaRecord({
-      event: "adapter_contact_blocked",
-      adapter: adapterKey,
-      contact: input._contactId,
-      reason: "unapproved_contact_initiating",
-    });
-    throw new Error(`Cannot initiate contact with unapproved person: ${input._contactId}`);
+if (commsMeta?.recipient_type === "person") {
+  const recipientField = commsMeta.recipient_field;
+  const recipientId = recipientField ? input[recipientField] : null;
+  if (recipientId) {
+    const contact = await this.resolveContact(commsMeta.channel, recipientId);
+    if (!contact?.approved) {
+      await this._karmaRecord({
+        event: "adapter_contact_blocked",
+        adapter: adapterKey,
+        recipient: recipientId,
+        reason: "unapproved_contact",
+      });
+      throw new Error(`Cannot send to unapproved contact: ${recipientId}`);
+    }
   }
 }
 
-// Strip internal fields before passing to adapter
-const { _contactId, _isInitiating, ...adapterInput } = input;
-const ctx = { ...adapterInput, secrets, fetch: (...args) => fetch(...args) };
+const ctx = { ...input, secrets, fetch: (...args) => fetch(...args) };
 ```
 
 - [ ] **Step 4: Run test to verify it passes**

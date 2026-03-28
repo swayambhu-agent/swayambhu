@@ -229,11 +229,32 @@ system.
 
 ### Retained Safety
 
-- **Adapter-level contact block** — `executeAdapter()` checks contact approval
-  before sending. Hard refusal for initiating contact with unapproved persons.
-  Constitutional floor, not bypassable by hook or prompt changes.
+- **Self-contained contact check in `executeAdapter()`** — the kernel uses the
+  adapter's own `meta.communication.recipient_field` to extract the recipient
+  from the call args, then resolves the contact itself via `resolveContact()`.
+  It does not trust any caller-supplied metadata about contact identity. Hard
+  refusal for initiating contact with unapproved persons. Constitutional floor.
+- **Hook isolation** — hooks receive only `K` (kernel interface), not raw
+  adapters or `env`. All outbound communication goes through
+  `K.executeAdapter()`, which enforces the contact check above. The adapter
+  is never passed directly to hook code.
 - **Budget enforcement** — unchanged, applies to all LLM calls including
   communication hook delivery mode.
+
+### Security Model
+
+The kernel mediates all external actions. Hooks talk to the outside world
+through `K`, not around it. This prevents accidental or incidental safety
+violations (agent forgets to check contact approval, LLM hallucinates a
+send).
+
+The remaining theoretical bypass (hook code reading secrets via `K.kvGet`
+and calling `fetch()` directly) is a runtime limitation — Workers share a
+process and cannot sandbox modules within a single isolate. The defense for
+this layer is proposal review (code changes are visible) and karma audit
+trail (unauthorized sends are detectable). This is appropriate for a
+self-improving agent: guardrails for drift and mistakes, not containment
+for a hostile actor.
 
 ### KV Prefix Changes
 
@@ -305,9 +326,9 @@ DR focuses on communication *policy* rather than individual messages.
 | File | Change |
 |------|--------|
 | `kernel.js` | `emitEvent()`, `drainEvents()` replace inbox methods. Remove `communicationGate()`, `queueBlockedComm()`, `processCommsVerdict()`, `listBlockedComms()`. Update `KERNEL_ONLY_PREFIXES`. Retain adapter-level contact safety check. |
-| `hook-chat.js` -> `hook-communication.js` | Rename. Add delivery mode for `communicationDelivery` handler. Emit `chat_message` events (replace `writeInboxItem`). |
+| `hook-chat.js` -> `hook-communication.js` | Rename. Remove adapter parameter — all sends go through `K.executeAdapter()`. Add delivery mode for `communicationDelivery` handler. Emit `chat_message` events (replace `writeInboxItem`). |
 | `tools/emit_event.js` | New tool for act sessions. |
-| `index.js` | Event handler function registration. Wire `drainEvents()` into scheduled handler. Remove inbox write paths. Update hook import. |
+| `index.js` | Event handler function registration. Wire `drainEvents()` into scheduled handler. Remove inbox write paths. Update hook import. Stop passing adapter to hook. |
 | `config/tool-registry.json` | Add `emit_event`. Add `context` field to all tools. Mark send tools as `communication`-only. |
 | `act.js` | `context.inbox` -> `context.events`. Update prompt references. |
 | `reflect.js` | Remove `blockedComms` template variable. Add `communication_health`. Remove verdict processing. |
