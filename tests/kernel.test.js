@@ -1478,7 +1478,102 @@ describe("updateSessionOutcome", () => {
   });
 });
 
-// ── 19. (hook_dirty tests removed — flag no longer exists) ──
+// ── 19. _writeSessionHealth ──────────────────────────────────
+
+describe("_writeSessionHealth", () => {
+  it("writes a clean health summary", async () => {
+    const { kernel, env } = makeKernel();
+    kernel.sessionId = "s_test_health";
+    kernel.sessionCost = 0.05;
+    kernel.sessionLLMCalls = 3;
+    kernel._sessionStart = Date.now() - 5000;
+    kernel.karma = [
+      { event: "session_start" },
+      { event: "llm_call", step: "act_turn_0" },
+      { event: "llm_call", step: "reflect_turn_0" },
+    ];
+
+    await kernel._writeSessionHealth("clean");
+
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_health");
+    expect(putCall).toBeTruthy();
+    const health = JSON.parse(putCall[1]);
+    expect(health.outcome).toBe("clean");
+    expect(health.cost).toBe(0.05);
+    expect(health.reflect_ran).toBe(true);
+    // Clean session should not have problem fields
+    expect(health.budget_exceeded).toBeUndefined();
+    expect(health.truncations).toBeUndefined();
+  });
+
+  it("captures budget_exceeded and missing reflect", async () => {
+    const { kernel, env } = makeKernel();
+    kernel.sessionId = "s_test_budget";
+    kernel.sessionCost = 0.20;
+    kernel.sessionLLMCalls = 8;
+    kernel._sessionStart = Date.now() - 10000;
+    kernel.karma = [
+      { event: "session_start" },
+      { event: "llm_call", step: "act_turn_0" },
+      { event: "budget_exceeded", step: "act" },
+      { event: "budget_exceeded", step: "reflect" },
+    ];
+
+    await kernel._writeSessionHealth("clean");
+
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_budget");
+    const health = JSON.parse(putCall[1]);
+    expect(health.budget_exceeded).toEqual(["act", "reflect"]);
+    expect(health.reflect_ran).toBe(false);
+  });
+
+  it("captures truncations and tool failures", async () => {
+    const { kernel, env } = makeKernel();
+    kernel.sessionId = "s_test_trunc";
+    kernel.sessionCost = 0.10;
+    kernel.sessionLLMCalls = 4;
+    kernel._sessionStart = Date.now() - 8000;
+    kernel.karma = [
+      { event: "session_start" },
+      { event: "llm_call", step: "reflect_turn_0", truncated: true },
+      { event: "tool_complete", tool: "computer", ok: false },
+      { event: "tool_complete", tool: "computer", ok: false },
+      { event: "reflect_parse_error", depth: 0 },
+      { event: "vikalpa_updates_missed", missed: [] },
+    ];
+
+    await kernel._writeSessionHealth("clean");
+
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_trunc");
+    const health = JSON.parse(putCall[1]);
+    expect(health.truncations).toEqual(["reflect_turn_0"]);
+    expect(health.tool_failures).toBe(2);
+    expect(health.parse_errors).toBe(1);
+    expect(health.updates_missed).toBe(1);
+    expect(health.reflect_ran).toBe(true);
+  });
+
+  it("writes health on fatal error path", async () => {
+    const { kernel, env } = makeKernel();
+    kernel.sessionId = "s_test_fatal";
+    kernel.sessionCost = 0.01;
+    kernel.sessionLLMCalls = 1;
+    kernel._sessionStart = Date.now() - 2000;
+    kernel.karma = [
+      { event: "session_start" },
+      { event: "fatal_error", error: "boom" },
+    ];
+
+    await kernel._writeSessionHealth("error");
+
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_fatal");
+    const health = JSON.parse(putCall[1]);
+    expect(health.outcome).toBe("error");
+    expect(health.reflect_ran).toBe(false);
+  });
+});
+
+// ── (hook_dirty tests removed — flag no longer exists) ──
 
 // ── 20. runScheduled hook execution flow ──────────────────
 
@@ -2827,5 +2922,30 @@ describe("rotatePatronKey", () => {
     const { kernel } = makeKernel();
     await expect(kernel.kvWrite("patron:public_key", "new value"))
       .rejects.toThrow("immutable");
+  });
+});
+
+describe("loadKeys size guard", () => {
+  it("passes through normal-sized values", async () => {
+    const { kernel } = makeKernel({ "foo": "bar", "num": 42 });
+    const result = await kernel.loadKeys(["foo", "num"]);
+    expect(result.foo).toBe("bar");
+    expect(result.num).toBe(42);
+  });
+
+  it("skips null/undefined values", async () => {
+    const { kernel } = makeKernel({ "exists": "yes" });
+    const result = await kernel.loadKeys(["exists", "missing"]);
+    expect(result.exists).toBe("yes");
+    expect(result.missing).toBeUndefined();
+  });
+
+  it("truncates values over 100K chars", async () => {
+    const bigValue = "x".repeat(150_000);
+    const { kernel } = makeKernel({ "big": bigValue, "small": "ok" });
+    const result = await kernel.loadKeys(["big", "small"]);
+    expect(result.big._truncated).toBe(true);
+    expect(result.big._reason).toContain("150000 chars");
+    expect(result.small).toBe("ok");
   });
 });

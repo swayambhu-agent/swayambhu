@@ -281,6 +281,31 @@ export async function gatherReflectContext(K, state, depth, context) {
   if (depth >= 1) {
     templateVars.belowOutputs = await loadReflectHistory(K, depth - 1, 10);
 
+    // Session health summaries — surfaces problems DR would otherwise miss
+    const healthKeys = recentSessionIds.map(id => `session_health:${id}`);
+    const healthData = await K.loadKeys(healthKeys);
+    // Enrich empty reflect records with health data
+    if (templateVars.belowOutputs) {
+      for (const [key, record] of Object.entries(templateVars.belowOutputs)) {
+        if (record && !record.reflection && record.session_id) {
+          const health = healthData[`session_health:${record.session_id}`];
+          if (health) record._health = health;
+        }
+      }
+    }
+    // Filter to only sessions with problems (non-empty budget_exceeded, truncations, etc.)
+    const problemSessions = {};
+    for (const [key, health] of Object.entries(healthData)) {
+      if (!health || health._truncated) continue;
+      if (health.budget_exceeded || health.truncations || health.provider_fallbacks
+          || health.tool_failures || health.parse_errors || !health.reflect_ran) {
+        problemSessions[key] = health;
+      }
+    }
+    if (Object.keys(problemSessions).length > 0) {
+      templateVars.sessionHealth = problemSessions;
+    }
+
     // Same-depth history — continuity for deep reflect
     const historyCount = state.defaults?.reflect_levels?.[depth]?.prior_reflections ?? 3;
     templateVars.priorReflections = await loadReflectHistory(K, depth, historyCount);

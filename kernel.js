@@ -1309,6 +1309,9 @@ class Kernel {
         ...(endBalances ? { balances: endBalances } : {}),
       });
 
+      // 13. Session health summary — scannable by deep reflect
+      await this._writeSessionHealth("clean");
+
       return { ok: true };
 
     } catch (err) {
@@ -1317,6 +1320,7 @@ class Kernel {
         error: err.message,
         stack: err.stack,
       });
+      await this._writeSessionHealth("error");
       return { ok: false, error: err.message };
     }
   }
@@ -1383,6 +1387,40 @@ class Kernel {
     const perLevel = defaults?.reflect_levels?.[depth];
     if (perLevel?.model) return perLevel.model;
     return defaults?.deep_reflect?.model || defaults?.act?.model;
+  }
+
+  async _writeSessionHealth(outcome) {
+    const karma = this.karma || [];
+    const health = {
+      outcome,
+      cost: this.sessionCost,
+      llm_calls: this.sessionLLMCalls,
+      elapsed_ms: this.elapsed(),
+      reflect_ran: karma.some(e => e.event === 'llm_call' && e.step?.startsWith('reflect')),
+      budget_exceeded: karma.filter(e => e.event === 'budget_exceeded').map(e => e.step),
+      truncations: karma.filter(e => e.truncated).map(e => e.step),
+      provider_fallbacks: karma.filter(e => e.event === 'provider_fallback').length,
+      tool_failures: karma.filter(e => e.event === 'tool_complete' && e.ok === false).length,
+      kv_writes_blocked: karma.filter(e => e.event === 'kv_writes_blocked').length,
+      parse_errors: karma.filter(e => e.event === 'reflect_parse_error').length,
+      updates_missed: karma.filter(e => e.event?.endsWith('_missed')).length,
+      timestamp: new Date().toISOString(),
+    };
+    // Only include non-zero/non-empty problem indicators
+    if (!health.budget_exceeded.length) delete health.budget_exceeded;
+    if (!health.truncations.length) delete health.truncations;
+    if (!health.provider_fallbacks) delete health.provider_fallbacks;
+    if (!health.tool_failures) delete health.tool_failures;
+    if (!health.kv_writes_blocked) delete health.kv_writes_blocked;
+    if (!health.parse_errors) delete health.parse_errors;
+    if (!health.updates_missed) delete health.updates_missed;
+    try {
+      await this.kv.put(
+        `session_health:${this.sessionId}`,
+        JSON.stringify(health),
+        { expirationTtl: 30 * 24 * 60 * 60, metadata: { format: "json" } }
+      );
+    } catch {}
   }
 
   async updateSessionOutcome(outcome) {

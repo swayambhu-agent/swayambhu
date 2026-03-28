@@ -48,6 +48,12 @@ Each `session_start` karma event includes `scheduled_at` showing when the sessio
 
 {{reflectSchedule}}
 
+### Session health
+
+{{sessionHealth}}
+
+Health summaries for recent sessions with problems. Only sessions that had issues (budget exceeded, truncations, reflect skipped, tool failures, parse errors) appear here. Clean sessions are omitted. Empty reflect records in `belowOutputs` include a `_health` field with the corresponding health data. Investigate problem sessions via `kv_query` on their karma.
+
 ### Recent session reflects
 
 {{belowOutputs}}
