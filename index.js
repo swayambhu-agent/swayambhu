@@ -51,6 +51,10 @@ const PROVIDERS = {
   'provider:wallet_balance': wallet_balance,
   'provider:gmail': gmail,
   'provider:compute': compute,
+  // Communication adapters — exposed for K.executeAdapter() calls from hooks
+  slack: send_slack,
+  email: send_email,
+  whatsapp: send_whatsapp,
 };
 
 const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
