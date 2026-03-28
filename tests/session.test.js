@@ -862,6 +862,38 @@ describe("Patron context in reflect", () => {
   });
 });
 
+// ── Communication health in reflect ──────────────────────
+
+describe("Communication health in reflect", () => {
+  it("communicationHealth included in gatherReflectContext with dead events", async () => {
+    const K = makeMockK({
+      "event_dead:e_1": JSON.stringify({ id: "e_1", reason: "failed" }),
+      "event_dead:e_2": JSON.stringify({ id: "e_2", reason: "timeout" }),
+    });
+    K.listBlockedComms = vi.fn(async () => []);
+    const state = makeState();
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    expect(result.templateVars.communicationHealth).toBeDefined();
+    const health = JSON.parse(result.templateVars.communicationHealth);
+    expect(health.delivery_failures).toBe(2);
+    expect(health.dead_events).toContain("event_dead:e_1");
+    expect(health.dead_events).toContain("event_dead:e_2");
+  });
+
+  it("communicationHealth with no dead events", async () => {
+    const K = makeMockK();
+    K.listBlockedComms = vi.fn(async () => []);
+    const state = makeState();
+
+    const result = await gatherReflectContext(K, state, 1, {});
+    expect(result.templateVars.communicationHealth).toBeDefined();
+    const health = JSON.parse(result.templateVars.communicationHealth);
+    expect(health.delivery_failures).toBe(0);
+    expect(health.dead_events).toEqual([]);
+  });
+});
+
 // ── summarizeKarma ──────────────────────────────────────────
 
 describe("summarizeKarma", () => {

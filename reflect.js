@@ -257,6 +257,13 @@ export async function gatherReflectContext(K, state, depth, context) {
   const patronContact = await K.getPatronContact();
   const patronIdentityDisputed = patronId ? await K.isPatronIdentityDisputed() : false;
 
+  // Communication health — delivery failures and patterns
+  const deadEvents = await K.kvList({ prefix: "event_dead:" });
+  const communicationHealth = {
+    delivery_failures: deadEvents.keys.length,
+    dead_events: deadEvents.keys.map(k => k.name).slice(0, 10),
+  };
+
   const templateVars = {
     actPrompt,
     currentDefaults: defaults,
@@ -270,6 +277,7 @@ export async function gatherReflectContext(K, state, depth, context) {
     patron_identity_disputed: patronIdentityDisputed,
     systemKeyPatterns,
     recentSessionIds,
+    communicationHealth: JSON.stringify(communicationHealth, null, 2),
     context: {
       orBalance: context?.balances?.providers?.openrouter?.balance ?? "unknown",
       walletBalance: context?.balances?.wallets?.base_usdc?.balance ?? 0,
