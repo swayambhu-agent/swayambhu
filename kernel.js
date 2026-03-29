@@ -1128,8 +1128,16 @@ class Kernel {
         loadKeys.filter(k => !k.startsWith("sealed:"))
       );
 
-      // 7a. Drain event bus (chat messages, patron directives, job completions)
+      // 7a. Drain event bus (signals for handlers)
       const { actContext: eventItems } = await this.drainEvents(this._eventHandlers);
+
+      // 7a2. Load pending session requests from KV (source of truth, crash-proof)
+      const reqList = await this.kv.list({ prefix: "session_request:" });
+      const pendingRequests = [];
+      for (const { name } of reqList.keys) {
+        const req = await this.kvGet(name);
+        if (req?.status === "pending") pendingRequests.push(req);
+      }
 
       // Extract patron DM from events for effort override
       const patronDM = eventItems.find(i => i.type === "patron_direct");
@@ -1161,6 +1169,7 @@ class Kernel {
         effort: effectiveEffort, reflectDepth,
         crashData,
         events: eventItems,
+        pendingRequests,
         directMessage: patronDM?.message || null,
         reflectSchedule: Object.keys(reflectSchedule).length > 0 ? reflectSchedule : null,
         patronPlatforms: this.patronPlatforms || null,

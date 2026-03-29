@@ -110,18 +110,15 @@ export async function runAct(K, state, context, config) {
     }
   }
 
-  // Track unaddressed requests in karma (agent accountability, not auto-generation)
-  const requestEvents = context.events?.filter(e => e.type === "session_request") || [];
+  // Track unaddressed requests in karma (from KV, not events)
+  const pendingReqs = context.pendingRequests || [];
   const respondedIds = new Set((output.session_responses || []).map(r => r.request_id));
-  const unaddressed = requestEvents.filter(e => {
-    const id = e.ref?.replace("session_request:", "");
-    return id && !respondedIds.has(id);
-  });
+  const unaddressed = pendingReqs.filter(r => !respondedIds.has(r.id));
   if (unaddressed.length > 0) {
     await K.karmaRecord({
       event: "unaddressed_requests",
       count: unaddressed.length,
-      refs: unaddressed.map(e => e.ref),
+      refs: unaddressed.map(r => `session_request:${r.id}`),
     });
   }
 
@@ -144,7 +141,9 @@ export function buildActContext(context) {
   return JSON.stringify({
     // Patron direct message — first so the agent reads it immediately
     ...(context.directMessage ? { direct_message: context.directMessage } : {}),
-    // Events — all events since last session (chat messages, job completions, etc.)
+    // Pending requests from contacts (source of truth — from KV, crash-proof)
+    ...(context.pendingRequests?.length ? { pending_requests: context.pendingRequests } : {}),
+    // Events — signals since last session (job completions, patron directives, etc.)
     ...(context.events?.length ? { events: context.events } : {}),
     ...(context.patronPlatforms ? { patron_platforms: context.patronPlatforms } : {}),
     additional_context: context.additionalContext,

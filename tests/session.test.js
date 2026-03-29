@@ -802,7 +802,8 @@ describe("runAct session_responses", () => {
       additionalContext: null,
       effort: "low",
       crashData: null,
-      events: [{ type: "session_request", ref: reqKey, contact: "U456" }],
+      events: [],
+      pendingRequests: [{ id: "req_456", contact: "U456", status: "pending" }],
     };
     await runAct(K, state, context, {});
 
@@ -810,7 +811,7 @@ describe("runAct session_responses", () => {
     const unaddressedCall = karmaCalls.find(c => c[0].event === "unaddressed_requests");
     expect(unaddressedCall).toBeDefined();
     expect(unaddressedCall[0].count).toBe(1);
-    expect(unaddressedCall[0].refs).toContain(reqKey);
+    expect(unaddressedCall[0].refs).toContain("session_request:req_456");
   });
 
   it("handles pending status with note and next_session", async () => {
