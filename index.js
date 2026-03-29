@@ -66,7 +66,7 @@ const EVENT_HANDLERS = {
     if (!EVENT_HANDLERS._pendingDelivery) EVENT_HANDLERS._pendingDelivery = [];
     EVENT_HANDLERS._pendingDelivery.push(event);
   },
-  sessionWake: async (K, event) => {
+  sessionTrigger: async (K, event) => {
     try {
       const schedule = await K.kvGet("session_schedule");
       if (schedule?.next_session_after) {

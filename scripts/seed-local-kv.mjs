@@ -63,9 +63,9 @@ await put("kernel:fallback_model", JSON.stringify(kernelConf.fallback_model), "j
 
 // Event handlers
 await put("config:event_handlers", {
-  chat_message: ["sessionWake"],
-  job_complete: ["communicationDelivery", "sessionWake"],
-  patron_direct: ["sessionWake"],
+  chat_message: ["sessionTrigger"],
+  job_complete: ["communicationDelivery", "sessionTrigger"],
+  patron_direct: ["sessionTrigger"],
   error: [],
 }, "json", "Event bus handler routing — maps event types to handler names");
 

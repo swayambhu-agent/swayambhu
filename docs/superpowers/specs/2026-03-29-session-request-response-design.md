@@ -27,7 +27,7 @@ Two new event types replace `chat_message` and `work_complete`:
 
 | Event | Emitted by | Subscribers | Purpose |
 |-------|-----------|-------------|---------|
-| `session_request` | `trigger_session` tool (chat) | `sessionWake` | Contact asked for work |
+| `session_request` | `trigger_session` tool (chat) | `sessionTrigger` | Contact asked for work |
 | `session_response` | `act.js` (structural output) | `communicationDelivery` | Session reports status |
 
 Regular chat messages ("hi, how are you") emit no events. Only
@@ -67,7 +67,7 @@ The source of truth for each request. Any process can read it.
 4. Chat LLM: calls trigger_session
    → Creates session_request:{id} KV key (status: pending)
    → Emits session_request event
-   → sessionWake handler advances schedule
+   → sessionTrigger handler advances schedule
 5. Chat LLM: "On it, kicking off a session"
 
 6. Cron fires → drains session_request event
@@ -220,10 +220,10 @@ for (const reqEvent of requestEvents) {
 
 ```json
 {
-  "session_request": ["sessionWake"],
+  "session_request": ["sessionTrigger"],
   "session_response": ["communicationDelivery"],
-  "job_complete": ["communicationDelivery", "sessionWake"],
-  "patron_direct": ["sessionWake"],
+  "job_complete": ["communicationDelivery", "sessionTrigger"],
+  "patron_direct": ["sessionTrigger"],
   "error": []
 }
 ```
