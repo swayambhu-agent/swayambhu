@@ -87,26 +87,6 @@ export async function runAct(K, state, context, config) {
     }
   }
 
-  // Deliver results to contacts — if the session had contact events,
-  // emit work_complete so the communication system can deliver.
-  // This is automatic: the agent doesn't decide to emit, the code does.
-  const contactEvents = context.events?.filter(e => e.contact) || [];
-  if (contactEvents.length > 0 && output.session_summary) {
-    const contacts = [...new Set(contactEvents.map(e => e.contact))];
-    for (const contact of contacts) {
-      try {
-        await K.emitEvent("work_complete", {
-          source: "act",
-          contact,
-          content: output.session_summary,
-          session_id: await K.getSessionId(),
-        });
-      } catch (err) {
-        await K.karmaRecord({ event: "work_complete_emit_error", contact, error: err.message });
-      }
-    }
-  }
-
   // Session reflect — skip if budget fully exhausted (but not if
   // act was soft-capped by reflect_reserve_pct)
   const skipReflect = output.budget_exceeded && !reservePct;

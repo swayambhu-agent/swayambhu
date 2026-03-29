@@ -1192,6 +1192,26 @@ class Kernel {
         const { runAct } = this.HOOKS.act || {};
         if (!runAct) throw new Error("No runAct in HOOKS.act");
         await runAct(K, state, context, config);
+
+        // Queue communication delivery for contacts that triggered this session.
+        // The scheduled handler flushes pending deliveries via ctx.waitUntil.
+        // Content is minimal — the delivery handler loads conversation history.
+        const contactEvents = eventItems?.filter(e => e.contact) || [];
+        if (contactEvents.length > 0) {
+          const contacts = [...new Set(contactEvents.map(e => e.contact))];
+          const handlers = this._eventHandlers;
+          if (handlers) {
+            for (const contact of contacts) {
+              if (!handlers._pendingDelivery) handlers._pendingDelivery = [];
+              handlers._pendingDelivery.push({
+                type: "work_complete",
+                source: "act",
+                contact,
+                session_id: this.sessionId,
+              });
+            }
+          }
+        }
       }
 
       // 11. Session bookkeeping — always runs regardless of act vs deep reflect
