@@ -548,6 +548,10 @@ export async function isReflectDue(K, state, depth) {
 }
 
 export async function highestReflectDepthDue(K, state) {
+  // First session is always deep reflect — orient before acting
+  const sessionCount = await K.getSessionCount();
+  if (sessionCount === 0) return 1;
+
   const maxDepth = state.defaults?.execution?.max_reflect_depth || 1;
   for (let d = maxDepth; d >= 1; d--) {
     if (await isReflectDue(K, state, d)) return d;
