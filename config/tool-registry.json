@@ -1,15 +1,6 @@
 {
   "tools": [
     {
-      "name": "send_slack",
-      "description": "Send a Slack message to a channel or DM a user. Pass a channel ID (C...) to post to a channel, or a user ID (U...) to send a direct message. Omit channel to use the default channel.",
-      "input": {
-        "text": "required",
-        "channel": "optional — channel ID (C...) or user ID (U...) for DM. Omit for default channel."
-      },
-      "context": ["communication"]
-    },
-    {
       "name": "web_fetch",
       "description": "Fetch contents of a URL",
       "input": {
@@ -57,17 +48,6 @@
         "mark_read": "optional boolean — mark fetched emails as read (default true)",
         "max_results": "optional — max emails to return (default 10, max 20)"
       }
-    },
-    {
-      "name": "send_email",
-      "description": "Send an email or reply to an existing thread via Gmail.",
-      "input": {
-        "to": "required — recipient email address",
-        "subject": "required (unless replying)",
-        "body": "required — plain text email body",
-        "reply_to_id": "optional — Gmail message ID to reply to (threads the reply)"
-      },
-      "context": ["communication"]
     },
     {
       "name": "test_model",
