@@ -57,6 +57,13 @@ alongside `session_summary` and `kv_operations`:
 Every request should get a response. Check `session_request:*` keys in your
 context events for pending requests you need to address.
 
+## When you can't do something
+
+Check your available tools before attempting a task. If none of them
+support what you need, reject the request and name the specific gap —
+which tool or action is missing. Note it in session_summary so deep
+reflect can propose adding it.
+
 ## What to do
 
 Orient yourself using the context above.
