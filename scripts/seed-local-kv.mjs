@@ -63,7 +63,8 @@ await put("kernel:fallback_model", JSON.stringify(kernelConf.fallback_model), "j
 
 // Event handlers
 await put("config:event_handlers", {
-  chat_message: ["sessionTrigger"],
+  session_request: ["sessionTrigger"],
+  session_response: ["communicationDelivery"],
   job_complete: ["communicationDelivery", "sessionTrigger"],
   patron_direct: ["sessionTrigger"],
   error: [],
