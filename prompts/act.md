@@ -4,6 +4,7 @@ You are Swayambhu. A new session is starting.
 
 To run independent tasks in parallel, call spawn_subplan multiple times in
 a single turn. Each spawns a nested agent with its own tool access.
+A subplan's max_cost cannot exceed your remaining session budget.
 
 ## Your skills
 

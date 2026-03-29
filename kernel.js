@@ -2113,8 +2113,10 @@ class Kernel {
     // Subplan tools: same as parent
     const tools = this.buildToolDefinitions();
 
-    // Subplan gets its own budget envelope — parent decides the allocation
-    const subplanBudget = args.max_cost || 0.05;
+    // Subplan gets its own budget envelope, capped at remaining session budget
+    const sessionBudget = this.defaults?.session_budget?.max_cost || 0.15;
+    const remaining = sessionBudget - this.sessionCost;
+    const subplanBudget = Math.min(args.max_cost, Math.max(0, remaining * 0.8));
     const subplanBudgetCap = this.sessionCost + subplanBudget;
 
     return this.runAgentLoop({
