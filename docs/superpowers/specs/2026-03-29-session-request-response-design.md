@@ -121,12 +121,16 @@ communication delivery handler reads the status and decides:
 - Been a while? "Still working on it, about 60% done."
 - Contact asks via chat? Chat reads the KV key and responds.
 
-### Enforcement
+### Accountability
 
-`act.js` enforces the contract: after the agent loop, it checks for
-`session_request:*` events in context. If the agent's output doesn't
-include a `session_responses` entry for each, `act.js` auto-generates
-a `pending` response. No silent drops.
+The act prompt tells the agent it MUST respond to every `session_request`
+in context. If it doesn't, `act.js` records `unaddressed_requests` in
+the karma summary — visible to DR and session health. The system doesn't
+auto-generate responses on behalf of the agent; it records the gap so
+the agent can learn and DR can flag patterns.
+
+No code enforcement. The agent is responsible. Stale pending requests
+with no recent `updated_at` are visible to DR for prioritization.
 
 ### trigger_session changes
 
@@ -196,23 +200,20 @@ if (output.session_responses?.length) {
   }
 }
 
-// Enforce contract: auto-respond pending for unaddressed requests
+// Track unaddressed requests in karma summary (not auto-generated responses)
 const requestEvents = context.events?.filter(e => e.type === "session_request") || [];
 const respondedIds = new Set((output.session_responses || []).map(r => r.request_id));
-for (const reqEvent of requestEvents) {
-  const reqKey = reqEvent.ref;
-  const req = await K.kvGet(reqKey);
-  if (req && !respondedIds.has(req.id)) {
-    req.status = "pending";
-    req.updated_at = new Date().toISOString();
-    req.note = "Session did not address this request";
-    await K.kvWriteSafe(reqKey, req);
-    await K.emitEvent("session_response", {
-      contact: req.contact,
-      ref: reqKey,
-      status: "pending",
-    });
-  }
+const unaddressed = requestEvents.filter(e => {
+  const req = e.ref;
+  const id = req?.replace("session_request:", "");
+  return id && !respondedIds.has(id);
+});
+if (unaddressed.length > 0) {
+  await K.karmaRecord({
+    event: "unaddressed_requests",
+    count: unaddressed.length,
+    refs: unaddressed.map(e => e.ref),
+  });
 }
 ```
 
