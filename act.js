@@ -52,7 +52,7 @@ export async function runAct(K, state, context, config) {
     dmConfig?.model || config.act?.model || defaults?.act?.model
   );
 
-  const tools = await K.buildToolDefinitions();
+  const tools = await K.buildToolDefinitions([], { context: "act" });
 
   // Reserve budget for reflect if configured
   const budget = defaults?.session_budget;
@@ -106,8 +106,8 @@ export function buildActContext(context) {
   return JSON.stringify({
     // Patron direct message — first so the agent reads it immediately
     ...(context.directMessage ? { direct_message: context.directMessage } : {}),
-    // Inbox — all events since last session (chat messages, job completions, etc.)
-    ...(context.inbox?.length ? { inbox: context.inbox } : {}),
+    // Events — all events since last session (chat messages, job completions, etc.)
+    ...(context.events?.length ? { events: context.events } : {}),
     ...(context.patronPlatforms ? { patron_platforms: context.patronPlatforms } : {}),
     additional_context: context.additionalContext,
     last_reflect: context.lastReflect,

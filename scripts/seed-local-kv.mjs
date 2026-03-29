@@ -61,6 +61,15 @@ await put("wallets", wallets, "json", "Registered crypto wallets");
 const kernelConf = readJSON("config/kernel.json");
 await put("kernel:fallback_model", JSON.stringify(kernelConf.fallback_model), "json", "Fallback model for failed LLM calls");
 
+// Event handlers
+await put("config:event_handlers", {
+  chat_message: ["sessionWake"],
+  work_complete: ["communicationDelivery"],
+  job_complete: ["communicationDelivery", "sessionWake"],
+  patron_direct: ["sessionWake"],
+  error: [],
+}, "json", "Event bus handler routing — maps event types to handler names");
+
 // ── Providers (from providers/*.js) ───────────────────────────
 
 console.log("--- Providers ---");
@@ -112,7 +121,7 @@ await put("prompt:act", read("prompts/act.md"), "text", "Act session system prom
 await put("prompt:subplan", read("prompts/subplan.md"), "text", "Subplan agent system prompt template");
 await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
 await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1)");
-await put("prompt:chat", read("prompts/chat.md"), "text", "Chat system prompt");
+await put("prompt:communication", read("prompts/communication.md"), "text", "Communication system prompt");
 
 // ── Documentation (from docs/agent/*.md) ──────────────────────
 
@@ -150,7 +159,7 @@ await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy �
 
 console.log("--- Kernel Source ---");
 await put("kernel:source:kernel.js", read("kernel.js"), "text", "Kernel source");
-await put("kernel:source:hook-chat.js", read("hook-chat.js"), "text", "Chat handler source");
+await put("kernel:source:hook-communication.js", read("hook-communication.js"), "text", "Communication handler source");
 
 // ── Channel adapters ──────────────────────────────────────────
 

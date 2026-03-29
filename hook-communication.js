@@ -1,6 +1,6 @@
-// Swayambhu Chat Handler — Platform-agnostic chat session pipeline
+// Swayambhu Communication Handler — inbound chat and outbound delivery pipeline.
 // Channel adapters handle platform specifics (statically imported).
-// The chat system prompt (prompt:chat) is in KV = agent-evolvable.
+// The communication system prompt (prompt:communication) is in KV = agent-evolvable.
 //
 // Every kernel method is called via K (the kernel interface).
 // This module is kernel-level code — immutable, imported directly.
@@ -9,7 +9,7 @@
 // One object per conversation, growing chronologically (mirrors Slack).
 // Karma (audit trail) is embedded in the chat object, not in karma:{sessionId}.
 
-export async function handleChat(K, channel, inbound, adapter) {
+export async function handleChat(K, channel, inbound) {
   const { chatId, text, command, userId, resolvedChatKey, sentTs } = inbound;
   const convKey = `chat:${channel}:${resolvedChatKey || chatId}`;
 
@@ -29,12 +29,12 @@ export async function handleChat(K, channel, inbound, adapter) {
     conv.total_cost = 0;
     delete conv._budget_warned;
     await K.kvWriteSafe(convKey, conv);
-    await adapter.sendReply(chatId, "Budget refilled. Conversation history preserved.");
+    await K.executeAdapter(channel, { text: "Budget refilled. Conversation history preserved.", channel: chatId });
     return { ok: true, reason: "reset" };
   }
   if (command === "clear") {
     await K.kvDeleteSafe(convKey);
-    await adapter.sendReply(chatId, "Conversation cleared.");
+    await K.executeAdapter(channel, { text: "Conversation cleared.", channel: chatId });
     return { ok: true, reason: "clear" };
   }
 
@@ -46,12 +46,12 @@ export async function handleChat(K, channel, inbound, adapter) {
   const chatConfig = { ...chatDefaults, ...contactConfig };
   const maxCost = chatConfig.max_cost_per_conversation || 0.50;
   if (conv.total_cost >= maxCost) {
-    await adapter.sendReply(chatId, "Budget reached. Send /reset to refill or /clear to start fresh.");
+    await K.executeAdapter(channel, { text: "Budget reached. Send /reset to refill or /clear to start fresh.", channel: chatId });
     return { ok: true, reason: "budget_exhausted" };
   }
 
   // Build system prompt (dharma injected by kernel in callLLM)
-  const chatPrompt = await K.kvGet("prompt:chat");
+  const chatPrompt = await K.kvGet("prompt:communication");
   const contactContext = contact
     ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}`
     : "";
@@ -63,7 +63,7 @@ export async function handleChat(K, channel, inbound, adapter) {
     : "";
 
   const systemPrompt = [
-    chatPrompt || "You are in a live chat. Respond conversationally.",
+    chatPrompt || "You are in a live communication session. Respond conversationally.",
     contactContext,
     sessionContext,
   ].join("\n\n").trim();
@@ -91,12 +91,12 @@ export async function handleChat(K, channel, inbound, adapter) {
   const model = await K.resolveModel(chatModel);
   let tools;
   if (contact?.approved) {
-    tools = await K.buildToolDefinitions();
+    tools = await K.buildToolDefinitions([], { context: "communication" });
   } else if (contact) {
     // Contact exists but not approved — restricted tools
     const allowlist = chatConfig.unknown_contact_tools || [];
     tools = allowlist.length
-      ? (await K.buildToolDefinitions()).filter(t => allowlist.includes(t.function?.name))
+      ? (await K.buildToolDefinitions([], { context: "communication" })).filter(t => allowlist.includes(t.function?.name))
       : [];
     await K.karmaRecord({
       event: 'inbound_unapproved', sender_id: userId, channel,
@@ -104,7 +104,7 @@ export async function handleChat(K, channel, inbound, adapter) {
   } else {
     const allowlist = chatConfig.unknown_contact_tools || [];
     tools = allowlist.length
-      ? (await K.buildToolDefinitions()).filter(t => allowlist.includes(t.function?.name))
+      ? (await K.buildToolDefinitions([], { context: "communication" })).filter(t => allowlist.includes(t.function?.name))
       : [];
     await K.karmaRecord({
       event: 'inbound_unknown', sender_id: userId, channel,
@@ -180,7 +180,7 @@ export async function handleChat(K, channel, inbound, adapter) {
   }
 
   // Send via channel adapter
-  await adapter.sendReply(chatId, reply);
+  await K.executeAdapter(channel, { text: reply, channel: chatId });
 
   // Collect chat karma from kernel (in-memory only, not written to karma:{sessionId})
   const chatKarma = await K.getChatKarma();
@@ -195,10 +195,9 @@ export async function handleChat(K, channel, inbound, adapter) {
   }
   await K.kvWriteSafe(convKey, conv);
 
-  // Write inbox item for next session
+  // Emit event for next session
   try {
-    await K.writeInboxItem({
-      type: "chat_message",
+    await K.emitEvent("chat_message", {
       source: { channel, user_id: userId },
       contact_name: contact?.name || userId,
       contact_approved: !!contact?.approved,
@@ -228,6 +227,97 @@ export async function handleChat(K, channel, inbound, adapter) {
   }
 
   return { ok: true, turn: conv.turn_count };
+}
+
+export async function handleDelivery(K, events) {
+  const byContact = {};
+  for (const event of events) {
+    const contactId = event.contact || "unknown";
+    if (!byContact[contactId]) byContact[contactId] = [];
+    byContact[contactId].push(event);
+  }
+
+  const results = [];
+
+  for (const [contactId, contactEvents] of Object.entries(byContact)) {
+    try {
+      const contact = await K.resolveContact(null, contactId);
+      if (!contact) {
+        await K.karmaRecord({
+          event: "delivery_skipped",
+          contact: contactId,
+          reason: "contact_not_found",
+          event_count: contactEvents.length,
+        });
+        continue;
+      }
+
+      const platform = contact.platform || "slack";
+      const convKey = `chat:${platform}:${contactId}`;
+      const conv = await K.kvGet(convKey) || { messages: [] };
+
+      const prompt = await K.kvGet("prompt:communication");
+      if (!prompt) {
+        await K.karmaRecord({ event: "delivery_error", reason: "no_prompt:communication" });
+        continue;
+      }
+
+      const deliveryContext = {
+        mode: "delivery",
+        contact: { id: contactId, name: contact.name, platform },
+        pending_deliverables: contactEvents.map(e => ({
+          type: e.type,
+          content: e.content,
+          attachments: e.attachments,
+          timestamp: e.timestamp,
+        })),
+        conversation_history: conv.messages.slice(-20),
+      };
+
+      const model = await K.resolveModel(
+        (await K.getDefaults())?.communication?.model || (await K.getDefaults())?.act?.model
+      );
+      const response = await K.callLLM({
+        model,
+        system: prompt,
+        messages: [{ role: "user", content: JSON.stringify(deliveryContext) }],
+        max_tokens: 1000,
+      });
+
+      const message = response?.content;
+      if (!message) continue;
+
+      const adapterKey = platform === "slack" ? "slack" : platform;
+      await K.executeAdapter(adapterKey, {
+        text: message,
+        channel: contactId,
+      });
+
+      conv.messages.push(
+        { role: "user", content: `[DELIVERY] ${contactEvents.map(e => e.content).join("; ")}` },
+        { role: "assistant", content: message }
+      );
+      await K.kvWriteSafe(convKey, conv);
+
+      await K.karmaRecord({
+        event: "delivery_sent",
+        contact: contactId,
+        event_count: contactEvents.length,
+        model,
+      });
+
+      results.push({ contact: contactId, sent: true });
+    } catch (err) {
+      await K.karmaRecord({
+        event: "delivery_error",
+        contact: contactId,
+        error: err.message,
+      });
+      results.push({ contact: contactId, sent: false, error: err.message });
+    }
+  }
+
+  return results;
 }
 
 // Trim messages by turn boundaries, keeping the most recent turns.

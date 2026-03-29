@@ -4,7 +4,7 @@
 // In local dev, this is a static hand-written file importing from disk.
 
 import { Kernel } from './kernel.js';
-import { handleChat } from './hook-chat.js';
+import { handleChat, handleDelivery } from './hook-communication.js';
 
 // Hook modules (mutable policy — agent can propose changes)
 import * as act from './act.js';
@@ -51,18 +51,51 @@ const PROVIDERS = {
   'provider:wallet_balance': wallet_balance,
   'provider:gmail': gmail,
   'provider:compute': compute,
+  // Communication adapters — exposed for K.executeAdapter() calls from hooks
+  slack: send_slack,
+  email: send_email,
+  whatsapp: send_whatsapp,
 };
 
 const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
 
 const HOOKS = { act, reflect };
 
+const EVENT_HANDLERS = {
+  communicationDelivery: async (K, event) => {
+    if (!EVENT_HANDLERS._pendingDelivery) EVENT_HANDLERS._pendingDelivery = [];
+    EVENT_HANDLERS._pendingDelivery.push(event);
+  },
+  sessionWake: async (K, event) => {
+    try {
+      const schedule = await K.kvGet("session_schedule");
+      if (schedule?.next_session_after) {
+        const advanceTo = Date.now() + 30 * 1000;
+        if (new Date(schedule.next_session_after).getTime() > advanceTo) {
+          await K.kvWriteSafe("session_schedule", {
+            ...schedule,
+            next_session_after: new Date(advanceTo).toISOString(),
+          });
+        }
+      }
+    } catch (err) {
+      await K.karmaRecord({ event: "session_wake_error", error: err.message });
+    }
+  },
+};
+
 // ── Entry points ──────────────────────────────────────────────
 
 export default {
   async scheduled(event, env, ctx) {
-    const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS });
+    const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
     await kernel.runScheduled();
+    // Flush pending communication deliveries in background
+    if (EVENT_HANDLERS._pendingDelivery?.length) {
+      const pending = EVENT_HANDLERS._pendingDelivery.splice(0);
+      const K = kernel.buildKernelInterface();
+      ctx.waitUntil(handleDelivery(K, pending));
+    }
   },
 
   async fetch(request, env, ctx) {
@@ -97,16 +130,15 @@ export default {
         if (body.artifacts) job.artifacts = body.artifacts;
         await env.KV.put(`job:${jobId}`, JSON.stringify(job));
 
-        // Write inbox item
-        const ts = Date.now().toString().padStart(15, '0');
-        await env.KV.put(`inbox:${ts}:job:${jobId}`, JSON.stringify({
-          type: "job_complete",
+        // Emit event into the event bus
+        const jobKernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+        const K = jobKernel.buildKernelInterface();
+        await K.emitEvent("job_complete", {
           source: { job_id: jobId },
           summary: `Job ${jobId} (${job.type}) ${job.status}`,
           ref: `job:${jobId}`,
           result_key: `job_result:${jobId}`,
-          timestamp: new Date().toISOString(),
-        }), { expirationTtl: 86400 });
+        });
 
         // Advance session schedule (same pattern as chat handler)
         try {
@@ -200,7 +232,7 @@ export default {
         };
 
         const K = kernel.buildKernelInterface();
-        await handleChat(K, channel, inbound, adapter);
+        await handleChat(K, channel, inbound);
       } catch (err) {
         console.error(`[CHAT] error: ${err.message}`, err.stack);
         try {

@@ -18,6 +18,7 @@ class Kernel {
     this.HOOKS = opts.HOOKS || {};
     this.PROVIDERS = opts.PROVIDERS || {};
     this.CHANNELS = opts.CHANNELS || {};
+    this._eventHandlers = opts.EVENT_HANDLERS || {};
     this.startTime = Date.now();
     this.sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.sessionCost = 0;
@@ -40,7 +41,6 @@ class Kernel {
     this.patronPlatforms = null; // Patron's platform bindings (loaded at boot from contact_platform: keys)
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
     this.lastCallModel = null; // Last model used in callLLM (for yama/niyama capability checks)
-    this._commsGateApproved = false; // Transient flag: set by executeToolCall/processCommsVerdict around executeAction
   }
 
   static SYSTEM_KEY_PREFIXES = [
@@ -49,19 +49,19 @@ class Kernel {
     'yama:', 'niyama:', 'task:',
     'upaya:', 'prajna:',
     'skill:',
-    'comms_blocked:',
     'contact:',
     'contact_platform:',
     'sealed:',
-    'inbox:',
+    'event:', 'event_dead:',
   ];
-  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'inbox:'];
+  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'event:', 'event_dead:'];
   static KERNEL_ONLY_EXACT = ['patron:direct'];
   static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   static IMMUTABLE_KEYS = ['patron:public_key'];
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
   static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
+  static ACT_RELEVANT_EVENTS = ['chat_message', 'job_complete', 'patron_direct'];
 
   static isSystemKey(key) {
     if (Kernel.SYSTEM_KEY_EXACT.includes(key)) return true;
@@ -240,176 +240,83 @@ class Kernel {
     return args[comm.reply_field] ? 'responding' : 'initiating';
   }
 
-  generateCommsBlockedId() {
-    return `cb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  }
+  // ── Event Bus ───────────────────────────────────────────────
+  // Structured event queue replacing the inbox. Events are routed to
+  // named handlers configured in config:event_handlers. Failed events
+  // are retried up to 3 times then dead-lettered.
 
-  async queueBlockedComm(toolName, args, meta, reason, gateResult) {
-    const id = this.generateCommsBlockedId();
-    const record = {
-      id,
-      tool: toolName,
-      args,
-      channel: meta.communication.channel,
-      content_field: meta.communication.content_field || null,
-      recipient: this.resolveRecipient(args, meta),
-      mode: this.resolveCommsMode(args, meta),
-      reason,
-      gate_verdict: gateResult,
-      session_id: this.sessionId,
-      model: this.lastCallModel,
-      timestamp: new Date().toISOString(),
-    };
-    // Kernel-internal write — not exposed via RPC
-    await this.kvWrite(`comms_blocked:${id}`, record);
-    await this.karmaRecord({
-      event: "comms_blocked",
-      id, tool: toolName,
-      channel: meta.communication.channel,
-      recipient: record.recipient,
-      mode: record.mode,
-      reason,
-    });
-    return id;
-  }
+  async drainEvents(handlers) {
+    const handlerConfig = await this.kvGet('config:event_handlers') || {};
+    const listResult = await this.kvListAll({ prefix: 'event:' });
+    const events = [];
 
-  async communicationGate(toolName, args, meta) {
-    const recipient = this.resolveRecipient(args, meta);
-    const mode = this.resolveCommsMode(args, meta);
+    for (const { name } of listResult) {
+      const val = await this.kv.get(name, 'json');
+      if (val) events.push({ key: name, ...val });
+    }
 
-    // Mechanical floor — blocks person-targeted comms to unknown/unapproved contacts
-    // Destination-targeted tools (e.g. Slack channel) pass through
-    const channel = meta.communication?.channel;
-    const recipientType = meta.communication?.recipient_type || 'destination';
-    const recipientContact = recipient ? await this.resolveContact(channel, recipient) : null;
-    if (recipientType === 'person' && recipient) {
-      if (!recipientContact) {
-        if (mode === 'initiating') {
-          return {
-            verdict: 'block',
-            reasoning: `No contact record for recipient "${recipient}" — cannot initiate contact with unknown person`,
-            mechanical: true,
-          };
+    if (events.length === 0) return { processed: [], actContext: [] };
+
+    const processed = [];
+    const actContext = [];
+
+    for (const event of events) {
+      if (Kernel.ACT_RELEVANT_EVENTS.includes(event.type)) {
+        actContext.push(event);
+      }
+
+      const handlerNames = handlerConfig[event.type] || [];
+      let allHandlersSucceeded = true;
+
+      for (const handlerName of handlerNames) {
+        const handlerFn = handlers[handlerName];
+        if (!handlerFn) {
+          await this.karmaRecord({
+            event: "event_handler_unknown",
+            handler: handlerName,
+            event_type: event.type,
+            event_key: event.key,
+          });
+          continue;
         }
-      } else if (!recipientContact.approved) {
-        return {
-          verdict: 'block',
-          reasoning: `Contact "${recipient}" is not approved — all communication blocked until patron approves`,
-          mechanical: true,
-        };
+        try {
+          await handlerFn(this.buildKernelInterface(), event);
+        } catch (err) {
+          allHandlersSucceeded = false;
+          await this.karmaRecord({
+            event: "event_handler_error",
+            handler: handlerName,
+            event_type: event.type,
+            error: err.message,
+          });
+        }
+      }
+
+      if (allHandlersSucceeded) {
+        await this.kv.delete(event.key);
+        processed.push(event);
+      } else {
+        const failKey = `event_fail_count:${event.key}`;
+        const failCount = ((await this.kvGet(failKey)) || 0) + 1;
+        if (failCount >= 3) {
+          const deadKey = event.key.replace('event:', 'event_dead:');
+          await this.kv.put(deadKey, JSON.stringify({ ...event, fail_count: failCount }), { expirationTtl: 604800 });
+          await this.kv.delete(event.key);
+          await this.kv.delete(failKey);
+          await this.karmaRecord({ event: "event_dead_lettered", type: event.type, key: event.key });
+        } else {
+          await this.kv.put(failKey, JSON.stringify(failCount), { expirationTtl: 86400 });
+        }
       }
     }
 
-    // Staleness check — if inbox items arrived since session started, hold outbound.
-    // Inbox items only exist when unprocessed (drainInbox deletes them at session start),
-    // so any present items arrived mid-session and the agent's context is stale.
-    if (this.mode === 'session') {
-      const peek = await this.kv.list({ prefix: "inbox:", limit: 1 });
-      if (peek.keys.length > 0) {
-        return {
-          verdict: 'hold',
-          reasoning: 'Unprocessed inbox items arrived during session — holding to avoid stale reply',
-        };
-      }
+    if (events.length > 0) {
+      const typeCounts = {};
+      for (const e of events) typeCounts[e.type] = (typeCounts[e.type] || 0) + 1;
+      await this.karmaRecord({ event: "events_drained", count: events.length, types: typeCounts });
     }
 
-    // Approved contact or destination — allow through
-    // Message quality and comms policy are the agent's responsibility (see skill:comms)
-    return { verdict: 'send' };
-  }
-
-  async listBlockedComms() {
-    const blockedKeys = await this.kvListAll({ prefix: 'comms_blocked:' });
-    const entries = [];
-    for (const { name: key } of blockedKeys) {
-      const value = await this.kvGet(key);
-      if (value !== null) {
-        try { entries.push(typeof value === 'string' ? JSON.parse(value) : value); }
-        catch { continue; }
-      }
-    }
-    return entries;
-  }
-
-  // ── Inbox (unified event queue) ────────────────────────────
-  // All external events (chat messages, patron directives, job completions)
-  // write to inbox:* keys. Sessions drain the inbox at startup.
-
-  async drainInbox() {
-    const keys = await this.kvListAll({ prefix: "inbox:" });
-    const items = [];
-    for (const { name } of keys) {
-      const val = await this.kvGet(name);
-      if (val) {
-        items.push(val);
-        await this.kv.delete(name);
-      }
-    }
-    if (items.length > 0) {
-      await this.karmaRecord({
-        event: "inbox_drained",
-        count: items.length,
-        types: items.reduce((acc, i) => { acc[i.type] = (acc[i.type] || 0) + 1; return acc; }, {}),
-      });
-    }
-    return items;
-  }
-
-  async processCommsVerdict(id, verdict, revision) {
-    const key = `comms_blocked:${id}`;
-    const raw = await this.kvGet(key);
-    if (!raw) return { error: `No blocked comm: ${id}` };
-    let record;
-    try { record = typeof raw === 'string' ? JSON.parse(raw) : raw; }
-    catch { return { error: "corrupted record" }; }
-
-    if (verdict === 'send' || verdict === 'revise_and_send') {
-      let sendArgs = { ...record.args };
-      if (verdict === 'revise_and_send' && revision?.text) {
-        const cf = record.content_field;
-        if (cf && sendArgs[cf] !== undefined) sendArgs[cf] = revision.text;
-      }
-      // Execute via executeAction — set gate flag (already approved by deep reflect)
-      this._commsGateApproved = true;
-      let result;
-      try {
-        result = await this.executeAction({
-          tool: record.tool,
-          input: sendArgs,
-          id: `comms_verdict_${id}`,
-        });
-      } finally {
-        this._commsGateApproved = false;
-      }
-      // Check if delivery actually succeeded before deleting the record
-      if (result?.ok === false || result?.error) {
-        await this.karmaRecord({
-          event: 'comms_verdict_failed', id, tool: record.tool,
-          recipient: record.recipient, verdict,
-          error: result?.error || 'delivery failed',
-        });
-        return { ok: false, error: result?.error || 'delivery failed', result };
-      }
-      await this.karmaRecord({
-        event: 'comms_verdict_sent', id, tool: record.tool,
-        recipient: record.recipient, verdict,
-        revised: verdict === 'revise_and_send',
-      });
-      await this.kv.delete(key);
-      return { ok: true, result };
-    }
-
-    if (verdict === 'drop') {
-      await this.karmaRecord({
-        event: 'comms_verdict_dropped', id, tool: record.tool,
-        recipient: record.recipient,
-        reason: revision?.reason || 'dropped by deep reflect',
-      });
-      await this.kv.delete(key);
-      return { ok: true, dropped: true };
-    }
-
-    return { error: `Unknown verdict: ${verdict}` };
+    return { processed, actContext };
   }
 
   // ── Debug log (durable, auto-expiring) ──────────────────────
@@ -496,7 +403,6 @@ class Kernel {
 
   // kvWritePrivileged — REMOVED. Functionality moved to kvWriteGated with context-based permissions.
   // Contact gating → _gateContact(). System key gating → _gateSystem().
-  // processCommsVerdict uses direct kv.delete() for comms_blocked: cleanup.
 
   // ── Kernel interface (replaces KernelRPC) ───────────────────
   // Returns a K object with the same API hooks expect from KernelRPC.
@@ -533,18 +439,18 @@ class Kernel {
       executeAction: async (step) => kernel.executeAction(step),
       executeAdapter: async (adapterKey, input) => kernel.executeAdapter(adapterKey, input),
 
-      // Blocked communications
-      listBlockedComms: async () => kernel.listBlockedComms(),
-      processCommsVerdict: async (id, verdict, revision) => kernel.processCommsVerdict(id, verdict, revision),
-
-      // Inbox (unified event queue)
-      writeInboxItem: async (item) => {
+      // Event bus
+      emitEvent: async (type, payload) => {
         const ts = Date.now().toString().padStart(15, '0');
-        const source = item.type === 'chat_message'
-          ? `chat:${item.source?.channel}:${item.source?.user_id}`
-          : item.type;
-        const key = `inbox:${ts}:${source}`;
-        await kernel.kv.put(key, JSON.stringify(item), { expirationTtl: 86400 });
+        const key = `event:${ts}:${type}`;
+        const event = {
+          type,
+          ...payload,
+          timestamp: payload.timestamp || new Date().toISOString(),
+        };
+        await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+        await kernel.karmaRecord({ event: "event_emitted", type, key });
+        return { key };
       },
 
       // Balance
@@ -1222,11 +1128,11 @@ class Kernel {
         loadKeys.filter(k => !k.startsWith("sealed:"))
       );
 
-      // 7a. Drain inbox (unified event queue — chat messages, patron directives, job completions)
-      const inboxItems = await this.drainInbox();
+      // 7a. Drain event bus (chat messages, patron directives, job completions)
+      const { actContext: eventItems } = await this.drainEvents(this._eventHandlers);
 
-      // Extract patron DM from inbox for effort override (replaces patron:direct)
-      const patronDM = inboxItems.find(i => i.type === "patron_direct");
+      // Extract patron DM from events for effort override
+      const patronDM = eventItems.find(i => i.type === "patron_direct");
 
       // 7b. Override effort for direct message sessions
       const effectiveEffort = patronDM
@@ -1254,7 +1160,7 @@ class Kernel {
         balances, lastReflect, additionalContext,
         effort: effectiveEffort, reflectDepth,
         crashData,
-        inbox: inboxItems,
+        events: eventItems,
         directMessage: patronDM?.message || null,
         reflectSchedule: Object.keys(reflectSchedule).length > 0 ? reflectSchedule : null,
         patronPlatforms: this.patronPlatforms || null,
@@ -1489,13 +1395,6 @@ class Kernel {
     // Load tool code + meta (platform-specific, overridable)
     const { meta, moduleCode } = await this._loadTool(toolName);
 
-    // Communication tools require gate approval — cannot be called via RPC directly
-    // Gate classification comes from kernel:tool_grants (immutable to agent), not meta
-    const grant = this.toolGrants?.[toolName];
-    if (grant?.communication && !this._commsGateApproved) {
-      return { error: 'Communication tools require gate approval — cannot call executeAction directly' };
-    }
-
     // Build sandboxed context based on function metadata
     const ctx = await this.buildToolContext(toolName, meta || {}, step.input || {});
 
@@ -1536,6 +1435,26 @@ class Kernel {
   async executeAdapter(adapterKey, input, secretOverrides) {
     const mod = this.PROVIDERS[adapterKey];
     if (!mod) throw new Error(`Unknown adapter: ${adapterKey}`);
+
+    // Constitutional safety: self-contained contact check for person-targeted adapters
+    // Kernel derives recipient from the actual args — does NOT trust caller metadata
+    const commsMeta = mod.meta?.communication;
+    if (commsMeta?.recipient_type === "person") {
+      const recipientField = commsMeta.recipient_field;
+      const recipientId = recipientField ? input[recipientField] : null;
+      if (recipientId) {
+        const contact = await this.resolveContact(commsMeta.channel, recipientId);
+        if (!contact?.approved) {
+          await this.karmaRecord({
+            event: "adapter_contact_blocked",
+            adapter: adapterKey,
+            recipient: recipientId,
+            reason: "unapproved_contact",
+          });
+          throw new Error(`Cannot send to unapproved contact: ${recipientId}`);
+        }
+      }
+    }
 
     // Providers inject secrets from their own meta.secrets, not from toolGrants
     const secrets = {};
@@ -1953,9 +1872,18 @@ class Kernel {
 
   // ── Agent loop (tool-calling execution primitive) ──────────
 
-  buildToolDefinitions(extraTools = []) {
+  buildToolDefinitions(extraTools = [], opts) {
     const registry = this.toolRegistry || { tools: [] };
-    const defs = registry.tools.map(t => ({
+    let registryTools = registry.tools;
+
+    if (opts?.context) {
+      registryTools = registryTools.filter(t => {
+        if (!t.context) return true;  // No context = available everywhere
+        return t.context.includes(opts.context);
+      });
+    }
+
+    const defs = registryTools.map(t => ({
       type: 'function',
       function: {
         name: t.name,
@@ -2030,49 +1958,8 @@ class Kernel {
       return this.checkBalance(args);
     }
 
-    // ── Load tool meta + grants (shared by comms gate + inbound gate) ──
-    const { meta: toolMeta } = await this._loadTool(name).catch(() => ({ meta: null }));
+    // ── Load tool grants (for inbound gate) ──
     const toolGrant = this.toolGrants?.[name] || {};
-
-    // ── Communication gate (kernel-enforced) ──────────────────
-    // Gate classification comes from kernel:tool_grants (immutable to agent), not meta.
-    // The agent cannot bypass the gate by modifying tool:*:meta in KV.
-    let isCommsTool = false;
-    {
-      const commGrant = toolGrant.communication;
-      if (commGrant) {
-        isCommsTool = true;
-        // Build a meta-like object from grants for the gate methods
-        const commMeta = { communication: commGrant };
-        const gateResult = await this.communicationGate(name, args, commMeta);
-
-        if (gateResult.verdict === 'block' || gateResult.verdict === 'queue' || gateResult.verdict === 'hold') {
-          await this.queueBlockedComm(name, args, commMeta, gateResult.reasoning, gateResult);
-          const label = gateResult.verdict === 'hold' ? 'held for next session'
-            : gateResult.verdict === 'queue' ? 'queued for review' : 'blocked';
-          return { error: `Communication ${label}: ${gateResult.reasoning}` };
-        }
-
-        if (gateResult.verdict === 'revise' && gateResult.revision?.text) {
-          const cf = commGrant.content_field;
-          if (cf && args[cf] !== undefined) args[cf] = gateResult.revision.text;
-          await this.karmaRecord({
-            event: 'comms_revised', tool: name,
-            recipient: this.resolveRecipient(args, commMeta),
-            reasoning: gateResult.reasoning,
-          });
-        }
-
-        if (gateResult.verdict === 'send') {
-          await this.karmaRecord({
-            event: 'comms_approved', tool: name,
-            recipient: this.resolveRecipient(args, commMeta),
-            reasoning: gateResult.reasoning,
-          });
-        }
-      }
-    }
-    // ── End communication gate ────────────────────────────────
 
     // Pre-validation hook
     const schema = this.toolRegistry?.tools?.find(t => t.name === name)?.input;
@@ -2083,102 +1970,96 @@ class Kernel {
     }
     if (preCheck?.args) args = preCheck.args;
 
-    // Set gate approval flag so executeAction allows communication tools
-    if (isCommsTool) this._commsGateApproved = true;
-    try {
-      let result = await this.executeAction({
-        tool: name,
-        input: args,
-        id: toolCall.id,
-      });
+    let result = await this.executeAction({
+      tool: name,
+      input: args,
+      id: toolCall.id,
+    });
 
-      // Post-validation hook
-      const postCheck = await this.callHook('validate_result', { tool: name, args, result });
-      if (postCheck && !postCheck.ok) {
-        await this.karmaRecord({ event: "hook_rejected", hook: "validate_result", tool: name, error: postCheck.error });
-        return { error: postCheck.error };
-      }
-
-      // ── Inbound content gate (kernel-enforced) ──────────────────
-      // Gate classification comes from kernel:tool_grants (immutable to agent).
-      // Tools with inbound grants return external messages. The kernel
-      // redacts content from unknown senders and quarantines it under
-      // sealed:* keys (unreadable by agent, visible to patron via dashboard).
-      {
-        const inboundGrant = toolGrant.inbound;
-        if (inboundGrant && result && !result.error) {
-          const { channel, sender_field, content_field, result_array } = inboundGrant;
-          const items = result[result_array];
-          if (Array.isArray(items)) {
-            for (const item of items) {
-              const senderId = item[sender_field];
-              if (!senderId) continue;
-              const contact = await this.resolveContact(channel, senderId);
-              if (!contact || !contact.approved) {
-                const reason = !contact ? 'unknown sender' : 'unapproved sender';
-                const ts = Date.now();
-                const quarantineKey = `sealed:quarantine:${channel}:${encodeURIComponent(senderId)}:${ts}`;
-                await this.kvWrite(quarantineKey, {
-                  sender: senderId,
-                  content: item[content_field],
-                  tool: name,
-                  reason,
-                  timestamp: new Date(ts).toISOString(),
-                  ...(item.subject ? { subject: item.subject } : {}),
-                  ...(item.from ? { from: item.from } : {}),
-                });
-                item[content_field] = `[content redacted — ${reason}]`;
-                await this.karmaRecord({
-                  event: 'inbound_redacted', sender_id: senderId, channel,
-                  quarantine_key: quarantineKey,
-                });
-              }
-            }
-          }
-        }
-      }
-      // ── End inbound content gate ────────────────────────────────
-
-      // ── Chat seeding (outbound Slack DMs seed conversation state) ──
-      // When send_slack targets a DM channel, seed the chat object so
-      // the agent's outbound message appears in conversation history
-      // and the recipient's reply has full context.
-      if (name === 'send_slack' && result && !result.error && result.ok) {
-        const targetChannel = args.channel || this.env.SLACK_CHANNEL_ID;
-        // Only seed chat for DMs (user ID starts with U)
-        if (targetChannel && targetChannel.startsWith('U')) {
-          try {
-            const chatKey = `chat:slack:${targetChannel}`;
-            const conv = await this.kvGet(chatKey) || {
-              messages: [],
-              karma: [],
-              total_cost: 0,
-              created_at: new Date().toISOString(),
-              turn_count: 0,
-            };
-            conv.messages.push({
-              role: "assistant",
-              content: args.text,
-              source_session: this.sessionId,
-              ts: new Date().toISOString(),
-            });
-            if (!conv.source_session) {
-              conv.source_session = this.sessionId;
-            }
-            conv.last_activity = new Date().toISOString();
-            await this.kvWriteSafe(chatKey, conv);
-          } catch (err) {
-            // Non-fatal — chat seeding failure shouldn't break the tool call
-            await this.karmaRecord({ event: "chat_seed_error", tool: name, error: err.message });
-          }
-        }
-      }
-      // ── End chat seeding ──────────────────────────────────────────
-
-      return result;
-    } finally {
-      if (isCommsTool) this._commsGateApproved = false;
+    // Post-validation hook
+    const postCheck = await this.callHook('validate_result', { tool: name, args, result });
+    if (postCheck && !postCheck.ok) {
+      await this.karmaRecord({ event: "hook_rejected", hook: "validate_result", tool: name, error: postCheck.error });
+      return { error: postCheck.error };
     }
+
+    // ── Inbound content gate (kernel-enforced) ──────────────────
+    // Gate classification comes from kernel:tool_grants (immutable to agent).
+    // Tools with inbound grants return external messages. The kernel
+    // redacts content from unknown senders and quarantines it under
+    // sealed:* keys (unreadable by agent, visible to patron via dashboard).
+    {
+      const inboundGrant = toolGrant.inbound;
+      if (inboundGrant && result && !result.error) {
+        const { channel, sender_field, content_field, result_array } = inboundGrant;
+        const items = result[result_array];
+        if (Array.isArray(items)) {
+          for (const item of items) {
+            const senderId = item[sender_field];
+            if (!senderId) continue;
+            const contact = await this.resolveContact(channel, senderId);
+            if (!contact || !contact.approved) {
+              const reason = !contact ? 'unknown sender' : 'unapproved sender';
+              const ts = Date.now();
+              const quarantineKey = `sealed:quarantine:${channel}:${encodeURIComponent(senderId)}:${ts}`;
+              await this.kvWrite(quarantineKey, {
+                sender: senderId,
+                content: item[content_field],
+                tool: name,
+                reason,
+                timestamp: new Date(ts).toISOString(),
+                ...(item.subject ? { subject: item.subject } : {}),
+                ...(item.from ? { from: item.from } : {}),
+              });
+              item[content_field] = `[content redacted — ${reason}]`;
+              await this.karmaRecord({
+                event: 'inbound_redacted', sender_id: senderId, channel,
+                quarantine_key: quarantineKey,
+              });
+            }
+          }
+        }
+      }
+    }
+    // ── End inbound content gate ────────────────────────────────
+
+    // ── Chat seeding (outbound Slack DMs seed conversation state) ──
+    // When send_slack targets a DM channel, seed the chat object so
+    // the agent's outbound message appears in conversation history
+    // and the recipient's reply has full context.
+    if (name === 'send_slack' && result && !result.error && result.ok) {
+      const targetChannel = args.channel || this.env.SLACK_CHANNEL_ID;
+      // Only seed chat for DMs (user ID starts with U)
+      if (targetChannel && targetChannel.startsWith('U')) {
+        try {
+          const chatKey = `chat:slack:${targetChannel}`;
+          const conv = await this.kvGet(chatKey) || {
+            messages: [],
+            karma: [],
+            total_cost: 0,
+            created_at: new Date().toISOString(),
+            turn_count: 0,
+          };
+          conv.messages.push({
+            role: "assistant",
+            content: args.text,
+            source_session: this.sessionId,
+            ts: new Date().toISOString(),
+          });
+          if (!conv.source_session) {
+            conv.source_session = this.sessionId;
+          }
+          conv.last_activity = new Date().toISOString();
+          await this.kvWriteSafe(chatKey, conv);
+        } catch (err) {
+          // Non-fatal — chat seeding failure shouldn't break the tool call
+          await this.karmaRecord({ event: "chat_seed_error", tool: name, error: err.message });
+        }
+      }
+    }
+    // ── End chat seeding ──────────────────────────────────────────
+
+    return result;
   }
 
   async callHook(hookName, ctx) {
@@ -2451,7 +2332,6 @@ class Kernel {
       sealed:     { type: "sealed", format: "json" },
       yama:       { type: "yama", format: "text" },
       niyama:     { type: "niyama", format: "text" },
-      comms_blocked: { type: "comms", format: "json" },
     };
     const finalMetadata = {
       ...defaults[prefix],

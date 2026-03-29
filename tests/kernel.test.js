@@ -184,6 +184,59 @@ describe("buildToolDefinitions", () => {
   });
 });
 
+// ── 2b. buildToolDefinitions context filtering ───────────────
+
+describe("buildToolDefinitions context filtering", () => {
+  const registryWithContexts = {
+    tools: [
+      { name: "send_slack", description: "Send Slack message", input: {}, context: ["communication"] },
+      { name: "emit_event", description: "Emit an event", input: {}, context: ["act", "reflect"] },
+      { name: "web_search", description: "Search the web", input: {}, context: ["act", "communication", "reflect"] },
+    ],
+  };
+
+  it("excludes communication-only tools from act context", () => {
+    const { kernel } = makeKernel({}, { toolRegistry: registryWithContexts });
+    const defs = kernel.buildToolDefinitions([], { context: "act" });
+    const names = defs.map(d => d.function.name);
+    expect(names).not.toContain("send_slack");
+    expect(names).toContain("emit_event");
+    expect(names).toContain("web_search");
+  });
+
+  it("includes communication-only tools in communication context", () => {
+    const { kernel } = makeKernel({}, { toolRegistry: registryWithContexts });
+    const defs = kernel.buildToolDefinitions([], { context: "communication" });
+    const names = defs.map(d => d.function.name);
+    expect(names).toContain("send_slack");
+    expect(names).not.toContain("emit_event");
+    expect(names).toContain("web_search");
+  });
+
+  it("includes all tools when no context filter specified", () => {
+    const { kernel } = makeKernel({}, { toolRegistry: registryWithContexts });
+    const defs = kernel.buildToolDefinitions();
+    const names = defs.map(d => d.function.name);
+    expect(names).toContain("send_slack");
+    expect(names).toContain("emit_event");
+    expect(names).toContain("web_search");
+  });
+
+  it("includes tools with no context field in all contexts", () => {
+    const registry = {
+      tools: [
+        { name: "no_context_tool", description: "No context set", input: {} },
+        { name: "act_only_tool", description: "Act only", input: {}, context: ["act"] },
+      ],
+    };
+    const { kernel } = makeKernel({}, { toolRegistry: registry });
+    const defs = kernel.buildToolDefinitions([], { context: "communication" });
+    const names = defs.map(d => d.function.name);
+    expect(names).toContain("no_context_tool");
+    expect(names).not.toContain("act_only_tool");
+  });
+});
+
 // ── 3. callLLM ──────────────────────────────────────────────
 
 describe("callLLM", () => {
@@ -1746,6 +1799,102 @@ describe("callLLM budgetCap", () => {
   });
 });
 
+// ── executeAdapter contact safety ──────────────────────────
+
+describe("executeAdapter contact safety", () => {
+  function makeEmailAdapter(recipientType = "person") {
+    return {
+      meta: {
+        secrets: [],
+        communication: {
+          channel: "email",
+          recipient_field: "to",
+          recipient_type: recipientType,
+        },
+      },
+      execute: vi.fn(async () => ({ sent: true })),
+    };
+  }
+
+  function makeSlackAdapter() {
+    return {
+      meta: {
+        secrets: [],
+        communication: {
+          channel: "slack",
+          recipient_field: "channel",
+          recipient_type: "destination",
+        },
+      },
+      execute: vi.fn(async () => ({ ok: true })),
+    };
+  }
+
+  function makeLLMAdapter() {
+    return {
+      meta: { secrets: [] },
+      call: vi.fn(async () => ({ content: "response" })),
+    };
+  }
+
+  it("blocks sending to unapproved person-targeted contact", async () => {
+    const emailAdapter = makeEmailAdapter("person");
+    const { kernel } = makeKernel(
+      {
+        "contact_platform:email:bob@example.com": JSON.stringify({ slug: "bob", approved: false }),
+        "contact:bob": JSON.stringify({ name: "Bob" }),
+      },
+      { PROVIDERS: { email: emailAdapter } }
+    );
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    await expect(
+      kernel.executeAdapter("email", { to: "bob@example.com", subject: "Hi", body: "Hello" })
+    ).rejects.toThrow("Cannot send to unapproved contact: bob@example.com");
+
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "adapter_contact_blocked", recipient: "bob@example.com" })
+    );
+  });
+
+  it("allows sending to approved person-targeted contact", async () => {
+    const emailAdapter = makeEmailAdapter("person");
+    const { kernel } = makeKernel(
+      {
+        "contact_platform:email:alice@example.com": JSON.stringify({ slug: "alice", approved: true }),
+        "contact:alice": JSON.stringify({ name: "Alice" }),
+      },
+      { PROVIDERS: { email: emailAdapter } }
+    );
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAdapter("email", { to: "alice@example.com", subject: "Hi", body: "Hello" });
+    expect(result).toEqual({ sent: true });
+    expect(emailAdapter.execute).toHaveBeenCalled();
+  });
+
+  it("allows destination-targeted sends without contact check", async () => {
+    const slackAdapter = makeSlackAdapter();
+    const { kernel } = makeKernel({}, { PROVIDERS: { slack: slackAdapter } });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    // No contact_platform entry, but should not block — destination type
+    const result = await kernel.executeAdapter("slack", { text: "hello", channel: "C_GENERAL" });
+    expect(result).toEqual({ ok: true });
+    expect(slackAdapter.execute).toHaveBeenCalled();
+  });
+
+  it("allows adapters with no communication meta (e.g. llm_balance)", async () => {
+    const llmAdapter = makeLLMAdapter();
+    const { kernel } = makeKernel({}, { PROVIDERS: { "provider:llm": llmAdapter } });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAdapter("provider:llm", { model: "claude" });
+    expect(result).toEqual({ content: "response" });
+    expect(llmAdapter.call).toHaveBeenCalled();
+  });
+});
+
 // ── Yamas and Niyamas ──────────────────────────────────────
 
 describe("Yamas and Niyamas", () => {
@@ -2062,379 +2211,6 @@ describe("Yamas and Niyamas", () => {
   });
 });
 
-// ── Communication gate ──────────────────────────────────────
-
-describe("Communication gate", () => {
-  const slackMeta = {
-    secrets: ["SLACK_BOT_TOKEN"],
-    kv_access: "none",
-    communication: { channel: "slack", recipient_field: "channel", reply_field: null, content_field: "text", recipient_type: "destination" },
-  };
-
-  const emailMeta = {
-    secrets: ["GMAIL_CLIENT_ID"],
-    kv_access: "none",
-    communication: { channel: "email", recipient_field: "to", reply_field: "reply_to_id", content_field: "body", recipient_type: "person" },
-  };
-
-  const noCommMeta = {
-    secrets: [],
-    kv_access: "none",
-  };
-
-  const commsModelsConfig = {
-    models: [
-      { id: "anthropic/claude-opus-4.6", alias: "opus" },
-      { id: "anthropic/claude-sonnet-4.6", alias: "sonnet" },
-      { id: "anthropic/claude-haiku-4.5", alias: "haiku" },
-      { id: "deepseek/deepseek-v3.2", alias: "deepseek" },
-    ],
-    alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5", deepseek: "deepseek/deepseek-v3.2" },
-  };
-
-  const commsModelCapabilities = {
-    "anthropic/claude-opus-4.6": { comms_gate_capable: true },
-    "anthropic/claude-sonnet-4.6": { comms_gate_capable: true },
-  };
-
-  it("resolveCommsMode — slack always initiating (no reply_field)", () => {
-    const { kernel } = makeKernel();
-    expect(kernel.resolveCommsMode({}, slackMeta)).toBe("initiating");
-    expect(kernel.resolveCommsMode({ channel: "C123" }, slackMeta)).toBe("initiating");
-  });
-
-  it("resolveCommsMode — email with reply_to_id is responding", () => {
-    const { kernel } = makeKernel();
-    expect(kernel.resolveCommsMode({ to: "a@b.com", reply_to_id: "msg123" }, emailMeta)).toBe("responding");
-    expect(kernel.resolveCommsMode({ to: "a@b.com" }, emailMeta)).toBe("initiating");
-  });
-
-  it("resolveRecipient — reads from recipient_field", () => {
-    const { kernel } = makeKernel();
-    expect(kernel.resolveRecipient({ channel: "C123" }, slackMeta)).toBe("C123");
-    expect(kernel.resolveRecipient({ to: "a@b.com" }, emailMeta)).toBe("a@b.com");
-    expect(kernel.resolveRecipient({}, slackMeta)).toBeNull();
-  });
-
-  it("mechanical floor blocks person-type initiating to unknown recipient", async () => {
-    const { kernel } = makeKernel();
-    const result = await kernel.communicationGate("send_email", { to: "unknown@example.com", body: "hello" }, emailMeta);
-    expect(result.verdict).toBe("block");
-    expect(result.mechanical).toBe(true);
-    expect(result.reasoning).toContain("No contact record");
-  });
-
-  it("destination-type allows send to unknown channel (no contact check)", async () => {
-    const { kernel } = makeKernel();
-    const result = await kernel.communicationGate("send_slack", { text: "hello", channel: "C_UNKNOWN" }, slackMeta);
-    expect(result.verdict).toBe("send");
-  });
-
-  it("destination-type allows send to approved contact", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("contact:dev", JSON.stringify({ name: "Dev", communication: "Team member." }));
-    await env.KV.put("contact_platform:slack:U_DEV", JSON.stringify({ slug: "dev", approved: true }));
-    const result = await kernel.communicationGate("send_slack", { text: "hello", channel: "U_DEV" }, slackMeta);
-    expect(result.verdict).toBe("send");
-  });
-
-  it("defaults to destination when recipient_type not specified", async () => {
-    const legacyMeta = {
-      secrets: [],
-      kv_access: "none",
-      communication: { channel: "custom", recipient_field: "target", reply_field: null, content_field: "msg" },
-    };
-    const { kernel } = makeKernel();
-    const result = await kernel.communicationGate("send_custom", { msg: "hi", target: "X" }, legacyMeta);
-    expect(result.verdict).toBe("send");
-  });
-
-  it("allows responding to unknown person (email reply)", async () => {
-    const { kernel } = makeKernel();
-    const result = await kernel.communicationGate(
-      "send_email",
-      { to: "unknown@example.com", body: "thanks", reply_to_id: "msg123" },
-      emailMeta,
-    );
-    expect(result.verdict).toBe("send");
-  });
-
-  it("allows initiating to approved contact", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami", communication: "Inner circle." }));
-    await env.KV.put("contact_platform:slack:swami", JSON.stringify({ slug: "swami", approved: true }));
-    const result = await kernel.communicationGate(
-      "send_slack",
-      { text: "hello", channel: "swami" },
-      slackMeta,
-    );
-    expect(result.verdict).toBe("send");
-  });
-
-  it("blocks person-type to unapproved contact (initiating)", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("contact:stub", JSON.stringify({ name: "Stub" }));
-    await env.KV.put("contact_platform:email:stub@example.com", JSON.stringify({ slug: "stub", approved: false }));
-    const result = await kernel.communicationGate(
-      "send_email",
-      { to: "stub@example.com", body: "hello" },
-      emailMeta,
-    );
-    expect(result.verdict).toBe("block");
-    expect(result.mechanical).toBe(true);
-    expect(result.reasoning).toContain("not approved");
-  });
-
-  it("blocks person-type to unapproved contact (responding)", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("contact:stub", JSON.stringify({ name: "Stub" }));
-    await env.KV.put("contact_platform:email:stub@example.com", JSON.stringify({ slug: "stub", approved: false }));
-    const result = await kernel.communicationGate(
-      "send_email",
-      { to: "stub@example.com", body: "thanks", reply_to_id: "msg123" },
-      emailMeta,
-    );
-    expect(result.verdict).toBe("block");
-    expect(result.mechanical).toBe(true);
-    expect(result.reasoning).toContain("not approved");
-  });
-
-  it("any model can send to approved contacts (no model capability check)", async () => {
-    const { kernel, env } = makeKernel();
-    kernel.lastCallModel = "deepseek/deepseek-v3.2"; // cheapest model
-    await env.KV.put("contact:swami", JSON.stringify({ name: "Swami" }));
-    await env.KV.put("contact_platform:slack:swami", JSON.stringify({ slug: "swami", approved: true }));
-    const result = await kernel.communicationGate(
-      "send_slack",
-      { text: "hello", channel: "swami" },
-      slackMeta,
-    );
-    expect(result.verdict).toBe("send");
-  });
-
-  it("queueBlockedComm writes record to KV", async () => {
-    const { kernel } = makeKernel();
-    kernel.sessionId = "test_session_123";
-    kernel.lastCallModel = "anthropic/claude-opus-4.6";
-    const id = await kernel.queueBlockedComm(
-      "send_slack",
-      { text: "hello", channel: "C123" },
-      slackMeta,
-      "test block reason",
-      { verdict: "block" },
-    );
-    expect(id).toMatch(/^cb_/);
-    const stored = await kernel.kvGet(`comms_blocked:${id}`);
-    expect(stored.tool).toBe("send_slack");
-    expect(stored.channel).toBe("slack");
-    expect(stored.recipient).toBe("C123");
-    expect(stored.reason).toBe("test block reason");
-  });
-
-  it("processCommsVerdict send — executes and deletes record", async () => {
-    const { kernel, env } = makeKernel();
-    kernel.sessionId = "test_session";
-    const record = {
-      id: "cb_test_1",
-      tool: "send_slack",
-      args: { text: "hello" },
-      channel: "slack",
-      recipient: "C123",
-      mode: "initiating",
-    };
-    await env.KV.put("comms_blocked:cb_test_1", JSON.stringify(record));
-    kernel.executeAction = vi.fn(async () => ({ ok: true }));
-
-    const result = await kernel.processCommsVerdict("cb_test_1", "send");
-    expect(result.ok).toBe(true);
-    expect(kernel.executeAction).toHaveBeenCalledWith(expect.objectContaining({ tool: "send_slack" }));
-    // Record should be deleted
-    const afterDelete = await env.KV.get("comms_blocked:cb_test_1");
-    expect(afterDelete).toBeNull();
-  });
-
-  it("processCommsVerdict drop — deletes record, records karma", async () => {
-    const { kernel, env } = makeKernel();
-    kernel.sessionId = "test_session";
-    const record = {
-      id: "cb_test_2",
-      tool: "send_email",
-      args: { to: "a@b.com", body: "hi" },
-      channel: "email",
-      recipient: "a@b.com",
-      mode: "initiating",
-    };
-    await env.KV.put("comms_blocked:cb_test_2", JSON.stringify(record));
-
-    const result = await kernel.processCommsVerdict("cb_test_2", "drop", { reason: "not needed" });
-    expect(result.ok).toBe(true);
-    expect(result.dropped).toBe(true);
-    const afterDelete = await env.KV.get("comms_blocked:cb_test_2");
-    expect(afterDelete).toBeNull();
-  });
-
-  it("executeAction rejects communication tool without gate approval", async () => {
-    const { kernel } = makeKernel();
-    kernel.toolGrants = { send_slack: { communication: slackMeta.communication } };
-    kernel._loadTool = vi.fn(async () => ({
-      meta: slackMeta,
-      moduleCode: "module.exports = { execute: async () => ({ ok: true }) }",
-    }));
-    const result = await kernel.executeAction({ tool: "send_slack", input: { text: "hi" }, id: "t1" });
-    expect(result.error).toContain("gate approval");
-  });
-
-  it("executeAction allows communication tool with gate approval flag", async () => {
-    const { kernel } = makeKernel();
-    kernel.toolGrants = { send_slack: { communication: slackMeta.communication } };
-    kernel._loadTool = vi.fn(async () => ({
-      meta: slackMeta,
-      moduleCode: "module.exports = { execute: async () => ({ ok: true }) }",
-    }));
-    kernel.buildToolContext = vi.fn(async () => ({}));
-    kernel._executeTool = vi.fn(async () => ({ ok: true }));
-    kernel._commsGateApproved = true;
-    const result = await kernel.executeAction({ tool: "send_slack", input: { text: "hi" }, id: "t1" });
-    expect(result).toEqual({ ok: true });
-    expect(kernel._executeTool).toHaveBeenCalled();
-  });
-
-  it("executeAction allows non-communication tool without gate approval", async () => {
-    const { kernel } = makeKernel();
-    kernel._loadTool = vi.fn(async () => ({
-      meta: noCommMeta,
-      moduleCode: "module.exports = { execute: async () => ({ ok: true }) }",
-    }));
-    kernel.buildToolContext = vi.fn(async () => ({}));
-    kernel._executeTool = vi.fn(async () => ({ result: 42 }));
-    const result = await kernel.executeAction({ tool: "kv_query", input: {}, id: "t2" });
-    expect(result).toEqual({ result: 42 });
-    expect(kernel._executeTool).toHaveBeenCalled();
-  });
-
-  it("gate approval flag is cleared after executeToolCall", async () => {
-    const { kernel } = makeKernel({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
-    kernel.toolGrants = { send_slack: { communication: slackMeta.communication } };
-    kernel.lastCallModel = "anthropic/claude-opus-4.6";
-    // Gate approves send
-    kernel.communicationGate = vi.fn(async () => ({ verdict: "send", reasoning: "ok" }));
-    kernel.executeAction = vi.fn(async () => ({ ok: true }));
-    kernel.callHook = vi.fn(async () => null);
-    kernel._loadTool = vi.fn(async () => ({ meta: slackMeta, moduleCode: "" }));
-
-    await kernel.executeToolCall({
-      id: "tc1",
-      function: { name: "send_slack", arguments: JSON.stringify({ text: "hi", channel: "C1" }) },
-    });
-    expect(kernel._commsGateApproved).toBe(false);
-  });
-
-  it("executeToolCall blocks communication tool when gate returns block", async () => {
-    const { kernel } = makeKernel({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
-    kernel.toolGrants = { send_slack: { communication: slackMeta.communication } };
-    kernel.lastCallModel = "anthropic/claude-opus-4.6";
-    kernel.communicationGate = vi.fn(async () => ({ verdict: "block", reasoning: "unsafe content" }));
-    kernel.queueBlockedComm = vi.fn(async () => "cb_1");
-    kernel._loadTool = vi.fn(async () => ({ meta: slackMeta, moduleCode: "" }));
-    kernel.executeAction = vi.fn(async () => ({ ok: true }));
-
-    const result = await kernel.executeToolCall({
-      id: "tc1",
-      function: { name: "send_slack", arguments: JSON.stringify({ text: "bad", channel: "C1" }) },
-    });
-    expect(result.error).toContain("blocked");
-    expect(kernel.queueBlockedComm).toHaveBeenCalled();
-    expect(kernel.executeAction).not.toHaveBeenCalled();
-  });
-
-  it("executeToolCall queues communication tool when gate returns queue", async () => {
-    const { kernel } = makeKernel({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
-    kernel.toolGrants = { send_slack: { communication: slackMeta.communication } };
-    kernel.lastCallModel = "anthropic/claude-opus-4.6";
-    kernel.communicationGate = vi.fn(async () => ({ verdict: "queue", reasoning: "not comms_gate_capable" }));
-    kernel.queueBlockedComm = vi.fn(async () => "cb_2");
-    kernel._loadTool = vi.fn(async () => ({ meta: slackMeta, moduleCode: "" }));
-    kernel.executeAction = vi.fn(async () => ({ ok: true }));
-
-    const result = await kernel.executeToolCall({
-      id: "tc2",
-      function: { name: "send_slack", arguments: JSON.stringify({ text: "hi", channel: "C1" }) },
-    });
-    expect(result.error).toContain("queued");
-    expect(kernel.executeAction).not.toHaveBeenCalled();
-  });
-
-  it("executeToolCall applies revision via content_field when gate returns revise", async () => {
-    const { kernel } = makeKernel({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
-    kernel.toolGrants = { send_slack: { communication: slackMeta.communication } };
-    kernel.lastCallModel = "anthropic/claude-opus-4.6";
-    kernel.communicationGate = vi.fn(async () => ({
-      verdict: "revise", reasoning: "tone", revision: { text: "polished message" },
-    }));
-    kernel._loadTool = vi.fn(async () => ({ meta: slackMeta, moduleCode: "" }));
-    kernel.executeAction = vi.fn(async (step) => ({ ok: true, sent_text: step.input.text }));
-    kernel.callHook = vi.fn(async () => null);
-
-    const result = await kernel.executeToolCall({
-      id: "tc3",
-      function: { name: "send_slack", arguments: JSON.stringify({ text: "rough draft", channel: "C1" }) },
-    });
-    // executeAction should receive the revised text
-    expect(kernel.executeAction).toHaveBeenCalledWith(
-      expect.objectContaining({ input: expect.objectContaining({ text: "polished message" }) }),
-    );
-    expect(result.ok).toBe(true);
-  });
-
-  it("executeToolCall lets non-communication tool through without gate", async () => {
-    const { kernel } = makeKernel({}, { modelsConfig: commsModelsConfig, modelCapabilities: commsModelCapabilities });
-    kernel._loadTool = vi.fn(async () => ({ meta: noCommMeta, moduleCode: "" }));
-    kernel.executeAction = vi.fn(async () => ({ result: 42 }));
-    kernel.callHook = vi.fn(async () => null);
-    kernel.communicationGate = vi.fn();
-
-    const result = await kernel.executeToolCall({
-      id: "tc4",
-      function: { name: "kv_query", arguments: JSON.stringify({ key: "foo" }) },
-    });
-    expect(result).toEqual({ result: 42 });
-    expect(kernel.communicationGate).not.toHaveBeenCalled();
-  });
-
-  it("processCommsVerdict revise_and_send applies revision via content_field", async () => {
-    const { kernel, env } = makeKernel();
-    kernel.sessionId = "test_session";
-    const record = {
-      id: "cb_rev_1",
-      tool: "send_email",
-      args: { to: "a@b.com", body: "original text" },
-      channel: "email",
-      content_field: "body",
-      recipient: "a@b.com",
-      mode: "initiating",
-    };
-    await env.KV.put("comms_blocked:cb_rev_1", JSON.stringify(record));
-    kernel.executeAction = vi.fn(async () => ({ ok: true }));
-
-    await kernel.processCommsVerdict("cb_rev_1", "revise_and_send", { text: "revised text" });
-    expect(kernel.executeAction).toHaveBeenCalledWith(
-      expect.objectContaining({ input: expect.objectContaining({ body: "revised text" }) }),
-    );
-  });
-
-  it("listBlockedComms returns all blocked records", async () => {
-    const { kernel, env } = makeKernel();
-    const record1 = { id: "cb_1", tool: "send_slack", args: { text: "a" } };
-    const record2 = { id: "cb_2", tool: "send_email", args: { body: "b" } };
-    await env.KV.put("comms_blocked:cb_1", JSON.stringify(record1));
-    await env.KV.put("comms_blocked:cb_2", JSON.stringify(record2));
-
-    const list = await kernel.listBlockedComms();
-    expect(list).toHaveLength(2);
-    expect(list.map(r => r.id).sort()).toEqual(["cb_1", "cb_2"]);
-  });
-});
-
 // ── Patron identity monitor ─────────────────────────────────
 
 describe("Patron identity monitor", () => {
@@ -2656,10 +2432,6 @@ describe("inbound content gate", () => {
 
     // Stub kvWrite for quarantine writes
     kernel.kvWrite = vi.fn(async () => {});
-
-    // Stub communication gate methods
-    kernel._commsGateApproved = false;
-    kernel.loadCommsWisdom = vi.fn(async () => null);
 
     return { kernel, env };
   }
@@ -2947,5 +2719,204 @@ describe("loadKeys size guard", () => {
     expect(result.big._truncated).toBe(true);
     expect(result.big._reason).toContain("150000 chars");
     expect(result.small).toBe("ok");
+  });
+});
+
+// ── emitEvent ────────────────────────────────────────────────
+
+describe("emitEvent", () => {
+  it("writes a key with format event:{15-digit-timestamp}:{type}", async () => {
+    const { kernel, env } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const result = await K.emitEvent("chat_message", { source: "slack", text: "hello" });
+
+    expect(result).toHaveProperty("key");
+    const key = result.key;
+    expect(key).toMatch(/^event:\d{15}:chat_message$/);
+
+    const stored = JSON.parse(await env.KV.get(key));
+    expect(stored.type).toBe("chat_message");
+    expect(stored.source).toBe("slack");
+    expect(stored.text).toBe("hello");
+    expect(stored.timestamp).toBeDefined();
+  });
+
+  it("writes event with 24h TTL (86400)", async () => {
+    const { kernel, env } = makeKernel();
+    const K = kernel.buildKernelInterface();
+
+    const putSpy = vi.spyOn(env.KV, "put");
+    await K.emitEvent("session_end", { session_id: "s_123" });
+
+    expect(putSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^event:\d{15}:session_end$/),
+      expect.any(String),
+      { expirationTtl: 86400 }
+    );
+  });
+
+  it("preserves payload timestamp if provided", async () => {
+    const { kernel, env } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const ts = "2026-01-01T00:00:00.000Z";
+    const result = await K.emitEvent("test_event", { timestamp: ts, foo: "bar" });
+
+    const stored = JSON.parse(await env.KV.get(result.key));
+    expect(stored.timestamp).toBe(ts);
+  });
+
+  it("sets timestamp to current ISO string if not provided", async () => {
+    const { kernel, env } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const before = new Date().toISOString();
+    const result = await K.emitEvent("test_event", { foo: "bar" });
+    const after = new Date().toISOString();
+
+    const stored = JSON.parse(await env.KV.get(result.key));
+    expect(stored.timestamp >= before).toBe(true);
+    expect(stored.timestamp <= after).toBe(true);
+  });
+
+  it("records a karma event with event_emitted and the type", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const K = kernel.buildKernelInterface();
+    const result = await K.emitEvent("chat_message", { source: "slack" });
+
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "event_emitted",
+        type: "chat_message",
+        key: result.key,
+      })
+    );
+  });
+});
+
+// ── drainEvents ─────────────────────────────────────────────
+
+describe("drainEvents", () => {
+  it("returns empty arrays when no event:* keys exist", async () => {
+    const { kernel } = makeKernel();
+    const result = await kernel.drainEvents({});
+    expect(result).toEqual({ processed: [], actContext: [] });
+  });
+
+  it("routes event to configured handler and deletes event on success", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['onChat'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hello' }),
+    });
+    const onChat = vi.fn(async () => {});
+    await kernel.drainEvents({ onChat });
+    // Event key should be deleted after successful handling
+    expect(await env.KV.get('event:0001:chat_message')).toBeNull();
+  });
+
+  it("adds act-relevant events to actContext", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({}),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hi' }),
+      'event:0002:job_complete': JSON.stringify({ type: 'job_complete', job_id: 'j1' }),
+      'event:0003:other_event': JSON.stringify({ type: 'other_event', data: 'x' }),
+    });
+    const { actContext } = await kernel.drainEvents({});
+    const types = actContext.map(e => e.type);
+    expect(types).toContain('chat_message');
+    expect(types).toContain('job_complete');
+    expect(types).not.toContain('other_event');
+  });
+
+  it("does not add non-act-relevant events to actContext", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({}),
+      'event:0001:other_event': JSON.stringify({ type: 'other_event' }),
+    });
+    const { actContext } = await kernel.drainEvents({});
+    expect(actContext).toHaveLength(0);
+  });
+
+  it("records karma warning for unknown handler name, still deletes event", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['nonExistentHandler'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message' }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.drainEvents({});
+    // Unknown handler — continue is called, so allHandlersSucceeded stays true, event is deleted
+    expect(await env.KV.get('event:0001:chat_message')).toBeNull();
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'event_handler_unknown', handler: 'nonExistentHandler' })
+    );
+  });
+
+  it("increments fail count when handler throws, does not delete event", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['failHandler'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message' }),
+    });
+    const failHandler = vi.fn(async () => { throw new Error('boom'); });
+    await kernel.drainEvents({ failHandler });
+    // Event should still exist
+    expect(await env.KV.get('event:0001:chat_message')).not.toBeNull();
+    // Fail count should be stored
+    const failCount = JSON.parse(await env.KV.get('event_fail_count:event:0001:chat_message'));
+    expect(failCount).toBe(1);
+  });
+
+  it("dead-letters event after 3 failures", async () => {
+    const eventKey = 'event:0001:chat_message';
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['failHandler'] }),
+      [eventKey]: JSON.stringify({ type: 'chat_message', text: 'x' }),
+      [`event_fail_count:${eventKey}`]: JSON.stringify(2),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    const failHandler = vi.fn(async () => { throw new Error('third failure'); });
+    await kernel.drainEvents({ failHandler });
+
+    // Original event deleted
+    expect(await env.KV.get(eventKey)).toBeNull();
+    // Fail count key deleted
+    expect(await env.KV.get(`event_fail_count:${eventKey}`)).toBeNull();
+    // Dead letter written
+    const deadKey = eventKey.replace('event:', 'event_dead:');
+    const deadVal = JSON.parse(await env.KV.get(deadKey));
+    expect(deadVal).not.toBeNull();
+    expect(deadVal.fail_count).toBe(3);
+    // Karma recorded
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'event_dead_lettered', key: eventKey })
+    );
+  });
+
+  it("records events_drained karma with count and type breakdown", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({}),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message' }),
+      'event:0002:chat_message': JSON.stringify({ type: 'chat_message' }),
+      'event:0003:job_complete': JSON.stringify({ type: 'job_complete' }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.drainEvents({});
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'events_drained',
+        count: 3,
+        types: { chat_message: 2, job_complete: 1 },
+      })
+    );
+  });
+
+  it("returns processed list of successfully handled events", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['onChat'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hello' }),
+      'event:0002:chat_message': JSON.stringify({ type: 'chat_message', text: 'world' }),
+    });
+    const onChat = vi.fn(async () => {});
+    const { processed } = await kernel.drainEvents({ onChat });
+    expect(processed).toHaveLength(2);
+    expect(processed.every(e => e.type === 'chat_message')).toBe(true);
   });
 });

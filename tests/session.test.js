@@ -783,53 +783,6 @@ describe("kvWriteGated handles contact: and contact_platform:", () => {
   });
 });
 
-// ── Communication gate integration ─────────────────────────
-
-describe("Communication gate in reflect", () => {
-  it("blocked comms loaded in gatherReflectContext", async () => {
-    const record1 = { id: "cb_1", tool: "send_slack", args: { text: "hello" }, channel: "slack" };
-    const record2 = { id: "cb_2", tool: "send_email", args: { body: "hi" }, channel: "email" };
-    const K = makeMockK({
-      "comms_blocked:cb_1": JSON.stringify(record1),
-      "comms_blocked:cb_2": JSON.stringify(record2),
-    });
-    K.listBlockedComms = vi.fn(async () => [record1, record2]);
-    const state = makeState();
-
-    const result = await gatherReflectContext(K, state, 1, {});
-    expect(result.templateVars.blockedComms).toContain("cb_1");
-    expect(result.templateVars.blockedComms).toContain("cb_2");
-  });
-
-  it("blockedComms is '(none)' when no blocked comms exist", async () => {
-    const K = makeMockK();
-    K.listBlockedComms = vi.fn(async () => []);
-    const state = makeState();
-
-    const result = await gatherReflectContext(K, state, 1, {});
-    expect(result.templateVars.blockedComms).toBe("(none)");
-  });
-
-  it("comms_verdicts processed from applyReflectOutput", async () => {
-    const K = makeMockK();
-    K.processCommsVerdict = vi.fn(async () => ({ ok: true }));
-    const state = makeState();
-    const output = {
-      reflection: "test reflection",
-      note_to_future_self: "remember",
-      comms_verdicts: [
-        { id: "cb_1", verdict: "send" },
-        { id: "cb_2", verdict: "drop", revision: { reason: "not needed" } },
-      ],
-    };
-
-    await applyReflectOutput(K, state, 1, output, {});
-    expect(K.processCommsVerdict).toHaveBeenCalledTimes(2);
-    expect(K.processCommsVerdict).toHaveBeenCalledWith("cb_1", "send", undefined);
-    expect(K.processCommsVerdict).toHaveBeenCalledWith("cb_2", "drop", { reason: "not needed" });
-  });
-});
-
 // ── Patron context in reflect ─────────────────────────────
 
 describe("Patron context in reflect", () => {
@@ -843,7 +796,6 @@ describe("Patron context in reflect", () => {
       patronId: "swami",
       patronContact,
     });
-    K.listBlockedComms = vi.fn(async () => []);
     const state = makeState();
 
     const result = await gatherReflectContext(K, state, 1, {});
@@ -853,7 +805,6 @@ describe("Patron context in reflect", () => {
 
   it("patron context is '(no patron configured)' when missing", async () => {
     const K = makeMockK();
-    K.listBlockedComms = vi.fn(async () => []);
     const state = makeState();
 
     const result = await gatherReflectContext(K, state, 1, {});
@@ -977,7 +928,6 @@ describe("gatherReflectContext continuity", () => {
       "reflect:0:s_003": JSON.stringify({ reflection: "depth-0 should not appear" }),
       "reflect:2:s_004": JSON.stringify({ reflection: "depth-2 should not appear" }),
     });
-    K.listBlockedComms = vi.fn(async () => []);
     const state = makeState();
 
     const result = await gatherReflectContext(K, state, 1, {});
@@ -993,7 +943,6 @@ describe("gatherReflectContext continuity", () => {
       "reflect:1:s_002": JSON.stringify({ reflection: "b" }),
       "reflect:1:s_003": JSON.stringify({ reflection: "c" }),
     });
-    K.listBlockedComms = vi.fn(async () => []);
     const state = makeState({ defaults: { reflect_levels: { 1: { prior_reflections: 1 } } } });
 
     const result = await gatherReflectContext(K, state, 1, {});
@@ -1007,7 +956,6 @@ describe("gatherReflectContext continuity", () => {
     });
     // Set metadata with summary on one key
     K._kv._meta.set("prajna:reasoning:complexity", { summary: "Tends toward overcomplexity" });
-    K.listBlockedComms = vi.fn(async () => []);
     const state = makeState();
 
     const result = await gatherReflectContext(K, state, 1, {});

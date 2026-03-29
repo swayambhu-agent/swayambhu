@@ -15,7 +15,7 @@ describe("generateIndexJS", () => {
 
     // Imports
     expect(code).toContain("import { Kernel } from './kernel.js'");
-    expect(code).toContain("import { handleChat } from './hook-chat.js'");
+    expect(code).toContain("import { handleChat, handleDelivery } from './hook-communication.js'");
     expect(code).toContain("import * as act from './act.js'");
     expect(code).toContain("import * as reflect from './reflect.js'");
     expect(code).toContain("import * as kv_query from './tools/kv_query.js'");

@@ -1,19 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleChat } from "../hook-chat.js";
+import { handleChat, handleDelivery } from "../hook-communication.js";
 import { makeMockK } from "./helpers/mock-kernel.js";
-
-function makeAdapter() {
-  return {
-    sendReply: vi.fn(async () => {}),
-  };
-}
 
 function makeLLMResponse(content, toolCalls = null) {
   return { content, cost: 0.001, toolCalls: toolCalls || null, usage: {} };
 }
 
 describe("handleChat", () => {
-  let K, adapter;
+  let K;
 
   beforeEach(() => {
     K = makeMockK({}, {
@@ -33,39 +27,41 @@ describe("handleChat", () => {
     K.resolveModel = vi.fn((m) => m);
     K.buildToolDefinitions = vi.fn(() => []);
     K.callLLM = vi.fn(async () => makeLLMResponse("Hello!"));
-    adapter = makeAdapter();
   });
 
-  it("sends reply via adapter.sendReply", async () => {
+  it("sends reply via K.executeAdapter", async () => {
     const result = await handleChat(K, "slack", {
       chatId: "123", text: "Hi", userId: "user1",
-    }, adapter);
+    });
 
     expect(result.ok).toBe(true);
     expect(result.turn).toBe(1);
-    expect(adapter.sendReply).toHaveBeenCalledWith("123", "Hello!");
+    expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
+      text: "Hello!",
+      channel: "123",
+    }));
     expect(K.callLLM).toHaveBeenCalledOnce();
   });
 
-  it("writes inbox item after handling message", async () => {
+  it("emits chat_message event after handling message", async () => {
     await handleChat(K, "slack", {
       chatId: "123", text: "Hello world", userId: "user1",
-    }, adapter);
+    });
 
-    expect(K.writeInboxItem).toHaveBeenCalledOnce();
-    const item = K.writeInboxItem.mock.calls[0][0];
-    expect(item.type).toBe("chat_message");
-    expect(item.source.channel).toBe("slack");
-    expect(item.source.user_id).toBe("user1");
-    expect(item.summary).toBe("Hello world");
-    expect(item.ref).toBe("chat:slack:123");
+    expect(K.emitEvent).toHaveBeenCalledOnce();
+    const [type, payload] = K.emitEvent.mock.calls[0];
+    expect(type).toBe("chat_message");
+    expect(payload.source.channel).toBe("slack");
+    expect(payload.source.user_id).toBe("user1");
+    expect(payload.summary).toBe("Hello world");
+    expect(payload.ref).toBe("chat:slack:123");
   });
 
   it("persists conversation state across turns", async () => {
     // Turn 1
     await handleChat(K, "slack", {
       chatId: "123", text: "Hi", userId: "user1",
-    }, adapter);
+    });
 
     // Verify state was saved (find by key, not index — digest writes interleave)
     const findPut = (key) => K.kvWriteSafe.mock.calls.filter(([k]) => k === key);
@@ -79,13 +75,13 @@ describe("handleChat", () => {
     K.kvGet.mockImplementation(async (key) => {
       if (key === "chat:slack:123") return conv;
       if (key === "wisdom") return null;
-      if (key === "prompt:chat") return null;
+      if (key === "prompt:communication") return null;
       return null;
     });
 
     await handleChat(K, "slack", {
       chatId: "123", text: "How are you?", userId: "user1",
-    }, adapter);
+    });
 
     const saved2 = findPut("chat:slack:123");
     expect(saved2).toHaveLength(2);
@@ -111,12 +107,13 @@ describe("handleChat", () => {
 
     const result = await handleChat(K, "slack", {
       chatId: "123", text: "/reset", userId: "user1", command: "reset",
-    }, adapter);
+    });
 
     expect(result).toEqual({ ok: true, reason: "reset" });
-    expect(adapter.sendReply).toHaveBeenCalledWith(
-      "123", "Budget refilled. Conversation history preserved."
-    );
+    expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
+      text: "Budget refilled. Conversation history preserved.",
+      channel: "123",
+    }));
     // Should save state with cost zeroed but messages kept
     const saved = K.kvWriteSafe.mock.calls[0][1];
     expect(saved.total_cost).toBe(0);
@@ -136,11 +133,14 @@ describe("handleChat", () => {
 
     const result = await handleChat(K, "slack", {
       chatId: "123", text: "/clear", userId: "user1", command: "clear",
-    }, adapter);
+    });
 
     expect(result).toEqual({ ok: true, reason: "clear" });
     expect(K.kvDeleteSafe).toHaveBeenCalledWith("chat:slack:123");
-    expect(adapter.sendReply).toHaveBeenCalledWith("123", "Conversation cleared.");
+    expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
+      text: "Conversation cleared.",
+      channel: "123",
+    }));
     expect(K.callLLM).not.toHaveBeenCalled();
   });
 
@@ -157,12 +157,13 @@ describe("handleChat", () => {
 
     const result = await handleChat(K, "slack", {
       chatId: "123", text: "Hello", userId: "user1",
-    }, adapter);
+    });
 
     expect(result).toEqual({ ok: true, reason: "budget_exhausted" });
-    expect(adapter.sendReply).toHaveBeenCalledWith(
-      "123", "Budget reached. Send /reset to refill or /clear to start fresh."
-    );
+    expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
+      text: "Budget reached. Send /reset to refill or /clear to start fresh.",
+      channel: "123",
+    }));
     expect(K.callLLM).not.toHaveBeenCalled();
   });
 
@@ -179,12 +180,15 @@ describe("handleChat", () => {
 
     const result = await handleChat(K, "slack", {
       chatId: "123", text: "What's the wisdom?", userId: "user1",
-    }, adapter);
+    });
 
     expect(result.ok).toBe(true);
     expect(K.callLLM).toHaveBeenCalledTimes(2);
     expect(K.executeToolCall).toHaveBeenCalledWith(toolCall);
-    expect(adapter.sendReply).toHaveBeenCalledWith("123", "The wisdom says: hello");
+    expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
+      text: "The wisdom says: hello",
+      channel: "123",
+    }));
 
     // Check messages in saved state:
     // user, assistant (tool_calls), tool result, assistant (final) = 4
@@ -222,7 +226,7 @@ describe("handleChat", () => {
 
     await handleChat(K, "slack", {
       chatId: "123", text: "msg3", userId: "user1",
-    }, adapter);
+    });
 
     const saved = K.kvWriteSafe.mock.calls[0][1];
     // 3 existing + 1 user + 1 assistant = 5, trimmed to last 4
@@ -235,7 +239,7 @@ describe("handleChat", () => {
     await handleChat(K, "slack", {
       chatId: "D0ANXBBBWUQ", text: "Hi", userId: "U084ASKBXB7",
       resolvedChatKey: "U084ASKBXB7", // set by adapter.resolveChatKey
-    }, adapter);
+    });
 
     const saved = K.kvWriteSafe.mock.calls[0];
     expect(saved[0]).toBe("chat:slack:U084ASKBXB7");
@@ -244,7 +248,7 @@ describe("handleChat", () => {
   it("falls back to chatId when resolvedChatKey is absent", async () => {
     await handleChat(K, "slack", {
       chatId: "C01234ABCDE", text: "Hi", userId: "U084ASKBXB7",
-    }, adapter);
+    });
 
     const saved = K.kvWriteSafe.mock.calls[0];
     expect(saved[0]).toBe("chat:slack:C01234ABCDE");
@@ -254,12 +258,12 @@ describe("handleChat", () => {
     // Chat 1
     await handleChat(K, "slack", {
       chatId: "aaa", text: "Hi from A", userId: "userA",
-    }, adapter);
+    });
 
     // Chat 2
     await handleChat(K, "slack", {
       chatId: "bbb", text: "Hi from B", userId: "userB",
-    }, adapter);
+    });
 
     // Verify different KV keys (find by key, not index)
     const findPut = (key) => K.kvWriteSafe.mock.calls.find(([k]) => k === key);
@@ -276,7 +280,7 @@ describe("handleChat", () => {
   it("embeds karma in chat object", async () => {
     await handleChat(K, "slack", {
       chatId: "123", text: "Hi", userId: "user1",
-    }, adapter);
+    });
 
     const saved = K.kvWriteSafe.mock.calls[0][1];
     expect(saved.karma).toBeDefined();
@@ -300,9 +304,11 @@ describe("handleChat", () => {
 
     await handleChat(K, "slack", {
       chatId: "123", text: "Go", userId: "user1",
-    }, adapter);
+    });
 
-    expect(adapter.sendReply).toHaveBeenCalledWith("123", "(no response)");
+    expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
+      text: "(no response)",
+    }));
   });
 
   it("includes contact in system prompt when available", async () => {
@@ -317,13 +323,13 @@ describe("handleChat", () => {
       return null;
     });
     K.kvGet.mockImplementation(async (key) => {
-      if (key === "prompt:chat") return "\n\nChat mode.";
+      if (key === "prompt:communication") return "\n\nChat mode.";
       return null;
     });
 
     await handleChat(K, "slack", {
       chatId: "123", text: "Hi", userId: "user1",
-    }, adapter);
+    });
 
     const callArgs = K.callLLM.mock.calls[0][0];
     expect(callArgs.systemPrompt).toContain("You are chatting with:");
@@ -344,7 +350,7 @@ describe("handleChat", () => {
 
     await handleChat(K, "slack", {
       chatId: "123", text: "Go", userId: "user1",
-    }, adapter);
+    });
 
     const saved = K.kvWriteSafe.mock.calls[0][1];
     expect(saved.total_cost).toBeCloseTo(0.03);
@@ -366,7 +372,7 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "Hi", userId: "user1",
-      }, adapter);
+      });
 
       const saved = K.kvWriteSafe.mock.calls[0][1];
       const systemMsgs = saved.messages.filter(m => m.role === "system");
@@ -390,7 +396,7 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "Hi again", userId: "user1",
-      }, adapter);
+      });
 
       const saved = K.kvWriteSafe.mock.calls[0][1];
       const systemMsgs = saved.messages.filter(m => m.role === "system");
@@ -411,7 +417,7 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "/reset", userId: "user1", command: "reset",
-      }, adapter);
+      });
 
       const saved = K.kvWriteSafe.mock.calls[0][1];
       expect(saved.total_cost).toBe(0);
@@ -425,7 +431,7 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "Hi", userId: "stranger",
-      }, adapter);
+      });
 
       const callArgs = K.callLLM.mock.calls[0][0];
       expect(callArgs.tools).toEqual([]);
@@ -436,7 +442,7 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "Hi", userId: "stranger",
-      }, adapter);
+      });
 
       expect(K.karmaRecord).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -456,7 +462,7 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "Hi", userId: "alice_id",
-      }, adapter);
+      });
 
       const callArgs = K.callLLM.mock.calls[0][0];
       expect(callArgs.tools).toEqual([]);
@@ -471,7 +477,7 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "Hi", userId: "alice_id",
-      }, adapter);
+      });
 
       expect(K.karmaRecord).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -495,7 +501,7 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "Hi", userId: "alice_id",
-      }, adapter);
+      });
 
       const callArgs = K.callLLM.mock.calls[0][0];
       expect(callArgs.tools).toHaveLength(2);
@@ -518,11 +524,49 @@ describe("handleChat", () => {
 
       await handleChat(K, "slack", {
         chatId: "123", text: "Hi", userId: "stranger",
-      }, adapter);
+      });
 
       const callArgs = K.callLLM.mock.calls[0][0];
       expect(callArgs.tools).toHaveLength(1);
       expect(callArgs.tools[0].function.name).toBe("kv_query");
     });
+  });
+});
+
+describe("handleDelivery", () => {
+  it("groups events by contact and calls LLM", async () => {
+    const K = makeMockK({
+      "prompt:communication": "You are a communication system.",
+      "chat:slack:U123": JSON.stringify({ messages: [] }),
+    });
+    K.resolveContact.mockResolvedValue({ name: "Test User", platform: "slack", approved: true });
+    K.resolveModel.mockResolvedValue("test-model");
+    K.callLLM = vi.fn(async () => ({ content: "Here are your results!" }));
+    K.getDefaults.mockResolvedValue({});
+
+    const events = [
+      { type: "work_complete", contact: "U123", content: "Research done", timestamp: new Date().toISOString() },
+    ];
+
+    const results = await handleDelivery(K, events);
+    expect(results).toHaveLength(1);
+    expect(results[0].sent).toBe(true);
+    expect(K.callLLM).toHaveBeenCalled();
+    expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
+      text: "Here are your results!",
+    }));
+  });
+
+  it("skips unknown contacts", async () => {
+    const K = makeMockK({});
+    K.resolveContact.mockResolvedValue(null);
+
+    const events = [{ type: "work_complete", contact: "UNKNOWN", content: "test" }];
+    const results = await handleDelivery(K, events);
+    expect(results).toHaveLength(0);
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "delivery_skipped",
+      reason: "contact_not_found",
+    }));
   });
 });
