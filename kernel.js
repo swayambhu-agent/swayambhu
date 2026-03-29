@@ -433,7 +433,7 @@ class Kernel {
       // Agent loop
       runAgentLoop: async (opts) => kernel.runAgentLoop(opts),
       executeToolCall: async (tc) => kernel.executeToolCall(tc),
-      buildToolDefinitions: async (extra, opts) => kernel.buildToolDefinitions(extra, opts),
+      buildToolDefinitions: async (extra) => kernel.buildToolDefinitions(extra),
       spawnSubplan: async (args, depth) => kernel.spawnSubplan(args, depth),
       callHook: async (name, ctx) => kernel.callHook(name, ctx),
       executeAction: async (step) => kernel.executeAction(step),
@@ -1872,18 +1872,9 @@ class Kernel {
 
   // ── Agent loop (tool-calling execution primitive) ──────────
 
-  buildToolDefinitions(extraTools = [], opts) {
+  buildToolDefinitions(extraTools = []) {
     const registry = this.toolRegistry || { tools: [] };
-    let registryTools = registry.tools;
-
-    if (opts?.context) {
-      registryTools = registryTools.filter(t => {
-        if (!t.context) return true;  // No context = available everywhere
-        return t.context.includes(opts.context);
-      });
-    }
-
-    const defs = registryTools.map(t => ({
+    const defs = registry.tools.map(t => ({
       type: 'function',
       function: {
         name: t.name,

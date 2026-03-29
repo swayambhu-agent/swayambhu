@@ -52,7 +52,7 @@ export async function runAct(K, state, context, config) {
     dmConfig?.model || config.act?.model || defaults?.act?.model
   );
 
-  const tools = await K.buildToolDefinitions([], { context: "act" });
+  const tools = await K.buildToolDefinitions();
 
   // Reserve budget for reflect if configured
   const budget = defaults?.session_budget;
