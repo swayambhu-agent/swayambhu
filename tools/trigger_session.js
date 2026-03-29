@@ -14,6 +14,7 @@ export async function execute({ summary, K, _chatContext }) {
   // Emit event for the session to pick up
   await K.emitEvent("chat_message", {
     source: { channel, user_id: userId },
+    contact: userId,
     contact_name: contact?.name || userId,
     contact_approved: !!contact?.approved,
     summary: summary || "(no summary)",

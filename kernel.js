@@ -433,7 +433,7 @@ class Kernel {
       // Agent loop
       runAgentLoop: async (opts) => kernel.runAgentLoop(opts),
       executeToolCall: async (tc) => kernel.executeToolCall(tc),
-      buildToolDefinitions: async (extra) => kernel.buildToolDefinitions(extra),
+      buildToolDefinitions: async (extra, opts) => kernel.buildToolDefinitions(extra, opts),
       spawnSubplan: async (args, depth) => kernel.spawnSubplan(args, depth),
       callHook: async (name, ctx) => kernel.callHook(name, ctx),
       executeAction: async (step) => kernel.executeAction(step),
