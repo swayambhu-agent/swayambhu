@@ -19,7 +19,7 @@ import * as collect_jobs from "../tools/collect_jobs.js";
 import * as send_whatsapp from "../tools/send_whatsapp.js";
 import * as google_docs from "../tools/google_docs.js";
 import * as gnanetra from "../tools/gnanetra.js";
-import * as emit_event from "../tools/emit_event.js";
+
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
@@ -115,7 +115,7 @@ function mockKV(initial = {}) {
 const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
-  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra, emit_event,
+  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail, compute };
@@ -1669,37 +1669,4 @@ describe("collect_jobs", () => {
   });
 });
 
-// ── emit_event ───────────────────────────────────────────────
 
-describe("emit_event", () => {
-  it("exports meta and execute", () => {
-    expect(emit_event.meta).toBeDefined();
-    expect(emit_event.meta.timeout_ms).toBeGreaterThan(0);
-    expect(emit_event.meta.kv_access).toBe("none");
-    expect(typeof emit_event.execute).toBe("function");
-  });
-
-  it("calls K.emitEvent with type and payload", async () => {
-    const K = { emitEvent: vi.fn(async () => ({ key: "event:123:work_complete" })) };
-    const result = await emit_event.execute({
-      type: "work_complete",
-      contact: "U084ASKBXB7",
-      content: "Research brief",
-      attachments: [{ type: "google_doc", url: "https://docs.google.com/123" }],
-      K,
-    });
-    expect(K.emitEvent).toHaveBeenCalledWith("work_complete", {
-      contact: "U084ASKBXB7",
-      content: "Research brief",
-      attachments: [{ type: "google_doc", url: "https://docs.google.com/123" }],
-    });
-    expect(result.key).toMatch(/^event:/);
-  });
-
-  it("rejects missing type", async () => {
-    const K = { emitEvent: vi.fn() };
-    const result = await emit_event.execute({ content: "test", K });
-    expect(result.error).toMatch(/type.*required/i);
-    expect(K.emitEvent).not.toHaveBeenCalled();
-  });
-});

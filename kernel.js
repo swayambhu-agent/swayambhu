@@ -2103,6 +2103,10 @@ class Kernel {
     // Subplan tools: same as parent
     const tools = this.buildToolDefinitions();
 
+    // Subplan gets its own budget envelope — parent decides the allocation
+    const subplanBudget = args.max_cost || 0.05;
+    const subplanBudgetCap = this.sessionCost + subplanBudget;
+
     return this.runAgentLoop({
       systemPrompt: builtPrompt,
       initialContext: `Execute this goal: ${args.goal}`,
@@ -2112,6 +2116,7 @@ class Kernel {
       maxTokens: args.max_output_tokens || 1000,
       maxSteps,
       step: `subplan_d${depth}`,
+      budgetCap: subplanBudgetCap,
     });
   }
 

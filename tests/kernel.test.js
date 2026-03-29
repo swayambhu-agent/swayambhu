@@ -190,8 +190,8 @@ describe("buildToolDefinitions context filtering", () => {
   const registryWithContexts = {
     tools: [
       { name: "send_slack", description: "Send Slack message", input: {}, context: ["communication"] },
-      { name: "emit_event", description: "Emit an event", input: {}, context: ["act", "reflect"] },
       { name: "web_search", description: "Search the web", input: {}, context: ["act", "communication", "reflect"] },
+      { name: "kv_query", description: "Query KV", input: {} },
     ],
   };
 
@@ -200,8 +200,8 @@ describe("buildToolDefinitions context filtering", () => {
     const defs = kernel.buildToolDefinitions([], { context: "act" });
     const names = defs.map(d => d.function.name);
     expect(names).not.toContain("send_slack");
-    expect(names).toContain("emit_event");
     expect(names).toContain("web_search");
+    expect(names).toContain("kv_query");
   });
 
   it("includes communication-only tools in communication context", () => {
@@ -209,7 +209,6 @@ describe("buildToolDefinitions context filtering", () => {
     const defs = kernel.buildToolDefinitions([], { context: "communication" });
     const names = defs.map(d => d.function.name);
     expect(names).toContain("send_slack");
-    expect(names).not.toContain("emit_event");
     expect(names).toContain("web_search");
   });
 
@@ -218,8 +217,8 @@ describe("buildToolDefinitions context filtering", () => {
     const defs = kernel.buildToolDefinitions();
     const names = defs.map(d => d.function.name);
     expect(names).toContain("send_slack");
-    expect(names).toContain("emit_event");
     expect(names).toContain("web_search");
+    expect(names).toContain("kv_query");
   });
 
   it("includes tools with no context field in all contexts", () => {

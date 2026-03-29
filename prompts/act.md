@@ -41,21 +41,10 @@ Session context is provided below as JSON. Key fields:
 
 ## Communication
 
-You do not send messages to contacts directly. Instead, use `emit_event` to
-signal work completion or other contact-relevant outcomes. The communication
-system will decide how and when to present your work to the contact.
-
-Example — after completing research:
-```json
-emit_event({
-  "type": "work_complete",
-  "contact": "U084ASKBXB7",
-  "content": "Research brief on 5 Sadhguru discourse topics",
-  "attachments": [{ "type": "google_doc", "url": "https://docs.google.com/..." }]
-})
-```
-
-Do not compose the message yourself. Describe what you did and for whom.
+You do not send messages to contacts directly. The communication system
+handles all contact-facing messages automatically after your session ends.
+Focus on doing the work — your session_summary will be delivered to any
+contacts who triggered this session.
 
 ## What to do
 
