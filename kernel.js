@@ -1902,15 +1902,16 @@ class Kernel {
       type: 'function',
       function: {
         name: 'spawn_subplan',
-        description: 'Spawn a nested agent to handle an independent sub-task. Multiple spawn_subplan calls in one turn execute in parallel.',
+        description: 'Spawn a nested agent to handle an independent sub-task. You must allocate a budget (max_cost) from your own session budget — the subplan runs within that envelope. If no budget is allocated, the subplan will not run. Choose a model appropriate to the task complexity (haiku for simple, sonnet for complex). Multiple spawn_subplan calls in one turn execute in parallel.',
         parameters: {
           type: 'object',
           properties: {
             goal: { type: 'string', description: 'What the subplan should achieve' },
+            max_cost: { type: 'number', description: 'Budget allocation in dollars from your session budget. Required — subplan will not run without a budget.' },
             model: { type: 'string', description: 'Model alias from config:models (e.g. opus, sonnet, haiku)' },
             max_steps: { type: 'number', description: 'Max turns (default: 5)' },
           },
-          required: ['goal'],
+          required: ['goal', 'max_cost'],
         },
       },
     });
@@ -2082,6 +2083,15 @@ class Kernel {
     const maxDepth = this.defaults?.execution?.max_subplan_depth || 3;
     if (depth >= maxDepth) {
       return { error: `Subplan depth limit (${maxDepth}) reached`, goal: args.goal };
+    }
+
+    // No budget = no subplan. Agent must allocate from its own budget.
+    if (!args.max_cost || args.max_cost <= 0) {
+      return {
+        error: "No budget allocated for subplan. Specify max_cost to allocate a portion of your session budget. Handling goal inline instead.",
+        goal: args.goal,
+        inline: true,
+      };
     }
 
     const subplanPrompt = await this.kvGet("prompt:subplan") || this.defaultSubplanPrompt();

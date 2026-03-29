@@ -734,7 +734,7 @@ describe("spawnSubplan", () => {
     });
     kernel.modelsConfig = { alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5" } };
 
-    const result = await kernel.spawnSubplan({ goal: "test", model: "deep_reflect" });
+    const result = await kernel.spawnSubplan({ goal: "test", model: "deep_reflect", max_cost: 0.05 });
     expect(result.error).toContain("Unknown model alias");
     expect(result.error).toContain("deep_reflect");
     expect(result.error).toContain("opus");
@@ -747,7 +747,7 @@ describe("spawnSubplan", () => {
     kernel.modelsConfig = { alias_map: { haiku: "anthropic/claude-haiku-4.5" } };
     kernel.runAgentLoop = vi.fn(async () => ({ result: "ok" }));
 
-    const result = await kernel.spawnSubplan({ goal: "test", model: "haiku" });
+    const result = await kernel.spawnSubplan({ goal: "test", model: "haiku", max_cost: 0.05 });
     expect(result.error).toBeUndefined();
     expect(kernel.runAgentLoop).toHaveBeenCalled();
   });
@@ -757,7 +757,7 @@ describe("spawnSubplan", () => {
     kernel.modelsConfig = { alias_map: {} };
     kernel.runAgentLoop = vi.fn(async () => ({ result: "ok" }));
 
-    const result = await kernel.spawnSubplan({ goal: "test", model: "anthropic/claude-haiku-4.5" });
+    const result = await kernel.spawnSubplan({ goal: "test", model: "anthropic/claude-haiku-4.5", max_cost: 0.05 });
     expect(result.error).toBeUndefined();
     expect(kernel.runAgentLoop).toHaveBeenCalled();
   });
