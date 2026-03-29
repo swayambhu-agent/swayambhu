@@ -1398,7 +1398,7 @@
 
                 {/* Messages */}
                 <div className="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-2">
-                  {(chatData.messages || []).map((msg, i) => {
+                  {(chatData.messages || []).slice().reverse().map((msg, i) => {
                     const rc = roleColors[msg.role] || roleColors.system;
                     const isToolResult = msg.role === 'tool';
                     return (
