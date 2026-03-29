@@ -42,9 +42,20 @@ Session context is provided below as JSON. Key fields:
 ## Communication
 
 You do not send messages to contacts directly. The communication system
-handles all contact-facing messages automatically after your session ends.
-Focus on doing the work — your session_summary will be delivered to any
-contacts who triggered this session.
+handles all contact-facing messages.
+
+## Session Requests
+
+When you receive session_request events in your context, you are expected
+to respond to each one in your output. Include a `session_responses` array
+alongside `session_summary` and `kv_operations`:
+
+- **fulfilled** — work is done. Include `result` with content and any attachments.
+- **rejected** — can't do this. Include `error` explaining why.
+- **pending** — not done yet. Include `note` on progress and optionally `next_session` time.
+
+Every request should get a response. Check `session_request:*` keys in your
+context events for pending requests you need to address.
 
 ## What to do
 
@@ -54,7 +65,8 @@ produce your final output as a JSON object:
 
 {
   "session_summary": "What you did and why",
-  "kv_operations": []
+  "kv_operations": [],
+  "session_responses": []
 }
 
 kv_operations: array of {op: "put"|"delete", key, value} or
