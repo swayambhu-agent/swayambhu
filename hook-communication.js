@@ -56,16 +56,9 @@ export async function handleChat(K, channel, inbound) {
     ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}`
     : "";
 
-  // If this conversation was initiated by the agent during a session, note it
-  const sourceSession = conv.source_session;
-  const sessionContext = sourceSession
-    ? `\n\nThis conversation was initiated during session ${sourceSession}. If the user asks about what you were doing, use kv_query to read karma:${sourceSession} for context.`
-    : "";
-
   const systemPrompt = [
     chatPrompt || "You are in a live communication session. Respond conversationally.",
     contactContext,
-    sessionContext,
   ].join("\n\n").trim();
 
   // Deduplicate layer 1: same Slack timestamp = same message re-delivered
@@ -86,98 +79,29 @@ export async function handleChat(K, channel, inbound) {
   const ts = sentTs ? new Date(parseFloat(sentTs) * 1000).toISOString() : new Date().toISOString();
   conv.messages.push({ role: "user", content: text, userId, ts, sentTs });
 
-  // Resolve model + tools (unapproved/unknown contacts get no tools — mechanical jailbreak prevention)
+  // Resolve model — chat is conversation only, no tools.
+  // Work happens in act sessions, not chat.
   const chatModel = chatConfig.model || defaults?.act?.model || "sonnet";
   const model = await K.resolveModel(chatModel);
-  let tools;
-  if (contact?.approved) {
-    tools = await K.buildToolDefinitions([], { context: "communication" });
-  } else if (contact) {
-    // Contact exists but not approved — restricted tools
-    const allowlist = chatConfig.unknown_contact_tools || [];
-    tools = allowlist.length
-      ? (await K.buildToolDefinitions([], { context: "communication" })).filter(t => allowlist.includes(t.function?.name))
-      : [];
-    await K.karmaRecord({
-      event: 'inbound_unapproved', sender_id: userId, channel,
-    });
-  } else {
-    const allowlist = chatConfig.unknown_contact_tools || [];
-    tools = allowlist.length
-      ? (await K.buildToolDefinitions([], { context: "communication" })).filter(t => allowlist.includes(t.function?.name))
-      : [];
-    await K.karmaRecord({
-      event: 'inbound_unknown', sender_id: userId, channel,
-    });
+
+  if (!contact) {
+    await K.karmaRecord({ event: 'inbound_unknown', sender_id: userId, channel });
+  } else if (!contact.approved) {
+    await K.karmaRecord({ event: 'inbound_unapproved', sender_id: userId, channel });
   }
 
-  // Tool-calling loop
-  const maxRounds = chatConfig.max_tool_rounds || 5;
-  let reply = null;
-
-  for (let i = 0; i < maxRounds; i++) {
-    const response = await K.callLLM({
-      model,
-      effort: chatConfig.effort || "low",
-      maxTokens: chatConfig.max_output_tokens || 1000,
-      systemPrompt,
-      messages: conv.messages,
-      tools,
-      step: `chat_${channel}_t${conv.turn_count}_r${i}`,
-    });
-    conv.total_cost += response.cost || 0;
-
-    // Budget warning — inject once when cost crosses threshold
-    const warningPct = chatConfig.budget_warning_pct || 0.80;
-    if (!conv._budget_warned && conv.total_cost >= maxCost * warningPct) {
-      conv.messages.push({
-        role: "system",
-        content: "This conversation's budget is running low. Wrap up soon.",
-      });
-      conv._budget_warned = true;
-    }
-
-    if (response.toolCalls?.length) {
-      conv.messages.push({
-        role: "assistant",
-        content: response.content || null,
-        tool_calls: response.toolCalls,
-      });
-      const results = await Promise.all(
-        response.toolCalls.map(tc =>
-          K.executeToolCall(tc).catch(err => ({ error: err.message }))
-        )
-      );
-      for (let j = 0; j < response.toolCalls.length; j++) {
-        conv.messages.push({
-          role: "tool",
-          tool_call_id: response.toolCalls[j].id,
-          content: JSON.stringify(results[j]),
-        });
-      }
-      continue;
-    }
-
-    reply = response.content;
-    conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
-    break;
-  }
-
-  if (!reply) {
-    // Tool rounds exhausted — force a text reply with tools disabled
-    const finalResponse = await K.callLLM({
-      model,
-      effort: chatConfig.effort || "low",
-      maxTokens: chatConfig.max_output_tokens || 1000,
-      systemPrompt,
-      messages: conv.messages,
-      tools: [],
-      step: `chat_${channel}_t${conv.turn_count}_final`,
-    });
-    conv.total_cost += finalResponse.cost || 0;
-    reply = finalResponse.content || "(no response)";
-    conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
-  }
+  // Single LLM call — no tools, no loops
+  const response = await K.callLLM({
+    model,
+    effort: chatConfig.effort || "low",
+    maxTokens: chatConfig.max_output_tokens || 1000,
+    systemPrompt,
+    messages: conv.messages,
+    step: `chat_${channel}_t${conv.turn_count}`,
+  });
+  conv.total_cost += response.cost || 0;
+  const reply = response.content || "I'll look into this in my next session.";
+  conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
 
   // Send via channel adapter
   await K.executeAdapter(channel, { text: reply, channel: chatId });

@@ -23,9 +23,7 @@ describe("handleChat", () => {
         act: { model: "sonnet" },
       },
     });
-    // handleChat calls K.resolveModel and K.buildToolDefinitions synchronously
     K.resolveModel = vi.fn((m) => m);
-    K.buildToolDefinitions = vi.fn(() => []);
     K.callLLM = vi.fn(async () => makeLLMResponse("Hello!"));
   });
 
@@ -167,39 +165,16 @@ describe("handleChat", () => {
     expect(K.callLLM).not.toHaveBeenCalled();
   });
 
-  it("tool calls execute mid-conversation and feed back to LLM", async () => {
-    const toolCall = {
-      id: "tc_1",
-      function: { name: "kv_query", arguments: '{"key":"wisdom"}' },
-    };
-    K.callLLM
-      .mockResolvedValueOnce(makeLLMResponse(null, [toolCall]))
-      .mockResolvedValueOnce(makeLLMResponse("The wisdom says: hello"));
+  it("fallback reply when LLM returns no content", async () => {
+    K.callLLM.mockResolvedValue(makeLLMResponse(null));
 
-    K.executeToolCall.mockResolvedValue({ value: "be kind" });
-
-    const result = await handleChat(K, "slack", {
-      chatId: "123", text: "What's the wisdom?", userId: "user1",
+    await handleChat(K, "slack", {
+      chatId: "123", text: "Hello", userId: "user1",
     });
 
-    expect(result.ok).toBe(true);
-    expect(K.callLLM).toHaveBeenCalledTimes(2);
-    expect(K.executeToolCall).toHaveBeenCalledWith(toolCall);
     expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
-      text: "The wisdom says: hello",
-      channel: "123",
+      text: "I'll look into this in my next session.",
     }));
-
-    // Check messages in saved state:
-    // user, assistant (tool_calls), tool result, assistant (final) = 4
-    const saved = K.kvWriteSafe.mock.calls[0][1];
-    expect(saved.messages).toHaveLength(4);
-    expect(saved.messages[0].role).toBe("user");
-    expect(saved.messages[1].role).toBe("assistant");
-    expect(saved.messages[1].tool_calls).toEqual([toolCall]);
-    expect(saved.messages[2].role).toBe("tool");
-    expect(saved.messages[3].role).toBe("assistant");
-    expect(saved.messages[3].content).toBe("The wisdom says: hello");
   });
 
   it("history trimming works (sliding window)", async () => {
@@ -287,28 +262,15 @@ describe("handleChat", () => {
     expect(Array.isArray(saved.karma)).toBe(true);
   });
 
-  it("falls back to '(no response)' when LLM returns no content after max rounds", async () => {
-    // All rounds return tool calls, never a text response
-    const toolCall = {
-      id: "tc_loop",
-      function: { name: "kv_query", arguments: '{"key":"x"}' },
-    };
-    K.callLLM.mockResolvedValue(makeLLMResponse(null, [toolCall]));
-    K.executeToolCall.mockResolvedValue({ value: "data" });
-
-    // Use a low max_tool_rounds
-    K.getDefaults.mockResolvedValue({
-      chat: { max_tool_rounds: 2 },
-      act: { model: "sonnet" },
-    });
-
+  it("single LLM call per turn — no tool loop", async () => {
     await handleChat(K, "slack", {
-      chatId: "123", text: "Go", userId: "user1",
+      chatId: "123", text: "Hello", userId: "user1",
     });
 
-    expect(K.executeAdapter).toHaveBeenCalledWith("slack", expect.objectContaining({
-      text: "(no response)",
-    }));
+    expect(K.callLLM).toHaveBeenCalledOnce();
+    // No tools passed to callLLM
+    const callArgs = K.callLLM.mock.calls[0][0];
+    expect(callArgs.tools).toBeUndefined();
   });
 
   it("includes contact in system prompt when available", async () => {
@@ -338,71 +300,18 @@ describe("handleChat", () => {
     expect(callArgs.model).toBe("haiku");
   });
 
-  it("accumulates cost across tool-calling rounds", async () => {
-    const toolCall = {
-      id: "tc_1",
-      function: { name: "kv_query", arguments: '{"key":"x"}' },
-    };
-    K.callLLM
-      .mockResolvedValueOnce({ content: null, cost: 0.01, toolCalls: [toolCall], usage: {} })
-      .mockResolvedValueOnce({ content: "Done", cost: 0.02, toolCalls: null, usage: {} });
-    K.executeToolCall.mockResolvedValue({ value: "v" });
+  it("tracks cost from single LLM call", async () => {
+    K.callLLM.mockResolvedValue({ content: "Hi", cost: 0.02, usage: {} });
 
     await handleChat(K, "slack", {
-      chatId: "123", text: "Go", userId: "user1",
+      chatId: "123", text: "Hello", userId: "user1",
     });
 
     const saved = K.kvWriteSafe.mock.calls[0][1];
-    expect(saved.total_cost).toBeCloseTo(0.03);
+    expect(saved.total_cost).toBeCloseTo(0.02);
   });
 
-  describe("budget warning", () => {
-    it("injects system warning when cost crosses threshold", async () => {
-      // Cost 0.001 per call (from makeLLMResponse). maxCost = 0.50, 80% = 0.40.
-      // Pre-load conversation at 0.399 — next call pushes to 0.40, crossing threshold.
-      K.kvGet.mockImplementation(async (key) => {
-        if (key === "chat:slack:123") return {
-          messages: [],
-          total_cost: 0.399,
-          turn_count: 5,
-          created_at: "2026-01-01T00:00:00.000Z",
-        };
-        return null;
-      });
-
-      await handleChat(K, "slack", {
-        chatId: "123", text: "Hi", userId: "user1",
-      });
-
-      const saved = K.kvWriteSafe.mock.calls[0][1];
-      const systemMsgs = saved.messages.filter(m => m.role === "system");
-      expect(systemMsgs).toHaveLength(1);
-      expect(systemMsgs[0].content).toContain("budget is running low");
-      expect(saved._budget_warned).toBe(true);
-    });
-
-    it("does not inject warning twice", async () => {
-      // Already warned, cost still above threshold
-      K.kvGet.mockImplementation(async (key) => {
-        if (key === "chat:slack:123") return {
-          messages: [],
-          total_cost: 0.42,
-          turn_count: 6,
-          created_at: "2026-01-01T00:00:00.000Z",
-          _budget_warned: true,
-        };
-        return null;
-      });
-
-      await handleChat(K, "slack", {
-        chatId: "123", text: "Hi again", userId: "user1",
-      });
-
-      const saved = K.kvWriteSafe.mock.calls[0][1];
-      const systemMsgs = saved.messages.filter(m => m.role === "system");
-      expect(systemMsgs).toHaveLength(0);
-    });
-
+  describe("budget", () => {
     it("/reset clears warning flag", async () => {
       K.kvGet.mockImplementation(async (key) => {
         if (key === "chat:slack:123") return {
@@ -425,18 +334,7 @@ describe("handleChat", () => {
     });
   });
 
-  describe("unknown contact tool filtering", () => {
-    it("gives empty tools to unknown contacts (default)", async () => {
-      K.resolveContact = vi.fn(async () => null);
-
-      await handleChat(K, "slack", {
-        chatId: "123", text: "Hi", userId: "stranger",
-      });
-
-      const callArgs = K.callLLM.mock.calls[0][0];
-      expect(callArgs.tools).toEqual([]);
-    });
-
+  describe("contact karma tracking", () => {
     it("records inbound_unknown karma for unknown contacts", async () => {
       K.resolveContact = vi.fn(async () => null);
 
@@ -451,21 +349,6 @@ describe("handleChat", () => {
           channel: "slack",
         })
       );
-    });
-
-    it("gives restricted tools to unapproved contacts", async () => {
-      K.resolveContact = vi.fn(async () => ({
-        name: "Alice",
-        slug: "alice",
-        approved: false,
-      }));
-
-      await handleChat(K, "slack", {
-        chatId: "123", text: "Hi", userId: "alice_id",
-      });
-
-      const callArgs = K.callLLM.mock.calls[0][0];
-      expect(callArgs.tools).toEqual([]);
     });
 
     it("records inbound_unapproved karma for unapproved contacts", async () => {
@@ -486,49 +369,6 @@ describe("handleChat", () => {
           channel: "slack",
         })
       );
-    });
-
-    it("gives full tools to known approved contacts", async () => {
-      K.resolveContact = vi.fn(async () => ({
-        name: "Alice",
-        slug: "alice",
-        approved: true,
-      }));
-      K.buildToolDefinitions = vi.fn(() => [
-        { function: { name: "kv_query" } },
-        { function: { name: "web_fetch" } },
-      ]);
-
-      await handleChat(K, "slack", {
-        chatId: "123", text: "Hi", userId: "alice_id",
-      });
-
-      const callArgs = K.callLLM.mock.calls[0][0];
-      expect(callArgs.tools).toHaveLength(2);
-    });
-
-    it("filters tools by allowlist for unknown contacts when configured", async () => {
-      K.resolveContact = vi.fn(async () => null);
-      K.getDefaults.mockResolvedValue({
-        chat: {
-          model: "sonnet",
-          unknown_contact_tools: ["kv_query"],
-        },
-        act: { model: "sonnet" },
-      });
-      K.buildToolDefinitions = vi.fn(() => [
-        { function: { name: "kv_query" } },
-        { function: { name: "web_fetch" } },
-        { function: { name: "check_email" } },
-      ]);
-
-      await handleChat(K, "slack", {
-        chatId: "123", text: "Hi", userId: "stranger",
-      });
-
-      const callArgs = K.callLLM.mock.calls[0][0];
-      expect(callArgs.tools).toHaveLength(1);
-      expect(callArgs.tools[0].function.name).toBe("kv_query");
     });
   });
 });
