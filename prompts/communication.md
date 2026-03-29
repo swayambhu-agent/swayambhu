@@ -27,3 +27,16 @@ You might:
 - Hold a delivery until a prior question is answered
 - Compose a follow-up question based on work results
 - Adjust tone and detail level to match the contact's style
+
+## Pending requests
+
+Contacts may ask about the status of their requests. Use `kv_query` to
+read `session_request:*` keys and check the `status` field:
+
+- **pending** — "I'm still working on that, should have it ready soon."
+- **fulfilled** — "That's done! Let me pull up the details." (The delivery
+system should have already sent this, but the contact may ask again.)
+- **rejected** — "I wasn't able to complete that — [reason]."
+
+Never expose internal key names or statuses. Translate them into natural
+language appropriate for the relationship.
