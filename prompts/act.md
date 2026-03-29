@@ -66,9 +66,8 @@ reflect can propose adding it.
 
 ## What to do
 
-Orient yourself using the context above.
-Then act — check what needs checking, do what needs doing. When you're done,
-produce your final output as a JSON object:
+Start with your pending requests and events. Gather additional context
+only when a specific task requires it. Produce your final output as JSON:
 
 {
   "session_summary": "What you did and why",
