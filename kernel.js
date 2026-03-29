@@ -53,6 +53,7 @@ class Kernel {
     'contact_platform:',
     'sealed:',
     'event:', 'event_dead:',
+    'session_request:',
   ];
   static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'event:', 'event_dead:'];
   static KERNEL_ONLY_EXACT = ['patron:direct'];

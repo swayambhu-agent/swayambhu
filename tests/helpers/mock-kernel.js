@@ -79,6 +79,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
         'yama:', 'niyama:', 'upaya:', 'prajna:',
         'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
+        'session_request:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
       if (exact.includes(key)) return true;
@@ -91,6 +92,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
         'yama:', 'niyama:', 'upaya:', 'prajna:',
         'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
+        'session_request:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
     })),
@@ -146,6 +148,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     'yama:', 'niyama:', 'upaya:', 'prajna:', 'skill:',
     'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
+    'session_request:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   const _KERNEL_ONLY = ['kernel:', 'sealed:', 'karma:', 'event:', 'event_dead:'];
