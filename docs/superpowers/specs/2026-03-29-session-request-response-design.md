@@ -268,8 +268,8 @@ each one in your output. Include a session_responses array:
 - rejected: can't do this, include error explaining why
 - pending: not done yet, include note on progress and next_session time
 
-Every request MUST get a response. If you don't address a request, the
-system will auto-mark it as pending.
+Every request should get a response. Unaddressed requests are tracked
+in session health and visible to deep reflect.
 ```
 
 ## Files Changed
