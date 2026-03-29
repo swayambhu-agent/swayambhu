@@ -38,21 +38,15 @@ describe("handleChat", () => {
       text: "Hello!",
       channel: "123",
     }));
-    expect(K.callLLM).toHaveBeenCalledOnce();
+    expect(K.callLLM).toHaveBeenCalled();
   });
 
-  it("emits chat_message event after handling message", async () => {
+  it("does NOT emit event automatically — only trigger_session does", async () => {
     await handleChat(K, "slack", {
       chatId: "123", text: "Hello world", userId: "user1",
     });
 
-    expect(K.emitEvent).toHaveBeenCalledOnce();
-    const [type, payload] = K.emitEvent.mock.calls[0];
-    expect(type).toBe("chat_message");
-    expect(payload.source.channel).toBe("slack");
-    expect(payload.source.user_id).toBe("user1");
-    expect(payload.summary).toBe("Hello world");
-    expect(payload.ref).toBe("chat:slack:123");
+    expect(K.emitEvent).not.toHaveBeenCalled();
   });
 
   it("persists conversation state across turns", async () => {
@@ -262,15 +256,17 @@ describe("handleChat", () => {
     expect(Array.isArray(saved.karma)).toBe(true);
   });
 
-  it("single LLM call per turn — no tool loop", async () => {
+  it("passes chat tools (kv_query, kv_manifest, trigger_session) to LLM", async () => {
     await handleChat(K, "slack", {
       chatId: "123", text: "Hello", userId: "user1",
     });
 
-    expect(K.callLLM).toHaveBeenCalledOnce();
-    // No tools passed to callLLM
     const callArgs = K.callLLM.mock.calls[0][0];
-    expect(callArgs.tools).toBeUndefined();
+    const toolNames = callArgs.tools.map(t => t.function.name);
+    expect(toolNames).toContain("kv_query");
+    expect(toolNames).toContain("kv_manifest");
+    expect(toolNames).toContain("trigger_session");
+    expect(toolNames).toHaveLength(3);
   });
 
   it("includes contact in system prompt when available", async () => {

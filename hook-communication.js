@@ -79,8 +79,7 @@ export async function handleChat(K, channel, inbound) {
   const ts = sentTs ? new Date(parseFloat(sentTs) * 1000).toISOString() : new Date().toISOString();
   conv.messages.push({ role: "user", content: text, userId, ts, sentTs });
 
-  // Resolve model — chat is conversation only, no tools.
-  // Work happens in act sessions, not chat.
+  // Resolve model — chat can read KV and trigger sessions, nothing else.
   const chatModel = chatConfig.model || defaults?.act?.model || "sonnet";
   const model = await K.resolveModel(chatModel);
 
@@ -90,18 +89,119 @@ export async function handleChat(K, channel, inbound) {
     await K.karmaRecord({ event: 'inbound_unapproved', sender_id: userId, channel });
   }
 
-  // Single LLM call — no tools, no loops
-  const response = await K.callLLM({
-    model,
-    effort: chatConfig.effort || "low",
-    maxTokens: chatConfig.max_output_tokens || 1000,
-    systemPrompt,
-    messages: conv.messages,
-    step: `chat_${channel}_t${conv.turn_count}`,
-  });
-  conv.total_cost += response.cost || 0;
-  const reply = response.content || "I'll look into this in my next session.";
-  conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
+  // Chat tools: read KV state + trigger sessions. No work tools.
+  const chatTools = [
+    {
+      type: 'function',
+      function: {
+        name: 'kv_query',
+        description: 'Read a KV value. Use to look up tasks, session history, contact info, or any agent state.',
+        parameters: {
+          type: 'object',
+          properties: {
+            key: { type: 'string', description: 'KV key to read' },
+            path: { type: 'string', description: 'Dot-bracket path to drill into the value' },
+          },
+          required: ['key'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'kv_manifest',
+        description: 'List KV keys by prefix. Use to discover what state exists.',
+        parameters: {
+          type: 'object',
+          properties: {
+            prefix: { type: 'string', description: 'Key prefix to filter by' },
+            limit: { type: 'number', description: 'Max keys to return (default 20)' },
+          },
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'trigger_session',
+        description: 'Signal that the conversation has an actionable request. Call this when the contact has given you enough info to act on. Do NOT call if you still need clarification.',
+        parameters: {
+          type: 'object',
+          properties: {
+            summary: { type: 'string', description: 'Brief summary of what the session should work on' },
+          },
+          required: ['summary'],
+        },
+      },
+    },
+  ];
+
+  // Chat context passed to trigger_session tool
+  const chatContext = { channel, userId, contact, convKey, chatConfig };
+
+  // Tool-calling loop — max 3 rounds (KV reads + optional trigger)
+  const maxRounds = 3;
+  let reply = null;
+
+  for (let i = 0; i < maxRounds; i++) {
+    const response = await K.callLLM({
+      model,
+      effort: chatConfig.effort || "low",
+      maxTokens: chatConfig.max_output_tokens || 1000,
+      systemPrompt,
+      messages: conv.messages,
+      tools: chatTools,
+      step: `chat_${channel}_t${conv.turn_count}_r${i}`,
+    });
+    conv.total_cost += response.cost || 0;
+
+    if (response.toolCalls?.length) {
+      conv.messages.push({
+        role: "assistant",
+        content: response.content || null,
+        tool_calls: response.toolCalls,
+      });
+      const results = await Promise.all(
+        response.toolCalls.map(async (tc) => {
+          const name = tc.function?.name;
+          const args = JSON.parse(tc.function?.arguments || '{}');
+          if (name === 'trigger_session') {
+            const mod = await import('./tools/trigger_session.js');
+            return mod.execute({ ...args, K, _chatContext: chatContext });
+          }
+          // kv_query and kv_manifest go through kernel
+          return K.executeToolCall(tc).catch(err => ({ error: err.message }));
+        })
+      );
+      for (let j = 0; j < response.toolCalls.length; j++) {
+        conv.messages.push({
+          role: "tool",
+          tool_call_id: response.toolCalls[j].id,
+          content: JSON.stringify(results[j]),
+        });
+      }
+      continue;
+    }
+
+    reply = response.content;
+    conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
+    break;
+  }
+
+  if (!reply) {
+    // Rounds exhausted — force final text reply
+    const finalResponse = await K.callLLM({
+      model,
+      effort: chatConfig.effort || "low",
+      maxTokens: chatConfig.max_output_tokens || 1000,
+      systemPrompt,
+      messages: conv.messages,
+      step: `chat_${channel}_t${conv.turn_count}_final`,
+    });
+    conv.total_cost += finalResponse.cost || 0;
+    reply = finalResponse.content || "I'll look into this in my next session.";
+    conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
+  }
 
   // Send via channel adapter
   await K.executeAdapter(channel, { text: reply, channel: chatId });
@@ -118,37 +218,6 @@ export async function handleChat(K, channel, inbound) {
     conv.messages = trimByTurns(conv.messages, maxMsgs);
   }
   await K.kvWriteSafe(convKey, conv);
-
-  // Emit event for next session
-  try {
-    await K.emitEvent("chat_message", {
-      source: { channel, user_id: userId },
-      contact_name: contact?.name || userId,
-      contact_approved: !!contact?.approved,
-      summary: text.slice(0, 300),
-      timestamp: new Date().toISOString(),
-      ref: convKey,
-    });
-  } catch {}
-
-  // Advance next session for approved contacts — conversation is a signal to run sooner
-  if (contact?.approved) {
-    try {
-      const advanceSecs = chatConfig.session_advance_seconds
-        ?? (chatConfig.session_advance_minutes ? chatConfig.session_advance_minutes * 60 : 30);
-      const schedule = await K.kvGet("session_schedule");
-      if (schedule?.next_session_after) {
-        const sessionAt = new Date(schedule.next_session_after).getTime();
-        const advanceTo = Date.now() + advanceSecs * 1000;
-        if (sessionAt > advanceTo) {
-          await K.kvWriteSafe("session_schedule", {
-            ...schedule,
-            next_session_after: new Date(advanceTo).toISOString(),
-          });
-        }
-      }
-    } catch {}
-  }
 
   return { ok: true, turn: conv.turn_count };
 }
