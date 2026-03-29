@@ -22,6 +22,7 @@ class Kernel {
     this.startTime = Date.now();
     this.sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.sessionCost = 0;
+    this._budgetReserved = 0;
     this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
     this.mode = opts.mode || 'session'; // 'session' (act/reflect) or 'chat'
@@ -2113,27 +2114,34 @@ class Kernel {
     // Subplan tools: same as parent
     const tools = this.buildToolDefinitions();
 
-    // Subplan gets its own budget envelope, capped at remaining session budget
+    // Reserve budget for this subplan — prevents parallel subplans from double-counting
     const sessionBudget = this.defaults?.session_budget?.max_cost || 0.15;
-    const remaining = Math.max(0, sessionBudget - this.sessionCost);
-    const subplanBudget = Math.min(args.max_cost, remaining);
-    const subplanBudgetCap = this.sessionCost + subplanBudget;
+    const available = Math.max(0, sessionBudget - this.sessionCost - this._budgetReserved);
+    const allocation = Math.min(args.max_cost, available);
+    if (allocation <= 0) {
+      return { error: "No budget available for subplan", goal: args.goal };
+    }
+    this._budgetReserved += allocation;
 
-    return this.runAgentLoop({
-      systemPrompt: builtPrompt,
-      initialContext: `Execute this goal: ${args.goal}`,
-      tools,
-      model,
-      effort: args.effort || 'low',
-      maxTokens: args.max_output_tokens || 1000,
-      maxSteps,
-      step: `subplan_d${depth}`,
-      budgetCap: subplanBudgetCap,
-    });
+    try {
+      return await this.runAgentLoop({
+        systemPrompt: builtPrompt,
+        initialContext: `Execute this goal: ${args.goal}`,
+        tools,
+        model,
+        effort: args.effort || 'low',
+        maxTokens: args.max_output_tokens || 1000,
+        maxSteps,
+        step: `subplan_d${depth}`,
+        maxSpend: allocation,
+      });
+    } finally {
+      this._budgetReserved -= allocation;
+    }
   }
 
   async runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
-                       maxTokens, maxSteps, step, budgetCap }) {
+                       maxTokens, maxSteps, step, budgetCap, maxSpend }) {
     const messages = [];
     if (initialContext) {
       const content = typeof initialContext === 'string'
@@ -2144,6 +2152,7 @@ class Kernel {
 
     let parseRetried = false;
     let softWarned = false;
+    let loopSpend = 0;
 
     // Budget limit config — resolve role from step name
     const role = step.startsWith('reflect_depth_') ? 'deep_reflect'
@@ -2156,6 +2165,12 @@ class Kernel {
 
     try {
       for (let i = 0; i < maxSteps; i++) {
+        // ── Per-invocation spend limit (subplans) ──────────────────
+        if (maxSpend && loopSpend >= maxSpend) {
+          await this.karmaRecord({ event: "budget_exceeded", reason: "maxSpend exceeded", step });
+          return { budget_exceeded: true, reason: "Subplan spend limit reached" };
+        }
+
         // ── Budget soft/hard limits ──────────────────────────────
         if (costLimit && role) {
           const usedPct = this.sessionCost / costLimit;
@@ -2184,6 +2199,7 @@ class Kernel {
           systemPrompt, messages, tools,
           step: `${step}_turn_${i}`, budgetCap,
         });
+        loopSpend += response.cost || 0;
 
         if (response.toolCalls?.length) {
           // Add assistant message with tool calls
