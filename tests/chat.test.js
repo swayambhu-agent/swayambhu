@@ -440,4 +440,41 @@ describe("handleDelivery", () => {
       reason: "contact_not_found",
     }));
   });
+
+  it("reads session_request KV key for delivery context", async () => {
+    const K = makeMockK({
+      "prompt:communication": "You are a communication system.",
+      "chat:slack:U123": JSON.stringify({ messages: [] }),
+      "session_request:req_123": {
+        id: "req_123",
+        contact: "U123",
+        contact_name: "Swami",
+        summary: "Research topics",
+        status: "fulfilled",
+        result: { content: "Doc ready", attachments: [{ type: "google_doc", url: "https://docs.google.com/123" }] },
+      },
+    });
+    K.resolveContact.mockResolvedValue({ name: "Swami", platform: "slack", approved: true });
+    K.resolveModel.mockResolvedValue("test-model");
+    K.callLLM = vi.fn(async () => ({ content: "Here's your research doc!" }));
+    K.getDefaults.mockResolvedValue({});
+
+    const events = [{
+      type: "session_response",
+      contact: "U123",
+      ref: "session_request:req_123",
+      status: "fulfilled",
+    }];
+
+    const results = await handleDelivery(K, events);
+
+    expect(results).toHaveLength(1);
+    expect(results[0].sent).toBe(true);
+    const llmArgs = K.callLLM.mock.calls[0][0];
+    const ctx = JSON.parse(llmArgs.messages[0].content);
+    expect(ctx.requests).toHaveLength(1);
+    expect(ctx.requests[0].summary).toBe("Research topics");
+    expect(ctx.requests[0].status).toBe("fulfilled");
+    expect(ctx.requests[0].result.content).toBe("Doc ready");
+  });
 });

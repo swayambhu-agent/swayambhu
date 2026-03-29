@@ -255,15 +255,27 @@ export async function handleDelivery(K, events) {
         continue;
       }
 
+      // Load session_request KV keys for events with refs
+      const requests = [];
+      for (const e of contactEvents) {
+        if (e.ref?.startsWith("session_request:")) {
+          const req = await K.kvGet(e.ref);
+          if (req) requests.push(req);
+        } else {
+          // Non-request events (e.g. job_complete) — pass through
+          requests.push({
+            type: e.type,
+            content: e.content,
+            attachments: e.attachments,
+            status: e.status,
+          });
+        }
+      }
+
       const deliveryContext = {
         mode: "delivery",
         contact: { id: contactId, name: contact.name, platform },
-        pending_deliverables: contactEvents.map(e => ({
-          type: e.type,
-          content: e.content,
-          attachments: e.attachments,
-          timestamp: e.timestamp,
-        })),
+        requests,
         conversation_history: conv.messages.slice(-20),
       };
 
