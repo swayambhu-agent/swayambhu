@@ -728,6 +728,173 @@ describe("runReflect budget_multiplier", () => {
   });
 });
 
+// ── 18. runAct — session_responses processing ──────────────
+
+describe("runAct session_responses", () => {
+  function makeSessionResponseFixture(kvInit = {}) {
+    const defaults = {
+      act: { model: "test/act", effort: "low", max_output_tokens: 1000 },
+      reflect: { model: "test/reflect" },
+      session_budget: { max_cost: 0.15 },
+      execution: { max_steps: { act: 3 } },
+    };
+    const state = makeState({ defaults });
+    const K = makeMockK(kvInit);
+    K.getKarma = vi.fn(async () => []);
+    K.getSessionCost = vi.fn(async () => 0);
+    return { K, state };
+  }
+
+  it("updates session_request KV key and emits session_response event", async () => {
+    const reqKey = "session_request:req_123";
+    const { K, state } = makeSessionResponseFixture({
+      [reqKey]: JSON.stringify({
+        status: "pending",
+        contact: "U123",
+        request: { goal: "Do something" },
+        created_at: "2026-03-28T10:00:00.000Z",
+      }),
+    });
+
+    K.runAgentLoop = vi.fn(async () => ({
+      session_responses: [
+        { request_id: "req_123", status: "fulfilled", result: { content: "Done" } },
+      ],
+    }));
+
+    const context = { balances: {}, lastReflect: null, additionalContext: null, effort: "low", crashData: null };
+    await runAct(K, state, context, {});
+
+    // KV key should be updated
+    const updated = await K.kvGet(reqKey);
+    expect(updated.status).toBe("fulfilled");
+    expect(updated.result).toEqual({ content: "Done" });
+    expect(updated.updated_at).toBeDefined();
+
+    // emitEvent should have been called with session_response
+    const emitCalls = K.emitEvent.mock.calls;
+    const responseCall = emitCalls.find(c => c[0] === "session_response");
+    expect(responseCall).toBeDefined();
+    expect(responseCall[1]).toMatchObject({
+      contact: "U123",
+      ref: reqKey,
+      status: "fulfilled",
+    });
+  });
+
+  it("records unaddressed requests in karma", async () => {
+    const reqKey = "session_request:req_456";
+    const { K, state } = makeSessionResponseFixture({
+      [reqKey]: JSON.stringify({
+        status: "pending",
+        contact: "U456",
+        request: { goal: "Do something else" },
+        created_at: "2026-03-28T10:00:00.000Z",
+      }),
+    });
+
+    // Agent returns NO session_responses
+    K.runAgentLoop = vi.fn(async () => ({}));
+
+    const context = {
+      balances: {},
+      lastReflect: null,
+      additionalContext: null,
+      effort: "low",
+      crashData: null,
+      events: [{ type: "session_request", ref: reqKey, contact: "U456" }],
+    };
+    await runAct(K, state, context, {});
+
+    const karmaCalls = K.karmaRecord.mock.calls;
+    const unaddressedCall = karmaCalls.find(c => c[0].event === "unaddressed_requests");
+    expect(unaddressedCall).toBeDefined();
+    expect(unaddressedCall[0].count).toBe(1);
+    expect(unaddressedCall[0].refs).toContain(reqKey);
+  });
+
+  it("handles pending status with note and next_session", async () => {
+    const reqKey = "session_request:req_789";
+    const { K, state } = makeSessionResponseFixture({
+      [reqKey]: JSON.stringify({
+        status: "pending",
+        contact: "U789",
+        request: { goal: "Long task" },
+        created_at: "2026-03-28T10:00:00.000Z",
+      }),
+    });
+
+    K.runAgentLoop = vi.fn(async () => ({
+      session_responses: [
+        {
+          request_id: "req_789",
+          status: "pending",
+          note: "50% done",
+          next_session: "2026-03-29T13:00:00Z",
+        },
+      ],
+    }));
+
+    const context = { balances: {}, lastReflect: null, additionalContext: null, effort: "low", crashData: null };
+    await runAct(K, state, context, {});
+
+    const updated = await K.kvGet(reqKey);
+    expect(updated.status).toBe("pending");
+    expect(updated.note).toBe("50% done");
+    expect(updated.next_session).toBe("2026-03-29T13:00:00Z");
+    expect(updated.updated_at).toBeDefined();
+  });
+
+  it("skips responses for non-existent request keys", async () => {
+    const { K, state } = makeSessionResponseFixture({});
+
+    K.runAgentLoop = vi.fn(async () => ({
+      session_responses: [
+        { request_id: "req_nonexistent", status: "fulfilled", result: { content: "Done" } },
+      ],
+    }));
+
+    const context = { balances: {}, lastReflect: null, additionalContext: null, effort: "low", crashData: null };
+    // Should not throw
+    await runAct(K, state, context, {});
+
+    // emitEvent should NOT have been called for a non-existent key
+    const emitCalls = K.emitEvent.mock.calls;
+    const responseCall = emitCalls.find(c => c[0] === "session_response");
+    expect(responseCall).toBeUndefined();
+  });
+
+  it("does not record unaddressed karma when all requests are responded to", async () => {
+    const reqKey = "session_request:req_abc";
+    const { K, state } = makeSessionResponseFixture({
+      [reqKey]: JSON.stringify({
+        status: "pending",
+        contact: "Uabc",
+        request: { goal: "Something" },
+        created_at: "2026-03-28T10:00:00.000Z",
+      }),
+    });
+
+    K.runAgentLoop = vi.fn(async () => ({
+      session_responses: [{ request_id: "req_abc", status: "fulfilled" }],
+    }));
+
+    const context = {
+      balances: {},
+      lastReflect: null,
+      additionalContext: null,
+      effort: "low",
+      crashData: null,
+      events: [{ type: "session_request", ref: reqKey, contact: "Uabc" }],
+    };
+    await runAct(K, state, context, {});
+
+    const karmaCalls = K.karmaRecord.mock.calls;
+    const unaddressedCall = karmaCalls.find(c => c[0].event === "unaddressed_requests");
+    expect(unaddressedCall).toBeUndefined();
+  });
+});
+
 // ── 18. kvWriteGated blocks system keys in act context ───
 
 describe("kvWriteGated blocks system keys in act context", () => {

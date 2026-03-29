@@ -87,6 +87,44 @@ export async function runAct(K, state, context, config) {
     }
   }
 
+  // Process session responses — update request KV keys and emit events
+  if (output.session_responses?.length) {
+    for (const resp of output.session_responses) {
+      const key = `session_request:${resp.request_id}`;
+      const existing = await K.kvGet(key);
+      if (!existing) continue;
+
+      existing.status = resp.status;
+      existing.updated_at = new Date().toISOString();
+      if (resp.result) existing.result = resp.result;
+      if (resp.error) existing.error = resp.error;
+      if (resp.next_session) existing.next_session = resp.next_session;
+      if (resp.note) existing.note = resp.note;
+
+      await K.kvWriteSafe(key, existing);
+      await K.emitEvent("session_response", {
+        contact: existing.contact,
+        ref: key,
+        status: resp.status,
+      });
+    }
+  }
+
+  // Track unaddressed requests in karma (agent accountability, not auto-generation)
+  const requestEvents = context.events?.filter(e => e.type === "session_request") || [];
+  const respondedIds = new Set((output.session_responses || []).map(r => r.request_id));
+  const unaddressed = requestEvents.filter(e => {
+    const id = e.ref?.replace("session_request:", "");
+    return id && !respondedIds.has(id);
+  });
+  if (unaddressed.length > 0) {
+    await K.karmaRecord({
+      event: "unaddressed_requests",
+      count: unaddressed.length,
+      refs: unaddressed.map(e => e.ref),
+    });
+  }
+
   // Session reflect — skip if budget fully exhausted (but not if
   // act was soft-capped by reflect_reserve_pct)
   const skipReflect = output.budget_exceeded && !reservePct;
