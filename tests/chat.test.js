@@ -49,6 +49,41 @@ describe("handleChat", () => {
     expect(K.emitEvent).not.toHaveBeenCalled();
   });
 
+  it("trigger_session creates session_request KV key and emits session_request event", async () => {
+    K.callLLM = vi.fn()
+      .mockResolvedValueOnce({
+        content: null,
+        cost: 0.001,
+        toolCalls: [{
+          id: "tc_1",
+          function: {
+            name: "trigger_session",
+            arguments: JSON.stringify({ summary: "Research Sadhguru topics" }),
+          },
+        }],
+      })
+      .mockResolvedValueOnce({ content: "On it!", cost: 0.001 });
+
+    await handleChat(K, "slack", {
+      chatId: "U123", text: "Do research", userId: "U123",
+    });
+
+    // Should have created a session_request: KV key
+    const putCalls = K.kvWriteSafe.mock.calls.filter(([k]) => k.startsWith("session_request:"));
+    expect(putCalls).toHaveLength(1);
+    const [key, value] = putCalls[0];
+    expect(key).toMatch(/^session_request:req_\d+$/);
+    expect(value.contact).toBe("U123");
+    expect(value.summary).toBe("Research Sadhguru topics");
+    expect(value.status).toBe("pending");
+
+    // Should have emitted session_request event (not chat_message)
+    expect(K.emitEvent).toHaveBeenCalledWith("session_request", expect.objectContaining({
+      contact: "U123",
+      ref: expect.stringMatching(/^session_request:req_\d+$/),
+    }));
+  });
+
   it("persists conversation state across turns", async () => {
     // Turn 1
     await handleChat(K, "slack", {

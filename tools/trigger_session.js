@@ -5,20 +5,35 @@ export const meta = {
 };
 
 // Chat-only tool: signal that the conversation has an actionable request.
-// Emits a chat_message event and advances the session schedule.
+// Creates a session_request KV key (source of truth) and emits a
+// session_request event (signal). The session will respond with a
+// session_response when work is done.
 export async function execute({ summary, K, _chatContext }) {
   if (!_chatContext) return { error: "trigger_session can only be called from chat" };
 
   const { channel, userId, contact, convKey, chatConfig } = _chatContext;
 
-  // Emit event for the session to pick up
-  await K.emitEvent("chat_message", {
-    source: { channel, user_id: userId },
+  // Create session_request KV key — source of truth
+  const id = `req_${Date.now()}`;
+  const request = {
+    id,
     contact: userId,
     contact_name: contact?.name || userId,
-    contact_approved: !!contact?.approved,
     summary: summary || "(no summary)",
+    status: "pending",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
     ref: convKey,
+    result: null,
+    error: null,
+    next_session: null,
+  };
+  await K.kvWriteSafe(`session_request:${id}`, request);
+
+  // Emit event — signal for sessionTrigger handler
+  await K.emitEvent("session_request", {
+    contact: userId,
+    ref: `session_request:${id}`,
   });
 
   // Advance session schedule
@@ -36,5 +51,5 @@ export async function execute({ summary, K, _chatContext }) {
     }
   }
 
-  return { ok: true, message: "Session triggered" };
+  return { ok: true, request_id: id };
 }
