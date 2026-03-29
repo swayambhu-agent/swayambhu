@@ -62,7 +62,7 @@ class Kernel {
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
   static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
-  static ACT_RELEVANT_EVENTS = ['chat_message', 'job_complete', 'patron_direct'];
+  static ACT_RELEVANT_EVENTS = ['session_request', 'job_complete', 'patron_direct'];
 
   static isSystemKey(key) {
     if (Kernel.SYSTEM_KEY_EXACT.includes(key)) return true;

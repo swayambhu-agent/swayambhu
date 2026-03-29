@@ -318,9 +318,9 @@ export async function gatherReflectContext(K, state, depth, context) {
   // Wisdom manifest — lazy loading for all depths
   templateVars.wisdom_manifest = await loadWisdomManifest(K);
 
-  // Inbox — events since last session (replaces chat digest scan)
-  if (depth >= 1 && context?.inbox?.length) {
-    templateVars.chatDigest = context.inbox.filter(i => i.type === 'chat_message');
+  // Events — session requests and other signals since last session
+  if (depth >= 1 && context?.events?.length) {
+    templateVars.chatDigest = context.events.filter(i => i.type === 'session_request');
   }
 
   // Reflect schedule — so deep reflect knows when it last ran and when next is due

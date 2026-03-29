@@ -2765,13 +2765,13 @@ describe("drainEvents", () => {
   it("adds act-relevant events to actContext", async () => {
     const { kernel } = makeKernel({
       'config:event_handlers': JSON.stringify({}),
-      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hi' }),
+      'event:0001:session_request': JSON.stringify({ type: 'session_request', ref: 'session_request:req_1' }),
       'event:0002:job_complete': JSON.stringify({ type: 'job_complete', job_id: 'j1' }),
       'event:0003:other_event': JSON.stringify({ type: 'other_event', data: 'x' }),
     });
     const { actContext } = await kernel.drainEvents({});
     const types = actContext.map(e => e.type);
-    expect(types).toContain('chat_message');
+    expect(types).toContain('session_request');
     expect(types).toContain('job_complete');
     expect(types).not.toContain('other_event');
   });
