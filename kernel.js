@@ -2115,8 +2115,8 @@ class Kernel {
 
     // Subplan gets its own budget envelope, capped at remaining session budget
     const sessionBudget = this.defaults?.session_budget?.max_cost || 0.15;
-    const remaining = sessionBudget - this.sessionCost;
-    const subplanBudget = Math.min(args.max_cost, Math.max(0, remaining * 0.8));
+    const remaining = Math.max(0, sessionBudget - this.sessionCost);
+    const subplanBudget = Math.min(args.max_cost, remaining);
     const subplanBudgetCap = this.sessionCost + subplanBudget;
 
     return this.runAgentLoop({
