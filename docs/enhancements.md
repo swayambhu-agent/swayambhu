@@ -18,6 +18,8 @@ Tracked ideas for future improvement. Not prioritized — just captured.
 
 ## Tools
 
+- **web_fetch returns raw HTML — wastes tokens and causes hangs**: `web_fetch` returns full HTML pages including scripts, nav, footers. When a subplan fetches multiple pages and sends them to the LLM, the context is massive and mostly useless. This caused a session hang — the LLM call with 4 full HTML pages in context timed out and killed the worker process. Fix: extract text content from HTML (strip tags, scripts, styles) before returning. The `max_length` parameter exists but the agent rarely uses it, and even truncated HTML is mostly boilerplate. A smarter extraction (readability-style) would give the agent the article text it actually needs.
+
 - **kv_manifest silent miss on wrong prefix**: `kv_manifest` returns `{ keys: [], count: 0 }` for both a typo'd prefix and a legitimately empty prefix — the agent can't tell the difference. Could silently poll a wrong prefix forever thinking "nothing new yet." Not fixable at the KV level (prefix scans have no concept of "this namespace exists"). Possible mitigations: prompt guidance ("if a prefix scan returns empty unexpectedly, verify against a broader scan"), or a heuristic in the tool that warns when a prefix has no keys and doesn't match any known prefix pattern.
 
 ## Naming
