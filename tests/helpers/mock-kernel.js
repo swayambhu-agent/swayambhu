@@ -118,23 +118,6 @@ export function makeMockK(kvInit = {}, opts = {}) {
     updateProposalStatus: vi.fn(async () => {}),
     processProposalVerdicts: vi.fn(async () => {}),
 
-    // Config utilities
-    getMaxSteps: vi.fn(async (state, role, depth) => {
-      const { defaults } = state;
-      if (role === 'act') return defaults?.execution?.max_steps?.act || 12;
-      const perLevel = defaults?.reflect_levels?.[depth];
-      if (perLevel?.max_steps) return perLevel.max_steps;
-      return depth === 1
-        ? (defaults?.execution?.max_steps?.reflect || 5)
-        : (defaults?.execution?.max_steps?.deep_reflect || 10);
-    }),
-    getReflectModel: vi.fn(async (state, depth) => {
-      const { defaults } = state;
-      const perLevel = defaults?.reflect_levels?.[depth];
-      if (perLevel?.model) return perLevel.model;
-      return defaults?.deep_reflect?.model || defaults?.act?.model;
-    }),
-
     // Internal — expose KV store for assertions
     _kv: kv,
   };

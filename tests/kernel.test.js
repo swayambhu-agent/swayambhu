@@ -144,7 +144,7 @@ describe("buildToolDefinitions", () => {
       },
     });
     const defs = kernel.buildToolDefinitions();
-    expect(defs.length).toBe(4); // 2 registry + spawn_subplan + verify_patron
+    expect(defs.length).toBe(3); // 2 registry + verify_patron
     expect(defs[0]).toEqual({
       type: "function",
       function: {
@@ -160,27 +160,27 @@ describe("buildToolDefinitions", () => {
     });
   });
 
-  it("always includes spawn_subplan and verify_patron", () => {
+  it("always includes verify_patron", () => {
     const { kernel } = makeKernel({}, { toolRegistry: { tools: [] } });
     const defs = kernel.buildToolDefinitions();
-    expect(defs.length).toBe(2); // spawn_subplan + verify_patron
-    expect(defs.map(d => d.function.name)).toContain("spawn_subplan");
+    expect(defs.length).toBe(1); // verify_patron only
     expect(defs.map(d => d.function.name)).toContain("verify_patron");
+    expect(defs.map(d => d.function.name)).not.toContain("spawn_subplan");
   });
 
   it("handles missing/null registry", () => {
     const { kernel } = makeKernel();
     kernel.toolRegistry = null;
     const defs = kernel.buildToolDefinitions();
-    expect(defs.length).toBe(2); // spawn_subplan + verify_patron
+    expect(defs.length).toBe(1); // verify_patron only
   });
 
   it("passes through extraTools", () => {
     const { kernel } = makeKernel({}, { toolRegistry: { tools: [] } });
     const extra = { type: "function", function: { name: "custom" } };
     const defs = kernel.buildToolDefinitions([extra]);
-    expect(defs.length).toBe(3); // spawn_subplan + verify_patron + extra
-    expect(defs[2]).toBe(extra);
+    expect(defs.length).toBe(2); // verify_patron + extra
+    expect(defs[1]).toBe(extra);
   });
 });
 
@@ -610,19 +610,6 @@ describe("runAgentLoop", () => {
 // ── 5. executeToolCall ─────────────────────────────────────
 
 describe("executeToolCall", () => {
-  it("routes spawn_subplan to spawnSubplan", async () => {
-    const { kernel } = makeKernel();
-    kernel.spawnSubplan = vi.fn(async (args) => ({ subplan: true, goal: args.goal }));
-
-    const result = await kernel.executeToolCall({
-      id: "tc1",
-      function: { name: "spawn_subplan", arguments: '{"goal":"test goal"}' },
-    });
-
-    expect(kernel.spawnSubplan).toHaveBeenCalledWith({ goal: "test goal" });
-    expect(result).toEqual({ subplan: true, goal: "test goal" });
-  });
-
   it("routes other tools to executeAction", async () => {
     const { kernel } = makeKernel();
     kernel.executeAction = vi.fn(async (step) => ({ tool_result: step.tool }));
@@ -670,46 +657,6 @@ describe("executeToolCall", () => {
       input: { x: 99 },
       id: "tc1",
     });
-  });
-});
-
-// ── spawnSubplan model validation ─────────────────────────
-
-describe("spawnSubplan", () => {
-  it("rejects invalid model aliases with available aliases", async () => {
-    const { kernel } = makeKernel({
-      "config:models": JSON.stringify({
-        alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5" },
-      }),
-    });
-    kernel.modelsConfig = { alias_map: { opus: "anthropic/claude-opus-4.6", sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5" } };
-
-    const result = await kernel.spawnSubplan({ goal: "test", model: "deep_reflect", max_cost: 0.05 });
-    expect(result.error).toContain("Unknown model alias");
-    expect(result.error).toContain("deep_reflect");
-    expect(result.error).toContain("opus");
-    expect(result.error).toContain("sonnet");
-    expect(result.error).toContain("haiku");
-  });
-
-  it("accepts valid aliases", async () => {
-    const { kernel } = makeKernel();
-    kernel.modelsConfig = { alias_map: { haiku: "anthropic/claude-haiku-4.5" } };
-    kernel.runAgentLoop = vi.fn(async () => ({ result: "ok" }));
-
-    const result = await kernel.spawnSubplan({ goal: "test", model: "haiku", max_cost: 0.05 });
-    expect(result.error).toBeUndefined();
-    expect(kernel.runAgentLoop).toHaveBeenCalled();
-  });
-
-  it("accepts full model IDs", async () => {
-    const { kernel } = makeKernel();
-    kernel.modelsConfig = { alias_map: {} };
-    kernel.runAgentLoop = vi.fn(async () => ({ result: "ok" }));
-
-    const result = await kernel.spawnSubplan({ goal: "test", model: "anthropic/claude-haiku-4.5", max_cost: 0.05 });
-    expect(result.error).toBeUndefined();
-    expect(kernel.runAgentLoop).toHaveBeenCalled();
   });
 });
 
@@ -1844,9 +1791,9 @@ describe("executeAdapter contact safety", () => {
   });
 });
 
-// ── Yamas and Niyamas ──────────────────────────────────────
+// ── Principles (generic, immutable) ────────────────────────
 
-describe("Yamas and Niyamas", () => {
+describe("principles (generic)", () => {
   function makeLLMKernel(response = {}) {
     const { kernel, env } = makeKernel();
     const defaultResponse = {
@@ -1861,302 +1808,120 @@ describe("Yamas and Niyamas", () => {
     return { kernel, env };
   }
 
-  describe("callLLM injection", () => {
-    it("injects [YAMAS] and [NIYAMAS] blocks after dharma", async () => {
-      const { kernel } = makeLLMKernel();
-      kernel.dharma = "Be truthful.";
-      kernel.yamas = { "yama:care": "Care for all.", "yama:truth": "Be transparent." };
-      kernel.niyamas = { "niyama:health": "Keep code clean." };
-      await kernel.callLLM({
-        model: "test-model",
-        messages: [{ role: "user", content: "hello" }],
-        systemPrompt: "You are helpful",
-        step: "test",
-      });
-      const call = kernel.callWithCascade.mock.calls[0][0];
-      const sysContent = call.messages[0].content;
-      expect(sysContent).toContain("[DHARMA]");
-      expect(sysContent).toContain("[YAMAS]");
-      expect(sysContent).toContain("[care]");
-      expect(sysContent).toContain("Care for all.");
-      expect(sysContent).toContain("[/care]");
-      expect(sysContent).toContain("[truth]");
-      expect(sysContent).toContain("[NIYAMAS]");
-      expect(sysContent).toContain("[health]");
-      expect(sysContent).toContain("Keep code clean.");
-      // Verify order: DHARMA before YAMAS before NIYAMAS before systemPrompt
-      const dharmaIdx = sysContent.indexOf("[DHARMA]");
-      const yamasIdx = sysContent.indexOf("[YAMAS]");
-      const niyamasIdx = sysContent.indexOf("[NIYAMAS]");
-      const promptIdx = sysContent.indexOf("You are helpful");
-      expect(dharmaIdx).toBeLessThan(yamasIdx);
-      expect(yamasIdx).toBeLessThan(niyamasIdx);
-      expect(niyamasIdx).toBeLessThan(promptIdx);
-    });
-
-    it("no blocks when yamas/niyamas are null", async () => {
-      const { kernel } = makeLLMKernel();
-      kernel.dharma = "Be truthful.";
-      kernel.yamas = null;
-      kernel.niyamas = null;
-      await kernel.callLLM({
-        model: "test-model",
-        messages: [{ role: "user", content: "hello" }],
-        systemPrompt: "You are helpful",
-        step: "test",
-      });
-      const sysContent = kernel.callWithCascade.mock.calls[0][0].messages[0].content;
-      expect(sysContent).not.toContain("[YAMAS]");
-      expect(sysContent).not.toContain("[NIYAMAS]");
-    });
-
-    it("no blocks when yamas/niyamas are empty objects", async () => {
-      const { kernel } = makeLLMKernel();
-      kernel.yamas = {};
-      kernel.niyamas = {};
-      await kernel.callLLM({
-        model: "test-model",
-        messages: [{ role: "user", content: "hello" }],
-        systemPrompt: "You are helpful",
-        step: "test",
-      });
-      const sysContent = kernel.callWithCascade.mock.calls[0][0].messages[0].content;
-      expect(sysContent).not.toContain("[YAMAS]");
-      expect(sysContent).not.toContain("[NIYAMAS]");
-    });
-
-    it("each entry labeled [name]...[/name]", async () => {
-      const { kernel } = makeLLMKernel();
-      kernel.yamas = { "yama:discipline": "Be disciplined." };
-      kernel.niyamas = {};
-      await kernel.callLLM({
-        model: "test-model",
-        messages: [{ role: "user", content: "hello" }],
-        step: "test",
-      });
-      const sysContent = kernel.callWithCascade.mock.calls[0][0].messages[0].content;
-      expect(sysContent).toContain("[discipline]\nBe disciplined.\n[/discipline]");
-    });
-
-    it("tracks lastCallModel after successful call", async () => {
-      const { kernel } = makeLLMKernel();
-      expect(kernel.lastCallModel).toBeNull();
-      await kernel.callLLM({
-        model: "anthropic/claude-sonnet-4.6",
-        messages: [{ role: "user", content: "hello" }],
-        step: "test",
-      });
-      expect(kernel.lastCallModel).toBe("anthropic/claude-sonnet-4.6");
+  it("loadPrinciples loads all principle: keys", async () => {
+    const { kernel, env } = makeKernel();
+    env.KV._store.set("principle:honesty", JSON.stringify("Always be truthful"));
+    env.KV._store.set("principle:kindness", JSON.stringify("Be kind to all beings"));
+    env.KV._store.set("principle:honesty:audit", JSON.stringify([]));
+    await kernel.loadPrinciples();
+    expect(kernel.principles).toEqual({
+      "principle:honesty": "Always be truthful",
+      "principle:kindness": "Be kind to all beings",
     });
   });
 
-  describe("kvWriteGated enforcement", () => {
-    function makePrincipleBrain(kvInit = {}) {
-      const { kernel, env } = makeKernel(kvInit, {
-        modelsConfig: {
-          models: [
-            { id: "anthropic/claude-sonnet-4.6", alias: "sonnet" },
-            { id: "anthropic/claude-haiku-4.5", alias: "haiku" },
-          ],
-          alias_map: { sonnet: "anthropic/claude-sonnet-4.6", haiku: "anthropic/claude-haiku-4.5" },
-        },
-        modelCapabilities: {
-          "anthropic/claude-sonnet-4.6": { yama_capable: true, niyama_capable: true },
-        },
-      });
-      kernel.karmaRecord = vi.fn(async () => {});
-      kernel.lastCallModel = "anthropic/claude-sonnet-4.6";
-      return { kernel, env };
-    }
-
-    it("rejects yama write if deliberation < 200 chars", async () => {
-      const { kernel } = makePrincipleBrain();
-      const result = await kernel.kvWriteGated(
-        { op: "put", key: "yama:care", value: "new value", deliberation: "too short" }, "deep-reflect"
-      );
-      expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/Yama modifications require deliberation \(min 200 chars/);
+  it("callLLM injects [PRINCIPLES] block", async () => {
+    const { kernel } = makeLLMKernel();
+    kernel.principles = {
+      "principle:honesty": "Always be truthful",
+    };
+    await kernel.callLLM({
+      model: "test-model",
+      messages: [{ role: "user", content: "hi" }],
+      step: "test",
     });
-
-    it("rejects niyama write if deliberation < 100 chars", async () => {
-      const { kernel } = makePrincipleBrain();
-      const result = await kernel.kvWriteGated(
-        { op: "put", key: "niyama:health", value: "new value", deliberation: "short" }, "deep-reflect"
-      );
-      expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/Niyama modifications require deliberation \(min 100 chars/);
-    });
-
-    it("rejects if last model lacks yama_capable flag", async () => {
-      const { kernel } = makePrincipleBrain();
-      kernel.lastCallModel = "anthropic/claude-haiku-4.5";
-      const result = await kernel.kvWriteGated(
-        { op: "put", key: "yama:care", value: "new value", deliberation: "x".repeat(200) }, "deep-reflect"
-      );
-      expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/yama_capable model/);
-    });
-
-    it("rejects if last model lacks niyama_capable flag", async () => {
-      const { kernel } = makePrincipleBrain();
-      kernel.lastCallModel = "anthropic/claude-haiku-4.5";
-      const result = await kernel.kvWriteGated(
-        { op: "put", key: "niyama:health", value: "new value", deliberation: "x".repeat(100) }, "deep-reflect"
-      );
-      expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/niyama_capable model/);
-    });
-
-    it("returns warning with diff when modifying a yama", async () => {
-      const { kernel } = makePrincipleBrain({
-        "yama:care": "Old care text",
-      });
-      const result = await kernel.kvWriteGated(
-        { op: "put", key: "yama:care", value: "New care text", deliberation: "x".repeat(200) }, "deep-reflect"
-      );
-      expect(result).toBeDefined();
-      expect(result.ok).toBe(true);
-      expect(result.warning.key).toBe("yama:care");
-      expect(result.warning.type).toBe("yama");
-      expect(result.warning.current_value).toBe("Old care text");
-      expect(result.warning.proposed_value).toBe("New care text");
-      expect(result.warning.message).toContain("core principle of how you act in the world");
-    });
-
-    it("returns warning for niyama with different severity message", async () => {
-      const { kernel } = makePrincipleBrain();
-      const result = await kernel.kvWriteGated(
-        { op: "put", key: "niyama:health", value: "New health text", deliberation: "x".repeat(100) }, "deep-reflect"
-      );
-      expect(result.warning.message).toContain("how you reflect and improve");
-      expect(result.warning.message).not.toContain("how you act in the world");
-    });
-
-    it("same warning weight for create and delete", async () => {
-      const { kernel } = makePrincipleBrain({
-        "yama:care": "Existing care text",
-      });
-      // Create (no existing value)
-      const createResult = await kernel.kvWriteGated(
-        { op: "put", key: "yama:new", value: "New yama", deliberation: "x".repeat(200) }, "deep-reflect"
-      );
-      expect(createResult.warning.message).toContain("WARNING: You are modifying yama");
-
-      // Delete
-      const deleteResult = await kernel.kvWriteGated(
-        { op: "delete", key: "yama:care", deliberation: "x".repeat(200) }, "deep-reflect"
-      );
-      expect(deleteResult.warning.message).toContain("WARNING: You are modifying yama");
-    });
-
-    it("writes audit entry to {key}:audit", async () => {
-      const { kernel, env } = makePrincipleBrain();
-      await kernel.kvWriteGated(
-        { op: "put", key: "yama:care", value: "New care text", deliberation: "x".repeat(200) }, "deep-reflect"
-      );
-      const auditRaw = env.KV._store.get("yama:care:audit");
-      expect(auditRaw).toBeDefined();
-      const audit = JSON.parse(auditRaw);
-      expect(audit).toHaveLength(1);
-      expect(audit[0].model).toBe("anthropic/claude-sonnet-4.6");
-      expect(audit[0].deliberation).toBe("x".repeat(200));
-      expect(audit[0].new_value).toBe("New care text");
-    });
-
-    it("reloads cache after yama/niyama write", async () => {
-      const { kernel, env } = makePrincipleBrain();
-      // Pre-populate some yamas in KV
-      env.KV._store.set("yama:truth", "Be transparent.");
-      kernel.yamas = {};
-      await kernel.kvWriteGated(
-        { op: "put", key: "yama:care", value: "New care", deliberation: "x".repeat(200) }, "deep-reflect"
-      );
-      // loadYamasNiyamas should have been called, refreshing the cache
-      expect(kernel.yamas).toHaveProperty("yama:care");
-    });
-
-    it("non-yama/niyama writes return {ok: true} without warning", async () => {
-      const { kernel } = makePrincipleBrain();
-      const result = await kernel.kvWriteGated(
-        { op: "put", key: "config:defaults", value: { updated: true } }, "deep-reflect"
-      );
-      expect(result.ok).toBe(true);
-      expect(result.warning).toBeUndefined();
-    });
-
-    it("audit keys don't require deliberation", async () => {
-      const { kernel } = makePrincipleBrain();
-      // Writing to an audit key should go through without deliberation gate
-      const result = await kernel.kvWriteGated(
-        { op: "put", key: "yama:care:audit", value: [{ entry: "test" }] }, "deep-reflect"
-      );
-      expect(result.ok).toBe(true);
-    });
+    const call = kernel.callWithCascade.mock.calls[0][0];
+    const systemMsg = call.messages.find(m => m.role === "system");
+    expect(systemMsg.content).toContain("[PRINCIPLES]");
+    expect(systemMsg.content).toContain("Always be truthful");
+    expect(systemMsg.content).not.toContain("[YAMAS]");
+    expect(systemMsg.content).not.toContain("[NIYAMAS]");
   });
 
-  describe("kvWriteSafe blocks yama/niyama", () => {
-    it("blocks yama:* keys", async () => {
-      const { kernel } = makeKernel();
-      await expect(kernel.kvWriteSafe("yama:care", "new value"))
-        .rejects.toThrow("system key");
+  it("callLLM injects [PRINCIPLES] block after dharma", async () => {
+    const { kernel } = makeLLMKernel();
+    kernel.dharma = "Be truthful.";
+    kernel.principles = { "principle:honesty": "Always be truthful" };
+    await kernel.callLLM({
+      model: "test-model",
+      messages: [{ role: "user", content: "hello" }],
+      systemPrompt: "You are helpful",
+      step: "test",
     });
-
-    it("blocks niyama:* keys", async () => {
-      const { kernel } = makeKernel();
-      await expect(kernel.kvWriteSafe("niyama:health", "new value"))
-        .rejects.toThrow("system key");
-    });
+    const call = kernel.callWithCascade.mock.calls[0][0];
+    const sysContent = call.messages[0].content;
+    expect(sysContent).toContain("[DHARMA]");
+    expect(sysContent).toContain("[PRINCIPLES]");
+    const dharmaIdx = sysContent.indexOf("[DHARMA]");
+    const principlesIdx = sysContent.indexOf("[PRINCIPLES]");
+    const promptIdx = sysContent.indexOf("You are helpful");
+    expect(dharmaIdx).toBeLessThan(principlesIdx);
+    expect(principlesIdx).toBeLessThan(promptIdx);
   });
 
-  describe("static helpers", () => {
-    it("isPrincipleKey identifies yama and niyama keys", () => {
-      expect(Kernel.isPrincipleKey("yama:care")).toBe(true);
-      expect(Kernel.isPrincipleKey("niyama:health")).toBe(true);
-      expect(Kernel.isPrincipleKey("config:defaults")).toBe(false);
-      expect(Kernel.isPrincipleKey("dharma")).toBe(false);
+  it("no [PRINCIPLES] block when principles is null", async () => {
+    const { kernel } = makeLLMKernel();
+    kernel.principles = null;
+    await kernel.callLLM({
+      model: "test-model",
+      messages: [{ role: "user", content: "hello" }],
+      systemPrompt: "You are helpful",
+      step: "test",
     });
-
-    it("isPrincipleAuditKey identifies audit keys", () => {
-      expect(Kernel.isPrincipleAuditKey("yama:care:audit")).toBe(true);
-      expect(Kernel.isPrincipleAuditKey("niyama:health:audit")).toBe(true);
-      expect(Kernel.isPrincipleAuditKey("yama:care")).toBe(false);
-      expect(Kernel.isPrincipleAuditKey("config:audit")).toBe(false);
-    });
+    const sysContent = kernel.callWithCascade.mock.calls[0][0].messages[0].content;
+    expect(sysContent).not.toContain("[PRINCIPLES]");
   });
 
-  describe("model capability helpers", () => {
-    it("isYamaCapable checks yama_capable flag in modelCapabilities", () => {
-      const { kernel } = makeKernel({}, {
-        modelsConfig: {
-          models: [
-            { id: "anthropic/claude-opus-4.6" },
-            { id: "anthropic/claude-haiku-4.5" },
-          ],
-        },
-        modelCapabilities: {
-          "anthropic/claude-opus-4.6": { yama_capable: true },
-        },
-      });
-      expect(kernel.isYamaCapable("anthropic/claude-opus-4.6")).toBe(true);
-      expect(kernel.isYamaCapable("anthropic/claude-haiku-4.5")).toBe(false);
-      expect(kernel.isYamaCapable("unknown-model")).toBe(false);
+  it("no [PRINCIPLES] block when principles is empty", async () => {
+    const { kernel } = makeLLMKernel();
+    kernel.principles = {};
+    await kernel.callLLM({
+      model: "test-model",
+      messages: [{ role: "user", content: "hello" }],
+      systemPrompt: "You are helpful",
+      step: "test",
     });
+    const sysContent = kernel.callWithCascade.mock.calls[0][0].messages[0].content;
+    expect(sysContent).not.toContain("[PRINCIPLES]");
+  });
 
-    it("isNiyamaCapable checks niyama_capable flag in modelCapabilities", () => {
-      const { kernel } = makeKernel({}, {
-        modelsConfig: {
-          models: [
-            { id: "anthropic/claude-sonnet-4.6" },
-            { id: "anthropic/claude-haiku-4.5" },
-          ],
-        },
-        modelCapabilities: {
-          "anthropic/claude-sonnet-4.6": { niyama_capable: true },
-        },
-      });
-      expect(kernel.isNiyamaCapable("anthropic/claude-sonnet-4.6")).toBe(true);
-      expect(kernel.isNiyamaCapable("anthropic/claude-haiku-4.5")).toBe(false);
+  it("each principle labeled [name]...[/name] inside [PRINCIPLES]", async () => {
+    const { kernel } = makeLLMKernel();
+    kernel.principles = { "principle:discipline": "Be disciplined." };
+    await kernel.callLLM({
+      model: "test-model",
+      messages: [{ role: "user", content: "hello" }],
+      step: "test",
     });
+    const sysContent = kernel.callWithCascade.mock.calls[0][0].messages[0].content;
+    expect(sysContent).toContain("[discipline]\nBe disciplined.\n[/discipline]");
+  });
+
+  it("kvWriteGated rejects principle: writes as immutable", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "principle:honesty", value: "new value" },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("immutable");
+  });
+
+  it("kvWriteSafe blocks principle: keys", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvWriteSafe("principle:honesty", "new value"))
+      .rejects.toThrow("system key");
+  });
+
+  it("non-principle system key writes succeed without warning", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "config:defaults", value: { updated: true } }, "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+    expect(result.warning).toBeUndefined();
   });
 });
 
@@ -2867,5 +2632,58 @@ describe("drainEvents", () => {
     const { processed } = await kernel.drainEvents({ onChat });
     expect(processed).toHaveLength(2);
     expect(processed.every(e => e.type === 'chat_message')).toBe(true);
+  });
+});
+
+// ── code staging ─────────────────────────────────────────────
+
+function createTestKernel() {
+  const { kernel } = makeKernel();
+  kernel.karmaRecord = vi.fn(async (entry) => { kernel.karma.push(entry); });
+  return kernel;
+}
+
+describe("code staging", () => {
+  it("stageCode writes to code_staging: prefix", async () => {
+    const kernel = createTestKernel();
+    await kernel.stageCode("tool:kv_query:code", "export function execute() {}");
+    const staged = await kernel.kvGet("code_staging:tool:kv_query:code");
+    expect(staged).toEqual({
+      code: "export function execute() {}",
+      staged_at: expect.any(String),
+      session_id: kernel.sessionId,
+    });
+  });
+
+  it("stageCode rejects non-code keys", async () => {
+    const kernel = createTestKernel();
+    await expect(kernel.stageCode("config:defaults", "bad"))
+      .rejects.toThrow("not a code key");
+  });
+
+  it("signalDeploy writes deploy:pending", async () => {
+    const kernel = createTestKernel();
+    await kernel.signalDeploy();
+    const pending = await kernel.kvGet("deploy:pending");
+    expect(pending).toEqual({
+      requested_at: expect.any(String),
+      session_id: kernel.sessionId,
+    });
+  });
+
+  it("signalDeploy records karma", async () => {
+    const kernel = createTestKernel();
+    await kernel.signalDeploy();
+    expect(kernel.karma).toContainEqual(
+      expect.objectContaining({ event: "deploy_signaled" })
+    );
+  });
+
+  it("stageCode records karma", async () => {
+    const kernel = createTestKernel();
+    await kernel.stageCode("tool:kv_query:code", "export function execute() {}");
+    expect(kernel.karma).toContainEqual(
+      expect.objectContaining({ event: "code_staged", target: "tool:kv_query:code" })
+    );
   });
 });

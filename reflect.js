@@ -3,7 +3,7 @@
 // Mutable — the agent can propose changes to this file via the proposal system.
 //
 // Receives K (kernel interface) for all kernel interactions.
-// getMaxSteps and getReflectModel live on K (kernel utility methods).
+// getMaxSteps and getReflectModel logic inlined (cognitive policy, not kernel).
 
 // Proposal system methods are on K (kernel interface):
 // K.createProposal, K.loadProposals, K.processProposalVerdicts
@@ -213,8 +213,12 @@ export async function runReflect(K, state, depth, context) {
   const allTools = await K.buildToolDefinitions();
   const tools = allTools.filter(t => t.function.name !== 'spawn_subplan');
 
-  const model = await K.resolveModel(await K.getReflectModel(state, depth));
-  const maxSteps = await K.getMaxSteps(state, 'reflect', depth);
+  const perLevel = defaults?.reflect_levels?.[depth];
+  const reflectModelId = perLevel?.model || defaults?.deep_reflect?.model || defaults?.act?.model;
+  const model = await K.resolveModel(reflectModelId);
+  const maxSteps = perLevel?.max_steps || (depth === 1
+    ? (defaults?.execution?.max_steps?.reflect || 5)
+    : (defaults?.execution?.max_steps?.deep_reflect || 10));
 
   // Deep reflect gets its own budget: max_cost * budget_multiplier
   const budget = defaults?.session_budget;

@@ -34,20 +34,18 @@ class Kernel {
     this.lastWorkingSnapshotted = false; // Only snapshot provider once per session
     this.privilegedWriteCount = 0; // Counter for privileged writes (system + contact keys)
     this._alertConfigCache = undefined; // undefined = not loaded, null = doesn't exist
-    this.yamas = null;         // Cached yama principles (loaded at boot)
-    this.niyamas = null;       // Cached niyama principles (loaded at boot)
+    this.principles = null;    // Cached generic principles (loaded at boot, immutable by agent)
     this.patronId = null;      // Contact slug of patron (loaded at boot)
     this.patronContact = null; // Full patron contact record (loaded at boot)
     this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
     this.patronPlatforms = null; // Patron's platform bindings (loaded at boot from contact_platform: keys)
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
-    this.lastCallModel = null; // Last model used in callLLM (for yama/niyama capability checks)
   }
 
   static SYSTEM_KEY_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'proposal:', 'hook:', 'doc:',
-    'yama:', 'niyama:', 'task:',
+    'principle:', 'task:',
     'upaya:', 'prajna:',
     'skill:',
     'contact:',
@@ -61,7 +59,6 @@ class Kernel {
   static IMMUTABLE_KEYS = ['patron:public_key'];
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
-  static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
   static ACT_RELEVANT_EVENTS = ['session_request', 'job_complete', 'patron_direct'];
 
   static isSystemKey(key) {
@@ -72,14 +69,6 @@ class Kernel {
   static isKernelOnly(key) {
     if (Kernel.KERNEL_ONLY_EXACT.includes(key)) return true;
     return Kernel.KERNEL_ONLY_PREFIXES.some(p => key.startsWith(p));
-  }
-
-  static isPrincipleKey(key) {
-    return Kernel.PRINCIPLE_PREFIXES.some(p => key.startsWith(p));
-  }
-
-  static isPrincipleAuditKey(key) {
-    return Kernel.isPrincipleKey(key) && key.endsWith(':audit');
   }
 
   // ── SSH Ed25519 key parsing ───────────────────────────────
@@ -99,7 +88,7 @@ class Kernel {
     return raw.slice(keyOffset, keyOffset + 32);
   }
 
-  // ── Yamas and Niyamas (operating principles) ─────────────
+  // ── Principles (generic, immutable) ──────────────────────
 
   async loadEagerConfig() {
     this.defaults = await this.kvGet("config:defaults");
@@ -111,22 +100,17 @@ class Kernel {
     if (!this.toolGrants || Object.keys(this.toolGrants).length === 0) {
       this.toolGrants = this._buildToolGrantsFromModules();
     }
-    await this.loadYamasNiyamas();
+    await this.loadPrinciples();
     await this.loadPatronContext();
   }
 
-  async loadYamasNiyamas() {
-    this.yamas = {};
-    this.niyamas = {};
-    for (const prefix of Kernel.PRINCIPLE_PREFIXES) {
-      const principleKeys = await this.kvListAll({ prefix });
-      for (const { name: key } of principleKeys) {
-        if (key.endsWith(':audit')) continue;
-        const value = await this.kvGet(key);
-        if (value === null) continue;
-        if (prefix === 'yama:') this.yamas[key] = value;
-        else this.niyamas[key] = value;
-      }
+  async loadPrinciples() {
+    this.principles = {};
+    const keys = await this.kvListAll({ prefix: 'principle:' });
+    for (const { name: key } of keys) {
+      if (key.endsWith(':audit')) continue;
+      const value = await this.kvGet(key);
+      if (value !== null) this.principles[key] = value;
     }
   }
 
@@ -215,17 +199,6 @@ class Kernel {
     }
     return { id, ...contact };
   }
-
-  isYamaCapable(modelId) {
-    const resolved = this.resolveModel(modelId);
-    return !!this.modelCapabilities?.[resolved]?.yama_capable;
-  }
-
-  isNiyamaCapable(modelId) {
-    const resolved = this.resolveModel(modelId);
-    return !!this.modelCapabilities?.[resolved]?.niyama_capable;
-  }
-
 
   // ── Communication gate (kernel-enforced contact boundary) ───
 
@@ -435,7 +408,6 @@ class Kernel {
       runAgentLoop: async (opts) => kernel.runAgentLoop(opts),
       executeToolCall: async (tc) => kernel.executeToolCall(tc),
       buildToolDefinitions: async (extra) => kernel.buildToolDefinitions(extra),
-      spawnSubplan: async (args, depth) => kernel.spawnSubplan(args, depth),
       callHook: async (name, ctx) => kernel.callHook(name, ctx),
       executeAction: async (step) => kernel.executeAction(step),
       executeAdapter: async (adapterKey, input) => kernel.executeAdapter(adapterKey, input),
@@ -481,15 +453,9 @@ class Kernel {
       // KV operation gating — context-based permissions
       // (kvWriteGated already exposed above in KV writes section)
 
-      // Config utilities (used by both act.js and reflect.js)
-      getMaxSteps: async (state, role, depth) => Kernel.getMaxSteps(state, role, depth),
-      getReflectModel: async (state, depth) => Kernel.getReflectModel(state, depth),
-
-      // Proposal system (code change proposals)
-      createProposal: async (request, sessionId, depth) => kernel.createProposal(request, sessionId, depth),
-      loadProposals: async (statusFilter) => kernel.loadProposals(statusFilter),
-      updateProposalStatus: async (id, newStatus, metadata) => kernel.updateProposalStatus(id, newStatus, metadata),
-      processProposalVerdicts: async (verdicts, depth) => kernel.processProposalVerdicts(verdicts, depth),
+      // Code staging
+      stageCode: async (targetKey, code) => kernel.stageCode(targetKey, code),
+      signalDeploy: async () => kernel.signalDeploy(),
 
       // State (read-only)
       getSessionId: async () => kernel.sessionId,
@@ -501,8 +467,7 @@ class Kernel {
       getModelCapabilities: async () => kernel.modelCapabilities,
       getDharma: async () => kernel.dharma,
       getToolRegistry: async () => kernel.toolRegistry,
-      getYamas: async () => kernel.yamas,
-      getNiyamas: async () => kernel.niyamas,
+      getPrinciples: async () => kernel.principles,
       getPatronId: async () => kernel.patronId,
       getPatronContact: async () => kernel.patronContact,
       isPatronIdentityDisputed: async () => kernel.patronIdentityDisputed,
@@ -518,7 +483,7 @@ class Kernel {
     const key = op.key;
 
     // 1. Always blocked — immutable keys
-    if (key === "dharma" || Kernel.IMMUTABLE_KEYS.includes(key)) {
+    if (key === "dharma" || key.startsWith("principle:") || Kernel.IMMUTABLE_KEYS.includes(key)) {
       return { ok: false, error: `Cannot write "${key}" — immutable` };
     }
 
@@ -529,7 +494,7 @@ class Kernel {
 
     // 3. Always blocked — code keys go through proposal_requests
     if (Kernel.isCodeKey(key)) {
-      return { ok: false, error: `Code key "${key}" requires proposal_requests` };
+      return { ok: false, error: `Code key "${key}" requires K.stageCode()` };
     }
 
     // 4. Contact keys — allowed in all contexts (with approval gating)
@@ -610,7 +575,7 @@ class Kernel {
     return { ok: true };
   }
 
-  // ── System key gating (deep-reflect only, deliberation gates for principles) ──
+  // ── System key gating (deep-reflect only) ────────────────
 
   async _gateSystem(op) {
     const key = op.key;
@@ -620,51 +585,16 @@ class Kernel {
       return { ok: false, error: `Unsupported op "${op.op}" for system key "${key}"` };
     }
 
-    // Model capabilities require deliberation + yama_capable model
+    // Model capabilities require deliberation
     if (key === "config:model_capabilities") {
       if (!op.deliberation || op.deliberation.length < 200) {
         return { ok: false, error: `Model capability changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
-      }
-      if (!this.isYamaCapable(this.lastCallModel)) {
-        return { ok: false, error: `Model capability changes require a yama_capable model (last model: ${this.lastCallModel})` };
-      }
-    }
-
-    // Yama/Niyama deliberation + capability gates
-    if (Kernel.isPrincipleKey(key) && !Kernel.isPrincipleAuditKey(key)) {
-      const isYama = key.startsWith('yama:');
-      const type = isYama ? 'yama' : 'niyama';
-      const minChars = isYama ? 200 : 100;
-      const typeLabel = isYama ? 'Yama' : 'Niyama';
-
-      if (!op.deliberation || op.deliberation.length < minChars) {
-        return { ok: false, error: `${typeLabel} modifications require deliberation (min ${minChars} chars, got ${op.deliberation?.length || 0})` };
-      }
-      const capCheck = isYama ? this.isYamaCapable(this.lastCallModel) : this.isNiyamaCapable(this.lastCallModel);
-      if (!capCheck) {
-        return { ok: false, error: `${typeLabel} writes require a ${type}_capable model (last model: ${this.lastCallModel})` };
       }
     }
 
     // Per-session limit
     if (this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
       return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
-    }
-
-    // Principle diff warning
-    let principleWarning = null;
-    if (Kernel.isPrincipleKey(key) && !Kernel.isPrincipleAuditKey(key)) {
-      const isYama = key.startsWith('yama:');
-      const type = isYama ? 'yama' : 'niyama';
-      const currentValue = await this.kvGet(key);
-      const proposedValue = op.op === 'delete' ? null : (op.op === 'patch' ? `[patch: "${op.old_string}" → "${op.new_string}"]` : op.value);
-      const name = key.replace(`${type}:`, '');
-
-      const warningMsg = isYama
-        ? `WARNING: You are modifying yama "${name}".\n\nCAUTION: You are attempting to modify a yama — a core principle of how you act in the world. This requires extraordinary justification. How does this change better serve your dharma?\n\nCurrent value: ${currentValue ?? '(new)'}\nProposed value: ${proposedValue ?? '(delete)'}`
-        : `WARNING: You are modifying niyama "${name}".\n\nCAUTION: You are attempting to modify a niyama — a core principle that governs how you reflect and improve. This requires compelling justification. How does this change better serve your dharma?\n\nCurrent value: ${currentValue ?? '(new)'}\nProposed value: ${proposedValue ?? '(delete)'}`;
-
-      principleWarning = { key, name, type, current_value: currentValue, proposed_value: proposedValue, deliberation: op.deliberation, model: this.lastCallModel, message: warningMsg };
     }
 
     // Snapshot old value
@@ -690,20 +620,6 @@ class Kernel {
     });
     this.privilegedWriteCount++;
 
-    // Audit trail for yama/niyama
-    if (Kernel.isPrincipleKey(key) && !Kernel.isPrincipleAuditKey(key)) {
-      const auditKey = `${key}:audit`;
-      const existing = await this.kvGet(auditKey) || [];
-      existing.push({
-        date: new Date().toISOString(),
-        model: this.lastCallModel,
-        deliberation: op.deliberation,
-        old_value: oldValue,
-        new_value: op.op === 'delete' ? null : (op.value ?? null),
-      });
-      await this.kvWrite(auditKey, existing);
-    }
-
     // Alert on hook: key writes
     if (key.startsWith("hook:")) {
       await this.sendKernelAlert("hook_write",
@@ -719,14 +635,7 @@ class Kernel {
       if (key === "config:model_capabilities") this.modelCapabilities = await this.kvGet("config:model_capabilities");
     }
 
-    // Reload principle cache
-    if (Kernel.isPrincipleKey(key) && !Kernel.isPrincipleAuditKey(key)) {
-      await this.loadYamasNiyamas();
-    }
-
-    const result = { ok: true };
-    if (principleWarning) result.warning = principleWarning;
-    return result;
+    return { ok: true };
   }
 
   // ── Direct write for unprotected agent keys ──
@@ -760,7 +669,7 @@ class Kernel {
     }
   }
 
-  // ── Proposal system (code change proposals — governor deploys accepted ones) ──
+  // ── Code staging (two primitives — replaces proposal system) ──────
 
   static CODE_KEY_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
 
@@ -768,183 +677,29 @@ class Kernel {
     return Kernel.CODE_KEY_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code');
   }
 
-  _generateProposalId() {
-    return `p_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  async createProposal(request, sessionId, depth = 0) {
-    if (!request.claims?.length || !request.ops?.length) {
-      await this.karmaRecord({ event: "proposal_invalid", reason: "missing required fields (claims, ops)" });
-      return null;
+  async stageCode(targetKey, code) {
+    if (!Kernel.isCodeKey(targetKey)) {
+      throw new Error(`"${targetKey}" is not a code key — stageCode only accepts code keys`);
     }
-
-    // Validate all ops target code keys
-    const nonCodeOps = request.ops.filter(op => !Kernel.isCodeKey(op.key));
-    if (nonCodeOps.length > 0) {
-      await this.karmaRecord({
-        event: "proposal_invalid",
-        reason: `proposal ops must target code keys — non-code targets: ${nonCodeOps.map(o => o.key).join(', ')}`,
-      });
-      return null;
-    }
-
-    const id = this._generateProposalId();
-    const sessionCount = await this.getSessionCount();
-    const proposal = {
-      id,
-      targets: request.ops.map(op => op.key),
-      changes: {},
-      claims: request.claims,
-      checks: request.checks || [],
-      proposed_by: sessionId,
-      proposed_at: new Date().toISOString(),
-      proposed_at_session: sessionCount,
-      proposed_by_depth: depth,
-      status: "proposed",
+    const record = {
+      code,
+      staged_at: new Date().toISOString(),
+      session_id: this.sessionId,
     };
-
-    // Store the actual change data
-    for (const op of request.ops) {
-      proposal.changes[op.key] = { op: op.op || "put", code: op.value, old_string: op.old_string, new_string: op.new_string };
-    }
-
-    await this.kvWrite(`proposal:${id}`, proposal);
-    await this.karmaRecord({ event: "proposal_created", proposal_id: id, claims: request.claims, targets: proposal.targets });
-    return id;
+    await this.kvWrite(`code_staging:${targetKey}`, record);
+    await this.karmaRecord({ event: "code_staged", target: targetKey });
   }
 
-  async loadProposals(statusFilter) {
-    const list = await this.kvListAll({ prefix: "proposal:" });
-    const proposals = {};
-    const sessionCount = await this.getSessionCount();
-    for (const { name: key } of list) {
-      const record = await this.kvGet(key);
-      if (!record) continue;
-      if (statusFilter && record.status !== statusFilter) continue;
-      const checkResults = record.checks?.length
-        ? await this._evaluateChecks(record.checks)
-        : null;
-      const sessions_since = record.proposed_at_session != null
-        ? sessionCount - record.proposed_at_session
-        : null;
-      proposals[record.id] = { record, check_results: checkResults, sessions_since };
-    }
-    return proposals;
-  }
-
-  async updateProposalStatus(id, newStatus, metadata = {}) {
-    const record = await this.kvGet(`proposal:${id}`);
-    if (!record) throw new Error(`No proposal: ${id}`);
-    record.status = newStatus;
-    Object.assign(record, metadata);
-    record[`${newStatus}_at`] = new Date().toISOString();
-    await this.kvWrite(`proposal:${id}`, record);
-    await this.karmaRecord({ event: `proposal_${newStatus}`, proposal_id: id });
-  }
-
-  async processProposalVerdicts(verdicts, depth) {
-    for (const v of verdicts || []) {
-      const id = v.proposal_id;
-      if (!id) continue;
-      switch (v.verdict) {
-        case "accept":
-          await this.updateProposalStatus(id, "accepted", { accepted_by_depth: depth });
-          break;
-        case "reject":
-          await this.updateProposalStatus(id, "rejected", { reason: v.reason, rejected_by_depth: depth });
-          break;
-        case "withdraw":
-          await this.kvDelete(`proposal:${id}`);
-          await this.karmaRecord({ event: "proposal_withdrawn", proposal_id: id });
-          break;
-        case "modify": {
-          const record = await this.kvGet(`proposal:${id}`);
-          if (record) {
-            if (v.updated_ops) {
-              record.ops = v.updated_ops;
-              record.changes = {};
-              for (const op of v.updated_ops) {
-                record.changes[op.key] = { op: op.op || "put", code: op.value, old_string: op.old_string, new_string: op.new_string };
-              }
-              record.targets = v.updated_ops.map(op => op.key);
-            }
-            if (v.updated_checks) record.checks = v.updated_checks;
-            if (v.updated_claims) record.claims = v.updated_claims;
-            record.modified_at = new Date().toISOString();
-            await this.kvWrite(`proposal:${id}`, record);
-            await this.karmaRecord({ event: "proposal_modified", proposal_id: id });
-          }
-          break;
-        }
-        case "defer":
-          await this.karmaRecord({ event: "proposal_deferred", proposal_id: id, reason: v.reason });
-          break;
-      }
-    }
-
-    // Signal governor if any proposals were accepted
-    const hasAccepted = verdicts?.some(v => v.verdict === "accept");
-    if (hasAccepted) {
-      await this.kvWrite("deploy:pending", {
-        requested_at: new Date().toISOString(),
-        session_id: this.sessionId,
-      });
-    }
+  async signalDeploy() {
+    await this.kvWrite("deploy:pending", {
+      requested_at: new Date().toISOString(),
+      session_id: this.sessionId,
+    });
+    await this.karmaRecord({ event: "deploy_signaled" });
   }
 
   async kvDelete(key) {
     await this.kv.delete(key);
-  }
-
-  // ── Predicate evaluation (used by proposals and reflect) ──
-
-  static evaluatePredicate(value, predicate, expected) {
-    switch (predicate) {
-      case "exists": return value !== null && value !== undefined;
-      case "equals": return value === expected;
-      case "gt": return typeof value === "number" && value > expected;
-      case "lt": return typeof value === "number" && value < expected;
-      case "matches": return typeof value === "string" && new RegExp(expected).test(value);
-      case "type": return typeof value === expected;
-      default: return false;
-    }
-  }
-
-  async _evaluateCheck(check) {
-    try {
-      switch (check.type) {
-        case "kv_assert": {
-          let value = await this.kvGet(check.key);
-          if (check.path && value != null) {
-            value = check.path.split(".").reduce((o, k) => o?.[k], value);
-          }
-          const passed = Kernel.evaluatePredicate(value, check.predicate, check.expected);
-          return { passed, detail: `${check.key}${check.path ? '.' + check.path : ''} ${check.predicate} ${JSON.stringify(check.expected)} → actual: ${JSON.stringify(value)}` };
-        }
-        case "tool_call": {
-          const result = await this.executeAction({
-            tool: check.tool, input: check.input || {}, id: `check_${check.tool}`,
-          });
-          if (check.assert) {
-            const passed = Kernel.evaluatePredicate(result, check.assert.predicate, check.assert.expected);
-            return { passed, detail: `${check.tool} result ${check.assert.predicate} ${JSON.stringify(check.assert.expected)} → actual: ${JSON.stringify(result)}` };
-          }
-          return { passed: true, detail: `${check.tool} executed successfully` };
-        }
-        default:
-          return { passed: false, detail: `unknown check type: ${check.type}` };
-      }
-    } catch (err) {
-      return { passed: false, detail: `check error: ${err.message}` };
-    }
-  }
-
-  async _evaluateChecks(checks) {
-    const results = [];
-    for (const check of checks) {
-      results.push(await this._evaluateCheck(check));
-    }
-    return { all_passed: results.every(r => r.passed), results };
   }
 
   // ── Tool grants from static imports (fallback when kernel:tool_grants not in KV) ──
@@ -1118,8 +873,8 @@ class Kernel {
         ? await highestReflectDepthDue(K, state)
         : 0;
 
-      // 6. Evaluate tripwires
-      const effort = Kernel.evaluateTripwires(config, { balances });
+      // 6. Effort level — cognitive policy (tripwire evaluation) belongs in hooks (Task 3)
+      const effort = config.default_effort || config.schedule?.default_effort || "low";
 
       // 7. Load context keys
       const loadKeys = lastReflect?.next_act_context?.load_keys
@@ -1259,50 +1014,6 @@ class Kernel {
       karma: deadKarma,
       last_entry: Array.isArray(deadKarma) ? deadKarma[deadKarma.length - 1] : null,
     };
-  }
-
-  // ── Tripwire evaluation ───────────────────────────────────
-
-  static evaluateTripwires(config, liveData) {
-    const alerts = config.alerts || [];
-    let effort = config.default_effort || config.schedule?.default_effort || "low";
-    for (const alert of alerts) {
-      const value = alert.field.split(".").reduce((o, k) => o?.[k], liveData) ?? null;
-      if (value === null) continue;
-      let fired = false;
-      switch (alert.condition) {
-        case "below": fired = value < alert.value; break;
-        case "above": fired = value > alert.value; break;
-        case "equals": fired = value === alert.value; break;
-        case "changed": fired = true; break;
-      }
-      if (fired && alert.override_effort) {
-        const levels = ["low", "medium", "high", "xhigh"];
-        if (levels.indexOf(alert.override_effort) > levels.indexOf(effort)) {
-          effort = alert.override_effort;
-        }
-      }
-    }
-    return effort;
-  }
-
-  // ── Config utility methods (used by both act.js and reflect.js) ──
-
-  static getMaxSteps(state, role, depth) {
-    const { defaults } = state;
-    if (role === 'act') return defaults?.execution?.max_steps?.act || 12;
-    const perLevel = defaults?.reflect_levels?.[depth];
-    if (perLevel?.max_steps) return perLevel.max_steps;
-    return depth === 1
-      ? (defaults?.execution?.max_steps?.reflect || 5)
-      : (defaults?.execution?.max_steps?.deep_reflect || 10);
-  }
-
-  static getReflectModel(state, depth) {
-    const { defaults } = state;
-    const perLevel = defaults?.reflect_levels?.[depth];
-    if (perLevel?.model) return perLevel.model;
-    return defaults?.deep_reflect?.model || defaults?.act?.model;
   }
 
   async _writeSessionHealth(outcome) {
@@ -1693,23 +1404,15 @@ class Kernel {
     // Kernel-enforced dharma injection — no hook or prompt modification can bypass this
     const dharmaPrefix = this.dharma ? `[DHARMA]\n${this.dharma}\n[/DHARMA]\n\n` : '';
 
-    // Kernel-enforced yama/niyama injection — mutable but always present
+    // Kernel-enforced principle injection — always present
     let principlesBlock = '';
-    if (this.yamas && Object.keys(this.yamas).length > 0) {
-      const yamaEntries = Object.entries(this.yamas)
+    if (this.principles && Object.keys(this.principles).length > 0) {
+      const entries = Object.entries(this.principles)
         .map(([key, text]) => {
-          const name = key.replace('yama:', '');
+          const name = key.replace('principle:', '');
           return `[${name}]\n${text}\n[/${name}]`;
         }).join('\n');
-      principlesBlock += `[YAMAS]\n${yamaEntries}\n[/YAMAS]\n\n`;
-    }
-    if (this.niyamas && Object.keys(this.niyamas).length > 0) {
-      const niyamaEntries = Object.entries(this.niyamas)
-        .map(([key, text]) => {
-          const name = key.replace('niyama:', '');
-          return `[${name}]\n${text}\n[/${name}]`;
-        }).join('\n');
-      principlesBlock += `[NIYAMAS]\n${niyamaEntries}\n[/NIYAMAS]\n\n`;
+      principlesBlock = `[PRINCIPLES]\n${entries}\n[/PRINCIPLES]\n\n`;
     }
 
     const fullSystemPrompt = systemPrompt
@@ -1794,7 +1497,6 @@ class Kernel {
 
     this.sessionCost += cost;
     this.sessionLLMCalls++;
-    this.lastCallModel = model;
 
     return { content: result.content, usage: result.usage, cost, toolCalls: result.toolCalls, finish_reason: result.finish_reason };
   }
@@ -1898,24 +1600,6 @@ class Kernel {
       },
     }));
 
-    // Built-in: spawn a nested agent loop
-    defs.push({
-      type: 'function',
-      function: {
-        name: 'spawn_subplan',
-        description: 'Spawn a nested agent to handle an independent sub-task. You must allocate a budget (max_cost) from your own session budget — the subplan runs within that envelope. If no budget is allocated, the subplan will not run. Choose a model appropriate to the task complexity (haiku for simple, sonnet for complex). Multiple spawn_subplan calls in one turn execute in parallel.',
-        parameters: {
-          type: 'object',
-          properties: {
-            goal: { type: 'string', description: 'What the subplan should achieve' },
-            max_cost: { type: 'number', description: 'Budget allocation in dollars from your session budget. Required — subplan will not run without a budget.' },
-            model: { type: 'string', description: 'Model alias from config:models (e.g. opus, sonnet, haiku)' },
-            max_steps: { type: 'number', description: 'Max turns (default: 5)' },
-          },
-          required: ['goal', 'max_cost'],
-        },
-      },
-    });
 
     // Built-in: verify patron identity via Ed25519 signature
     defs.push({
@@ -1946,10 +1630,6 @@ class Kernel {
         : toolCall.function.arguments || {};
     } catch {
       return { error: `Invalid JSON in tool arguments for ${name}` };
-    }
-
-    if (name === 'spawn_subplan') {
-      return this.spawnSubplan(args);
     }
 
     if (name === 'verify_patron') {
@@ -2077,66 +1757,6 @@ class Kernel {
     } catch (err) {
       await this.karmaRecord({ event: "hook_error", hook: hookName, error: err.message });
       return null;  // broken hook degrades to no hook, not crash
-    }
-  }
-
-  async spawnSubplan(args, depth = 0) {
-    const maxDepth = this.defaults?.execution?.max_subplan_depth || 3;
-    if (depth >= maxDepth) {
-      return { error: `Subplan depth limit (${maxDepth}) reached`, goal: args.goal };
-    }
-
-    // No budget = no subplan. Agent must allocate from its own budget.
-    if (!args.max_cost || args.max_cost <= 0) {
-      return {
-        error: "No budget allocated for subplan. Specify max_cost to allocate a portion of your session budget. Handling goal inline instead.",
-        goal: args.goal,
-        inline: true,
-      };
-    }
-
-    const subplanPrompt = await this.kvGet("prompt:subplan") || this.defaultSubplanPrompt();
-    const requestedModel = args.model || await this.getFallbackModel() || 'haiku';
-    const model = this.resolveModel(requestedModel);
-    if (model === requestedModel && !requestedModel.includes('/')) {
-      const validAliases = Object.keys(this.modelsConfig?.alias_map || {});
-      return { error: `Unknown model alias: "${requestedModel}". Valid aliases: ${validAliases.join(', ')}` };
-    }
-    const maxSteps = args.max_steps || 5;
-
-    const builtPrompt = this.buildPrompt(subplanPrompt, {
-      goal: args.goal,
-      maxSteps,
-      maxCost: args.max_cost || 0.05,
-      executorModel: args.model || 'haiku',
-    });
-
-    // Subplan tools: same as parent
-    const tools = this.buildToolDefinitions();
-
-    // Reserve budget for this subplan — prevents parallel subplans from double-counting
-    const sessionBudget = this.defaults?.session_budget?.max_cost || 0.15;
-    const available = Math.max(0, sessionBudget - this.sessionCost - this._budgetReserved);
-    const allocation = Math.min(args.max_cost, available);
-    if (allocation <= 0) {
-      return { error: "No budget available for subplan", goal: args.goal };
-    }
-    this._budgetReserved += allocation;
-
-    try {
-      return await this.runAgentLoop({
-        systemPrompt: builtPrompt,
-        initialContext: `Execute this goal: ${args.goal}`,
-        tools,
-        model,
-        effort: args.effort || 'low',
-        maxTokens: args.max_output_tokens || 1000,
-        maxSteps,
-        step: `subplan_d${depth}`,
-        maxSpend: allocation,
-      });
-    } finally {
-      this._budgetReserved -= allocation;
     }
   }
 
@@ -2363,8 +1983,7 @@ class Kernel {
       prajna:     { type: "wisdom", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },
-      yama:       { type: "yama", format: "text" },
-      niyama:     { type: "niyama", format: "text" },
+      principle:  { type: "principle", format: "text" },
     };
     const finalMetadata = {
       ...defaults[prefix],
@@ -2444,14 +2063,6 @@ class Kernel {
       return typeof val === "string" ? val : JSON.stringify(val);
     });
     return result;
-  }
-
-  defaultSubplanPrompt() {
-    return "You are executing a subgoal. You have tools available via function calling.\n\n" +
-      "Goal: {{goal}}\n\n" +
-      "Use your tools to accomplish this goal. When done, produce a JSON object\n" +
-      "with a \"result\" field summarizing what you accomplished.\n\n" +
-      "Budget: max {{maxSteps}} turns, max ${{maxCost}}.";
   }
 
   elapsed() {

@@ -61,7 +61,7 @@ export async function runAct(K, state, context, config) {
     ? budget.max_cost * (1 - reservePct)
     : undefined;
 
-  const maxSteps = await K.getMaxSteps(state, 'act');
+  const maxSteps = defaults?.execution?.max_steps?.act || 12;
 
   const output = await K.runAgentLoop({
     systemPrompt,
