@@ -277,21 +277,38 @@ the full lived experience of the session, not a secondhand report.
 ```
 Session:
   1. Kernel: load state (d, m, c, ξ → folded into c)
-  2. LLM call(s): plan — select ONE action (structured by A_{m,c}(d) = a)
-  3. LLM call(s): act — execute via tool-calling loop
-  4. Kernel: compute σ, α; update μ (mechanical — no LLM)
-  5. LLM call: review — evaluate, write narrative if salient, write karma
+  2. Loop while budget remains:
+     a. LLM call(s): plan — precipitate one action (A_{m,c}(d) = a)
+     b. LLM call(s): act — execute via tool-calling loop
+     c. Kernel: compute σ, α; update μ (mechanical — no LLM)
+     d. LLM call: review — evaluate, write narrative if salient
+     e. Circumstances update (c reflects the new state)
+  3. Loop ends when: budget exhausted OR plan precipitates no action
 ```
 
-**One action per session.** Plan selects the single highest-priority
-action. Tool calls within an action are not separate actions — "compile
-a research doc" involves many tool calls but is one action. If the
-action completes with budget remaining, plan may select a follow-up,
-but each gets its own σ/α evaluation.
+**The session loops.** Plan, act, and review repeat within one session.
+After each cycle, circumstances have changed (the action modified the
+world). Plan re-evaluates and may precipitate another action. The loop
+stops naturally when the equation `A_{m,c}(d) = a` yields nothing —
+no desire meets the current circumstances in a way that produces an
+action. Or when budget is exhausted.
 
-**Action scoping.** If a desire implies work that exceeds the session
-budget, plan scopes the action to a meaningful first step. The system
-continues in the next session. Budget is a circumstance that plan
+**One action per cycle, not per session.** Each cycle precipitates one
+action with one σ/α evaluation. Tool calls within an action are not
+separate actions — "compile a research doc" involves many tool calls
+but is one action.
+
+**Delivery is just an action.** When act completes work that a contact
+cares about, the changed circumstances ("doc is ready, patron hasn't
+been informed") cause plan to precipitate a communication action. Act
+prepares what to communicate and emits a delivery event. The comms
+subsystem picks it up and composes/sends via the appropriate channel.
+No special delivery pipeline — notification is a normal action that
+flows from desires meeting circumstances.
+
+**Action scoping.** If a desire implies work that exceeds the remaining
+session budget, plan scopes the action to a meaningful first step. The
+system continues in the next session. Budget is a circumstance that plan
 accounts for naturally.
 
 **Plan output structure.** Plan produces:
@@ -413,7 +430,7 @@ desires, assumptions, actions, plans, reviews, or deep reflect.
 - **LLM calling** — model resolution, dharma/principle injection, budget enforcement
 - **Tool dispatch** — tool grants, execution context, communication gating
 - **Event bus** — emit, drain, dead-letter
-- **Safety** — crash detection/recovery, proposal governance, sealed keys
+- **Safety** — crash detection/recovery, code staging/deployment, sealed keys
 - **Bookkeeping** — session counter, karma recording, session health
 
 ### 10.3 What Moves to Hooks
@@ -525,9 +542,44 @@ The chat handler (`handleChat` in hook-communication.js) changes:
 - The session hook folds events into circumstances (c_t)
 - The hook decides what to do about them — the kernel doesn't know
 
-Delivery triggers when any `action:*` key with a `contact` field
-reaches `fulfilled` status. The delivery handler composes and sends
-via the existing adapter system.
+Delivery is not a special pipeline. It is a normal action precipitated
+by plan when circumstances include "work is complete, contact hasn't
+been informed." Act prepares the communication and emits a delivery
+event. The comms subsystem picks it up and composes/sends via the
+appropriate channel adapter.
+
+### 10.8 Code Staging (Replaces Proposal System)
+
+The current kernel proposal system (~185 LOC) encodes cognitive policy:
+claims, verdicts, checks, depth-based auto-accept, predicate evaluation.
+All of this moves to hooks. The kernel retains only two primitives:
+
+```javascript
+K.stageCode(targetKey, code)   // Store code in staging area
+K.signalDeploy()               // Tell governor to deploy staged code
+```
+
+The governor reads staged code, applies it to KV, builds, and deploys
+to Cloudflare — unchanged from current behavior. The crash tripwire
+(3 consecutive crashes → mechanical rollback) stays as kernel safety.
+
+**How self-improvement works in the cognitive framework:**
+
+1. Deep reflect evolves a desire: "my tools should handle sharing"
+2. Plan precipitates an action: "write a share action for google_docs"
+3. Act writes the code and calls `K.stageCode()`
+4. Deep reflect (next cycle) decides to deploy — calls `K.signalDeploy()`
+5. Review creates an assumption from the code's intent: "share action
+   eliminates curl workarounds" (TTL: 10 sessions, risk: medium)
+6. Statistical memory tracks outcomes — tool failures, workaround usage
+7. Deep reflect examines μ via `M_c(μ) = m`:
+   - Low surprise → extend assumption (the improvement works)
+   - High surprise → expire assumption → investigate or rollback
+
+Code changes are evaluated through the normal assumption lifecycle.
+No special proposal observations, verdicts, or review machinery needed.
+The cognitive framework handles it the same way it handles any other
+assumption about the world.
 
 ---
 
