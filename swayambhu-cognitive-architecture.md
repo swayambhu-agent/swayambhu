@@ -398,7 +398,144 @@ The agent begins with high resource cost (no assumptions to shortcut anything) a
 
 ---
 
-## 10. Open Questions for Implementation
+## 10. Kernel / Hook Boundary
+
+### 10.1 Design Principle
+
+The kernel enforces things the agent cannot be trusted to enforce on
+itself. Everything else is cognitive policy and lives in hooks. The
+kernel is cognitive-architecture-agnostic — it does not know about
+desires, assumptions, actions, plans, reviews, or deep reflect.
+
+### 10.2 What the Kernel Provides
+
+- **KV access** — read/write with tier-based gating
+- **LLM calling** — model resolution, dharma/principle injection, budget enforcement
+- **Tool dispatch** — tool grants, execution context, communication gating
+- **Event bus** — emit, drain, dead-letter
+- **Safety** — crash detection/recovery, proposal governance, sealed keys
+- **Bookkeeping** — session counter, karma recording, session health
+
+### 10.3 What Moves to Hooks
+
+Everything in the current kernel that encodes cognitive architecture
+knowledge moves to the session hook:
+
+| Currently in kernel | Moves to | Reason |
+|---|---|---|
+| `ACT_RELEVANT_EVENTS` list | Hook | Hook decides which events matter |
+| `session_request:*` scanning | Hook | Old cognitive model (replaced by actions) |
+| `last_reflect` loading | Hook | Old cognitive model |
+| `reflect:schedule:*` loading | Hook | Hook manages its own scheduling |
+| `highestReflectDepthDue` check | Hook | Hook decides session type |
+| Act vs reflect decision | Hook | One hook entry point: `session.run` |
+| `evaluateTripwires` → effort | Hook | Cognitive policy |
+| `getMaxSteps`, `getReflectModel` | Hook | Cognitive policy |
+| Context building (load keys, pending requests, DM handling) | Hook | Cognitive context is hook's responsibility |
+| `loadYamasNiyamas()` | Replaced | Generic `loadPrinciples()` loading `principle:*` |
+| `isYamaCapable`, `isNiyamaCapable` | Removed | Principles are immutable — no capability gates needed |
+| `getYamas`, `getNiyamas` on K interface | Replaced | `getPrinciples()` |
+| `_gateSystem()` yama/niyama deliberation | Simplified | Reject `principle:*` writes. Other system keys use config-driven tiers |
+| Yama/niyama injection in `callLLM` | Genericized | `[PRINCIPLES]` block from `principle:*` keys |
+| Role detection from step names in `runAgentLoop` | Removed | Caller passes budget config directly |
+| `SYSTEM_KEY_PREFIXES` cognitive entries | Config-driven | `kernel:key_tiers` (kernel-only key) |
+
+### 10.4 Key Tier Configuration
+
+Instead of hardcoding cognitive key prefixes in `SYSTEM_KEY_PREFIXES`,
+the kernel reads write-protection tiers from a kernel-only config key:
+
+```json
+kernel:key_tiers → {
+  "immutable": ["dharma", "principle:*"],
+  "kernel_only": ["karma:*", "sealed:*", "event:*", "kernel:*"],
+  "protected": ["config:*", "prompt:*", "tool:*", "provider:*",
+                 "channel:*", "hook:*", "contact:*", "proposal:*"]
+}
+```
+
+The kernel enforces these tiers mechanically. The cognitive architecture
+declares which of its keys need protection by having the patron set them
+in this config. The agent cannot modify `kernel:key_tiers` (it is
+kernel-only).
+
+Protected keys are writable only when the hook passes a privileged
+context flag. The kernel does not know what "deep-reflect" means —
+it just knows "this write was flagged as privileged by the hook."
+
+### 10.5 Refactored runSession()
+
+```javascript
+async runSession() {
+  await this.loadEagerConfig();
+  const K = this.buildKernelInterface();
+
+  // 1. Schedule gate (infrastructure)
+  const schedule = await this.kvGet("session_schedule");
+  if (!this._isSessionDue(schedule)) return { skipped: true };
+
+  // 2. Infrastructure inputs
+  const crashData = await this._detectCrash();
+  const balances = await this.checkBalance({});
+  const events = await this.drainEvents(this._eventHandlers);
+
+  // 3. Session start bookkeeping
+  const count = await this.getSessionCount();
+  await this.kvWriteSafe("session_counter", count + 1);
+  await this.karmaRecord({ event: "session_start", ... });
+
+  // 4. Hand everything to the session hook
+  const { run } = this.HOOKS.session;
+  await run(K, { crashData, balances, events, schedule });
+
+  // 5. Post-session bookkeeping
+  await this._writeSessionHealth("clean");
+  await this.updateSessionOutcome("clean");
+}
+```
+
+The hook receives the kernel interface and raw infrastructure inputs.
+It decides everything else: what to load, what phases to run, how to
+structure the session, whether to dispatch deep reflect as a background
+job.
+
+### 10.6 Deep Reflect as External Process
+
+Deep reflect does not run inside the Cloudflare Worker. It runs as a
+background job on the compute server (akash), triggered by the session
+hook when conditions are met (via the existing `start_job` tool).
+
+This is natural because:
+- Deep reflect may run longer than Workers CPU limits allow
+- The evaluation pipeline (embeddings, NLI) runs on akash
+- Deep reflect is a different kind of process — slow, reflective, not time-sensitive
+- The session hook decides when to trigger it — the kernel doesn't know
+
+Deep reflect reads and writes KV via API. Act sessions continue
+running normally while deep reflect works. The read/write isolation
+matrix (§8) ensures no conflicts.
+
+### 10.7 Comms Integration
+
+The chat handler (`handleChat` in hook-communication.js) changes:
+
+- `trigger_session` tool becomes `record_event` — records the patron's
+  need as an event and advances the session schedule
+- Events are infrastructure (KV entries with TTLs, drained at session start)
+- The session hook folds events into circumstances (c_t)
+- The hook decides what to do about them — the kernel doesn't know
+
+Delivery triggers when any `action:*` key with a `contact` field
+reaches `fulfilled` status. The delivery handler composes and sends
+via the existing adapter system.
+
+---
+
+## 11. Open Questions for Implementation
+
+7. **Kernel key tier bootstrap:** How are `kernel:key_tiers` seeded? Candidate: seed script writes them alongside principles. Patron can update via dashboard.
+
+8. **Deep reflect trigger conditions on akash:** How does the session hook decide when to dispatch deep reflect? Candidate: check μ drift, episodic growth, and session count since last DR — all readable from KV.
 
 1. **Salience threshold (τ):** Fixed or adaptive? If adaptive, what adjusts it? Candidate: τ adapts based on episodic memory growth rate — if ε is growing too fast, raise τ to be more selective.
 
@@ -414,7 +551,7 @@ The agent begins with high resource cost (no assumptions to shortcut anything) a
 
 ---
 
-## 11. Implementation Dependencies
+## 12. Implementation Dependencies
 
 | Component | Purpose | Candidate | Runs On |
 |-----------|---------|-----------|---------|
