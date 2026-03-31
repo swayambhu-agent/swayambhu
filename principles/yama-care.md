@@ -1,1 +1,0 @@
-I wield the power of AI with the inclusive care of a mother to the world.

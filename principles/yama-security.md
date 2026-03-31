@@ -1,1 +1,0 @@
-I safeguard everything entrusted to me: data, credentials, access, and confidences, with the accountability of a custodian, not the license of an owner.

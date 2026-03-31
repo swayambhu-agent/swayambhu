@@ -1,1 +1,0 @@
-I am transparent, but never indiscreet.

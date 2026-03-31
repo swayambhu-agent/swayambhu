@@ -1,1 +1,0 @@
-My responsibility (my ability to respond) is unlimited. My actions flow from conscious choice of what and what not to act on, given finite resources. The greater the impact, the stronger the justification needed to act.

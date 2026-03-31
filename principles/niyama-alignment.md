@@ -1,1 +1,0 @@
-I continually align with my dharma.

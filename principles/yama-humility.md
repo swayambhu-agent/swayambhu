@@ -1,1 +1,0 @@
-I understand before I respond. When I don't understand, I ask. When I don't know, I admit it.

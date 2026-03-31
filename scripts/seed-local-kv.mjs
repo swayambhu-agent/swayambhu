@@ -61,6 +61,18 @@ await put("wallets", wallets, "json", "Registered crypto wallets");
 const kernelConf = readJSON("config/kernel.json");
 await put("kernel:fallback_model", JSON.stringify(kernelConf.fallback_model), "json", "Fallback model for failed LLM calls");
 
+// Key tiers (kernel reads this at boot to enforce KV write protection)
+await put("kernel:key_tiers", {
+  immutable: ["dharma", "principle:*", "patron:public_key"],
+  kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
+  protected: [
+    "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
+    "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
+    "secret:*", "doc:*", "upaya:*", "prajna:*", "skill:*", "task:*",
+    "providers", "wallets", "patron:contact", "patron:identity_snapshot",
+  ],
+}, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
+
 // Event handlers
 await put("config:event_handlers", {
   session_request: ["sessionTrigger"],
@@ -118,7 +130,6 @@ await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool (k
 
 console.log("--- Prompts ---");
 await put("prompt:act", read("prompts/act.md"), "text", "Act session system prompt");
-await put("prompt:subplan", read("prompts/subplan.md"), "text", "Subplan agent system prompt template");
 await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
 await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1)");
 await put("prompt:communication", read("prompts/communication.md"), "text", "Communication system prompt");
@@ -127,7 +138,6 @@ await put("prompt:communication", read("prompts/communication.md"), "text", "Com
 
 console.log("--- Documentation ---");
 await put("doc:design_rationale", read("docs/agent/design-rationale.md"), "text", "Design rationale");
-await put("doc:proposal_guide", read("docs/agent/proposal-guide.md"), "text", "Proposal guide");
 await put("doc:threat_model", read("docs/agent/threat-model.md"), "text", "Threat model");
 await put("doc:wisdom_guide", read("docs/agent/wisdom-guide.md"), "text", "Wisdom guide");
 await put("doc:patron", read("docs/agent/patron-relationship.md"), "text", "Patron relationship");
@@ -138,18 +148,23 @@ await put("doc:setup_guide", read("docs/agent/setup-guide.md"), "text", "Setup g
 console.log("--- Dharma ---");
 await put("dharma", read("DHARMA.md"), "text", "Core identity and purpose");
 
-// ── Principles (from principles/*.md) ─────────────────────────
+// ── Principles (from principles.md — single file, parsed by ## headings) ──
 
 console.log("--- Principles ---");
-for (const file of readdirSync(resolve(root, "principles")).sort()) {
-  if (!file.endsWith(".md")) continue;
-  const name = file.replace(".md", "").replace("-", ":");
-  const type = name.startsWith("yama:") ? "Yama" : "Niyama";
-  const label = name.split(":")[1];
-  await put(name, read(`principles/${file}`), "text", `${type}: ${label}`);
+{
+  const raw = read("principles.md");
+  const sections = raw.split(/^## /m).slice(1); // skip header before first ##
+  for (const section of sections) {
+    const newline = section.indexOf("\n");
+    const name = section.slice(0, newline).trim();
+    const body = section.slice(newline + 1).trim();
+    if (name && body) {
+      await put(`principle:${name}`, body, "text", `Principle: ${name}`);
+    }
+  }
 }
 
-// ── Policy code (mutable — agent can propose changes via proposals) ──
+// ── Policy code (mutable — agent can stage changes via K.stageCode) ──
 
 console.log("--- Policy Code ---");
 await put("hook:act:code", read("act.js"), "text", "Session policy — act flow, context building");

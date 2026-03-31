@@ -272,6 +272,11 @@ carefully reflect and think through proposals from first principles. Push
 back if you genuinely think a different approach is better, and explain why.
 Agreeing without thinking leads to worse outcomes than honest disagreement.
 
+**Delete stale artifacts.** When code or architecture changes make a file,
+doc, prompt, config, or test obsolete, delete it. Don't leave dead files
+around "for reference" — git history exists for that. Stale artifacts
+mislead future sessions and accumulate confusion.
+
 **Commit and push after every significant piece of work.** Don't let
 changes accumulate — commit as soon as a coherent unit of work is complete
 (a bug fix, a feature, a refactor). This protects against lost work and
