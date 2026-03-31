@@ -22,7 +22,6 @@ class Kernel {
     this.startTime = Date.now();
     this.sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.sessionCost = 0;
-    this._budgetReserved = 0;
     this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
     this.mode = opts.mode || 'session'; // 'session' (act/reflect) or 'chat'
@@ -1588,42 +1587,6 @@ class Kernel {
     }
     // ── End inbound content gate ────────────────────────────────
 
-    // ── Chat seeding (outbound Slack DMs seed conversation state) ──
-    // When send_slack targets a DM channel, seed the chat object so
-    // the agent's outbound message appears in conversation history
-    // and the recipient's reply has full context.
-    if (name === 'send_slack' && result && !result.error && result.ok) {
-      const targetChannel = args.channel || this.env.SLACK_CHANNEL_ID;
-      // Only seed chat for DMs (user ID starts with U)
-      if (targetChannel && targetChannel.startsWith('U')) {
-        try {
-          const chatKey = `chat:slack:${targetChannel}`;
-          const conv = await this.kvGet(chatKey) || {
-            messages: [],
-            karma: [],
-            total_cost: 0,
-            created_at: new Date().toISOString(),
-            turn_count: 0,
-          };
-          conv.messages.push({
-            role: "assistant",
-            content: args.text,
-            source_session: this.sessionId,
-            ts: new Date().toISOString(),
-          });
-          if (!conv.source_session) {
-            conv.source_session = this.sessionId;
-          }
-          conv.last_activity = new Date().toISOString();
-          await this.kvWriteSafe(chatKey, conv);
-        } catch (err) {
-          // Non-fatal — chat seeding failure shouldn't break the tool call
-          await this.karmaRecord({ event: "chat_seed_error", tool: name, error: err.message });
-        }
-      }
-    }
-    // ── End chat seeding ──────────────────────────────────────────
-
     return result;
   }
 
@@ -1657,14 +1620,10 @@ class Kernel {
     let softWarned = false;
     let loopSpend = 0;
 
-    // Budget limit config — resolve role from step name
-    const role = step.startsWith('reflect_depth_') ? 'deep_reflect'
-      : step === 'act' ? 'act'
-      : null;
-    const roleConfig = role ? this.defaults?.[role] : null;
-    const softPct = roleConfig?.budget_soft_limit_pct ?? 0.75;
-    const hardPct = roleConfig?.budget_hard_limit_pct ?? 0.90;
+    // Budget limit config
     const costLimit = budgetCap ?? this.defaults?.session_budget?.max_cost;
+    const softPct = 0.75;
+    const hardPct = 0.90;
 
     try {
       for (let i = 0; i < maxSteps; i++) {
@@ -1675,7 +1634,7 @@ class Kernel {
         }
 
         // ── Budget soft/hard limits ──────────────────────────────
-        if (costLimit && role) {
+        if (costLimit) {
           const usedPct = this.sessionCost / costLimit;
 
           // Hard limit — strip tools, force final output
