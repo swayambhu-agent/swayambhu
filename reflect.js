@@ -624,7 +624,7 @@ Examine your karma, your act prompt, your patterns. Produce a JSON object:
   "next_session_config": { "interval_seconds": 21600, "effort": "low" }
 }
 
-kv_operations: write to any key including system keys (config, prompts, wisdom). Yama/niyama require deliberation field.
+kv_operations: write to any key including system keys (config, prompts, wisdom). Principle keys are immutable — cannot be written.
 proposal_requests: code changes ONLY — become proposals (governor deploys).
 proposal_verdicts: accept/reject/modify/withdraw proposals.
 Required: reflection, note_to_future_self. Everything else optional.`;

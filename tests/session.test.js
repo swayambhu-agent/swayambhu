@@ -540,19 +540,11 @@ describe("runAct session_responses", () => {
 // ── 18. kvWriteGated blocks system keys in act context ───
 
 describe("kvWriteGated blocks system keys in act context", () => {
-  it("blocks yama: prefix as system key", async () => {
+  it("blocks principle: writes as immutable", async () => {
     const K = makeMockK();
-    const result = await kvWriteGated(K, { op: "put", key: "yama:care", value: "new value" });
+    const result = await kvWriteGated(K, { op: "put", key: "principle:care", value: "new value" });
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/system key/);
-    expect(K.kvWriteSafe).not.toHaveBeenCalled();
-  });
-
-  it("blocks niyama: prefix as system key", async () => {
-    const K = makeMockK();
-    const result = await kvWriteGated(K, { op: "put", key: "niyama:health", value: "new value" });
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/system key/);
+    expect(result.error).toMatch(/immutable/);
     expect(K.kvWriteSafe).not.toHaveBeenCalled();
   });
 

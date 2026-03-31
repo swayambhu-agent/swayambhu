@@ -978,8 +978,8 @@ describe("isSystemKey / isKernelOnly", () => {
     expect(Kernel.isSystemKey("prompt:act")).toBe(true);
     expect(Kernel.isSystemKey("tool:kv_query:code")).toBe(true);
     expect(Kernel.isSystemKey("hook:act:code")).toBe(true);
-    expect(Kernel.isSystemKey("proposal:p_1")).toBe(true);
-    expect(Kernel.isSystemKey("doc:proposal_guide")).toBe(true);
+    expect(Kernel.isSystemKey("principle:care")).toBe(true);
+    expect(Kernel.isSystemKey("doc:guide")).toBe(true);
     expect(Kernel.isSystemKey("skill:model-config")).toBe(true);
   });
 

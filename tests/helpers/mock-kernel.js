@@ -75,8 +75,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
     isSystemKey: vi.fn(async (key) => {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'proposal:', 'hook:', 'doc:',
-        'yama:', 'niyama:', 'upaya:', 'prajna:',
+        'hook:', 'doc:',
+        'principle:', 'upaya:', 'prajna:',
         'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ];
@@ -87,8 +87,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
     getSystemKeyPatterns: vi.fn(async () => ({
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'proposal:', 'hook:', 'doc:',
-        'yama:', 'niyama:', 'upaya:', 'prajna:',
+        'hook:', 'doc:',
+        'principle:', 'upaya:', 'prajna:',
         'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ],
@@ -104,8 +104,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     getModelsConfig: vi.fn(async () => opts.modelsConfig || null),
     getDharma: vi.fn(async () => opts.dharma || null),
     getToolRegistry: vi.fn(async () => opts.toolRegistry || null),
-    getYamas: vi.fn(async () => opts.yamas || null),
-    getNiyamas: vi.fn(async () => opts.niyamas || null),
+    getPrinciples: vi.fn(async () => opts.principles || null),
     getPatronId: vi.fn(async () => opts.patronId || null),
     getPatronContact: vi.fn(async () => opts.patronContact || null),
     isPatronIdentityDisputed: vi.fn(async () => opts.patronIdentityDisputed || false),
@@ -125,8 +124,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
   // kvWriteGated mock — mirrors kernel context-based permission logic
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'proposal:', 'hook:', 'doc:',
-    'yama:', 'niyama:', 'upaya:', 'prajna:', 'skill:',
+    'hook:', 'doc:',
+    'principle:', 'upaya:', 'prajna:', 'skill:',
     'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
   ];
@@ -147,7 +146,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   mock.kvWriteGated = vi.fn(async (op, context) => {
     const key = op.key;
 
-    if (key === "dharma" || key === "patron:public_key") {
+    if (key === "dharma" || key.startsWith("principle:") || key === "patron:public_key") {
       return { ok: false, error: `Cannot write "${key}" — immutable` };
     }
     if (_isKernelOnly(key)) {

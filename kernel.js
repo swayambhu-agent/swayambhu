@@ -3,7 +3,7 @@
 // Policy (session flow, reflection) lives in act.js and reflect.js — mutable
 // code injected at construction via HOOKS. Tools, providers, and channels are
 // also injected. The kernel enforces safety: KV write tiers, dharma injection,
-// communication gates, budget enforcement, and proposal mechanics.
+// communication gates, budget enforcement, and code staging.
 //
 // Entry point is index.js, which imports all modules and wires them here.
 
@@ -44,7 +44,7 @@ class Kernel {
 
   static SYSTEM_KEY_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'proposal:', 'hook:', 'doc:',
+    'hook:', 'doc:',
     'principle:', 'task:',
     'upaya:', 'prajna:',
     'skill:',
@@ -492,7 +492,7 @@ class Kernel {
       return { ok: false, error: `Cannot write kernel key "${key}"` };
     }
 
-    // 3. Always blocked — code keys go through proposal_requests
+    // 3. Always blocked — code keys go through K.stageCode()
     if (Kernel.isCodeKey(key)) {
       return { ok: false, error: `Code key "${key}" requires K.stageCode()` };
     }
@@ -1978,7 +1978,6 @@ class Kernel {
       reflect:    { type: "reflect_output", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
-      proposal:   { type: "proposal", format: "json" },
       upaya:     { type: "wisdom", format: "json" },
       prajna:     { type: "wisdom", format: "json" },
       kernel:     { type: "kernel", format: "json" },
