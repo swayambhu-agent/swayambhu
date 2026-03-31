@@ -170,9 +170,9 @@ to `DEFAULT_KEY_TIERS`):
 |------|-------------|------|
 | Immutable | `dharma`, `principle:*`, `patron:public_key` | Never writable — not by agent, not by hooks |
 | Kernel-only | `karma:*`, `sealed:*`, `event:*`, `kernel:*` | Only kernel internals can write |
-| Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*` | Writable via `kvWriteGated` with privileged context flag |
+| Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*`, `desire:*`, `assumption:*` | Writable via `kvWriteGated` with privileged context flag |
 | Code keys | `tool:*:code`, `hook:*:code` | Must go through `K.stageCode()` → governor deploys |
-| Agent keys | Everything else | `kvWriteSafe` — direct write |
+| Agent keys | `mu:*`, `episode:*`, everything else | `kvWriteSafe` — direct write |
 
 **Principles:** `principle:*` keys are loaded at boot via `loadPrinciples()`
 and injected into every LLM call as a `[PRINCIPLES]` block after dharma.
@@ -255,6 +255,25 @@ these files (they use named exports: `execute`, `call`, `check`, `meta`).
 | `node scripts/clear-schedule.mjs` | Clear schedule timer (force immediate session) |
 | `node scripts/gmail-auth.mjs` | Generate Gmail OAuth refresh token |
 | `node scripts/rollback-session.mjs` | Undo last session's KV changes (`--dry-run` to preview, `--yes` to skip confirm) |
+
+### Cognitive architecture KV keys
+
+The cognitive architecture (spec: `swayambhu-cognitive-architecture.md`) uses
+four entity types stored in KV:
+
+| Prefix | Entity | Tier | Written by | Read by |
+|--------|--------|------|------------|---------|
+| `desire:*` | Desires (d) — directional vectors | Protected | Deep-reflect only | Act (plan phase) |
+| `assumption:*` | Assumptions (m) — cached heuristics with TTL | Protected | Deep-reflect only | Act (plan phase) |
+| `mu:*` | Statistical memory (μ) — rolling counters | Agent | Review phase (every session) | Deep-reflect |
+| `episode:*` | Episodic memory (ε) — salient experiences | Agent | Review phase (conditional) | Deep-reflect |
+
+Cold start: all stores empty (`d_0 = ∅`, `m_0 = ∅`, `μ_0 = ∅`, `ε_0 = ∅`).
+The first session triggers deep-reflect, which runs `D_p(∅, ∅)` to derive
+initial desires from principles. The agent earns its desires from the start.
+
+Schemas: see `tests/schema.test.js` for canonical field definitions and
+validation logic.
 
 ## Working Style — MANDATORY
 
