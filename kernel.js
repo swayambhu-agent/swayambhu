@@ -50,6 +50,7 @@ class Kernel {
       "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
       "secret:*", "doc:*", "upaya:*", "prajna:*", "skill:*", "task:*",
       "providers", "wallets", "patron:contact", "patron:identity_snapshot",
+      "desire:*", "assumption:*",
     ],
   };
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];

@@ -1094,6 +1094,46 @@ describe("kvWriteSafe", () => {
     await kernel.kvWriteSafe("session_schedule", { interval_seconds: 100 });
     // Should not throw
   });
+
+  it("blocks desire keys (protected)", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvWriteSafe("desire:serve", { slug: "serve" }))
+      .rejects.toThrow("system key");
+  });
+
+  it("blocks assumption keys (protected)", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvWriteSafe("assumption:slack-working", { slug: "slack-working" }))
+      .rejects.toThrow("system key");
+  });
+
+  it("allows mu keys (agent-writable)", async () => {
+    const { kernel } = makeKernel();
+    await kernel.kvWriteSafe("mu:slack-delivery", {
+      check_id: "slack-delivery",
+      confirmation_count: 0,
+      violation_count: 0,
+      last_checked: null,
+      cumulative_surprise: 0,
+    });
+    // Should not throw
+  });
+
+  it("allows episode keys (agent-writable)", async () => {
+    const { kernel } = makeKernel();
+    await kernel.kvWriteSafe("episode:1711352400000", {
+      timestamp: "2026-03-31T12:00:00.000Z",
+      action_taken: "test action",
+      outcome: "test outcome",
+      active_assumptions: [],
+      active_desires: [],
+      surprise_score: 0,
+      affinity_vector: {},
+      narrative: "test",
+      embedding: null,
+    });
+    // Should not throw
+  });
 });
 
 // ── 14. kvDeleteSafe ───────────────────────────────────────
@@ -1120,6 +1160,30 @@ describe("kvDeleteSafe", () => {
   it("allows non-system keys", async () => {
     const { kernel } = makeKernel();
     await kernel.kvDeleteSafe("tooldata:mykey");
+    // Should not throw
+  });
+
+  it("blocks desire keys (protected)", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvDeleteSafe("desire:serve"))
+      .rejects.toThrow("system key");
+  });
+
+  it("blocks assumption keys (protected)", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvDeleteSafe("assumption:slack-working"))
+      .rejects.toThrow("system key");
+  });
+
+  it("allows mu keys (agent-writable)", async () => {
+    const { kernel } = makeKernel();
+    await kernel.kvDeleteSafe("mu:slack-delivery");
+    // Should not throw
+  });
+
+  it("allows episode keys (agent-writable)", async () => {
+    const { kernel } = makeKernel();
+    await kernel.kvDeleteSafe("episode:1711352400000");
     // Should not throw
   });
 });
