@@ -70,6 +70,7 @@ await put("kernel:key_tiers", {
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
     "secret:*", "doc:*", "upaya:*", "prajna:*", "skill:*", "task:*",
     "providers", "wallets", "patron:contact", "patron:identity_snapshot",
+    "desire:*", "assumption:*",
   ],
 }, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
 
