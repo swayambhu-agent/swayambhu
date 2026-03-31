@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { makeKVStore } from "./helpers/mock-kv.js";
 import {
   buildActContext,
   detectCrash,
@@ -1098,6 +1099,111 @@ describe("applyReflectOutput conditional fields", () => {
     const record = stored[1];
     expect(record).not.toHaveProperty("sankalpas");
     expect(record).not.toHaveProperty("proposal_observations");
+  });
+});
+
+// ── simplified runSession ─────────────────────────────────
+
+function createTestKernel(kvInit = {}) {
+  const env = { KV: makeKVStore(kvInit) };
+  const kernel = new Kernel(env, {
+    TOOLS: {},
+    HOOKS: {},
+    PROVIDERS: {},
+    CHANNELS: {},
+  });
+  kernel.defaults = {};
+  kernel.toolRegistry = null;
+  kernel.modelsConfig = null;
+  kernel.modelCapabilities = null;
+  kernel.dharma = null;
+  kernel.toolGrants = {};
+  kernel.karmaRecord = vi.fn(async (entry) => { kernel.karma.push(entry); });
+  return kernel;
+}
+
+describe("simplified runSession", () => {
+  it("calls HOOKS.session.run with kernel interface and infrastructure inputs", async () => {
+    const kernel = createTestKernel();
+    let hookArgs;
+    kernel.HOOKS.session = {
+      run: async (K, inputs) => { hookArgs = { K, inputs }; },
+    };
+    kernel.kv._data = kernel.kv._data || new Map();
+    await kernel.kv.put("session_schedule", JSON.stringify({
+      next_session_after: new Date(Date.now() - 1000).toISOString(),
+    }));
+    await kernel.kv.put("config:defaults", JSON.stringify({
+      session_budget: { max_cost: 1.0 },
+    }));
+    await kernel.runSession();
+    expect(hookArgs).toBeDefined();
+    expect(hookArgs.inputs).toHaveProperty("crashData");
+    expect(hookArgs.inputs).toHaveProperty("balances");
+    expect(hookArgs.inputs).toHaveProperty("events");
+    expect(hookArgs.inputs).toHaveProperty("schedule");
+  });
+
+  it("skips session when not due", async () => {
+    const kernel = createTestKernel();
+    await kernel.kv.put("session_schedule", JSON.stringify({
+      next_session_after: new Date(Date.now() + 60000).toISOString(),
+    }));
+    const result = await kernel.runSession();
+    expect(result).toEqual({ skipped: true, reason: "not_time_yet" });
+  });
+
+  it("does NOT call HOOKS.act.runAct or HOOKS.reflect.runReflect", async () => {
+    const kernel = createTestKernel();
+    kernel.HOOKS.session = { run: async () => {} };
+    kernel.HOOKS.act = { runAct: vi.fn() };
+    kernel.HOOKS.reflect = { runReflect: vi.fn() };
+    await kernel.kv.put("session_schedule", JSON.stringify({
+      next_session_after: new Date(Date.now() - 1000).toISOString(),
+    }));
+    await kernel.runSession();
+    expect(kernel.HOOKS.act.runAct).not.toHaveBeenCalled();
+    expect(kernel.HOOKS.reflect.runReflect).not.toHaveBeenCalled();
+  });
+
+  it("increments session counter and records karma", async () => {
+    const kernel = createTestKernel();
+    kernel.HOOKS.session = { run: async () => {} };
+    await kernel.kv.put("session_schedule", JSON.stringify({
+      next_session_after: new Date(Date.now() - 1000).toISOString(),
+    }));
+    await kernel.kv.put("session_counter", JSON.stringify(4));
+    await kernel.runSession();
+    const counter = JSON.parse(await kernel.kv.get("session_counter"));
+    expect(counter).toBe(5);
+    expect(kernel.karma).toContainEqual(
+      expect.objectContaining({ event: "session_start", session_number: 5 })
+    );
+  });
+
+  it("records crash_detected in session_start karma when crash exists", async () => {
+    const kernel = createTestKernel();
+    kernel.HOOKS.session = { run: async () => {} };
+    await kernel.kv.put("session_schedule", JSON.stringify({
+      next_session_after: new Date(Date.now() - 1000).toISOString(),
+    }));
+    // Simulate a killed session in kernel:last_sessions
+    await kernel.kv.put("kernel:last_sessions", JSON.stringify([
+      { id: "s_dead", outcome: "killed", ts: new Date().toISOString() },
+    ]));
+    await kernel.kv.put("karma:s_dead", JSON.stringify([{ event: "session_start" }]));
+    await kernel.runSession();
+    const startKarma = kernel.karma.find(e => e.event === "session_start");
+    expect(startKarma?.crash_detected).toBe(true);
+  });
+
+  it("heals missing schedule and returns skipped+healed", async () => {
+    const kernel = createTestKernel();
+    // No session_schedule in KV
+    const result = await kernel.runSession();
+    expect(result).toMatchObject({ skipped: true, reason: "not_time_yet", healed: true });
+    const schedule = JSON.parse(await kernel.kv.get("session_schedule"));
+    expect(schedule).toHaveProperty("next_session_after");
   });
 });
 

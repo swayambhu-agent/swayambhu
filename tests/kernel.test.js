@@ -2527,7 +2527,7 @@ describe("drainEvents", () => {
     expect(await env.KV.get('event:0001:chat_message')).toBeNull();
   });
 
-  it("adds act-relevant events to actContext", async () => {
+  it("adds all drained events to actContext", async () => {
     const { kernel } = makeKernel({
       'config:event_handlers': JSON.stringify({}),
       'event:0001:session_request': JSON.stringify({ type: 'session_request', ref: 'session_request:req_1' }),
@@ -2538,16 +2538,17 @@ describe("drainEvents", () => {
     const types = actContext.map(e => e.type);
     expect(types).toContain('session_request');
     expect(types).toContain('job_complete');
-    expect(types).not.toContain('other_event');
+    expect(types).toContain('other_event');
   });
 
-  it("does not add non-act-relevant events to actContext", async () => {
+  it("adds all event types (including non-act-specific) to actContext", async () => {
     const { kernel } = makeKernel({
       'config:event_handlers': JSON.stringify({}),
       'event:0001:other_event': JSON.stringify({ type: 'other_event' }),
     });
     const { actContext } = await kernel.drainEvents({});
-    expect(actContext).toHaveLength(0);
+    expect(actContext).toHaveLength(1);
+    expect(actContext[0].type).toBe('other_event');
   });
 
   it("records karma warning for unknown handler name, still deletes event", async () => {

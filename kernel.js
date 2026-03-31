@@ -59,7 +59,6 @@ class Kernel {
   static IMMUTABLE_KEYS = ['patron:public_key'];
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
-  static ACT_RELEVANT_EVENTS = ['session_request', 'job_complete', 'patron_direct'];
 
   static isSystemKey(key) {
     if (Kernel.SYSTEM_KEY_EXACT.includes(key)) return true;
@@ -235,9 +234,7 @@ class Kernel {
     const actContext = [];
 
     for (const event of events) {
-      if (Kernel.ACT_RELEVANT_EVENTS.includes(event.type)) {
-        actContext.push(event);
-      }
+      actContext.push(event);
 
       const handlerNames = handlerConfig[event.type] || [];
       let allHandlersSucceeded = true;
@@ -802,136 +799,32 @@ class Kernel {
     await this.kv.delete("kernel:active_session");
   }
 
-  // Session orchestration — timing, crash detection, dispatch to act or reflect
+  // Session orchestration — schedule gate, infrastructure inputs, hook dispatch
   async runSession() {
     await this.loadEagerConfig();
     const K = this.buildKernelInterface();
 
-    let defaults = this.defaults;
-    let modelsConfig = this.modelsConfig;
-    let toolRegistry = this.toolRegistry;
-
-    // Build shared state object passed to act/reflect
-    const state = {
-      defaults, modelsConfig, toolRegistry, sessionId: this.sessionId,
-      async refreshDefaults() {
-        state.defaults = await K.getDefaults();
-        defaults = state.defaults;
-      },
-      async refreshModels() {
-        state.modelsConfig = await K.getModelsConfig();
-        modelsConfig = state.modelsConfig;
-      },
-      async refreshToolRegistry() {
-        state.toolRegistry = await K.getToolRegistry();
-        toolRegistry = state.toolRegistry;
-      },
-    };
-
     try {
-      // 0. Load defaults early — needed for schedule check fallback
-      defaults = await this.kvGet("config:defaults");
-      this.defaults = defaults;
-      state.defaults = defaults;
-
-      // 1. Check if it's actually time to run a session
+      // 1. Schedule gate
       const schedule = await this.kvGet("session_schedule");
-      const nextSession = schedule?.next_session_after;
-      if (!nextSession) {
-        // No valid session time — policy code wrote bad data or first boot.
-        // Fall back to default interval_seconds so we don't run every cron tick.
-        const fallbackInterval = defaults?.schedule?.interval_seconds || 21600;
-        const fallbackTime = new Date(Date.now() + fallbackInterval * 1000).toISOString();
-        await this.kvWriteSafe("session_schedule", { ...schedule, next_session_after: fallbackTime, interval_seconds: fallbackInterval });
-        return { skipped: true, reason: "not_time_yet", healed: true };
-      }
-      if (Date.now() < new Date(nextSession).getTime()) {
+      if (!this._isSessionDue(schedule)) {
+        if (!schedule?.next_session_after) {
+          // No valid session time — heal by writing a fallback schedule
+          const defaults = this.defaults;
+          const fallbackInterval = defaults?.schedule?.interval_seconds || 21600;
+          const fallbackTime = new Date(Date.now() + fallbackInterval * 1000).toISOString();
+          await this.kvWriteSafe("session_schedule", { ...schedule, next_session_after: fallbackTime, interval_seconds: fallbackInterval });
+          return { skipped: true, reason: "not_time_yet", healed: true };
+        }
         return { skipped: true, reason: "not_time_yet" };
       }
 
-      // 2. Crash detection
+      // 2. Infrastructure inputs
       const crashData = await this._detectCrash();
-
-      // 3. Load ground truth
       const balances = await this.checkBalance({});
-      const lastReflect = await this.kvGet("last_reflect");
+      const { actContext: events } = await this.drainEvents(this._eventHandlers);
 
-      // 4. Merge with defaults
-      const config = this.mergeDefaults(defaults, schedule);
-
-      // 4a. Cache stable values
-      modelsConfig = await this.kvGet("config:models");
-      this.modelsConfig = modelsConfig;
-      state.modelsConfig = modelsConfig;
-      toolRegistry = await this.kvGet("config:tool_registry");
-      this.toolRegistry = toolRegistry;
-      state.toolRegistry = toolRegistry;
-
-      // 5. Check if reflection is due
-      const { highestReflectDepthDue } = this.HOOKS.reflect || {};
-      const reflectDepth = highestReflectDepthDue
-        ? await highestReflectDepthDue(K, state)
-        : 0;
-
-      // 6. Effort level — cognitive policy (tripwire evaluation) belongs in hooks (Task 3)
-      const effort = config.default_effort || config.schedule?.default_effort || "low";
-
-      // 7. Load context keys
-      const loadKeys = lastReflect?.next_act_context?.load_keys
-        || defaults?.memory?.default_load_keys
-        || [];
-      const additionalContext = await this.loadKeys(
-        loadKeys.filter(k => !k.startsWith("sealed:"))
-      );
-
-      // 7a. Drain event bus (signals for handlers)
-      const { actContext: eventItems } = await this.drainEvents(this._eventHandlers);
-
-      // 7a2. Load pending session requests from KV (source of truth, crash-proof)
-      const reqList = await this.kv.list({ prefix: "session_request:" });
-      const pendingRequests = [];
-      for (const { name } of reqList.keys) {
-        const req = await this.kvGet(name);
-        if (req?.status === "pending") pendingRequests.push(req);
-      }
-
-      // Extract patron DM from events for effort override
-      const patronDM = eventItems.find(i => i.type === "patron_direct");
-
-      // 7b. Override effort for direct message sessions
-      const effectiveEffort = patronDM
-        ? (defaults?.act_after_dm?.effort || "high")
-        : effort;
-
-      // 7c. Load reflect schedules for all depths
-      const maxReflectDepth = defaults?.execution?.max_reflect_depth || 1;
-      const reflectSchedule = {};
-      const sessionCount = await this.getSessionCount();
-      for (let d = 1; d <= maxReflectDepth; d++) {
-        const sched = await this.kvGet(`reflect:schedule:${d}`);
-        if (sched) {
-          const interval = sched.after_sessions
-            || defaults?.deep_reflect?.default_interval_sessions || 20;
-          reflectSchedule[d] = {
-            last_ran: sched.last_reflect_session || 0,
-            next_due: (sched.last_reflect_session || 0) + interval,
-          };
-        }
-      }
-
-      // 8. Build context
-      const context = {
-        balances, lastReflect, additionalContext,
-        effort: effectiveEffort, reflectDepth,
-        crashData,
-        events: eventItems,
-        pendingRequests,
-        directMessage: patronDM?.message || null,
-        reflectSchedule: Object.keys(reflectSchedule).length > 0 ? reflectSchedule : null,
-        patronPlatforms: this.patronPlatforms || null,
-      };
-
-      // 9. Record session start + increment counter
+      // 3. Session start bookkeeping
       const count = await this.getSessionCount();
       await this.kvWriteSafe("session_counter", count + 1);
       const sessionIds = await this.kvGet("cache:session_ids") || [];
@@ -942,46 +835,19 @@ class Kernel {
         event: "session_start",
         session_id: this.sessionId,
         session_number: count + 1,
-        effort,
         scheduled_at: schedule?.next_session_after || null,
         crash_detected: !!crashData,
         balances,
       });
 
-      // 10. Run session or reflect
-      if (reflectDepth > 0) {
-        const { runReflect } = this.HOOKS.reflect || {};
-        if (!runReflect) throw new Error("No runReflect in HOOKS.reflect");
-        await runReflect(K, state, reflectDepth, context);
-      } else {
-        const { runAct } = this.HOOKS.act || {};
-        if (!runAct) throw new Error("No runAct in HOOKS.act");
-        await runAct(K, state, context, config);
-      }
+      // 4. Hand everything to the session hook
+      const { run } = this.HOOKS.session || {};
+      if (!run) throw new Error("No HOOKS.session.run");
+      await run(K, { crashData, balances, events, schedule });
 
-      // 11. Session bookkeeping — always runs regardless of act vs deep reflect
-      const karma = this.karma;
-      if (karma.length > 0) {
-        const { summarizeKarma } = this.HOOKS.act || {};
-        if (summarizeKarma) {
-          await this.kvWriteSafe(`karma_summary:${this.sessionId}`, summarizeKarma(karma));
-        }
-      }
-
-      // 12. Session end — clean bookend with final balances
-      let endBalances;
-      try { endBalances = await this.checkBalance({}); } catch {}
-      await this.karmaRecord({
-        event: "session_end",
-        session_id: this.sessionId,
-        session_cost: this.sessionCost,
-        llm_calls: this.sessionLLMCalls,
-        elapsed_ms: this.elapsed(),
-        ...(endBalances ? { balances: endBalances } : {}),
-      });
-
-      // 13. Session health summary — scannable by deep reflect
+      // 5. Post-session bookkeeping
       await this._writeSessionHealth("clean");
+      await this.updateSessionOutcome("clean");
 
       return { ok: true };
 
@@ -994,6 +860,12 @@ class Kernel {
       await this._writeSessionHealth("error");
       return { ok: false, error: err.message };
     }
+  }
+
+  _isSessionDue(schedule) {
+    const nextSession = schedule?.next_session_after;
+    if (!nextSession) return false;
+    return Date.now() >= new Date(nextSession).getTime();
   }
 
   // ── Crash detection ───────────────────────────────────────
