@@ -970,40 +970,101 @@ describe("runAgentLoop parse error retry", () => {
   });
 });
 
-// ── 12. isSystemKey / isKernelOnly ──────────────────────────
+// ── 12. isSystemKey / isKernelOnly / isImmutableKey ─────────
 
-describe("isSystemKey / isKernelOnly", () => {
+describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
   it("recognizes system key prefixes", () => {
-    expect(Kernel.isSystemKey("config:defaults")).toBe(true);
-    expect(Kernel.isSystemKey("prompt:act")).toBe(true);
-    expect(Kernel.isSystemKey("tool:kv_query:code")).toBe(true);
-    expect(Kernel.isSystemKey("hook:act:code")).toBe(true);
-    expect(Kernel.isSystemKey("principle:care")).toBe(true);
-    expect(Kernel.isSystemKey("doc:guide")).toBe(true);
-    expect(Kernel.isSystemKey("skill:model-config")).toBe(true);
+    const { kernel } = makeKernel();
+    expect(kernel.isSystemKey("config:defaults")).toBe(true);
+    expect(kernel.isSystemKey("prompt:act")).toBe(true);
+    expect(kernel.isSystemKey("tool:kv_query:code")).toBe(true);
+    expect(kernel.isSystemKey("hook:act:code")).toBe(true);
+    expect(kernel.isSystemKey("principle:care")).toBe(true);
+    expect(kernel.isSystemKey("doc:guide")).toBe(true);
+    expect(kernel.isSystemKey("skill:model-config")).toBe(true);
   });
 
   it("recognizes exact system keys", () => {
-    expect(Kernel.isSystemKey("providers")).toBe(true);
-    expect(Kernel.isSystemKey("wallets")).toBe(true);
+    const { kernel } = makeKernel();
+    expect(kernel.isSystemKey("providers")).toBe(true);
+    expect(kernel.isSystemKey("wallets")).toBe(true);
     // wisdom is no longer a system key (replaced by upaya:/prajna: prefixes)
   });
 
   it("rejects non-system keys", () => {
-    expect(Kernel.isSystemKey("session_schedule")).toBe(false);
-    expect(Kernel.isSystemKey("last_reflect")).toBe(false);
-    expect(Kernel.isSystemKey("session_counter")).toBe(false);
+    const { kernel } = makeKernel();
+    expect(kernel.isSystemKey("session_schedule")).toBe(false);
+    expect(kernel.isSystemKey("last_reflect")).toBe(false);
+    expect(kernel.isSystemKey("session_counter")).toBe(false);
   });
 
   it("recognizes kernel-only keys", () => {
-    expect(Kernel.isKernelOnly("kernel:last_sessions")).toBe(true);
-    expect(Kernel.isKernelOnly("kernel:active_session")).toBe(true);
-    expect(Kernel.isKernelOnly("kernel:alert_config")).toBe(true);
+    const { kernel } = makeKernel();
+    expect(kernel.isKernelOnly("kernel:last_sessions")).toBe(true);
+    expect(kernel.isKernelOnly("kernel:active_session")).toBe(true);
+    expect(kernel.isKernelOnly("kernel:alert_config")).toBe(true);
   });
 
-  it("kernel-only does not overlap with system keys", () => {
-    expect(Kernel.isKernelOnly("config:defaults")).toBe(false);
-    expect(Kernel.isKernelOnly("prompt:act")).toBe(false);
+  it("kernel-only does not overlap with protected keys", () => {
+    const { kernel } = makeKernel();
+    expect(kernel.isKernelOnly("config:defaults")).toBe(false);
+    expect(kernel.isKernelOnly("prompt:act")).toBe(false);
+  });
+
+  it("isImmutableKey matches exact keys and wildcards", () => {
+    const { kernel } = makeKernel();
+    expect(kernel.isImmutableKey("dharma")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(true);
+    expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
+    expect(kernel.isImmutableKey("config:defaults")).toBe(false);
+  });
+});
+
+// ── 12b. config-driven key tiers ──────────────────────────────
+
+describe("config-driven key tiers", () => {
+  it("reads key tiers from kernel:key_tiers at boot", async () => {
+    const { kernel } = makeKernel();
+    kernel.kv._store.set("kernel:key_tiers", JSON.stringify({
+      immutable: ["dharma", "principle:*"],
+      kernel_only: ["karma:*", "sealed:*", "event:*", "kernel:*"],
+      protected: ["config:*", "prompt:*"],
+    }));
+    await kernel.loadEagerConfig();
+    expect(kernel.keyTiers).toBeDefined();
+    expect(kernel.keyTiers.immutable).toContain("dharma");
+  });
+
+  it("isSystemKey uses loaded tiers", () => {
+    const { kernel } = makeKernel();
+    kernel.keyTiers = {
+      immutable: ["dharma"],
+      kernel_only: ["karma:*"],
+      protected: ["config:*", "custom:*"],
+    };
+    expect(kernel.isSystemKey("custom:foo")).toBe(true);
+    expect(kernel.isSystemKey("random:foo")).toBe(false);
+  });
+
+  it("falls back to hardcoded defaults if kernel:key_tiers missing", async () => {
+    const { kernel } = makeKernel();
+    await kernel.loadEagerConfig();
+    expect(kernel.isSystemKey("config:defaults")).toBe(true);
+  });
+
+  it("isImmutableKey matches exact keys and wildcards", () => {
+    const { kernel } = makeKernel();
+    kernel.keyTiers = {
+      immutable: ["dharma", "principle:*", "patron:public_key"],
+      kernel_only: [],
+      protected: [],
+    };
+    expect(kernel.isImmutableKey("dharma")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(true);
+    expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
+    expect(kernel.isImmutableKey("config:defaults")).toBe(false);
   });
 });
 
@@ -1908,10 +1969,10 @@ describe("principles (generic)", () => {
     expect(result.error).toContain("immutable");
   });
 
-  it("kvWriteSafe blocks principle: keys", async () => {
+  it("kvWriteSafe blocks principle: keys as immutable", async () => {
     const { kernel } = makeKernel();
     await expect(kernel.kvWriteSafe("principle:honesty", "new value"))
-      .rejects.toThrow("system key");
+      .rejects.toThrow("immutable");
   });
 
   it("non-principle system key writes succeed without warning", async () => {
@@ -2041,11 +2102,13 @@ describe("Patron identity monitor", () => {
 describe("sealed namespace", () => {
   describe("isSystemKey / isKernelOnly recognize sealed:", () => {
     it("sealed: is a system key", () => {
-      expect(Kernel.isSystemKey("sealed:quarantine:email:foo:123")).toBe(true);
+      const { kernel } = makeKernel();
+      expect(kernel.isSystemKey("sealed:quarantine:email:foo:123")).toBe(true);
     });
 
     it("sealed: is kernel-only", () => {
-      expect(Kernel.isKernelOnly("sealed:quarantine:email:foo:123")).toBe(true);
+      const { kernel } = makeKernel();
+      expect(kernel.isKernelOnly("sealed:quarantine:email:foo:123")).toBe(true);
     });
   });
 

@@ -34,6 +34,7 @@ class Kernel {
     this.lastWorkingSnapshotted = false; // Only snapshot provider once per session
     this.privilegedWriteCount = 0; // Counter for privileged writes (system + contact keys)
     this._alertConfigCache = undefined; // undefined = not loaded, null = doesn't exist
+    this.keyTiers = null;      // Loaded from kernel:key_tiers at boot; falls back to DEFAULT_KEY_TIERS
     this.principles = null;    // Cached generic principles (loaded at boot, immutable by agent)
     this.patronId = null;      // Contact slug of patron (loaded at boot)
     this.patronContact = null; // Full patron contact record (loaded at boot)
@@ -42,32 +43,44 @@ class Kernel {
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
   }
 
-  static SYSTEM_KEY_PREFIXES = [
-    'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'hook:', 'doc:',
-    'principle:', 'task:',
-    'upaya:', 'prajna:',
-    'skill:',
-    'contact:',
-    'contact_platform:',
-    'sealed:',
-    'event:', 'event_dead:',
-  ];
-  static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:', 'karma:', 'event:', 'event_dead:'];
-  static KERNEL_ONLY_EXACT = ['patron:direct'];
-  static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
-  static IMMUTABLE_KEYS = ['patron:public_key'];
+  static DEFAULT_KEY_TIERS = {
+    immutable: ["dharma", "principle:*", "patron:public_key"],
+    kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
+    protected: [
+      "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
+      "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
+      "secret:*", "doc:*", "upaya:*", "prajna:*", "skill:*", "task:*",
+      "providers", "wallets", "patron:contact", "patron:identity_snapshot",
+    ],
+  };
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
 
-  static isSystemKey(key) {
-    if (Kernel.SYSTEM_KEY_EXACT.includes(key)) return true;
-    return Kernel.SYSTEM_KEY_PREFIXES.some(p => key.startsWith(p));
+  // ── Key tier helpers (instance methods — use loaded tiers from KV) ──
+
+  _matchesTierPattern(key, patterns) {
+    for (const pattern of patterns) {
+      if (pattern.endsWith('*')) {
+        if (key.startsWith(pattern.slice(0, -1))) return true;
+      } else {
+        if (key === pattern) return true;
+      }
+    }
+    return false;
   }
 
-  static isKernelOnly(key) {
-    if (Kernel.KERNEL_ONLY_EXACT.includes(key)) return true;
-    return Kernel.KERNEL_ONLY_PREFIXES.some(p => key.startsWith(p));
+  isImmutableKey(key) {
+    return this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).immutable);
+  }
+
+  isKernelOnly(key) {
+    return this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).kernel_only);
+  }
+
+  isSystemKey(key) {
+    return this.isImmutableKey(key)
+      || this.isKernelOnly(key)
+      || this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).protected);
   }
 
   // ── SSH Ed25519 key parsing ───────────────────────────────
@@ -90,6 +103,7 @@ class Kernel {
   // ── Principles (generic, immutable) ──────────────────────
 
   async loadEagerConfig() {
+    this.keyTiers = await this.kvGet("kernel:key_tiers") || Kernel.DEFAULT_KEY_TIERS;
     this.defaults = await this.kvGet("config:defaults");
     this.modelsConfig = await this.kvGet("config:models");
     this.modelCapabilities = await this.kvGet("config:model_capabilities");
@@ -359,16 +373,16 @@ class Kernel {
   // ── KV write tiers (RPC-exposed) ─────────────────────────
 
   async kvWriteSafe(key, value, metadata) {
-    if (key === "dharma") throw new Error("Cannot overwrite dharma — immutable key");
-    if (Kernel.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
-    if (Kernel.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
+    if (this.isImmutableKey(key)) throw new Error(`Cannot overwrite "${key}" — immutable key`);
+    if (this.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
+    if (this.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
     return this.kvWrite(key, value, metadata);
   }
 
   async kvDeleteSafe(key) {
-    if (key === "dharma") throw new Error("Cannot delete dharma — immutable key");
-    if (Kernel.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
-    if (Kernel.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
+    if (this.isImmutableKey(key)) throw new Error(`Cannot delete "${key}" — immutable key`);
+    if (this.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
+    if (this.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
     return this.kv.delete(key);
   }
 
@@ -441,11 +455,8 @@ class Kernel {
       },
       getSessionCount: async () => kernel.getSessionCount(),
       mergeDefaults: async (defaults, overrides) => kernel.mergeDefaults(defaults, overrides),
-      isSystemKey: async (key) => Kernel.isSystemKey(key),
-      getSystemKeyPatterns: async () => ({
-        prefixes: Kernel.SYSTEM_KEY_PREFIXES,
-        exact: Kernel.SYSTEM_KEY_EXACT,
-      }),
+      isSystemKey: async (key) => kernel.isSystemKey(key),
+      getSystemKeyPatterns: async () => kernel.keyTiers || Kernel.DEFAULT_KEY_TIERS,
 
       // KV operation gating — context-based permissions
       // (kvWriteGated already exposed above in KV writes section)
@@ -480,12 +491,12 @@ class Kernel {
     const key = op.key;
 
     // 1. Always blocked — immutable keys
-    if (key === "dharma" || key.startsWith("principle:") || Kernel.IMMUTABLE_KEYS.includes(key)) {
+    if (this.isImmutableKey(key)) {
       return { ok: false, error: `Cannot write "${key}" — immutable` };
     }
 
     // 2. Always blocked — kernel-only keys
-    if (Kernel.isKernelOnly(key)) {
+    if (this.isKernelOnly(key)) {
       return { ok: false, error: `Cannot write kernel key "${key}"` };
     }
 
@@ -500,7 +511,7 @@ class Kernel {
     }
 
     // 5. System keys — deep-reflect only
-    if (Kernel.isSystemKey(key)) {
+    if (this.isSystemKey(key)) {
       if (context !== "deep-reflect") {
         return { ok: false, error: `Cannot write system key "${key}" during ${context} — note in session_summary for deep reflect` };
       }
@@ -1825,12 +1836,12 @@ class Kernel {
 
   async kvWrite(key, value, metadata = {}) {
     // Protect immutable keys
-    if (key === "dharma" || Kernel.IMMUTABLE_KEYS.includes(key)) {
+    if (this.isImmutableKey(key)) {
       throw new Error(`Cannot write "${key}" — immutable key`);
     }
 
     // System keys cannot be marked unprotected
-    if (Kernel.isSystemKey(key)) delete metadata.unprotected;
+    if (this.isSystemKey(key)) delete metadata.unprotected;
 
     // Auto-tag: guarantee every key has at minimum a type based on prefix
     const prefix = key.split(":")[0];
