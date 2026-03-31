@@ -467,7 +467,7 @@ kernel:key_tiers → {
   "immutable": ["dharma", "principle:*"],
   "kernel_only": ["karma:*", "sealed:*", "event:*", "kernel:*"],
   "protected": ["config:*", "prompt:*", "tool:*", "provider:*",
-                 "channel:*", "hook:*", "contact:*", "proposal:*"]
+                 "channel:*", "hook:*", "contact:*", "code_staging:*"]
 }
 ```
 
@@ -583,11 +583,28 @@ assumption about the world.
 
 ---
 
-## 11. Open Questions for Implementation
+## 11. Design Decisions
 
-7. **Kernel key tier bootstrap:** How are `kernel:key_tiers` seeded? Candidate: seed script writes them alongside principles. Patron can update via dashboard.
+1. **No subplans.** The looping session handles sequential decomposition
+   (plan precipitates the next action after each cycle). Parallel tool
+   calls within act handle parallelism within a single action. Parallel
+   sessions (future optimisation) handle independent work streams. The
+   `spawn_subplan` mechanism is removed — it solves a problem the
+   framework already handles.
 
-8. **Deep reflect trigger conditions on akash:** How does the session hook decide when to dispatch deep reflect? Candidate: check μ drift, episodic growth, and session count since last DR — all readable from KV.
+2. **No delivery pipeline.** Notification is a normal action. When
+   circumstances include "work complete, contact uninformed," plan
+   precipitates a communication action. Act emits a delivery event.
+   Comms composes and sends.
+
+3. **No proposal system in the kernel.** Two kernel primitives
+   (`stageCode`, `signalDeploy`) replace ~185 LOC of proposal
+   governance. All cognitive policy (claims, verdicts, checks)
+   moves to hooks and the assumption framework.
+
+---
+
+## 12. Open Questions for Implementation
 
 1. **Salience threshold (τ):** Fixed or adaptive? If adaptive, what adjusts it? Candidate: τ adapts based on episodic memory growth rate — if ε is growing too fast, raise τ to be more selective.
 
@@ -601,9 +618,13 @@ assumption about the world.
 
 6. **NLI model selection and hosting:** DeBERTa-v3-base-mnli-fever-anli is ~86M parameters. Confirm it runs acceptably on akash (Ryzen 7 3700X, 62GB RAM). Benchmark latency for expected pair volumes per review phase.
 
+7. **Kernel key tier bootstrap:** How are `kernel:key_tiers` seeded? Candidate: seed script writes them alongside principles. Patron can update via dashboard.
+
+8. **Deep reflect trigger conditions on akash:** How does the session hook decide when to dispatch deep reflect? Candidate: check μ drift, episodic growth, and session count since last DR — all readable from KV.
+
 ---
 
-## 12. Implementation Dependencies
+## 13. Implementation Dependencies
 
 | Component | Purpose | Candidate | Runs On |
 |-----------|---------|-----------|---------|
