@@ -166,6 +166,128 @@ export default {
       return json({ principles, samskaras, desires, experiences, operator_health: operatorHealth });
     }
 
+    // GET /deep-reflect/:sessionId — structured DR execution data
+    const drMatch = path.match(/^\/deep-reflect\/(.+)$/);
+    if (drMatch) {
+      const drSessionId = decodeURIComponent(drMatch[1]);
+
+      // Load DR output
+      const drOutput = await env.KV.get(`reflect:1:${drSessionId}`, "json");
+      if (!drOutput) return json({ error: "DR session not found" }, 404);
+
+      // Load DR karma
+      const drKarma = await env.KV.get(`karma:${drSessionId}`, "json");
+
+      // Find the previous DR to determine accumulation period
+      const allReflectKeys = await kvListAll(env.KV, { prefix: "reflect:1:" });
+      const drSessionIds = allReflectKeys
+        .filter(k => !k.name.includes("schedule"))
+        .map(k => k.name.replace("reflect:1:", ""))
+        .sort();
+      const drIndex = drSessionIds.indexOf(drSessionId);
+      const prevDrSessionId = drIndex > 0 ? drSessionIds[drIndex - 1] : null;
+
+      // Load all session IDs from karma keys
+      const allKarmaKeys = await kvListAll(env.KV, { prefix: "karma:" });
+      const allSessionIds = allKarmaKeys.map(k => k.name.replace("karma:", "")).sort();
+
+      // Find act sessions in the accumulation period
+      const actSessions = allSessionIds.filter(id => {
+        if (id === drSessionId) return false;
+        if (drSessionIds.includes(id)) return false;
+        if (prevDrSessionId && id <= prevDrSessionId) return false;
+        if (id > drSessionId) return false;
+        return true;
+      });
+
+      // Load experiences from the accumulation period
+      const experienceKeys = await kvListAll(env.KV, { prefix: "experience:" });
+      const periodExperiences = [];
+      for (const ek of experienceKeys) {
+        const exp = await env.KV.get(ek.name, "json");
+        if (!exp) continue;
+        periodExperiences.push({ key: ek.name, ...exp });
+      }
+      periodExperiences.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+      // Compute accumulation stats from act session karma (sample last 20)
+      let evalCount = 0, tier3Count = 0;
+      for (const sid of actSessions.slice(-20)) {
+        const karma = await env.KV.get(`karma:${sid}`, "json");
+        if (!karma) continue;
+        for (const entry of karma) {
+          if (entry.event === 'llm_call' && entry.step?.includes('eval_tier3')) tier3Count++;
+          if (entry.event === 'llm_call' && entry.step?.includes('eval')) evalCount++;
+        }
+      }
+
+      // Parse S/D operator output from DR's kv_operations
+      const sOutput = [];
+      const dOutput = [];
+      for (const op of (drOutput.kv_operations || [])) {
+        if (op.key?.startsWith('samskara:')) {
+          sOutput.push({
+            action: op.op === 'delete' ? 'deleted' : 'written',
+            key: op.key,
+            pattern: op.value?.pattern,
+            strength: op.value?.strength,
+          });
+        }
+        if (op.key?.startsWith('desire:')) {
+          dOutput.push({
+            action: op.op === 'delete' ? 'retired' : 'written',
+            key: op.key,
+            description: op.value?.description,
+            direction: op.value?.direction,
+            source_principles: op.value?.source_principles,
+          });
+        }
+      }
+
+      // DR execution cost and duration from karma
+      let cost = 0, durationMs = 0, model = null;
+      if (drKarma) {
+        for (const entry of drKarma) {
+          if (entry.cost) cost += entry.cost;
+          if (entry.event === 'llm_call' && entry.model) model = entry.model;
+        }
+        const times = drKarma.filter(e => e.t).map(e => e.t);
+        if (times.length >= 2) durationMs = Math.max(...times) - Math.min(...times);
+      }
+
+      return json({
+        session_id: drSessionId,
+        accumulation: {
+          act_sessions: actSessions.length,
+          experiences_total: periodExperiences.length,
+          eval_count: evalCount,
+          tier3_fallbacks: tier3Count,
+          period: {
+            from_session: actSessions[0] || null,
+            to_session: actSessions[actSessions.length - 1] || null,
+          },
+        },
+        experiences: periodExperiences.slice(0, 20).map(e => ({
+          key: e.key,
+          surprise_score: e.surprise_score,
+          salience: e.salience,
+          narrative: e.narrative,
+          action_taken: e.action_taken,
+          timestamp: e.timestamp,
+        })),
+        execution: {
+          reflection: drOutput.reflection,
+          note_to_future_self: drOutput.note_to_future_self,
+          s_output: sOutput,
+          d_output: dOutput,
+          cost: Math.round(cost * 10000) / 10000,
+          duration_ms: durationMs,
+          model,
+          karma_count: drKarma?.length || 0,
+        },
+      });
+    }
+
     // GET /sessions — discover all sessions (act + deep reflect)
     if (path === "/sessions") {
       const [karmaKeys, reflectKeys, cached] = await Promise.all([
