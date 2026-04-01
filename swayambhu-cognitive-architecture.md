@@ -655,8 +655,6 @@ No special proposal observations, verdicts, or review machinery needed.
 
 8. **Deep reflect trigger conditions on akash:** How does the session hook decide when to dispatch deep reflect? Candidate: check experience growth and session count since last DR — all readable from KV.
 
-9. **Samskara conflict:** S may create samskaras that logically contradict each other — e.g., "External APIs are unreliable" and "Google Docs API is highly reliable." During act, embedding-based selection might surface both for an action involving Google Docs. Strength alone doesn't capture logical relationships between samskaras. The act LLM can reconcile contradictory context pragmatically, and S can consolidate conflicting samskaras during deep-reflect, but this is an implicit capability rather than an explicit mechanism.
-
 ---
 
 ## 13. Implementation Dependencies
