@@ -621,6 +621,9 @@ export async function loadReflectHistory(K, depth, count = 10) {
 export async function isReflectDue(K, state, depth) {
   const { defaults } = state;
 
+  // An agent without desires should reflect — bootstrap or recovery
+  if (depth === 1 && Object.keys(state.desires || {}).length === 0) return true;
+
   const schedule = await K.kvGet(`reflect:schedule:${depth}`);
 
   const sessionCount = await K.getSessionCount();

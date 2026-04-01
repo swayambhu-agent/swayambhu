@@ -462,7 +462,7 @@ export async function run(K, { crashData, balances, events, schedule }) {
   }
 
   // 7. Per-depth reflect dispatch
-  const state = { defaults, modelsConfig };
+  const state = { defaults, modelsConfig, desires };
   const maxDepth = defaults?.execution?.max_reflect_depth || 1;
   for (let d = maxDepth; d >= 1; d--) {
     if (await isReflectDue(K, state, d)) {
