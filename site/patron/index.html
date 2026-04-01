@@ -1652,6 +1652,11 @@
             <span><span className="text-green-400">●</span> {counts.samskaras} samskaras</span>
             <span><span className="text-purple-400">●</span> {counts.desires} desires</span>
             <span><span className="text-cyan-400">●</span> {counts.experiences} experiences</span>
+            {onRefresh && (
+              <button onClick={onRefresh} className="text-gray-600 hover:text-gray-400 transition ml-2 text-sm" title="Refresh">
+                ↻
+              </button>
+            )}
           </div>
         </div>
       );
@@ -1951,6 +1956,7 @@
     function App() {
       const [patronKey, setPatronKey] = useState(() => sessionStorage.getItem('patronKey'));
       const [health, setHealth] = useState(null);
+      const [mindCounts, setMindCounts] = useState(null);
       const [balances, setBalances] = useState(null);
       const [countdown, setCountdown] = useState(null);
       const [activeTab, setActiveTab] = useState('timeline');
@@ -2006,11 +2012,24 @@
         }
       }, [patronKey]);
 
+      const loadMindCounts = useCallback(async () => {
+        try {
+          const d = await api('/mind', patronKey);
+          setMindCounts({
+            samskaras: d.samskaras?.length || 0,
+            desires: d.desires?.length || 0,
+            experiences: d.experiences?.length || 0,
+            sessionsSinceDr: d.operator_health?.sessions_since_dr ?? '?',
+          });
+        } catch {}
+      }, [patronKey]);
+
       useEffect(() => {
         loadHealth();
-        const iv = setInterval(loadHealth, 10000);
+        loadMindCounts();
+        const iv = setInterval(() => { loadHealth(); loadMindCounts(); }, 10000);
         return () => clearInterval(iv);
-      }, [loadHealth]);
+      }, [loadHealth, loadMindCounts]);
 
       // Countdown timer for next session
       useEffect(() => {
@@ -2071,6 +2090,22 @@
                       : 'bg-gray-800 text-gray-500'
                 }`}>{health.session ? 'In session' : countdown === 'now' ? 'Starting' : 'Idle'}</span>
               </>
+            )}
+            {mindCounts && (
+              <div className="flex items-center gap-3 text-gray-500 border-l border-gray-800 pl-3 ml-1">
+                <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-green-400 transition">
+                  <span className="text-green-400">●</span> {mindCounts.samskaras}s
+                </span>
+                <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-purple-400 transition">
+                  <span className="text-purple-400">●</span> {mindCounts.desires}d
+                </span>
+                <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-cyan-400 transition">
+                  <span className="text-cyan-400">●</span> {mindCounts.experiences}ε
+                </span>
+                <span className="text-gray-600">
+                  DR:{mindCounts.sessionsSinceDr}
+                </span>
+              </div>
             )}
             <div className="flex items-center gap-2 ml-auto">
               {health && balances && (() => {
