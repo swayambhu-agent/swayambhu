@@ -14,7 +14,7 @@ Move deep-reflect from running inside the CF Worker (via K.runAgentLoop, ~$0.50/
 - Deep-reflect dispatches via existing `start_job` tool (cc_analysis type)
 - Results stored in KV, applied by the next session via `applyReflectOutput` (store-only callback, session applies — matching async-jobs spec)
 - M and D operators are explicit prompt phases with structured JSON output
-- Cold start (`D_p(∅, ∅)`) stays in-Worker (synchronous, must complete before first act)
+- **No cold start special case.** When `d = ∅`, the first session orients from principles + circumstances. The absence of desires is a circumstance. The orientation is the first experience. Deep-reflect derives d_1 from real experience, not ceremony.
 - Timeout configurable via `config:defaults.deep_reflect.ttl_minutes` (default 60, max as needed)
 - Zero new infrastructure — uses existing `start_job`, `collect_jobs`, `/job-complete` callback
 - Zero kernel changes
@@ -164,9 +164,26 @@ Respond with ONLY a JSON object:
 Only output kv_operations for desire:* and assumption:* keys. Do not modify any other keys.
 ```
 
-### Cold Start Prompt (D_p(∅, ∅))
+### No Cold Start Special Case
 
-Same as Module 3's `coldStartPrompt()` in reflect.js. Stays in-Worker — the agent needs desires before it can act. No change needed.
+The cold start ceremony (`D_p(∅, ∅)` — synchronous in-Worker deep-reflect) is eliminated. When `d = ∅`:
+
+1. The plan prompt handles it naturally: "If you have no desires yet, orient: observe your environment, understand your situation, act from principles. The absence of desires is itself a circumstance."
+2. The first session orients — reads environment, observes available tools/resources/patron, notices the absence of desires and assumptions
+3. That orientation is the first experience, written to `experience:0`
+4. Deep-reflect runs (async, normal path), reads the first experience + principles, derives `d_1` organically
+
+**What gets deleted from existing code:**
+- `coldStartPrompt()` in reflect.js
+- `isColdStart` handling in `runReflect`
+- The `if (Object.keys(desires).length === 0)` cold start branch in session.js
+- The synchronous `runReflectInWorker` fallback (no longer needed for cold start)
+
+**What changes:**
+- Plan prompt updated to handle `d = ∅` gracefully
+- `highestReflectDepthDue` returns depth 1 on session 0 (already does this — triggers deep-reflect after first session)
+
+The yogic model: awareness precedes desire. The agent arrives with awareness (principles + circumstances), not with wants. Desires crystallize from awareness meeting reality.
 
 ### Prompt Stored in KV
 
@@ -250,14 +267,9 @@ async function applyDeepReflectResult(K, job, state) {
 export async function runReflect(K, state, depth, context) {
   const { defaults } = state;
 
-  // Cold start: stays in-Worker (synchronous)
-  if (context?.coldStart) {
-    return runReflectInWorker(K, state, depth, context);
-  }
-
-  // Normal deep-reflect: dispatch as async job
-  const jobRunnerUrl = defaults?.deep_reflect?.job_runner_url || defaults?.jobs?.base_url;
-  if (jobRunnerUrl) {
+  // Dispatch as async job if configured
+  const jobsConfig = defaults?.jobs;
+  if (jobsConfig?.base_url) {
     return dispatchDeepReflect(K, state, depth);
   }
 
@@ -266,7 +278,7 @@ export async function runReflect(K, state, depth, context) {
 }
 ```
 
-`runReflectInWorker` is the current `runReflect` logic (K.runAgentLoop). Renamed but unchanged. This is the fallback when akash is unavailable.
+`runReflectInWorker` is the current `runReflect` logic (K.runAgentLoop). Renamed but unchanged. This is the fallback when akash is unavailable. No cold start branch — the first session orients normally and deep-reflect runs after.
 
 ### dispatchDeepReflect
 
@@ -331,6 +343,10 @@ Each depth is independent — if depth 2 is dispatched as a job and depth 1 runs
 ---
 
 ## 6. session.js Changes
+
+### Delete cold start branch
+
+Remove the entire `if (Object.keys(desires).length === 0)` block in session.js. The plan prompt handles `d = ∅` naturally.
 
 ### Event processing — collect deep-reflect results
 
@@ -429,7 +445,7 @@ New KV key seeded by the seed script. Contains the M/D operator prompt from Sect
 **tests/reflect.test.js (additions):**
 - dispatchDeepReflect: verifies executeToolCall called with start_job, correct context_keys
 - Fallback: verifies runReflectInWorker called when dispatch fails
-- Cold start: still runs in-Worker (existing test)
+- Cold start deleted: no special case tests needed
 
 **tests/session.test.js (additions):**
 - Deep-reflect job_complete event: verifies applyDeepReflectResult called
@@ -475,3 +491,5 @@ Codex found 14 issues in the original design (separate job runner service). The 
 - ~~No fallback~~ → falls back to in-Worker `runReflectInWorker`
 - ~~Depth cascade~~ → separate dispatch per depth
 - ~~Trust boundary~~ → kv_operations filtered to desire:*/assumption:* only
+
+**Post-Codex refinement:** Eliminated cold start special case entirely. When `d = ∅`, the first session orients from principles + circumstances. The orientation is the first experience. Deep-reflect derives desires from real experience, not ceremony. The yogic model: awareness precedes desire.
