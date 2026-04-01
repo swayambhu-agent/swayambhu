@@ -283,7 +283,7 @@ Template variables:
 | `context.crashData` | `context.crashData` | Crash data from `detectCrash` (or `"none"`) |
 | `belowOutputs` | `loadReflectHistory(K, depth-1, 10)` | Last 10 outputs from one level below (depth >= 1 only) |
 | `priorReflections` | `loadReflectHistory(K, depth, count)` | Own prior outputs at same depth (depth >= 1 only, configurable count, default 3) |
-| `wisdom_manifest` | `loadWisdomManifest(K)` | Manifest of prajna/upaya key names + metadata summaries (all depths) |
+| `samskara_manifest` | `loadSamskaraManifest(K)` | Manifest of samskara:* key names + summaries (all depths) |
 | `depth` | depth parameter | Current reflection depth |
 | `belowPrompt` | `loadBelowPrompt(K, depth)` | Prompt text for one level below |
 
@@ -428,47 +428,21 @@ Processes in this order (order matters for conflict resolution):
 
 ---
 
-## Wisdom System
+## Samskara Manifest
 
-Two KV prefix families store accumulated wisdom:
+Deep reflect receives a manifest of `samskara:*` key names + summaries,
+built by `loadSamskaraManifest(K)` in reflect.js. Deep reflect uses
+`kv_query` to load specific entries on demand. Session reflect (no tools,
+single-shot call) sees the manifest as informational only.
 
-### upaya:* — Discernment
+The manifest `summary` field provides a one-line description for relevance
+judgment. Falls back to the key name when summary is absent.
 
-`upaya:comms:*` and `upaya:channel:*` store communication wisdom.
-Loaded by `loadCommsUpaya()` in `kernel.js:469` and injected into
-the `COMMS_GATE_PROMPT`. Format: JSON, type `"wisdom"`.
+---
 
-These keys are in `SYSTEM_KEY_PREFIXES` — writes require
-`kvWriteGated` in deep-reflect context. They can be written via the
-Proposal Protocol or via `kv_operations` in deep reflect output
-(which routes through `kvWriteGated(op, "deep-reflect")`).
+## Yamas and Niyamas — Operating Principles
 
-### prajna:* — Self-knowledge
-
-`prajna:*` keys are in `SYSTEM_KEY_PREFIXES` with format JSON, type
-`"wisdom"`. They follow the same write rules as upaya keys.
-
-> **NOTE:** No code in the codebase currently reads `prajna:*` keys.
-> They exist in the type system (`kernel.js:1999`) and are protected
-> as system keys, but are not loaded into any prompt or context. They are
-> available for the agent to write to and read via tools (e.g. `kv_query`),
-> but have no kernel-level consumer.
-
-### Wisdom via Proposal Protocol
-
-The Proposal Protocol has a dedicated `wisdom` type for
-principle-level changes. Wisdom proposals:
-- Can only be staged by deep reflect (depth >= 1)
-- Cannot use `acceptDirect` — must go through staging
-- Inject the `validation` field into op values on accept
-- Skip circuit breaker and git sync on promote
-
-See `docs/dev/proposal-protocol.md` for full details.
-
-### Yamas and Niyamas — Operating Principles
-
-`yama:*` and `niyama:*` keys are a higher tier than upaya/prajna. They
-are kernel-enforced operating principles:
+`yama:*` and `niyama:*` keys are the kernel-enforced operating principles:
 
 **Loading:** `loadYamasNiyamas()` runs at boot (`kernel.js:322`).
 Scans both prefixes and caches all values in `this.yamas` and
@@ -527,27 +501,6 @@ Session reflect does not load same-depth history — its continuity is via
 
 ---
 
-## Wisdom Manifest
-
-Both session reflect and deep reflect receive a manifest of prajna/upaya
-key names + metadata summaries, built by `loadWisdomManifest(K)` in
-reflect.js. Deep reflect uses `kv_query` to load specific entries on
-demand. Session reflect (no tools, single-shot call) sees the manifest as
-informational only — it references entries by name in
-`proposal_observations` and `note_to_future_self` for deep reflect to
-follow up.
-
-Metadata `summary` field provides a one-line description for relevance
-judgment. Falls back to key name when summary is absent. Key naming
-convention is prompt-enforced: names must be descriptive enough for
-relevance judgment from the manifest alone.
-
-The comms gate's full `upaya:comms:*` loading via `loadCommsUpaya()`
-remains unchanged — safety-critical paths get full loading, reflective
-paths get manifest + on-demand.
-
----
-
 ## Observation Cycle
 
 1. **Propose with criteria** — proposal requests include a `criteria`
@@ -561,29 +514,5 @@ paths get manifest + on-demand.
    `loadStagedModifications`; visible in template context
 4. **Verdict or justification** — proposals exceeding 30 sessions need
    a verdict or explicit deferral reason
-5. **Crystallization** — completed intentions become `prajna:*` entries via
-   wisdom proposal requests with `type: 'wisdom'`
+5. **Crystallization** — completed intentions may be distilled into samskaras via `samskara:*` writes in `kv_operations` during deep reflect
 
----
-
-## Wisdom Trust Tiers
-
-Prajna/upaya are a softer trust tier than yamas/niyamas. The direct path
-(`acceptDirect`) is available for prajna/upaya but not yamas/niyamas —
-the `acceptDirect` gate checks ops for `yama:*` / `niyama:*` prefixes and
-rejects those, while allowing `upaya:*` / `prajna:*` through.
-
-Safeguards against accumulated drift through prajna:
-
-1. **Kernel-enforced gates** — yama/niyama writes require 200-char/100-char
-   deliberation + capability model, regardless of what prajna content
-   suggests
-2. **Depth hierarchy** — depth-2+ reviews depth-1's prajna entries and can
-   rollback/delete drifted entries
-3. **Manifest visibility** — all prajna/upaya key names and summaries are
-   visible in the manifest; suspiciously named entries draw scrutiny
-
-The risk is not a single malicious entry but gradual drift through many
-individually-reasonable entries that collectively shift the LLM's
-disposition. The depth hierarchy and observation cycle are the primary
-safeguards.

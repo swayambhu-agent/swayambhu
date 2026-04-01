@@ -141,7 +141,7 @@ await put("prompt:deep_reflect", read("prompts/deep_reflect.md"), "text", "Deep-
 console.log("--- Documentation ---");
 await put("doc:design_rationale", read("docs/agent/design-rationale.md"), "text", "Design rationale");
 await put("doc:threat_model", read("docs/agent/threat-model.md"), "text", "Threat model");
-await put("doc:wisdom_guide", read("docs/agent/wisdom-guide.md"), "text", "Wisdom guide");
+// doc:wisdom_guide removed — samskaras are self-explaining via the deep_reflect prompt
 await put("doc:patron", read("docs/agent/patron-relationship.md"), "text", "Patron relationship");
 await put("doc:setup_guide", read("docs/agent/setup-guide.md"), "text", "Setup guide");
 

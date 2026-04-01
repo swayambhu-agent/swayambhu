@@ -206,16 +206,14 @@ Text values. Loaded at boot by `loadYamasNiyamas()`, injected into every LLM pro
 
 System prefix. Writable via `kvWriteGated()` in deep-reflect context or via the Proposal Protocol. Skills are procedural knowledge — reusable instructions for how to approach a class of problem using existing tools.
 
-### Wisdom (`upaya:*`, `prajna:*`)
+### Cognitive memory (`desire:*`, `samskara:*`)
 
 | Key pattern | Format | Value | Read by | Written by | Seeded |
 |-------------|--------|-------|---------|------------|--------|
-| `upaya:comms:defaults` | JSON | `{ text, type, created, sources[] }` — default communication stance | `loadCommsUpaya()` in kernel.js | Seed | Yes |
-| `upaya:channel:*` | JSON | Channel-specific communication wisdom | `loadCommsUpaya()` | Agent via Proposal Protocol (wisdom type) | No |
-| `upaya:comms:*` | JSON | Communication wisdom entries | `loadCommsUpaya()` | Agent via Proposal Protocol (wisdom type) | No |
-| `prajna:*` | JSON | Self-knowledge entries | Not currently read by any specific runtime code (available via `kv_query` tool) | Agent via Proposal Protocol (wisdom type) | No |
+| `desire:*` | JSON | `{ id, direction, description, strength, ... }` — directional approach/avoidance vectors | `gatherReflectContext()` in reflect.js, act.js (plan phase) | Deep-reflect (D operator) via `kv_operations` | No — bootstrapped by first deep reflect |
+| `samskara:*` | JSON | `{ id, description, strength, ema_strength, last_updated, ... }` — impressions with EMA strength | `loadSamskaraManifest()` in reflect.js, act.js (plan phase) | Strength: review phase (mechanical). Create/refine/delete: deep-reflect (S operator) | No — bootstrapped by first deep reflect |
 
-System-prefix keys. Writable via `kvWriteGated()` in deep-reflect context (through `kv_operations`) or via the Proposal Protocol (wisdom type — must be staged by deep reflect, depth >= 1). No circuit breaker rollback, no git sync.
+Protected keys. Writable via `kvWriteGated()` in deep-reflect context (through `kv_operations`). Samskara strength is also updated mechanically by the review phase each session.
 
 ### Contacts (`contact:*`, `contact_platform:*`)
 
@@ -300,9 +298,10 @@ System-prefix keys. Writable via `kvWriteGated()` in deep-reflect context (throu
 
 | Key | Format | Value | Read by | Seeded |
 |-----|--------|-------|---------|--------|
-| `doc:proposal_guide` | text | Proposal Protocol reference doc | Agent via `kv_query` tool | Yes |
-| `doc:architecture` | text | System architecture reference doc | Agent via `kv_query` tool | Yes |
-| `doc:wisdom_guide` | text | Wisdom system reference — schema, naming conventions, when to write, maintenance | Agent via `kv_query` tool | Yes |
+| `doc:design_rationale` | text | Agent design rationale | Agent via `kv_query` tool | Yes |
+| `doc:threat_model` | text | Threat model reference | Agent via `kv_query` tool | Yes |
+| `doc:patron` | text | Patron relationship guide | Agent via `kv_query` tool | Yes |
+| `doc:setup_guide` | text | Setup guide | Agent via `kv_query` tool | Yes |
 
 System prefix. Writable via `kvWriteGated()` in deep-reflect context or via the Proposal Protocol.
 
@@ -433,12 +432,10 @@ Which prefixes are listed where, by which code, and why.
 | `yama:` | `loadYamasNiyamas()` in kernel.js | `this.kvListAll({ prefix })` | Load all yama principles into memory at boot |
 | `niyama:` | `loadYamasNiyamas()` in kernel.js | `this.kvListAll({ prefix })` | Load all niyama principles into memory at boot |
 | `contact:` | `resolveContact()` in kernel.js | `this.kvListAll({ prefix: "contact:" })` | Full scan on contact index cache miss |
-| `upaya:channel:` | `loadCommsUpaya()` in kernel.js | `this.kvListAll({ prefix })` | Load channel-specific communication wisdom for comms gate |
-| `upaya:comms:` | `loadCommsUpaya()` in kernel.js | `this.kvListAll({ prefix })` | Load general communication wisdom for comms gate |
+| `samskara:` | `loadSamskaraManifest()` in reflect.js | `K.kvList({ prefix, limit: 200 })` | Build samskara manifest for reflect context (all depths) |
 | `comms_blocked:` | `listBlockedComms()` in kernel.js | `this.kvListAll({ prefix })` | List all queued blocked communications for deep reflect |
 | `reflect:{depth}:` | `loadReflectHistory()` in reflect.js | `K.kvList({ prefix, limit })` | Load recent reflect outputs for belowOutputs and priorReflections context |
-| `prajna:` | `loadWisdomManifest()` in reflect.js | `K.kvList({ prefix, limit: 100 })` | Build wisdom manifest (key names + metadata summaries) for reflect context |
-| `upaya:` | `loadWisdomManifest()` in reflect.js | `K.kvList({ prefix, limit: 100 })` | Build wisdom manifest for reflect context |
+| `desire:` | `gatherReflectContext()` in reflect.js | `K.kvList({ prefix, limit: 200 })` | Load desire entries for deep reflect context |
 | `reflect:1:` | Dashboard API (`GET /reflections`, `GET /sessions`) | `kvListAll(env.KV, { prefix })` | List deep reflections for public display and session discovery |
 | `karma:` | Dashboard API (`GET /sessions`) | `kvListAll(env.KV, { prefix })` | Discover all sessions (ground truth) |
 | `sealed:quarantine:` | Dashboard API (`GET /quarantine`) | `kvListAll(env.KV, { prefix })` | List quarantined inbound messages for patron review |
@@ -493,13 +490,13 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **73 keys** total:
 | 38 | `kernel:llm_fallback:meta` | Kernel |
 | 39 | `kernel:fallback_model` | Kernel |
 | 40 | `kernel:tool_grants` | Kernel |
-| 41 | `doc:proposal_guide` | Docs |
-| 42 | `doc:architecture` | Docs |
-| 43 | `doc:wisdom_guide` | Docs |
-| 44 | `contact:swami_kevala` | Contacts |
-| 45 | `patron:contact` | Identity |
-| 46 | `patron:public_key` | Identity |
-| 47 | `upaya:comms:defaults` | Wisdom |
+| 41 | `doc:design_rationale` | Docs |
+| 42 | `doc:threat_model` | Docs |
+| 43 | `doc:patron` | Docs |
+| 44 | `doc:setup_guide` | Docs |
+| 45 | `contact:swami_kevala` | Contacts |
+| 46 | `patron:contact` | Identity |
+| 47 | `patron:public_key` | Identity |
 | 48 | `skill:model-config` | Skills |
 | 49 | `skill:model-config:ref` | Skills |
 | 50 | `skill:skill-authoring` | Skills |
@@ -550,5 +547,5 @@ The seed script (`scripts/seed-local-kv.mjs`) produces **73 keys** total:
 | `dedup:*` | `fetch()` | On inbound chat (30s TTL) |
 | `tooldata:*` | `ScopedKV.put()` / `kv_write` tool | When tools store data |
 | `yama:*:audit` / `niyama:*:audit` | `kvWriteGated()` | When principles modified |
-| `upaya:*` / `prajna:*` | Proposal Protocol | When wisdom created/modified |
+| `samskara:*` / `desire:*` | Deep-reflect `kv_operations` | When cognitive memory written/updated |
 | `secret:*` | Proposal Protocol | When agent provisions secrets |

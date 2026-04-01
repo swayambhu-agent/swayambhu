@@ -34,7 +34,7 @@ The runtime then shuts down. Nothing persists except what's in the store. Next s
 
 Periodically, instead of a normal session, the kernel triggers a **deep reflection**. Normal sessions and deep reflect sessions are mutually exclusive — when reflection fires, it replaces the normal act cycle entirely, because the point is to step back and examine the pattern rather than continue acting within it.
 
-**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose changes to prompts, config, tools, and wisdom (`upaya:*`, `prajna:*`) through the proposal system — code changes go through `K.createProposal()` for governor deployment, while config/prompt/wisdom changes go through KV write tiers directly. Depth 1 also writes the session schedule that governs normal sessions.
+**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose changes to prompts, config, tools, desires, and samskaras through the proposal system — code changes go through `K.createProposal()` for governor deployment, while config/prompt/memory changes go through KV write tiers directly. Depth 1 also writes the session schedule that governs normal sessions.
 
 **Depth 2** fires less often (~100 sessions by default, but self-determined after first run). It reads depth 1's stored outputs, looking for patterns in *how depth 1 is reflecting*. Is depth 1 over-correcting? Missing systemic issues? Fixating on symptoms instead of causes?
 
@@ -74,7 +74,7 @@ Non-code changes (config, prompts, wisdom) go through `kv_operations` with conte
 
 **Conservative seed defaults.** The system starts with tight constraints — low step limits, cautious budgets. As it gains experience, the reflection hierarchy can loosen these constraints via config updates. Safer to start tight and self-relax than start loose and self-correct after making expensive mistakes.
 
-**Communication gating.** Outbound messages pass through a kernel-enforced gate before sending. The gate checks for accumulated wisdom about the recipient (`upaya:contact:*`), requires a capable model for judgment, and evaluates each message against communication wisdom. Messages can be sent, revised, or blocked and queued for deep reflect review. The mechanism is hardcoded in the kernel; the policy is encoded in upaya entries that the agent accumulates through experience. This prevents the agent from bypassing communication checks through self-modification.
+**Communication gating.** Outbound messages to persons pass through a kernel-enforced contact check before sending — only approved contacts can receive messages. The mechanism is hardcoded in the kernel: the provider declares `communication.recipient_type: "person"`, and the kernel checks that the recipient has an approved `contact_platform:*` record. This prevents the agent from contacting unknown parties through self-modification.
 
 **Inbound access control.** Inbound content from external senders is gated by contact status. The kernel maintains a contact registry (`contact:*` keys with `contact_platform:*` bindings for index and approval). Two enforcement layers:
 
@@ -162,7 +162,7 @@ Three methods gate all writes:
 
 **`kvWrite(key, value, metadata)`** — raw write, immutability check only. Internal kernel use, not exposed via the K interface.
 
-**`kvWriteSafe(key, value, metadata)`** — standard gated write, allows writes to non-system keys. Blocks writes to system key prefixes (`prompt:`, `config:`, `tool:`, `provider:`, `secret:`, `proposal:`, `upaya:`, `prajna:`, `hook:`), kernel-only prefixes (`kernel:`), system exact keys (`dharma`, `providers`, `wallets`), and the `dharma` key unconditionally. This is for routine data writes.
+**`kvWriteSafe(key, value, metadata)`** — standard gated write, allows writes to non-system keys. Blocks writes to protected keys (e.g. `prompt:`, `config:`, `tool:`, `samskara:`, `desire:`, `hook:`), kernel-only prefixes (`kernel:`), and immutable keys (`dharma`, `patron:public_key`). This is for routine data writes.
 
 **`kvWriteGated(op, context)`** — context-based permissions for all agent-originated `kv_operations` writes. In "act" and "reflect" contexts: can write agent keys + contacts. In "deep-reflect" context: can also write system keys (config, prompts, wisdom, skills), with karma snapshots, rate limiting (max 50/session), and audit trails for principle keys. Yama/niyama require deliberation. Always returns `{ok: true}` or `{ok: false, error: "reason"}` — blocked writes are collected and recorded as a `kv_writes_blocked` karma event.
 

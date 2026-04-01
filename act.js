@@ -66,9 +66,6 @@ export function formatSamskaras(s) {
   return JSON.stringify(arr, null, 2);
 }
 
-// Temporary alias — removed in Task 5
-export { formatSamskaras as formatAssumptions };
-
 export function formatCircumstances(c) {
   return JSON.stringify(c, null, 2);
 }

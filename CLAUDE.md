@@ -129,7 +129,7 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 | `session.js` | Session hook — plan→act→eval→review cycle, cold start | Yes (via code staging) |
 | `act.js` | Act library — prompt rendering, tool defs, context formatting | Yes (via code staging) |
 | `eval.js` | Three-tier eval pipeline (embeddings → NLI → LLM fallback) | Yes (via code staging) |
-| `memory.js` | Memory utilities — μ operators, experience selection, vector math | Yes (via code staging) |
+| `memory.js` | Memory utilities — samskara operators, experience selection, vector math | Yes (via code staging) |
 | `reflect.js` | Reflection policy — scheduling, deep reflect dispatch | Yes (via code staging) |
 | `prompts/deep_reflect.md` | M/D operator prompt — loaded as `prompt:deep_reflect` | Yes (via code staging) |
 | `tools/*.js` | Tool implementations | Yes (via code staging) |
@@ -181,7 +181,7 @@ to `DEFAULT_KEY_TIERS`):
 | Kernel-only | `karma:*`, `sealed:*`, `event:*`, `kernel:*` | Only kernel internals can write |
 | Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*`, `desire:*`, `samskara:*` | Writable via `kvWriteGated` with privileged context flag |
 | Code keys | `tool:*:code`, `hook:*:code` | Must go through `K.stageCode()` → governor deploys |
-| Agent keys | `mu:*`, `experience:*`, everything else | `kvWriteSafe` — direct write |
+| Agent keys | `experience:*`, everything else | `kvWriteSafe` — direct write |
 
 **Principles:** `principle:*` keys are loaded at boot via `loadPrinciples()`
 and injected into every LLM call as a `[PRINCIPLES]` block after dharma.

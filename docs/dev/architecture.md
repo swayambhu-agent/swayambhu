@@ -48,18 +48,19 @@ The kernel handles all agent logic — sessions, chat, tool execution, LLM calls
 ### Static safety properties
 
 ```js
-static SYSTEM_KEY_PREFIXES = [
-  'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-  'proposal:', 'proposal:', 'hook:', 'doc:', 'git_pending:',
-  'yama:', 'niyama:', 'upaya:', 'prajna:',
-  'comms_blocked:', 'contact:', 'contact_platform:', 'sealed:',
-];
-static KERNEL_ONLY_PREFIXES = ['kernel:', 'sealed:'];
-static SYSTEM_KEY_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
-static IMMUTABLE_KEYS = ['patron:public_key'];
-static DANGER_SIGNALS = ["fatal_error", "orient_parse_error", "all_providers_failed"];
+static DEFAULT_KEY_TIERS = {
+  immutable: ["dharma", "principle:*", "patron:public_key"],
+  kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
+  protected: [
+    "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
+    "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
+    "secret:*", "doc:*", "samskara:*", "skill:*", "task:*",
+    "providers", "wallets", "patron:contact", "patron:identity_snapshot",
+    "desire:*",
+  ],
+};
+static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
 static MAX_PRIVILEGED_WRITES = 50;
-static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
 ```
 
 `isSystemKey(key)` returns true if a key matches any `SYSTEM_KEY_EXACT` value or starts with any `SYSTEM_KEY_PREFIXES` entry.
@@ -76,11 +77,7 @@ static PRINCIPLE_PREFIXES = ['yama:', 'niyama:'];
    - `kvDeleteSafe(key)` — same blocks as `kvWriteSafe`.
    - `kvWriteGated(op, context)` — context-based permissions for agent-originated writes via `kv_operations`. In "act" and "reflect" contexts: can write agent keys + contacts. In "deep-reflect" context: can also write system keys (config, prompts, wisdom, skills). Yama/niyama require deliberation. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact_platform:*` keys (patron-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on hook writes. Always returns `{ok: true}` or `{ok: false, error: "reason"}` — no silent failures. Blocked writes are collected and recorded as a `kv_writes_blocked` karma event.
 
-4. **Communication gate** — `communicationGate()` (`kernel.js:515`) intercepts every tool call to a tool with a `communication` grant in `kernel:tool_grants`. Three checks in sequence:
-   - Mechanical floor: blocks initiating contact with unknown persons (no contact record).
-   - Model gate: current model must have `comms_gate_capable` flag.
-   - LLM gate: calls an LLM with upaya context to get a send/revise/block/queue verdict.
-   Blocked messages are stored as `comms_blocked:{id}` for deep reflect to review later.
+4. **Communication gate** — when providers declare `communication.recipient_type: "person"`, the kernel's `executeAdapter()` resolves the recipient via `resolveRecipient()` and checks their contact record. Unapproved contacts result in a blocked call with a `adapter_contact_blocked` karma event.
 
 5. **Inbound content gate** — tools with an `inbound` grant in `kernel:tool_grants` return external content. The kernel redacts content from unknown senders (no matching contact) and quarantines it under `sealed:*` keys (`kernel.js:1722-1751`). Sealed keys are unreadable by tools and hooks.
 
@@ -214,7 +211,7 @@ Deep reflect output processing (`applyReflectOutput`):
 Two types of proposals:
 
 - **Code** (prompts, config, tools, hooks): requires `claims` (array), `ops` (array), `checks` (array). Goes through staged → inflight → promoted lifecycle.
-- **Wisdom** (`upaya:*`, `prajna:*`): requires `validation` and `ops`. Can only be staged by deep reflect (depth >= 1). Cannot use `acceptDirect()`. No circuit breaker rollback.
+- **Wisdom** (system keys like `upaya:*`): requires `validation` and `ops`. Can only be staged by deep reflect (depth >= 1). Cannot use `acceptDirect()`. No circuit breaker rollback.
 
 Lifecycle:
 1. **`stageModification(K, request, sessionId, depth)`** — validates fields, writes to `proposal:{id}` via `kvWriteGated`.
@@ -405,8 +402,8 @@ All state lives in Cloudflare KV. The key space is divided into protection tiers
 | `proposal:*` | Staged proposals |
 | `proposal:*` | Inflight proposal snapshots (for rollback) |
 | `yama:*`, `niyama:*` | Operating principles (outer world / inner practice) |
-| `upaya:*` | Accumulated wisdom (communication, channels) |
-| `prajna:*` | Accumulated self-knowledge |
+| `desire:*` | Desires — directional vectors (approach/avoidance) |
+| `samskara:*` | Samskaras — impressions with EMA strength |
 | `contact:*` | Contact records |
 | `contact_platform:*` | Platform-to-contact binding and approval store |
 | `sealed:*` | Quarantined content from unknown senders (kernel-only read) |
