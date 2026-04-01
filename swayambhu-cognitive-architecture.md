@@ -1,6 +1,6 @@
 # Swayambhu Cognitive Architecture
 
-## Formal Specification v1.0
+## Formal Specification v2.0
 
 ---
 
@@ -35,32 +35,30 @@ Immutable. Never written by any process. Read by the Desire operator during deep
 
 ## 3. Entities
 
-### 3.1 Operands (lowercase — state and data)
+### 3.1 State (lowercase)
 
 | Symbol | Name | Description | Mutability |
 |--------|------|-------------|------------|
 | p | Principles | Immutable foundational truths | Never changes |
-| c_t | Circumstances | The observable state of the world at time t | Changes every tick via World operator |
 | d_t | Desires | Directional vectors — positive affinity (approach) or negative affinity (avoidance) | Evolves in deep-reflect only |
-| m_t | Assumptions | Cached heuristics with calculated TTL expiry dates | Evolves in deep-reflect only |
+| s_t | Samskaras | Impressions left by experience — shallow ones fade, deep ones shape everything | Strength updated mechanically every session; created/refined/eroded by S in deep-reflect |
+| ε | Experiences | Append-only log of salient experiences | Appended conditionally in review phase |
+| c_t | Circumstances | The observable state of the world at time t | Changes every tick via World operator |
+| ξ_t | Exogenous events | External changes not caused by the agent | External, uncontrolled |
 | a_t | Action | The agent's concrete intervention at time t | Generated in plan phase |
-| ξ_t | Exogenous events | External changes not caused by the agent (messages, system triggers, cron jobs) | External, uncontrolled |
-| μ_t | Statistical memory | Cheap rolling counters tracking routine confirmations and deviations | Updated every review phase |
-| ε | Episodic memory | Append-only store of rich narrative logs for highly salient events | Appended conditionally in review phase |
-| e_t | Experience | A single evaluated experience record | Produced conditionally in review phase |
-| σ_t | Surprise | Scalar — degree of contradiction between assumptions and actual outcome | Computed in review phase |
+| σ_t | Surprise | Scalar — degree of contradiction between samskaras and actual outcome | Computed in review phase |
 | α_t | Affinity | Vector — degree of alignment or opposition between desires and actual outcome | Computed in review phase |
 
-### 3.2 Operators (Uppercase — processes)
+### 3.2 Operators (Uppercase)
 
 | Symbol | Name | Phase | Description |
 |--------|------|-------|-------------|
-| A | Act | Plan | Generates action from desires, filtered by assumptions, shaped by circumstances |
+| A | Act | Plan | Generates action from desires, informed by samskaras, shaped by circumstances |
 | W | World | Act | External process — transforms circumstances given the agent's action and exogenous events |
-| R | Routine | Review | Updates statistical memory with surprise and affinity metrics |
-| E | Experience | Review | Writes a rich episodic record when salience exceeds threshold |
-| M | Make Assumptions | Deep-reflect | Generates or expires assumptions from statistical memory patterns |
-| D | Derive Desires | Deep-reflect | Evolves desires by applying principles to accumulated episodic memory |
+| S | Samskara | Deep-reflect | Creates, deepens, refines, and erodes samskaras from experience patterns |
+| D | Desire | Deep-reflect | Magnifies experience into desires through principles |
+
+Three agent operators (A, S, D). One external (W). Review-phase computation (σ, α, strength updates, experience recording) is mechanical — formulas, not operators.
 
 ---
 
@@ -70,9 +68,9 @@ Immutable. Never written by any process. Read by the Desire operator during deep
 
 **Plan — generate action:**
 ```
-A_{m_t, c_t}(d_t) = a_t
+A_{s_t, c_t}(d_t) = a_t
 ```
-The Action operator, constrained by active assumptions and current circumstances, operates on desires to produce a concrete action. Desires are the sole generative force. Assumptions filter. Circumstances shape. Without desire, no action is produced.
+The Act operator, informed by samskaras and shaped by current circumstances, operates on desires to produce a concrete action. Desires are the sole generative force — without desire, no action is produced. Samskaras make the agent choose more intelligent actions. Circumstances shape based on what is happening now.
 
 **Act — the world responds:**
 ```
@@ -80,52 +78,64 @@ W_{ξ_t}(a_t, c_t) = c_{t+1}
 ```
 The external World operator processes the agent's action alongside exogenous events and the prior circumstances to yield the new reality. The agent does not own or control this operator.
 
-**Review — evaluate and remember:**
+**Review — evaluate and update (mechanical):**
 ```
-σ_t = Surprise(m_t, c_{t+1})
+σ_t = Surprise(s_t, c_{t+1})
 α_t = Affinity(d_t, c_{t+1})
 ```
 
-Always (routine update):
+Samskara strength update (always, EMA):
 ```
-R_{σ_t, α_t}(μ_t) = μ_{t+1}
+For each samskara tested:
+    s.strength = s.strength × (1 - α_ema) + (1 - σ_per_samskara) × α_ema
 ```
 
-Conditionally (episodic update):
+Where `α_ema` is the EMA smoothing parameter (shared with surprise tracking). Confirmation moves strength toward 1. Violation moves strength toward 0. Untested samskaras are unchanged.
+
+When `s.strength < deletion_threshold`: delete the samskara — it has been mostly violated and is not worth storing.
+
+Experience recording (conditional):
 ```
-If (σ_t + |α_t|) > τ:
-    E_{m_t, d_t}(a_t, c_{t+1}) = e_t
+If salience(σ_t, α_t) > τ:
     ε_{t+1} = ε_t ∪ {e_t}
 ```
 
+Review is computation, not an operator. No LLM reasoning is needed — surprise and affinity are computed by the evaluation pipeline (§5), strength updates are a formula, and experience recording is a threshold check. (Note: the evaluation pipeline's Tier 3 may invoke an LLM as a structured classifier for ambiguous cases, but this is mechanical classification, not open-ended reasoning.)
+
 ### 4.2 Deep-Reflect Session (Slow Cycle, Asynchronous)
 
-**Evolve assumptions from statistical memory:**
+**Samskara management from experience patterns:**
 ```
-M_{c_t}(μ_{t+1}) = m_{t+1}
+S(ε, s_t') = s_{t+1}
 ```
-Where μ shows consistent low-surprise patterns, create or extend assumptions (extend TTL). Where patterns are broken (high surprise counts), expire assumptions early so the act loop is forced to check actual state.
+The Samskara operator reads accumulated experiences and current samskaras to manage the agent's model of reality. It creates new samskaras when patterns emerge across experiences, deepens existing ones when new experiences reinforce them, refines their pattern text as understanding sharpens, and erodes or deletes ones that experience contradicts.
 
-Assumption TTL rule: an assumption is worth holding when `cost(state_check) × frequency > cost(risk_of_wrong_assumption)`.
+Samskaras are impressions (Sanskrit: संस्कार) — not assumptions or insights, but a unified concept spanning the full spectrum from provisional observation to deep understanding. A fresh samskara from one experience is shallow and easily overwritten. A samskara reinforced across many diverse experiences is deep and shapes everything that follows. The difference is not type — it is depth.
 
-**Evolve desires from episodic memory through principles:**
+**What makes a samskara:** An enduring pattern about how things work, distilled from experiences. "Slack fails silently — success responses don't guarantee delivery." Not a snapshot of current state ("Slack is working right now") — that kind of temporal fact is handled naturally by the mechanical strength update. When Slack stops working, the samskara's strength decays via the EMA. The S operator focuses on patterns that transcend individual observations.
+
+**Desire magnification from experience memory through principles:**
 ```
-D_p(ε_{t+1}, d_t) = d_{t+1}
+D_p(ε, d_t) = d_{t+1}
 ```
-The Desire operator reviews accumulated salient episodes through the immutable lens of principles. It adjusts desire vectors — strengthening, weakening, creating, or retiring desires based on what the agent has lived through and what the principles demand.
+The Desire operator is a magnification force, not a reasoning process. It takes experience and amplifies: "I did X" → "do more X." This magnification is bidirectional — approach (toward what felt aligned with desires) and avoidance (away from what felt misaligned). Principles do not generate the desire — they shape the direction of magnification. "Research more" → "research more *that serves the patron*." The force comes from experience, the shape from principles.
+
+Samskaras do not feed into desire creation. Samskaras inform action (A), not desire (D). Desire is force. Samskaras are intelligence. They are parallel outputs of deep-reflect, both reading ε, serving fundamentally different roles.
+
+**Organic exploration:** The architecture self-corrects against local maxima without an explicit exploration mechanism. Deep-reflect is itself an experience. When the agent reflects and sees the gap between its principles and its narrow activity, that gap-awareness is an experience that D magnifies into a desire to broaden. Reflection scheduling parameters (`after_sessions`, `after_days`) effectively tune the exploration rate.
 
 ---
 
 ## 5. The Evaluation Pipeline
 
-Surprise and affinity both require assessing the relationship between two statements (an assumption or desire vs. an outcome). This is a three-tier pipeline designed for resource discipline: cheap operations handle the bulk, expensive operations handle only what the cheap ones cannot resolve.
+Surprise and affinity both require assessing the relationship between two statements (a samskara or desire vs. an outcome). This is a three-tier pipeline designed for resource discipline: cheap operations handle the bulk, expensive operations handle only what the cheap ones cannot resolve.
 
 ### 5.1 The Problem
 
 Semantic embeddings alone cannot compute surprise or affinity because they measure **topical proximity**, not **logical relationship**. Two statements can be about exactly the same thing and say opposite things about it. Embeddings compress that opposition into nearness.
 
 Example:
-- Assumption: "The Slack channel is working"
+- Samskara: "The Slack channel is working"
 - Outcome: "The Slack channel is permanently dead"
 
 These are semantically close (both about Slack channel status) but logically contradictory (maximum surprise). Cosine similarity would return a high score, suggesting low surprise. This is wrong.
@@ -140,30 +150,30 @@ Semantically close. But negative affinity — the outcome opposes the desire.
 
 #### Tier 1 — Relevance Filter (Embeddings, cheap, local)
 
-**Purpose:** Narrow the field. Given an outcome c_{t+1}, which of the agent's active assumptions and desires are topically related to it?
+**Purpose:** Narrow the field. Given an outcome c_{t+1}, which of the agent's samskaras and desires are topically related to it?
 
-**Method:** Embed all active assumptions and desires (cache these embeddings; they change infrequently). Embed the outcome. Compute cosine similarity. Return only pairs above a relevance threshold.
+**Method:** Embed all samskaras and desires (cache these embeddings; they change infrequently). Embed the outcome. Compute cosine similarity. Return only pairs above a relevance threshold.
 
 **Cost:** Vector operations on cached embeddings. Near-zero marginal cost per evaluation.
 
-**Output:** A filtered set of (assumption, outcome) and (desire, outcome) pairs that are topically related.
+**Output:** A filtered set of (samskara, outcome) and (desire, outcome) pairs that are topically related.
 
 **Implementation notes:**
 - Embedding model: any standard sentence-transformer (e.g., all-MiniLM-L6-v2 or similar). Must run locally.
-- Assumption and desire embeddings are recomputed only when deep-reflect modifies them.
+- Samskara and desire embeddings are recomputed only when deep-reflect modifies them.
 - Relevance threshold is a tunable parameter. Start conservatively (low threshold, more pairs pass through) and tighten as confidence grows.
 
 #### Tier 2 — Valence Classification (NLI, cheap, local)
 
-**Purpose:** For each relevant pair, determine the logical relationship: does the outcome **entail**, **contradict**, or have a **neutral** relationship to the assumption or desire?
+**Purpose:** For each relevant pair, determine the logical relationship: does the outcome **entail**, **contradict**, or have a **neutral** relationship to the samskara or desire?
 
 **Method:** Natural Language Inference (NLI) model takes premise-hypothesis pairs and classifies them.
 
-For surprise (assumption evaluation):
-- Premise: the assumption text
+For surprise (samskara evaluation):
+- Premise: the samskara pattern text
 - Hypothesis: the outcome text
-- Contradiction → high surprise
-- Entailment → low surprise (assumption confirmed)
+- Contradiction → high surprise (samskara violated)
+- Entailment → low surprise (samskara confirmed)
 - Neutral → no signal
 
 For affinity (desire evaluation):
@@ -198,15 +208,17 @@ For affinity (desire evaluation):
 **Implementation notes:**
 - Trigger: NLI confidence below a tunable ambiguity threshold (e.g., max class probability < 0.6).
 - Batch ambiguous pairs into a single LLM call where possible.
-- This tier should handle a small minority of evaluations. If it's being triggered frequently, either the NLI model is inadequate or the assumptions/desires are poorly worded.
+- This tier should handle a small minority of evaluations. If it's being triggered frequently, either the NLI model is inadequate or the samskaras/desires are poorly worded.
 
 ### 5.3 Computing the Final Metrics
 
 **Surprise (σ_t) — scalar:**
 ```
-σ_t = max(surprise_scores across all relevant assumptions)
+σ_t = max(surprise_scores across all relevant samskaras)
 ```
-The single highest contradiction score. The agent's most-violated assumption determines overall surprise. Alternative: weighted average. Start with max for simplicity.
+The single highest contradiction score. The agent's most-violated samskara determines overall surprise. Alternative: weighted average. Start with max for simplicity.
+
+**Empty samskaras → maximum surprise.** When s_t = ∅, the agent has no model of the world — everything is maximally surprising (σ = 1). This is not a special case; it follows from the mathematics. Having no impressions means having no expectations, which is maximum uncertainty. This is what bootstraps the agent: the first session records a high-salience experience, deep-reflect picks it up, and S and D begin building the agent's model of reality.
 
 **Affinity (α_t) — vector:**
 ```
@@ -214,52 +226,71 @@ The single highest contradiction score. The agent's most-violated assumption det
 ```
 Each active desire is a dimension. Entailment contributes a positive value. Contradiction contributes a negative value. Neutral or irrelevant desires receive 0. The result is a vector in desire-space.
 
-**Salience — scalar (for episodic storage decision):**
+**Empty desires → zero affinity.** An experience is memorable on the desire axis when it is strongly aligned or misaligned with what you want. With no desires there is no vector to measure against — affinity is genuinely zero, not max. The surprise axis alone drives salience during bootstrap.
+
+**Salience — scalar (for experience storage decision):**
 ```
 salience = σ_t + |α_t|
 ```
-Where |α_t| is the L1 norm (sum of absolute affinity values across all desire dimensions). If salience > τ (threshold), write to episodic memory.
+Where |α_t| is the L1 norm (sum of absolute affinity values across all desire dimensions). If salience > τ (threshold), write to experience memory.
 
 ---
 
 ## 6. Memory Architecture
 
-### 6.1 Statistical Memory (μ)
+Two memory stores. No separate counter store — samskara entries carry their own statistics.
 
-**Purpose:** Track routine patterns cheaply so that assumptions can be derived from accumulated evidence, not single observations.
+### 6.1 Samskaras (s)
 
-**Structure:** Key-value counters keyed by assumption ID or state-check ID.
+**Purpose:** The agent's model of reality. Everything it holds to be true, at varying levels of depth.
 
-Per entry:
-- `check_id`: what state is being tracked
-- `confirmation_count`: how many times the pattern held
-- `violation_count`: how many times the pattern broke
-- `last_checked`: timestamp
-- `cumulative_surprise`: running average of surprise scores for this check
+**Structure:** Key-value store. Each samskara entry:
 
-**Write frequency:** Every review phase. Always. Cheap.
+```
+{
+  "pattern": "Slack fails silently — success responses don't guarantee delivery",
+  "strength": 0.85
+}
+```
 
-**Read frequency:** Deep-reflect only.
+Two fields. Strength is an EMA (exponential moving average), normalized 0-1. Confirmation moves it toward 1. Violation moves it toward 0. Untested samskaras are unchanged — a samskara that hasn't been tested doesn't decay just because time passed.
 
-### 6.2 Episodic Memory (ε)
+**One EMA parameter (α_ema)** governs how responsive samskaras are to new evidence. High α → fast adaptation, shallow grooves. Low α → slow adaptation, deep grooves. Same parameter used for surprise tracking — they measure the same underlying signal.
 
-**Purpose:** Store rich narrative records of highly salient events for deep reflection.
+**Strength update formula (mechanical, every review phase):**
+```
+strength = strength × (1 - α_ema) + (1 - σ_per_samskara) × α_ema
+```
 
-**Structure:** Append-only log. Each episode (e_t) contains:
+**Deletion:** When strength drops below a configurable threshold (e.g., 0.05), the samskara is deleted. It has been mostly violated and is not worth storing.
+
+**Creation:** Only the S operator (deep-reflect) creates samskaras. The review phase updates existing ones mechanically but cannot articulate new patterns — that requires intelligence.
+
+**Selection for act phase:** When the samskara store grows large, embedding-based relevance filtering selects samskaras relevant to the current action context. Same mechanism as Tier 1 of the evaluation pipeline.
+
+**Write frequency:** Strength updated mechanically every review phase. Entries created/refined/eroded by S in deep-reflect.
+
+**Read frequency:** Every act session (plan phase). Deep-reflect reads all.
+
+### 6.2 Experience Memory (ε)
+
+**Purpose:** Store rich narrative records of salient events. Raw material for deep-reflect.
+
+**Structure:** Append-only log. Each experience (e_t) contains:
 
 - `timestamp`: when it occurred
 - `action_taken`: what the agent did (a_t)
 - `outcome`: what happened (c_{t+1})
-- `active_assumptions`: which assumptions were in play (m_t)
-- `active_desires`: which desires were being pursued (d_t)
 - `surprise_score`: σ_t
-- `affinity_vector`: α_t
+- `salience`: σ_t + |α_t| (computed at write time — the affinity vector serves its purpose at the salience gate and is not stored)
 - `narrative`: natural language summary of what happened and why it mattered
 - `embedding`: vector embedding of the narrative (for retrieval)
 
+No affinity vector or active desire/samskara lists. The narrative carries the qualitative meaning. The embedding enables retrieval. Downstream consumers (S and D operators) work from narratives, not from numeric vectors. This eliminates the desire dimensionality problem — as desires evolve, old experiences remain valid because their signal is in the text, not in a vector measured against a desire set that no longer exists.
+
 **Write frequency:** Conditional — only when salience > τ.
 
-**Read frequency:** Deep-reflect only. Deep-reflect must select which episodes to review when ε grows large (see §7.3).
+**Read frequency:** Deep-reflect only. Deep-reflect must select which experiences to review when ε grows large (see §7.3).
 
 ---
 
@@ -271,17 +302,17 @@ Plan, Act, and Review are phases of one continuous session, not separate
 invocations. The LLM plans, calls tools, sees results, and evaluates —
 all within one context window. Multiple LLM calls occur within the
 session (each tool-use round is a call), with kernel computation
-(surprise, affinity, μ updates) happening between calls. Review has
-the full lived experience of the session, not a secondhand report.
+(surprise, affinity, samskara strength updates) happening between calls.
+Review has the full lived experience of the session, not a secondhand report.
 
 ```
 Session:
-  1. Kernel: load state (d, m, c, ξ → folded into c)
+  1. Kernel: load state (d, s, c, ξ → folded into c)
   2. Loop while budget remains:
-     a. LLM call(s): plan — precipitate one action (A_{m,c}(d) = a)
+     a. LLM call(s): plan — precipitate one action (A_{s,c}(d) = a)
      b. LLM call(s): act — execute via tool-calling loop
-     c. Kernel: compute σ, α; update μ (mechanical — no LLM)
-     d. LLM call: review — evaluate, write narrative if salient
+     c. Kernel: compute σ, α; update samskara strengths (mechanical)
+     d. Kernel: record experience if salient (mechanical)
      e. Circumstances update (c reflects the new state)
   3. Loop ends when: budget exhausted OR plan precipitates no action
 ```
@@ -289,7 +320,7 @@ Session:
 **The session loops.** Plan, act, and review repeat within one session.
 After each cycle, circumstances have changed (the action modified the
 world). Plan re-evaluates and may precipitate another action. The loop
-stops naturally when the equation `A_{m,c}(d) = a` yields nothing —
+stops naturally when the equation `A_{s,c}(d) = a` yields nothing —
 no desire meets the current circumstances in a way that produces an
 action. Or when budget is exhausted.
 
@@ -314,37 +345,35 @@ accounts for naturally.
 **Plan output structure.** Plan produces:
 - `action`: what to do
 - `success`: what the outcome should look like (makes affinity measurable)
-- `relies_on`: what assumptions are being depended on (makes surprise measurable)
+- `relies_on`: what samskaras are being depended on (makes surprise measurable)
 - `defer_if`: when to stop and leave the rest for next session
 
 `success` and `relies_on` are optimisation hints for the evaluation
 pipeline — they tell review which pairs to check first. They do not
 limit review's scope.
 
-**Review evaluates against ALL active desires and assumptions**, not
+**Review evaluates against ALL active desires and samskaras**, not
 just the ones plan flagged. Plan's stated success criteria are checked
 first (cheap, precise pairs), then the full pool of active desires and
-assumptions (broader scan). An action that fails its planned objective
+samskaras (broader scan). An action that fails its planned objective
 may still produce high positive affinity against a completely different
 desire. Review must capture this.
 
 **Inputs consumed (read):**
 - d_t (desires) — from KV store
-- m_t (assumptions) — from KV store, checking TTL expiry
+- s_t (samskaras) — from KV store
 - c_t (circumstances) — observed at session start, includes ξ events
 
 **Outputs produced (write):**
-- μ_{t+1} (statistical memory update) — always
+- s_t' (samskara strength updates) — always, mechanical
 - e_t appended to ε — conditionally
 - Action execution side effects in the world
 
-**Act session does not modify desires or assumptions.** It is a pure consumer of the slow state and a pure producer of memory.
-
-**Expired assumptions:** During plan phase, any assumption whose TTL has elapsed is treated as absent. The agent must fall back to checking actual state. The cost of this check is noted in μ for the deep-reflect session to evaluate.
+**Act session does not modify desires.** It updates samskara strengths mechanically but cannot create, refine, or delete samskaras — that requires intelligence (S operator).
 
 **Parallel sessions.** Multiple act sessions can run concurrently because
-of read/write isolation — each reads the same d and m, gets its own c,
-produces its own μ updates and episodic records. Plan must claim its
+of read/write isolation — each reads the same d and s, gets its own c,
+produces its own strength updates and experience records. Plan must claim its
 selected action so parallel sessions don't duplicate work. This is an
 optimisation, not a requirement for v1.
 
@@ -354,32 +383,30 @@ Runs asynchronously on its own schedule. Not triggered by individual act session
 
 **Trigger conditions (any of):**
 - Scheduled interval (e.g., every N act sessions, or wall-clock period)
-- Accumulated μ drift exceeds a threshold (many expired assumptions, or high violation counts)
-- Episodic memory has grown by more than K entries since last reflect
+- Experience memory has grown by more than K entries since last reflect
 
 **Inputs consumed (read):**
-- μ (statistical memory)
-- ε (episodic memory)
+- ε (experience memory)
+- s_t (current samskaras)
 - d_t (current desires)
 - p (principles — always read, never written)
-- c_t (current circumstances — for assumption context)
 
 **Outputs produced (write):**
-- m_{t+1} (new, extended, or expired assumptions)
+- s_{t+1} (new, refined, deepened, or deleted samskaras)
 - d_{t+1} (evolved desires)
 
-**Deep-reflect does not execute actions or modify memory stores.** It is a pure consumer of memory and a pure producer of slow state.
+**Deep-reflect does not execute actions or modify experience memory.** It is a pure consumer of experiences and a pure producer of slow state.
 
-### 7.3 Deep-Reflect Episode Selection
+### 7.3 Deep-Reflect Experience Selection
 
-As ε grows, the deep-reflect session cannot review every episode. Selection strategy:
+As ε grows, the deep-reflect session cannot review every experience. Selection strategy:
 
-1. **Recency bias:** Prioritise episodes since last deep-reflect.
-2. **High surprise:** Episodes where the agent's model of the world was most wrong.
-3. **High absolute affinity:** Episodes where outcomes strongly advanced or opposed desires.
-4. **Cluster representatives:** If many similar episodes exist, select representative samples rather than reviewing all.
+1. **Recency bias:** Prioritise experiences since last deep-reflect.
+2. **High surprise:** Experiences where the agent's model of the world was most wrong.
+3. **High absolute affinity:** Experiences where outcomes strongly advanced or opposed desires.
+4. **Cluster representatives:** If many similar experiences exist, select representative samples rather than reviewing all.
 
-Retrieval method: embed the current desires and principles, query ε by embedding similarity to surface episodes most relevant to current concerns. Then rank by recency and salience.
+Retrieval method: embed the current desires and samskaras, query ε by embedding similarity to surface experiences most relevant to current concerns. Then rank by recency and salience.
 
 ---
 
@@ -390,15 +417,14 @@ The two phases share data stores but never compete for the same writes.
 | Entity | Read By | Written By | Storage Type |
 |--------|---------|------------|-------------|
 | Principles (p) | Deep-reflect | None (immutable) | Static config |
-| Circumstances (c) | Plan, Review | World operator | Ephemeral (observed) |
+| Circumstances (c) | Plan | World operator | Ephemeral (observed) |
 | Exogenous (ξ) | World operator | External | Event queue / webhook |
-| Desires (d) | Plan, Review | Deep-reflect | KV store |
-| Assumptions (m) | Plan, Review | Deep-reflect | KV store (TTL-keyed) |
-| Statistical memory (μ) | Deep-reflect | Review | Counter store |
-| Episodic memory (ε) | Deep-reflect | Review | Append-only log + vector index |
+| Samskaras (s) | Plan, Review | Strength: Review (mechanical). Create/refine/delete: Deep-reflect (S) | KV store |
+| Desires (d) | Plan, Review | Deep-reflect (D) | KV store |
+| Experiences (ε) | Deep-reflect | Review (conditional) | Append-only log + vector index |
 | Actions (a) | Act phase | Plan phase | Ephemeral (session-scoped) |
 
-No locks required. Act sessions and deep-reflect sessions can run concurrently.
+No locks required. Act sessions and deep-reflect sessions can run concurrently. Samskara strength updates from concurrent act sessions are commutative (EMA of independent observations).
 
 ---
 
@@ -406,12 +432,11 @@ No locks required. Act sessions and deep-reflect sessions can run concurrently.
 
 On first boot, the agent has:
 - p (principles) — loaded from config
-- d_0 (initial desires) — seeded from principles: D_p(∅, ∅) = d_0. With no experience, principles alone generate the starting desires. These are the foundational wants implied by the dharma.
-- m_0 = ∅ (no assumptions) — the agent checks everything. Expensive, but honest.
-- μ_0 = ∅ (empty statistical memory)
-- ε_0 = ∅ (empty episodic memory)
+- d_0 = ∅ (no desires) — bootstrapped via first deep-reflect: D_p(ε, ∅)
+- s_0 = ∅ (no samskaras) — everything is surprising (σ=1)
+- ε_0 = ∅ (empty experience memory)
 
-The agent begins with high resource cost (no assumptions to shortcut anything) and gradually becomes more efficient as statistical memory accumulates and assumptions are formed. This is the intended trajectory — earn your shortcuts, don't assume them.
+The bootstrap sequence: the first session wakes with empty samskaras, producing maximum surprise (σ=1). This high-salience experience is recorded as an experience. Deep-reflect fires, and the two operators work in parallel — D magnifies the experience through principles into initial desires, S begins distilling early patterns into initial samskaras. The agent begins with no model of reality and gradually builds one. Earn your impressions.
 
 ---
 
@@ -422,12 +447,12 @@ The agent begins with high resource cost (no assumptions to shortcut anything) a
 The kernel enforces things the agent cannot be trusted to enforce on
 itself. Everything else is cognitive policy and lives in hooks. The
 kernel is cognitive-architecture-agnostic — it does not know about
-desires, assumptions, actions, plans, reviews, or deep reflect.
+desires, samskaras, actions, plans, reviews, or deep reflect.
 
 ### 10.2 What the Kernel Provides
 
 - **KV access** — read/write with tier-based gating
-- **LLM calling** — model resolution, dharma/principle injection, budget enforcement
+- **LLM calling** — model resolution, dharma/principle injection, budget enforcement, JSON extraction
 - **Tool dispatch** — tool grants, execution context, communication gating
 - **Event bus** — emit, drain, dead-letter
 - **Safety** — crash detection/recovery, code staging/deployment, sealed keys
@@ -467,7 +492,8 @@ kernel:key_tiers → {
   "immutable": ["dharma", "principle:*"],
   "kernel_only": ["karma:*", "sealed:*", "event:*", "kernel:*"],
   "protected": ["config:*", "prompt:*", "tool:*", "provider:*",
-                 "channel:*", "hook:*", "contact:*", "code_staging:*"]
+                 "channel:*", "hook:*", "contact:*", "code_staging:*",
+                 "desire:*", "samskara:*"]
 }
 ```
 
@@ -569,17 +595,13 @@ to Cloudflare — unchanged from current behavior. The crash tripwire
 2. Plan precipitates an action: "write a share action for google_docs"
 3. Act writes the code and calls `K.stageCode()`
 4. Deep reflect (next cycle) decides to deploy — calls `K.signalDeploy()`
-5. Review creates an assumption from the code's intent: "share action
-   eliminates curl workarounds" (TTL: 10 sessions, risk: medium)
-6. Statistical memory tracks outcomes — tool failures, workaround usage
-7. Deep reflect examines μ via `M_c(μ) = m`:
-   - Low surprise → extend assumption (the improvement works)
-   - High surprise → expire assumption → investigate or rollback
+5. The new tool's outcomes flow through the normal eval pipeline
+6. Samskara strengths track whether the change is working
+7. S operator examines experiences — deepens the samskara if the tool works,
+   erodes it if not, potentially creating a new samskara about why it failed
 
-Code changes are evaluated through the normal assumption lifecycle.
+Code changes are evaluated through the normal samskara lifecycle.
 No special proposal observations, verdicts, or review machinery needed.
-The cognitive framework handles it the same way it handles any other
-assumption about the world.
 
 ---
 
@@ -600,19 +622,30 @@ assumption about the world.
 3. **No proposal system in the kernel.** Two kernel primitives
    (`stageCode`, `signalDeploy`) replace ~185 LOC of proposal
    governance. All cognitive policy (claims, verdicts, checks)
-   moves to hooks and the assumption framework.
+   moves to hooks and the samskara framework.
+
+4. **Unified belief store.** Assumptions, insights, and wisdom collapse
+   into samskaras — impressions at different depths. No separate
+   counter store (μ) — statistics live on the entries themselves as
+   EMA strength. No TTL — shallow samskaras naturally erode through
+   the strength mechanism. One prefix, one lifecycle, one spectrum.
+
+5. **Mechanical review, intelligent reflect.** The review phase
+   (σ, α, strength updates, experience recording) is computation — no
+   LLM needed. Only the S and D operators in deep-reflect require
+   intelligence. This keeps act sessions cheap and fast.
 
 ---
 
 ## 12. Open Questions for Implementation
 
-1. **Salience threshold (τ):** Fixed or adaptive? If adaptive, what adjusts it? Candidate: τ adapts based on episodic memory growth rate — if ε is growing too fast, raise τ to be more selective.
+1. **Salience threshold (τ):** Fixed or adaptive? If adaptive, what adjusts it? Candidate: τ adapts based on experience memory growth rate — if ε is growing too fast, raise τ to be more selective.
 
-2. **Assumption TTL calculation:** The principle is `cost(check) × frequency > cost(risk)`. In practice, how is risk quantified? Candidate: risk = (consequence of wrong assumption) × (probability of change based on μ violation rate).
+2. **EMA alpha (α_ema):** What value? Controls how quickly samskaras respond to new evidence. Low (0.1) → slow, deep grooves. High (0.3) → fast adaptation. Start with the existing `surprise_ema_alpha` value and tune.
 
-3. **Desire vector dimensionality:** As desires evolve, dimensions are added and removed. How is affinity history normalised across different dimensionalities? Candidate: affinity vectors in ε are stored with the desire set that was active at the time. Comparison across eras requires projection into the intersection of desire sets.
+3. **Samskara deletion threshold:** What strength level triggers deletion? Candidate: 0.05 (a samskara confirmed only 5% of the time is noise).
 
-4. **Deep-reflect LLM usage:** The D and M operators in deep-reflect are likely LLM-mediated (they require reasoning about patterns and principles). What model tier? What context budget? How are episodes summarised for context window efficiency?
+4. **Deep-reflect LLM usage:** The S and D operators in deep-reflect are LLM-mediated (they require reasoning about patterns and principles). What model tier? What context budget? How are experiences summarised for context window efficiency?
 
 5. **Exogenous event handling:** How are ξ events surfaced to the agent? Candidate: an event queue that is drained at the start of each act session, folded into c_t as updated circumstances.
 
@@ -620,7 +653,9 @@ assumption about the world.
 
 7. **Kernel key tier bootstrap:** How are `kernel:key_tiers` seeded? Candidate: seed script writes them alongside principles. Patron can update via dashboard.
 
-8. **Deep reflect trigger conditions on akash:** How does the session hook decide when to dispatch deep reflect? Candidate: check μ drift, episodic growth, and session count since last DR — all readable from KV.
+8. **Deep reflect trigger conditions on akash:** How does the session hook decide when to dispatch deep reflect? Candidate: check experience growth and session count since last DR — all readable from KV.
+
+9. **Samskara conflict:** S may create samskaras that logically contradict each other — e.g., "External APIs are unreliable" and "Google Docs API is highly reliable." During act, embedding-based selection might surface both for an action involving Google Docs. Strength alone doesn't capture logical relationships between samskaras. The act LLM can reconcile contradictory context pragmatically, and S can consolidate conflicting samskaras during deep-reflect, but this is an implicit capability rather than an explicit mechanism.
 
 ---
 
@@ -628,11 +663,10 @@ assumption about the world.
 
 | Component | Purpose | Candidate | Runs On |
 |-----------|---------|-----------|---------|
-| Embedding model | Tier 1 relevance filtering | all-MiniLM-L6-v2 | akash (local) |
+| Embedding model | Tier 1 relevance filtering + samskara selection | bge-small-en-v1.5 | akash (local) |
 | NLI model | Tier 2 valence classification | DeBERTa-v3-base-mnli-fever-anli | akash (local) |
 | LLM (small) | Tier 3 edge cases, act sessions | Qwen3-32B via Ollama | akash (local) |
-| LLM (large) | Deep-reflect, complex evaluation | Claude via API | Remote |
-| Vector store | Episodic memory retrieval | TBD (candidate: ChromaDB, lancedb) | akash (local) |
-| KV store | Desires, assumptions | Cloudflare KV (existing) | Cloudflare Workers |
-| Counter store | Statistical memory | Cloudflare KV or D1 | Cloudflare Workers |
+| LLM (large) | Deep-reflect (S and D operators) | Claude via API | Remote |
+| Vector store | Experience memory retrieval | TBD (candidate: ChromaDB, lancedb) | akash (local) |
+| KV store | Desires, samskaras, experiences | Cloudflare KV (existing) | Cloudflare Workers |
 | Event queue | Exogenous events | TBD (candidate: Cloudflare Queue) | Cloudflare Workers |

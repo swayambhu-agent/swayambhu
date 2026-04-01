@@ -179,7 +179,7 @@ to `DEFAULT_KEY_TIERS`):
 |------|-------------|------|
 | Immutable | `dharma`, `principle:*`, `patron:public_key` | Never writable — not by agent, not by hooks |
 | Kernel-only | `karma:*`, `sealed:*`, `event:*`, `kernel:*` | Only kernel internals can write |
-| Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*`, `desire:*`, `assumption:*` | Writable via `kvWriteGated` with privileged context flag |
+| Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*`, `desire:*`, `samskara:*` | Writable via `kvWriteGated` with privileged context flag |
 | Code keys | `tool:*:code`, `hook:*:code` | Must go through `K.stageCode()` → governor deploys |
 | Agent keys | `mu:*`, `experience:*`, everything else | `kvWriteSafe` — direct write |
 
@@ -234,7 +234,7 @@ The kernel validates that only code keys (`tool:*:code`, `hook:*:code`,
 `provider:*:code`, `channel:*:code`) can be staged. The hook decides
 *when* to stage and deploy — the kernel just provides the primitives.
 
-Non-code changes (config, prompts, wisdom) go through `kvWriteGated`
+Non-code changes (config, prompts, insights) go through `kvWriteGated`
 with a privileged context flag. No deployment needed.
 
 ### Debug logging
@@ -280,18 +280,18 @@ these files (they use named exports: `execute`, `call`, `check`, `meta`).
 ### Cognitive architecture KV keys
 
 The cognitive architecture (spec: `swayambhu-cognitive-architecture.md`) uses
-four entity types stored in KV:
+three entity types stored in KV:
 
 | Prefix | Entity | Tier | Written by | Read by |
 |--------|--------|------|------------|---------|
-| `desire:*` | Desires (d) — directional vectors | Protected | Deep-reflect only | Act (plan phase) |
-| `assumption:*` | Assumptions (m) — cached heuristics with TTL | Protected | Deep-reflect only | Act (plan phase) |
-| `mu:*` | Statistical memory (μ) — rolling counters | Agent | Review phase (every session) | Deep-reflect |
-| `experience:*` | Experience memory (ε) — salient experiences | Agent | Review phase (conditional) | Deep-reflect |
+| `desire:*` | Desires (d) — approach/avoidance vectors | Protected | Deep-reflect (D operator) | Act (plan phase) |
+| `samskara:*` | Samskaras (s) — impressions with EMA strength | Protected | Strength: review (mechanical). Create/refine/delete: deep-reflect (S operator) | Act (plan phase) |
+| `experience:*` | Experiences (ε) — salient experiences | Agent | Review phase (conditional) | Deep-reflect |
 
-Cold start: all stores empty (`d_0 = ∅`, `m_0 = ∅`, `μ_0 = ∅`, `ε_0 = ∅`).
-The first session triggers deep-reflect, which runs `D_p(∅, ∅)` to derive
-initial desires from principles. The agent earns its desires from the start.
+Cold start: all stores empty (`d_0 = ∅`, `s_0 = ∅`, `ε_0 = ∅`).
+The first session wakes with empty samskaras (σ=1, max surprise), records
+a high-salience experience, and deep-reflect bootstraps desires via `D_p(ε, ∅)`
+and samskaras via `S(ε, ∅)`. The agent earns everything from the start.
 
 Schemas: see `tests/schema.test.js` for canonical field definitions and
 validation logic.
