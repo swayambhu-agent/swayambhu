@@ -5,34 +5,7 @@
 
 import { runReflect, highestReflectDepthDue } from './reflect.js';
 import { evaluateAction } from './eval.js';
-
-// ── Local helpers (move to act.js in Task 5) ────────────────
-
-async function renderActPrompt(K, { defaults }) {
-  const actPrompt = await K.kvGet("prompt:act");
-  if (!actPrompt) return "You are a helpful agent. Execute the planned action using available tools.";
-  return K.buildPrompt(actPrompt, { config: defaults });
-}
-
-async function buildToolSet(K) {
-  return K.buildToolDefinitions();
-}
-
-function formatDesires(d) {
-  return JSON.stringify(Object.entries(d).map(([key, val]) => ({
-    key, slug: val.slug, direction: val.direction, description: val.description,
-  })), null, 2);
-}
-
-function formatAssumptions(m) {
-  return JSON.stringify(Object.entries(m).map(([key, val]) => ({
-    key, slug: val.slug, check: val.check, confidence: val.confidence, ttl_expires: val.ttl_expires,
-  })), null, 2);
-}
-
-function formatCircumstances(c) {
-  return JSON.stringify(c, null, 2);
-}
+import { renderActPrompt, buildToolSet, formatDesires, formatAssumptions, formatCircumstances } from './act.js';
 
 // ── Snapshot loaders ────────────────────────────────────────
 

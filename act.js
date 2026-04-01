@@ -1,25 +1,19 @@
-// Swayambhu — Session Policy (act)
-// How a normal act session works: context building, agent loop, output processing.
-// Mutable — the agent can propose changes to this file via the proposal system.
-//
-// Receives K (kernel interface) for all kernel interactions.
+// Swayambhu — Act Library
+// Prompt rendering, tool set building, context formatting.
+// Called by session.js — no longer a standalone hook entry point.
 
-import { executeReflect } from './reflect.js';
+// ── Prompt rendering ─────────────────────────────────────────
 
-// ── Normal session ──────────────────────────────────────────
-
-export async function runAct(K, state, context, config) {
-  const { defaults, modelsConfig } = state;
-
+export async function renderActPrompt(K, { defaults, modelsConfig } = {}) {
   const actPrompt = await K.kvGet("prompt:act");
+  if (!actPrompt) return "You are a helpful agent. Execute the planned action using available tools.";
+
   const resources = await K.kvGet("config:resources");
   const subagents = await K.kvGet("config:subagents");
 
-  // Build skill manifest for act prompt injection
   const skillList = await K.kvList({ prefix: "skill:", limit: 100 });
   const skill_manifest = [];
   for (const k of skillList.keys) {
-    // Skip :ref companion keys
     if (k.name.includes(":ref")) continue;
     const v = await K.kvGet(k.name);
     if (v) {
@@ -35,104 +29,51 @@ export async function runAct(K, state, context, config) {
     }
   }
 
-  const systemPrompt = await K.buildPrompt(actPrompt, {
+  return K.buildPrompt(actPrompt, {
     models: modelsConfig,
     resources,
-    config,
+    config: defaults,
     skill_manifest: skill_manifest.length ? skill_manifest : null,
     subagents: subagents || null,
   });
-
-  const initialContext = buildActContext(context);
-
-  // Use act_after_dm config when a direct message is present
-  const dmConfig = context.directMessage ? defaults?.act_after_dm : null;
-
-  const actModel = await K.resolveModel(
-    dmConfig?.model || config.act?.model || defaults?.act?.model
-  );
-
-  const tools = await K.buildToolDefinitions();
-
-  // Reserve budget for reflect if configured
-  const budget = defaults?.session_budget;
-  const reservePct = budget?.reflect_reserve_pct || 0;
-  const actBudgetCap = (budget?.max_cost && reservePct > 0)
-    ? budget.max_cost * (1 - reservePct)
-    : undefined;
-
-  const maxSteps = defaults?.execution?.max_steps?.act || 12;
-
-  const output = await K.runAgentLoop({
-    systemPrompt,
-    initialContext,
-    tools,
-    model: actModel,
-    effort: dmConfig?.effort || context.effort || config.act?.effort || defaults?.act?.effort,
-    maxTokens: dmConfig?.max_output_tokens || config.act?.max_output_tokens || defaults?.act?.max_output_tokens,
-    maxSteps,
-    step: 'act',
-    budgetCap: actBudgetCap,
-  });
-
-  // Apply KV operations (gated by kernel — context determines permissions)
-  if (output.kv_operations?.length) {
-    const blocked = [];
-    for (const op of output.kv_operations) {
-      const result = await K.kvWriteGated(op, "act");
-      if (!result.ok) blocked.push({ key: op.key, error: result.error });
-    }
-    if (blocked.length) {
-      await K.karmaRecord({ event: "kv_writes_blocked", blocked });
-    }
-  }
-
-  // Process session responses — update request KV keys and emit events
-  if (output.session_responses?.length) {
-    for (const resp of output.session_responses) {
-      const key = `session_request:${resp.request_id}`;
-      const existing = await K.kvGet(key);
-      if (!existing) continue;
-
-      existing.status = resp.status;
-      existing.updated_at = new Date().toISOString();
-      if (resp.result) existing.result = resp.result;
-      if (resp.error) existing.error = resp.error;
-      if (resp.next_session) existing.next_session = resp.next_session;
-      if (resp.note) existing.note = resp.note;
-
-      await K.kvWriteSafe(key, existing);
-      await K.emitEvent("session_response", {
-        contact: existing.contact,
-        ref: key,
-        status: resp.status,
-      });
-    }
-  }
-
-  // Track unaddressed requests in karma (from KV, not events)
-  const pendingReqs = context.pendingRequests || [];
-  const respondedIds = new Set((output.session_responses || []).map(r => r.request_id));
-  const unaddressed = pendingReqs.filter(r => !respondedIds.has(r.id));
-  if (unaddressed.length > 0) {
-    await K.karmaRecord({
-      event: "unaddressed_requests",
-      count: unaddressed.length,
-      refs: unaddressed.map(r => `session_request:${r.id}`),
-    });
-  }
-
-  // Session reflect — skip if budget fully exhausted (but not if
-  // act was soft-capped by reflect_reserve_pct)
-  const skipReflect = output.budget_exceeded && !reservePct;
-  if (!skipReflect) {
-    await executeReflect(K, state, { model: defaults?.reflect?.model });
-  }
-
-  await writeSessionResults(K, config, { reflectRan: !skipReflect });
 }
 
-// ── Act context builder ──────────────────────────────────
+export async function buildToolSet(K) {
+  return K.buildToolDefinitions();
+}
+
+// ── Context formatters ───────────────────────────────────────
+
+export function formatDesires(d) {
+  return JSON.stringify(
+    Object.entries(d).map(([key, val]) => ({
+      key,
+      slug: val.slug,
+      direction: val.direction,
+      description: val.description,
+    })),
+    null, 2
+  );
+}
+
+export function formatAssumptions(m) {
+  return JSON.stringify(
+    Object.entries(m).map(([key, val]) => ({
+      key,
+      slug: val.slug,
+      check: val.check,
+      confidence: val.confidence,
+      ttl_expires: val.ttl_expires,
+    })),
+    null, 2
+  );
+}
+
+export function formatCircumstances(c) {
+  return JSON.stringify(c, null, 2);
+}
+
+// ── Act context builder ──────────────────────────────────────
 
 export function buildActContext(context) {
   // Static/stable fields first for prompt caching (prefix match),
@@ -156,7 +97,7 @@ export function buildActContext(context) {
   });
 }
 
-// ── Session results ─────────────────────────────────────────
+// ── Session results ─────────────────────────────────────────────
 
 export async function writeSessionResults(K, config, { reflectRan = true } = {}) {
   // If reflect was skipped, reset session_schedule to system defaults.
@@ -172,7 +113,7 @@ export async function writeSessionResults(K, config, { reflectRan = true } = {})
   // written by kernel.js runScheduled() — runs for both act and deep reflect.
 }
 
-// ── Karma summarization ─────────────────────────────────────
+// ── Karma summarization ─────────────────────────────────────────
 
 export function summarizeKarma(karma) {
   const events = {};
@@ -237,7 +178,7 @@ export async function detectCrash(K) {
   };
 }
 
-// ── Helpers ─────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────
 
 export async function getBalances(K, state) {
   return K.checkBalance({});
