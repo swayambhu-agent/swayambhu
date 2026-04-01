@@ -1658,7 +1658,164 @@
     }
 
     function MindFlowGraph({ data, selected, onSelect }) {
-      return <div className="px-4 py-3 border-b border-border text-gray-500 text-xs">Flow graph — coming next</div>;
+      const { samskaras, desires, experiences } = data;
+
+      const W = 900, nodeH = 28, nodeGap = 6;
+      const nodeW = { exp: 140, sam: 175, des: 165 };
+      const cols = { exp: 80, sam: 340, des: 600 };
+
+      const expNodes = experiences.slice(0, 5).map((e, i) => ({
+        ...e, x: 10, y: 32 + i * (nodeH + nodeGap), w: nodeW.exp,
+      }));
+      const samNodes = samskaras.map((s, i) => ({
+        ...s, x: cols.sam - nodeW.sam / 2, y: 32 + i * (nodeH + nodeGap), w: nodeW.sam,
+      }));
+      const desNodes = desires.map((d, i) => ({
+        ...d, x: cols.des - nodeW.des / 2, y: 32 + i * (nodeH + nodeGap + 6), w: nodeW.des,
+      }));
+
+      const maxNodes = Math.max(expNodes.length, samNodes.length, desNodes.length, 1);
+      const H = Math.max(200, 32 + maxNodes * (nodeH + nodeGap) + 30);
+
+      const isSelected = (type, key) => selected?.type === type && selected?.key === key;
+      const strengthColor = (s) => s > 0.7 ? '#22c55e' : s > 0.3 ? '#f59e0b' : '#ef4444';
+      const trunc = (t, max) => t && t.length > max ? t.slice(0, max - 1) + '…' : (t || '');
+
+      return (
+        <div className="px-4 py-2 border-b border-border" style={{ background: 'rgba(255,255,255,0.01)' }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', maxHeight: 240, cursor: 'default' }}>
+
+            {/* Column labels */}
+            <text x={cols.exp} y={14} fill="#666" fontSize="9" textAnchor="middle" fontFamily="monospace" letterSpacing="1">EXPERIENCES (ε)</text>
+            <text x={cols.sam} y={14} fill="#666" fontSize="9" textAnchor="middle" fontFamily="monospace" letterSpacing="1">SAMSKARAS (s)</text>
+            <text x={cols.des} y={14} fill="#666" fontSize="9" textAnchor="middle" fontFamily="monospace" letterSpacing="1">DESIRES (d)</text>
+
+            {/* Connection lines: experiences → samskaras */}
+            {expNodes.map((e, ei) =>
+              samNodes.map((s, si) => (
+                <line key={`es-${ei}-${si}`}
+                  x1={e.x + e.w} y1={e.y + nodeH/2}
+                  x2={s.x} y2={s.y + nodeH/2}
+                  stroke="#22c55e" strokeWidth="0.8"
+                  opacity={selected
+                    ? (isSelected('experience', e.key) || isSelected('samskara', s.key) ? 0.4 : 0.05)
+                    : 0.12}
+                />
+              ))
+            )}
+
+            {/* Connection lines: experiences → desires */}
+            {expNodes.map((e, ei) =>
+              desNodes.map((d, di) => (
+                <line key={`ed-${ei}-${di}`}
+                  x1={e.x + e.w} y1={e.y + nodeH/2}
+                  x2={d.x} y2={d.y + nodeH/2}
+                  stroke="#a78bfa" strokeWidth="0.6"
+                  opacity={selected
+                    ? (isSelected('experience', e.key) || isSelected('desire', d.key) ? 0.3 : 0.04)
+                    : 0.08}
+                />
+              ))
+            )}
+
+            {/* Connection lines: desires → right edge */}
+            {desNodes.map((d, di) => (
+              <line key={`da-${di}`}
+                x1={d.x + d.w} y1={d.y + nodeH/2}
+                x2={W - 20} y2={d.y + nodeH/2}
+                stroke="#a78bfa" strokeWidth="1"
+                opacity={selected ? (isSelected('desire', d.key) ? 0.5 : 0.08) : 0.2}
+                strokeDasharray="4,3"
+              />
+            ))}
+
+            {/* Feedback loop arrow */}
+            <path
+              d={`M ${W-10} ${32 + nodeH/2} Q ${W} ${32+nodeH/2} ${W} ${H-12} L 10 ${H-12} Q 5 ${H-12} 5 ${H-24}`}
+              stroke="#06b6d4" strokeWidth="1" opacity="0.15" fill="none" strokeDasharray="4,3"
+            />
+            <text x={W/2} y={H-4} fill="#06b6d4" fontSize="8" textAnchor="middle" opacity="0.3" fontFamily="monospace">→ new experiences</text>
+
+            {/* Experience nodes */}
+            {expNodes.map((e) => {
+              const hi = isSelected('experience', e.key);
+              return (
+                <g key={e.key} onClick={() => onSelect(hi ? null : {type:'experience', key:e.key})} style={{cursor:'pointer'}}>
+                  <rect x={e.x} y={e.y} width={e.w} height={nodeH} rx={5}
+                    fill={hi ? 'rgba(6,182,212,0.25)' : 'rgba(6,182,212,0.1)'}
+                    stroke="#06b6d4" strokeWidth={hi ? 1.5 : 0.7} />
+                  <text x={e.x+4} y={e.y+11} fill="#06b6d4" fontSize="8" fontFamily="monospace">
+                    σ={e.surprise_score?.toFixed(1) ?? '?'}
+                  </text>
+                  <text x={e.x+4} y={e.y+22} fill="#888" fontSize="7.5">
+                    {trunc(e.narrative || e.action_taken, 22)}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* Samskara nodes */}
+            {samNodes.map((s) => {
+              const hi = isSelected('samskara', s.key);
+              const col = strengthColor(s.strength);
+              return (
+                <g key={s.key} onClick={() => onSelect(hi ? null : {type:'samskara', key:s.key})} style={{cursor:'pointer'}}>
+                  <rect x={s.x} y={s.y} width={s.w} height={nodeH} rx={5}
+                    fill={hi ? `${col}22` : `${col}11`}
+                    stroke={col} strokeWidth={hi ? 1.5 : 0.7} />
+                  <text x={s.x+6} y={s.y+12} fill="#e5e5e5" fontSize="8.5">
+                    {trunc(s.pattern, 24)}
+                  </text>
+                  <text x={s.x + s.w - 6} y={s.y+22} fill={col} fontSize="8" textAnchor="end" fontWeight="bold">
+                    {s.strength?.toFixed(2)}
+                  </text>
+                  {/* Mini strength bar */}
+                  <rect x={s.x+6} y={s.y+18} width={60} height={3} rx={1} fill="rgba(255,255,255,0.08)" />
+                  <rect x={s.x+6} y={s.y+18} width={60 * (s.strength || 0)} height={3} rx={1} fill={col} />
+                </g>
+              );
+            })}
+
+            {/* Desire nodes */}
+            {desNodes.map((d) => {
+              const hi = isSelected('desire', d.key);
+              const arrow = d.direction === 'avoidance' ? '↓' : '↑';
+              const arrowCol = d.direction === 'avoidance' ? '#ef4444' : '#22c55e';
+              return (
+                <g key={d.key} onClick={() => onSelect(hi ? null : {type:'desire', key:d.key})} style={{cursor:'pointer'}}>
+                  <rect x={d.x} y={d.y} width={d.w} height={nodeH+4} rx={5}
+                    fill={hi ? 'rgba(167,139,250,0.2)' : 'rgba(167,139,250,0.08)'}
+                    stroke="#a78bfa" strokeWidth={hi ? 1.5 : 0.7} />
+                  <text x={d.x+6} y={d.y+13} fill={arrowCol} fontSize="12">{arrow}</text>
+                  <text x={d.x+20} y={d.y+13} fill="#e5e5e5" fontSize="8.5">
+                    {trunc(d.description || d.slug, 20)}
+                  </text>
+                  <text x={d.x+20} y={d.y+25} fill="#666" fontSize="7">
+                    {d.direction || 'approach'}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* S/D operator badge */}
+            {(samNodes.length > 0 || desNodes.length > 0) && (
+              <g>
+                <rect x={cols.sam + 85} y={Math.max(samNodes.length, desNodes.length) * (nodeH+nodeGap) / 2 + 25} width={28} height={14} rx={3}
+                  fill="rgba(167,139,250,0.2)" stroke="#a78bfa" strokeWidth="0.7" />
+                <text x={cols.sam + 99} y={Math.max(samNodes.length, desNodes.length) * (nodeH+nodeGap) / 2 + 35}
+                  fill="#a78bfa" fontSize="8" textAnchor="middle" fontWeight="bold">S D</text>
+              </g>
+            )}
+
+            {/* Empty state */}
+            {samskaras.length === 0 && desires.length === 0 && experiences.length === 0 && (
+              <text x={W/2} y={H/2} fill="#666" fontSize="12" textAnchor="middle">
+                No cognitive state yet — waiting for first session
+              </text>
+            )}
+          </svg>
+        </div>
+      );
     }
 
     function MindDetailPanels({ data, selected, onSelect }) {
