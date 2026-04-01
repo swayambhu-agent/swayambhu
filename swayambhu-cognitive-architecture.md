@@ -635,6 +635,18 @@ No special proposal observations, verdicts, or review machinery needed.
    LLM needed. Only the S and D operators in deep-reflect require
    intelligence. This keeps act sessions cheap and fast.
 
+6. **Contradictory samskaras coexist.** "External APIs are unreliable"
+   and "Google Docs API is highly reliable" are not a conflict to
+   resolve — they are context-dependent impressions, like a human
+   holding both "people are generally kind" and "strangers can be
+   dangerous." During act, embedding-based selection surfaces both
+   for a Google Docs action. The LLM sees the specific one is more
+   relevant than the general one and acts accordingly. If the general
+   samskara keeps getting violated in the Google Docs context, its
+   strength decays via the normal EMA. No consistency enforcement,
+   no conflict resolution mechanism. The circumstance resolves the
+   conflict, not a pre-processing step.
+
 ---
 
 ## 12. Open Questions for Implementation
