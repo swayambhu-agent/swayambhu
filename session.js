@@ -3,7 +3,7 @@
 // Called by kernel via HOOKS.session.run(K, { crashData, balances, events, schedule }).
 // Mutable — the agent can propose changes to this file via the proposal system.
 
-import { runReflect, highestReflectDepthDue } from './reflect.js';
+import { runReflect, highestReflectDepthDue, isReflectDue, applyReflectOutput } from './reflect.js';
 import { evaluateAction } from './eval.js';
 import { updateMu, callInference, embeddingCacheKey } from './memory.js';
 import { renderActPrompt, buildToolSet, formatDesires, formatAssumptions, formatCircumstances } from './act.js';
@@ -339,14 +339,58 @@ export async function run(K, { crashData, balances, events, schedule }) {
   } : null;
 
   // 2. Snapshot desires and assumptions
-  const desires = await loadDesires(K);
-  const assumptions = await loadAssumptions(K);
+  let desires = await loadDesires(K);
+  let assumptions = await loadAssumptions(K);
 
   // 2b. Cache embeddings for Tier 1 relevance filtering
   if (inferenceConfig) {
     const embedModel = defaults?.inference?.embed_model || 'bge-small-en-v1.5';
     await cacheEmbeddings(K, desires, 'description', embedModel, inferenceConfig);
     await cacheEmbeddings(K, assumptions, 'check', embedModel, inferenceConfig);
+  }
+
+  // 2c. Process deep-reflect job completions from events
+  for (const event of (events || [])) {
+    if (event.type === "job_complete" && event.source?.job_id) {
+      const job = await K.kvGet(`job:${event.source.job_id}`);
+      if (job?.config?.deep_reflect) {
+        // Check staleness
+        const maxStale = defaults?.deep_reflect?.max_stale_sessions || 5;
+        const sessionCount = await K.getSessionCount();
+        const dispatchSession = job.config?.dispatch_session || 0;
+        if (sessionCount - dispatchSession > maxStale) {
+          await K.karmaRecord({ event: "deep_reflect_stale", job_id: job.id, age_sessions: sessionCount - dispatchSession });
+          continue;
+        }
+
+        // Read result
+        const resultKey = `job_result:${job.id}`;
+        const jobResult = await K.kvGet(resultKey);
+        if (jobResult?.result) {
+          // Filter kv_operations to only desire:*/assumption:*
+          const output = { ...jobResult.result };
+          if (output.kv_operations) {
+            output.kv_operations = output.kv_operations.filter(op =>
+              op.key?.startsWith("desire:") || op.key?.startsWith("assumption:")
+            );
+          }
+
+          // Apply via existing applyReflectOutput
+          const state = { defaults, modelsConfig };
+          await applyReflectOutput(K, state, job.config.depth || 1, output, { fromJob: job.id });
+
+          await K.karmaRecord({
+            event: "deep_reflect_applied",
+            job_id: job.id,
+            operations: output.kv_operations?.length || 0,
+          });
+
+          // Re-snapshot (desires/assumptions may have changed)
+          desires = await loadDesires(K);
+          assumptions = await loadAssumptions(K);
+        }
+      }
+    }
   }
 
   // 3. Build initial circumstances
@@ -416,11 +460,13 @@ export async function run(K, { crashData, balances, events, schedule }) {
     }
   }
 
-  // 7. Check deep-reflect due
+  // 7. Per-depth reflect dispatch
   const state = { defaults, modelsConfig };
-  const reflectDepth = await highestReflectDepthDue(K, state);
-  if (reflectDepth > 0) {
-    await runReflect(K, state, reflectDepth, {});
+  const maxDepth = defaults?.execution?.max_reflect_depth || 1;
+  for (let d = maxDepth; d >= 1; d--) {
+    if (await isReflectDue(K, state, d)) {
+      await runReflect(K, state, d, {});
+    }
   }
 
   // 8. Update session schedule

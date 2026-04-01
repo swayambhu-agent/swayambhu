@@ -4,6 +4,8 @@ import { makeMockK } from "./helpers/mock-kernel.js";
 vi.mock("../reflect.js", () => ({
   runReflect: vi.fn(async () => {}),
   highestReflectDepthDue: vi.fn(async () => 0),
+  isReflectDue: vi.fn(async () => false),
+  applyReflectOutput: vi.fn(async () => {}),
 }));
 
 vi.mock("../eval.js", () => ({
@@ -28,7 +30,7 @@ vi.mock("../memory.js", () => ({
 }));
 
 import { run } from "../session.js";
-import { runReflect, highestReflectDepthDue } from "../reflect.js";
+import { runReflect, highestReflectDepthDue, isReflectDue, applyReflectOutput } from "../reflect.js";
 import { evaluateAction } from "../eval.js";
 import { updateMu } from "../memory.js";
 
@@ -426,5 +428,218 @@ describe("session memory writes", () => {
     const muCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("mu:"));
     expect(muCall).toBeUndefined();
     expect(updateMu).not.toHaveBeenCalled();
+  });
+});
+
+// ── Deep-reflect job collection tests ─────────────────────────
+
+describe("deep-reflect job collection", () => {
+  let K;
+
+  const JOB_ID = "job_dr_001";
+  const DESIRE = {
+    slug: "d_help",
+    direction: "help patrons effectively",
+    description: "Be genuinely helpful.",
+    created_at: "2026-01-01T00:00:00.000Z",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeJobK(jobResult, extraKv = {}) {
+    const kvData = {
+      "desire:d_help": JSON.stringify(DESIRE),
+      [`job:${JOB_ID}`]: JSON.stringify({
+        id: JOB_ID,
+        config: { deep_reflect: true, depth: 1, dispatch_session: 0 },
+      }),
+      [`job_result:${JOB_ID}`]: JSON.stringify({ result: jobResult }),
+      ...extraKv,
+    };
+
+    const k = makeMockK(kvData, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        session_budget: { max_cost: 0.01 }, // tiny budget so main loop exits immediately
+        session: { min_review_cost: 0.05 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { max_stale_sessions: 5 },
+      },
+      sessionCount: 2,
+    });
+
+    // Plan returns no_action (budget exhausted anyway)
+    k.callLLM = vi.fn(async () => ({
+      content: JSON.stringify({ no_action: true, reason: "budget" }),
+      cost: 0.01,
+      toolCalls: null,
+    }));
+
+    // getSessionCost returns high cost so main loop skips
+    k.getSessionCost = vi.fn(async () => 0.50);
+
+    return k;
+  }
+
+  it("applies deep-reflect job results from events", async () => {
+    const jobResult = {
+      reflection: "Test reflection",
+      kv_operations: [
+        { op: "put", key: "desire:d_new", value: { slug: "d_new", direction: "new desire" } },
+      ],
+    };
+
+    K = makeJobK(jobResult);
+    const events = [
+      { type: "job_complete", source: { job_id: JOB_ID } },
+    ];
+
+    await run(K, { crashData: null, balances: {}, events, schedule: {} });
+
+    // applyReflectOutput should have been called with the filtered output
+    expect(applyReflectOutput).toHaveBeenCalledWith(
+      K,
+      expect.objectContaining({ defaults: expect.any(Object) }),
+      1,
+      expect.objectContaining({
+        reflection: "Test reflection",
+        kv_operations: [
+          expect.objectContaining({ key: "desire:d_new" }),
+        ],
+      }),
+      { fromJob: JOB_ID },
+    );
+
+    // Karma should log deep_reflect_applied
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "deep_reflect_applied", job_id: JOB_ID }),
+    );
+  });
+
+  it("filters non-desire/assumption kv_operations", async () => {
+    const jobResult = {
+      reflection: "Test reflection",
+      kv_operations: [
+        { op: "put", key: "desire:d_new", value: { slug: "d_new" } },
+        { op: "put", key: "config:defaults", value: { hacked: true } },
+        { op: "put", key: "assumption:a_new", value: { slug: "a_new" } },
+        { op: "put", key: "prompt:act", value: "pwned" },
+      ],
+    };
+
+    K = makeJobK(jobResult);
+    const events = [
+      { type: "job_complete", source: { job_id: JOB_ID } },
+    ];
+
+    await run(K, { crashData: null, balances: {}, events, schedule: {} });
+
+    // applyReflectOutput should only get desire:* and assumption:* operations
+    const call = applyReflectOutput.mock.calls[0];
+    const output = call[3];
+    expect(output.kv_operations).toHaveLength(2);
+    expect(output.kv_operations[0].key).toBe("desire:d_new");
+    expect(output.kv_operations[1].key).toBe("assumption:a_new");
+  });
+
+  it("skips stale deep-reflect jobs", async () => {
+    const jobResult = {
+      reflection: "Stale reflection",
+      kv_operations: [],
+    };
+
+    const kvData = {
+      "desire:d_help": JSON.stringify(DESIRE),
+      [`job:${JOB_ID}`]: JSON.stringify({
+        id: JOB_ID,
+        config: { deep_reflect: true, depth: 1, dispatch_session: 0 },
+      }),
+      [`job_result:${JOB_ID}`]: JSON.stringify({ result: jobResult }),
+    };
+
+    K = makeMockK(kvData, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        session_budget: { max_cost: 0.01 },
+        session: { min_review_cost: 0.05 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { max_stale_sessions: 5 },
+      },
+      sessionCount: 10, // 10 - 0 = 10 > 5 max_stale
+    });
+
+    K.callLLM = vi.fn(async () => ({
+      content: JSON.stringify({ no_action: true, reason: "budget" }),
+      cost: 0.01,
+      toolCalls: null,
+    }));
+    K.getSessionCost = vi.fn(async () => 0.50);
+
+    const events = [
+      { type: "job_complete", source: { job_id: JOB_ID } },
+    ];
+
+    await run(K, { crashData: null, balances: {}, events, schedule: {} });
+
+    // applyReflectOutput should NOT have been called
+    expect(applyReflectOutput).not.toHaveBeenCalled();
+
+    // Should log staleness
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "deep_reflect_stale", job_id: JOB_ID }),
+    );
+  });
+});
+
+// ── Per-depth reflect dispatch tests ──────────────────────────
+
+describe("per-depth reflect dispatch", () => {
+  let K;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    K = makeMockK({}, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        session_budget: { max_cost: 0.01 },
+        session: { min_review_cost: 0.05 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 }, max_reflect_depth: 3 },
+      },
+    });
+
+    K.callLLM = vi.fn(async () => ({
+      content: JSON.stringify({ no_action: true, reason: "budget" }),
+      cost: 0.01,
+      toolCalls: null,
+    }));
+    K.getSessionCost = vi.fn(async () => 0.50);
+  });
+
+  it("dispatches each due depth independently", async () => {
+    // Depths 3 and 1 are due, depth 2 is not
+    isReflectDue.mockImplementation(async (K, state, d) => d === 3 || d === 1);
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    // runReflect should be called for depth 3 and depth 1
+    expect(runReflect).toHaveBeenCalledTimes(2);
+    expect(runReflect.mock.calls[0][2]).toBe(3);
+    expect(runReflect.mock.calls[1][2]).toBe(1);
+  });
+
+  it("dispatches nothing when no depth is due", async () => {
+    isReflectDue.mockResolvedValue(false);
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    expect(runReflect).not.toHaveBeenCalled();
   });
 });
