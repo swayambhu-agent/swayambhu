@@ -1,0 +1,6 @@
+{
+  "samskara:comms:defaults": {
+    "pattern": "When in doubt, do not send. Silence is safer than a poorly judged message. A message sent cannot be unsent, but a message held can always be sent later with better judgment.",
+    "strength": 0.3
+  }
+}
