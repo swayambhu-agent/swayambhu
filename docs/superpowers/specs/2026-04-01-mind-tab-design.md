@@ -1,193 +1,126 @@
-# Design: Mind Tab — Cognitive Health Dashboard
+# Design: Mind Tab — Cognitive Graph Explorer
 
 ## Problem
 
-The dashboard shows session-level data (timeline, karma, chat) but cannot
-show the cognitive system working as a whole. You can see what the agent
-did, but not how its mind is developing — which samskaras are forming,
-which desires are evolving, how experiences flow into beliefs and actions.
+The dashboard shows session-level data but cannot show the cognitive
+system working as a whole. The original Mind tab design (four-column
+flow graph) doesn't scale — with hundreds of experiences and dozens of
+samskaras, you can't show everything at once.
 
-## Design
+## Design: Graph Explorer
 
-### Architecture: Header Bar + Mind Tab
+One entity at the center, its connections radiating out. Navigate by
+clicking connected nodes. Scales to any number of entities because only
+the neighborhood is shown.
 
-**Header bar** (always visible): compact cognitive health indicators
-added to the existing header. Samskara count, desire count, experience
-count, sessions since last deep-reflect. Glanceable — tells you whether
-to look deeper.
+### Layout
 
-**Mind tab**: new tab alongside Timeline, Chat, Contacts, KV Explorer,
-Reflections, Modifications. The deep-dive view.
+Three regions:
 
-### Mind Tab Layout: Hybrid (Graph + Detail Panels)
+**Left sidebar** (200px, scrollable): all entities grouped by type.
+Four collapsible sections:
+- **Principles** (amber) — 14 entries, immutable
+- **Desires** (purple) — approach ↑ / avoidance ↓
+- **Samskaras** (green) — pattern + strength score
+- **Experiences** (cyan) — σ score + narrative snippet
 
-Three sections, top to bottom:
+Click any entity in the sidebar → it becomes the center node.
+Selected entity is highlighted in the sidebar.
 
-**1. Operator Health Bar** (compact, always visible within tab)
-
-Single row showing:
-- Bootstrap status (complete / in progress / not started)
-- Last deep-reflect: N sessions ago
-- Last S operator output: +N created, N deepened, N eroded
-- Last D operator output: N evolved
-- Next deep-reflect: ~N sessions
-- Store counts: N samskaras, N desires, N experiences
-
-Data source: `reflect:schedule:1`, last `reflect:1:*` entry, counts
-from `samskara:*`, `desire:*`, `experience:*` prefix listings.
-
-**2. Flow Graph** (compact, ~180px height)
-
-Directed graph showing the cognitive cycle left to right:
+**Center graph** (flex, main area): the selected entity with upstream
+(left) and downstream (right) connections.
 
 ```
-Experiences (ε) → [S/D operators] → Samskaras (s) + Desires (d) → Actions (a) → feedback loop → ε
+[upstream nodes] ——→ [CENTER NODE] ——→ [downstream nodes]
 ```
 
-Each column shows actual entities from KV:
-- **Experiences**: recent episodes with σ score, sorted by recency
-- **Samskaras**: all samskaras with strength bars, color-coded (green >0.7, amber 0.3-0.7, red <0.3)
-- **Desires**: active desires with approach (↑) / avoidance (↓) indicators
-- **Actions**: recent actions from karma with success/failure status
+Each entity type has characteristic connections:
 
-Lines connect related entities:
-- Solid lines: confirmed relationships (experience fed into samskara creation/deepening)
-- Dashed lines: inferred relationships (samskara informed an action)
-- Line opacity scales with strength/confidence of the connection
+| Center Type | Upstream (what feeds in) | Downstream (what flows out) |
+|-------------|-------------------------|----------------------------|
+| Principle | (none — immutable root) | Desires it shaped |
+| Desire | Principles that shaped it + experiences that magnified it | Actions it generated |
+| Samskara | Experiences that formed/deepened it | Actions it informed |
+| Experience | Action that produced it | Samskaras it deepened + desires it magnified |
 
-The S/D operator badge sits between experiences and samskaras/desires,
-with dashed lines showing what the operators produced.
+Click any connected node in the graph → it becomes the new center.
+Navigation is fluid — walk the entire cognitive web node by node.
 
-The feedback loop arrow curves from actions back to experiences,
-completing the cycle visually.
+**Bottom detail strip** (compact, ~60px): key info about the selected
+entity. Upstream/downstream counts. Entity-specific fields.
 
-**Click interaction**: clicking any node in the graph highlights its
-connections (other lines dim) and expands the corresponding detail
-panel below.
+### Operator Health Bar
 
-**3. Detail Panels** (expandable, below graph)
+Same as current implementation — compact bar above the graph showing:
+bootstrap status, DR timing, store counts. No changes needed.
 
-Three side-by-side panels. One expands when a node is clicked:
+### Header Bar Extension
 
-**Samskara detail:**
-- Pattern text
-- Strength score (large)
-- Created session, last tested session
-- Strength-over-time sparkline (from karma history of strength updates)
-- Connected experiences (clickable, jumps to experience detail)
-
-**Desire detail:**
-- Description with approach/avoidance indicator
-- Source principles
-- Last evolved session
-- Magnified from which experience(s)
-
-**Experience detail:**
-- Session number
-- Surprise score (σ) and salience
-- Full narrative text
-- What it fed into: which samskaras were deepened, which desires were
-  magnified (clickable cross-references)
-
-### Dashboard Header Extension
-
-Add to existing header (alongside session count, next session, balances):
-
-```
-● 4 samskaras  ● 2 desires  ● 12 experiences  DR: 3 sessions ago
-```
-
-Color-coded dots match Mind tab colors (green/purple/cyan). Clicking
-any metric navigates to the Mind tab.
+Same as current — cognitive health counters in the always-visible
+header. No changes needed.
 
 ### Data Sources
 
-All data comes from existing KV stores via the dashboard API:
-
-| Data | KV Source | API Endpoint |
-|------|-----------|-------------|
-| Samskaras | `samskara:*` | `GET /kv?prefix=samskara:` + batch read |
-| Desires | `desire:*` | `GET /kv?prefix=desire:` + batch read |
-| Experiences | `experience:*` | `GET /kv?prefix=experience:` + batch read |
-| Operator health | `reflect:schedule:1`, `reflect:1:*` (latest) | `GET /kv/{key}` |
-| Strength history | `karma:*` (samskara write events) | Existing `/kv/karma:*` |
-| Actions | `karma:*` (tool_call events) | Existing `/kv/karma:*` |
-| Bootstrap status | Presence of `desire:*` and `samskara:*` keys | Derived from counts |
-
-### New API Endpoints
-
-**`GET /mind`** — single endpoint returning the complete cognitive state:
+Same `GET /mind` endpoint, extended to include principles:
 
 ```json
 {
-  "samskaras": [
-    { "key": "samskara:slack-silent", "pattern": "...", "strength": 0.92 }
+  "principles": [
+    { "key": "principle:2", "text": "I continually align with my dharma." }
   ],
-  "desires": [
-    { "key": "desire:serve", "slug": "serve", "direction": "approach", "description": "..." }
-  ],
-  "experiences": [
-    { "key": "experience:1711352400", "surprise_score": 0.8, "salience": 0.95, "narrative": "..." }
-  ],
-  "operator_health": {
-    "bootstrap_complete": true,
-    "last_deep_reflect_session": 44,
-    "sessions_since_dr": 3,
-    "next_dr_due": 49,
-    "last_s_output": { "created": 1, "deepened": 2, "eroded": 0 },
-    "last_d_output": { "evolved": 1 }
-  }
+  "samskaras": [...],
+  "desires": [...],
+  "experiences": [...],
+  "operator_health": {...}
 }
 ```
 
-This avoids N+1 API calls from the SPA. One fetch loads the entire
-Mind tab.
-
 ### Relationship Inference
 
-The graph needs to show connections between entities. These aren't
-stored explicitly — they're inferred:
+Connections between entities are inferred at render time using
+session-based correlation (same as before):
 
-**Experience → Samskara**: an experience "fed into" a samskara if:
-- The experience's session matches a karma entry that updated that samskara's strength
-- Or the samskara was created in a deep-reflect that ran after the experience
+- **Principle → Desire**: desire's `source_principles` field references
+  the principle
+- **Experience → Samskara**: samskara strength changed in a session
+  where the experience was recorded
+- **Experience → Desire**: desire evolved in a deep-reflect that
+  processed the experience
+- **Desire → Action**: plan's action was generated with this desire
+  active (from karma data)
+- **Samskara → Action**: plan's `relies_on` references the samskara
 
-**Experience → Desire**: an experience was "magnified into" a desire if:
-- The desire was created/evolved in a deep-reflect that had that experience in its input set
-
-**Samskara → Action**: a samskara "informed" an action if:
-- The plan's `relies_on` field references that samskara key
-- Or the samskara was surfaced by embedding selection during that session
-
-For v1, keep relationship inference simple: session-based correlation.
-If a samskara strength changed in the same session an experience was
-recorded, they're connected. If a desire evolved in the same deep-reflect
-that read certain experiences, they're connected.
-
-### Implementation Scope
-
-**SPA changes** (site/patron/index.html):
-- New Mind tab component
-- Flow graph renderer (SVG, no external dependencies)
-- Detail panel components with expand/collapse
-- Header bar extension with cognitive health counters
-- Click interaction: node → highlight connections + expand panel
-
-**API changes** (dashboard-api/worker.js):
-- New `GET /mind` endpoint that batch-reads cognitive state
-- Derive operator health from reflect schedule and latest reflect output
-
-**No changes to**: kernel.js, session.js, reflect.js, eval.js, memory.js.
-The Mind tab is pure read-only visualization of existing KV state.
+For v1, keep inference simple. Principle→Desire uses the explicit
+`source_principles` field. Other connections use session correlation.
+If no connections can be inferred, show the entity alone with a note.
 
 ### Visual Design
 
-Follow existing dashboard patterns:
-- Dark background (#0a0a0f)
-- Samskara color: green (#22c55e)
-- Desire color: purple (#a78bfa)
-- Experience color: cyan (#06b6d4)
-- Violation/erosion: red (#ef4444)
-- High surprise: amber (#f59e0b)
-- Deep-reflect events: purple (#a78bfa)
-- Strength bars: color-coded by range (green >0.7, amber 0.3-0.7, red <0.3)
+Entity type colors (unchanged):
+- Principles: amber (#f59e0b)
+- Desires: purple (#a78bfa)
+- Samskaras: green (#22c55e), amber (#f59e0b), red (#ef4444) by strength
+- Experiences: cyan (#06b6d4)
+- Actions: gray (#666)
+
+Center node: larger, 2px border, filled background.
+Connected nodes: standard size, 1px border.
+Connection lines: solid for explicit relationships, dashed for inferred.
+
+### Implementation Changes
+
+This replaces the current MindFlowGraph and MindDetailPanels components.
+The MindTab shell, MindHealthBar, header counters, and API endpoint
+stay as-is.
+
+**API changes** (dashboard-api/worker.js):
+- Extend `GET /mind` to include `principles` array (read `principle:*`
+  keys)
+
+**SPA changes** (site/patron/index.html):
+- Replace `MindFlowGraph` with `MindGraphExplorer` — sidebar + center
+  graph + detail strip
+- Remove `MindDetailPanels` (absorbed into graph explorer)
+- Update `MindTab` to pass data to new component
+
+**No changes to**: kernel, session, reflect, eval, memory, prompts.
