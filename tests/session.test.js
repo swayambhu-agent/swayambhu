@@ -7,16 +7,30 @@ vi.mock("../reflect.js", () => ({
 }));
 
 vi.mock("../eval.js", () => ({
-  evaluateAction: vi.fn(() => ({
-    sigma: 0, alpha: {}, salience: 0, eval_method: "stub",
+  evaluateAction: vi.fn(async () => ({
+    sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
     tool_outcomes: [], plan_success_criteria: null,
     assumptions_relied_on: [], candidate_check_ids: [],
+    assumption_scores: {},
   })),
+}));
+
+vi.mock("../memory.js", () => ({
+  updateMu: vi.fn((existing, checkId, score) => ({
+    check_id: checkId,
+    confirmation_count: (existing?.confirmation_count || 0) + (score.direction === "entailment" ? 1 : 0),
+    violation_count: (existing?.violation_count || 0) + (score.direction === "contradiction" ? 1 : 0),
+    last_checked: new Date().toISOString(),
+    cumulative_surprise: score.surprise || 0,
+  })),
+  callInference: vi.fn(async () => ({ embeddings: [] })),
+  embeddingCacheKey: vi.fn((text, model) => `embedding:mock:${model}`),
 }));
 
 import { run } from "../session.js";
 import { runReflect, highestReflectDepthDue } from "../reflect.js";
 import { evaluateAction } from "../eval.js";
+import { updateMu } from "../memory.js";
 
 // ── Cold start tests ────────────────────────────────────────
 
@@ -122,7 +136,6 @@ describe("session plan phase", () => {
     assessment: "success",
     narrative: "Greeting sent successfully.",
     salience_estimate: 0.1,
-    mu_updates: [],
   });
 
   beforeEach(() => {
@@ -207,7 +220,7 @@ describe("session plan phase", () => {
 describe("session memory writes", () => {
   let K;
 
-  const CHECK_ID = "assumption:a_available";
+  const CHECK_ID = "a_available";
 
   const DESIRE = {
     slug: "d_help",
@@ -248,15 +261,16 @@ describe("session memory writes", () => {
       },
     );
 
-    // evaluateAction controls candidate_check_ids and salience
+    // evaluateAction controls assumption_scores and salience
     if (evalOverride) {
-      evaluateAction.mockReturnValue(evalOverride);
+      evaluateAction.mockResolvedValue(evalOverride);
     } else {
-      evaluateAction.mockReturnValue({
-        sigma: 0, alpha: {}, salience: 0, eval_method: "stub",
+      evaluateAction.mockResolvedValue({
+        sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
         tool_outcomes: [], plan_success_criteria: null,
         assumptions_relied_on: [CHECK_ID],
         candidate_check_ids: [CHECK_ID],
+        assumption_scores: {},
       });
     }
 
@@ -280,17 +294,33 @@ describe("session memory writes", () => {
     vi.clearAllMocks();
   });
 
-  it("writes mu on confirmed assumption", async () => {
+  it("writes mu via updateMu for assumption_scores from eval", async () => {
     const review = {
       assessment: "success",
       narrative: "Assumption confirmed.",
       salience_estimate: 0.1,
-      mu_updates: [{ check_id: CHECK_ID, confirmed: true }],
     };
-    K = makeK(review);
+    const evalResult = {
+      sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
+      tool_outcomes: [], plan_success_criteria: null,
+      assumptions_relied_on: [CHECK_ID],
+      candidate_check_ids: [CHECK_ID],
+      assumption_scores: {
+        [CHECK_ID]: { direction: "entailment", surprise: 0 },
+      },
+    };
+    K = makeK(review, evalResult);
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
+    // updateMu should have been called with the score from eval
+    expect(updateMu).toHaveBeenCalledWith(
+      null, // no existing mu
+      CHECK_ID,
+      { direction: "entailment", surprise: 0 },
+    );
+
+    // mu key should have been written
     const muCall = K.kvWriteSafe.mock.calls.find(([key]) => key === `mu:${CHECK_ID}`);
     expect(muCall).toBeDefined();
     const muValue = typeof muCall[1] === "string" ? JSON.parse(muCall[1]) : muCall[1];
@@ -298,12 +328,43 @@ describe("session memory writes", () => {
     expect(muValue.violation_count).toBe(0);
   });
 
+  it("writes mu with violation on contradiction score", async () => {
+    const review = {
+      assessment: "failed",
+      narrative: "Assumption violated.",
+      salience_estimate: 0.1,
+    };
+    const evalResult = {
+      sigma: 0.8, alpha: {}, salience: 0.8, eval_method: "pipeline",
+      tool_outcomes: [], plan_success_criteria: null,
+      assumptions_relied_on: [CHECK_ID],
+      candidate_check_ids: [CHECK_ID],
+      assumption_scores: {
+        [CHECK_ID]: { direction: "contradiction", surprise: 0.8 },
+      },
+    };
+    K = makeK(review, evalResult);
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    expect(updateMu).toHaveBeenCalledWith(
+      null,
+      CHECK_ID,
+      { direction: "contradiction", surprise: 0.8 },
+    );
+
+    const muCall = K.kvWriteSafe.mock.calls.find(([key]) => key === `mu:${CHECK_ID}`);
+    expect(muCall).toBeDefined();
+    const muValue = typeof muCall[1] === "string" ? JSON.parse(muCall[1]) : muCall[1];
+    expect(muValue.violation_count).toBe(1);
+    expect(muValue.confirmation_count).toBe(0);
+  });
+
   it("writes episode when salience exceeds threshold", async () => {
     const review = {
       assessment: "success",
       narrative: "Something significant happened.",
       salience_estimate: 0.8,
-      mu_updates: [],
     };
     K = makeK(review);
 
@@ -313,9 +374,9 @@ describe("session memory writes", () => {
     expect(episodeCall).toBeDefined();
     const episodeValue = typeof episodeCall[1] === "string" ? JSON.parse(episodeCall[1]) : episodeCall[1];
     expect(episodeValue.narrative).toBe("Something significant happened.");
-    // evalResult.salience is 0, so salience falls back to review.salience_estimate = 0.8
-    expect(episodeValue.salience).toBe(0.8);
-    expect(episodeValue.sigma).toBe(0);
+    expect(episodeValue.active_desires).toEqual(["desire:d_help"]);
+    expect(episodeValue.surprise_score).toBe(0);
+    expect(episodeValue.embedding).toBeNull(); // no inferenceConfig
   });
 
   it("skips episode when salience is below threshold", async () => {
@@ -323,7 +384,6 @@ describe("session memory writes", () => {
       assessment: "routine",
       narrative: "Nothing notable.",
       salience_estimate: 0.2,
-      mu_updates: [],
     };
     K = makeK(review);
 
@@ -333,32 +393,18 @@ describe("session memory writes", () => {
     expect(episodeCall).toBeUndefined();
   });
 
-  it("filters out hallucinated check_ids from mu_updates", async () => {
-    const HALLUCINATED_ID = "assumption:nonexistent_hallucination";
+  it("does not write mu when assumption_scores is empty", async () => {
     const review = {
       assessment: "success",
-      narrative: "Processed.",
+      narrative: "No assumptions tested.",
       salience_estimate: 0.1,
-      mu_updates: [
-        { check_id: CHECK_ID, confirmed: true },
-        { check_id: HALLUCINATED_ID, confirmed: true },
-      ],
     };
     K = makeK(review);
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // Valid check_id written
-    const validMu = K.kvWriteSafe.mock.calls.find(([key]) => key === `mu:${CHECK_ID}`);
-    expect(validMu).toBeDefined();
-
-    // Hallucinated check_id NOT written
-    const hallucinatedMu = K.kvWriteSafe.mock.calls.find(([key]) => key === `mu:${HALLUCINATED_ID}`);
-    expect(hallucinatedMu).toBeUndefined();
-
-    // karmaRecord called for unknown check_ids
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "review_unknown_check_ids" }),
-    );
+    const muCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("mu:"));
+    expect(muCall).toBeUndefined();
+    expect(updateMu).not.toHaveBeenCalled();
   });
 });

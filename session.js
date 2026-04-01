@@ -5,6 +5,7 @@
 
 import { runReflect, highestReflectDepthDue } from './reflect.js';
 import { evaluateAction } from './eval.js';
+import { updateMu, callInference, embeddingCacheKey } from './memory.js';
 import { renderActPrompt, buildToolSet, formatDesires, formatAssumptions, formatCircumstances } from './act.js';
 
 // ── Snapshot loaders ────────────────────────────────────────
@@ -41,6 +42,41 @@ function buildCircumstances(events, balances, crashData) {
   if (balances) circumstances.balances = balances;
   if (crashData) circumstances.crash = crashData;
   return circumstances;
+}
+
+// ── Embedding cache helper ───────────────────────────────────
+
+async function cacheEmbeddings(K, entities, textField, model, config) {
+  const textsToEmbed = [];
+  const pendingKeys = [];
+
+  for (const [key, entity] of Object.entries(entities)) {
+    const text = entity[textField];
+    if (!text) continue;
+    const cacheKey = embeddingCacheKey(text, model);
+    const cached = await K.kvGet(cacheKey);
+    if (cached) {
+      entity._embedding = cached;
+    } else {
+      textsToEmbed.push(text);
+      pendingKeys.push({ entityKey: key, cacheKey });
+    }
+  }
+
+  if (textsToEmbed.length > 0) {
+    try {
+      const resp = await callInference(config.url, config.secret, '/embed', { texts: textsToEmbed });
+      for (let i = 0; i < pendingKeys.length; i++) {
+        const emb = resp.embeddings?.[i];
+        if (emb) {
+          entities[pendingKeys[i].entityKey]._embedding = emb;
+          await K.kvWriteSafe(pendingKeys[i].cacheKey, emb);
+        }
+      }
+    } catch {
+      await K.karmaRecord({ event: "embedding_cache_failed" });
+    }
+  }
 }
 
 // ── Plan phase ──────────────────────────────────────────────
@@ -191,9 +227,6 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
     `tool_outcomes: ${JSON.stringify(evalResult.tool_outcomes)}`,
     `plan_success_criteria: ${evalResult.plan_success_criteria || "none"}`,
     `assumptions_relied_on: ${JSON.stringify(evalResult.assumptions_relied_on)}`,
-    "",
-    `candidate_check_ids: ${JSON.stringify(evalResult.candidate_check_ids)}`,
-    "IMPORTANT: mu_updates check_ids MUST come from candidate_check_ids above. Unknown IDs will be stripped.",
   ].join("\n");
 
   const systemPrompt = reviewPrompt
@@ -216,7 +249,7 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
       final_text: ledger.final_text?.slice(0, 500),
     }, null, 2),
     "",
-    "Respond with JSON: { assessment, narrative, salience_estimate, mu_updates: [{ check_id, confirmed }] }",
+    "Respond with JSON: { assessment, narrative, salience_estimate }",
   ].join("\n");
 
   const response = await K.callLLM({
@@ -236,47 +269,21 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
     return null;
   }
 
-  // Validate check_ids
-  if (review.mu_updates?.length) {
-    const allowed = new Set(evalResult.candidate_check_ids || []);
-    const unknown = review.mu_updates.filter(u => !allowed.has(u.check_id));
-    if (unknown.length) {
-      await K.karmaRecord({
-        event: "review_unknown_check_ids",
-        unknown: unknown.map(u => u.check_id),
-        stripped: true,
-      });
-      review.mu_updates = review.mu_updates.filter(u => allowed.has(u.check_id));
-    }
-  }
-
   return review;
 }
 
 // ── Memory writes ───────────────────────────────────────────
 
-async function writeMemory(K, { ledger, evalResult, review, desires, assumptions }) {
+async function writeMemory(K, { ledger, evalResult, review, desires, assumptions, inferenceConfig }) {
   const now = new Date().toISOString();
 
-  // μ writes — always, for each mu_update
-  if (review?.mu_updates?.length) {
-    for (const update of review.mu_updates) {
-      const muKey = `mu:${update.check_id}`;
-      const existing = await K.kvGet(muKey) || {
-        check_id: update.check_id,
-        confirmation_count: 0,
-        violation_count: 0,
-        last_checked: null,
-      };
-
-      if (update.confirmed) {
-        existing.confirmation_count = (existing.confirmation_count || 0) + 1;
-      } else {
-        existing.violation_count = (existing.violation_count || 0) + 1;
-      }
-      existing.last_checked = now;
-
-      await K.kvWriteSafe(muKey, existing);
+  // μ writes — from eval's mechanical assumption_scores (not review's LLM output)
+  if (evalResult.assumption_scores) {
+    for (const [checkId, score] of Object.entries(evalResult.assumption_scores)) {
+      const muKey = `mu:${checkId}`;
+      const existing = await K.kvGet(muKey);
+      const updated = updateMu(existing, checkId, score);
+      await K.kvWriteSafe(muKey, updated);
     }
   }
 
@@ -287,16 +294,29 @@ async function writeMemory(K, { ledger, evalResult, review, desires, assumptions
     : (review?.salience_estimate || 0);
 
   if (salience > salienceThreshold) {
+    let embedding = null;
+    if (inferenceConfig) {
+      try {
+        const resp = await callInference(inferenceConfig.url, inferenceConfig.secret, '/embed', {
+          texts: [review?.narrative || review?.assessment || '']
+        });
+        embedding = resp.embeddings?.[0] || null;
+      } catch {
+        await K.karmaRecord({ event: "episode_embedding_failed" });
+      }
+    }
+
     const episodeKey = `episode:${Date.now()}`;
     await K.kvWriteSafe(episodeKey, {
-      action_id: ledger.action_id,
-      plan: ledger.plan,
-      tool_outcomes: evalResult.tool_outcomes,
-      assessment: review?.assessment,
-      narrative: review?.narrative,
-      salience,
-      sigma: evalResult.sigma,
       timestamp: now,
+      action_taken: ledger.plan.action,
+      outcome: ledger.final_text || review?.assessment,
+      active_assumptions: ledger.plan.relies_on || [],
+      active_desires: Object.keys(desires),
+      surprise_score: evalResult.sigma,
+      affinity_vector: evalResult.alpha,
+      narrative: review?.narrative || review?.assessment,
+      embedding,
     });
   }
 }
@@ -308,9 +328,26 @@ export async function run(K, { crashData, balances, events, schedule }) {
   const defaults = await K.getDefaults();
   const modelsConfig = await K.getModelsConfig();
 
+  // 1b. Load inference config for embedding pipeline
+  const inferenceUrl = defaults?.inference?.url || null;
+  const inferenceSecret = await K.kvGet("secret:inference");
+  const inferenceConfig = inferenceUrl ? {
+    url: inferenceUrl,
+    secret: inferenceSecret,
+    relevance_threshold: defaults?.inference?.relevance_threshold || 0.3,
+    ambiguity_threshold: defaults?.inference?.ambiguity_threshold || 0.6,
+  } : null;
+
   // 2. Snapshot desires and assumptions
   const desires = await loadDesires(K);
   const assumptions = await loadAssumptions(K);
+
+  // 2b. Cache embeddings for Tier 1 relevance filtering
+  if (inferenceConfig) {
+    const embedModel = defaults?.inference?.embed_model || 'bge-small-en-v1.5';
+    await cacheEmbeddings(K, desires, 'description', embedModel, inferenceConfig);
+    await cacheEmbeddings(K, assumptions, 'check', embedModel, inferenceConfig);
+  }
 
   // 3. Cold start: no desires → deep reflect to derive them
   if (Object.keys(desires).length === 0) {
@@ -372,13 +409,13 @@ export async function run(K, { crashData, balances, events, schedule }) {
     });
 
     // 7d. Eval phase
-    const evalResult = evaluateAction(ledger, desires, assumptions);
+    const evalResult = await evaluateAction(K, ledger, desires, assumptions, inferenceConfig || {});
 
     // 7e. Review phase
     const review = await reviewPhase(K, { ledger, evalResult, defaults });
 
     // 7f. Memory writes
-    await writeMemory(K, { ledger, evalResult, review, desires, assumptions });
+    await writeMemory(K, { ledger, evalResult, review, desires, assumptions, inferenceConfig });
 
     cyclesRun++;
 
