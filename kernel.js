@@ -416,6 +416,7 @@ class Kernel {
       kvWriteGated: async (op, context) => kernel.kvWriteGated(op, context),
 
       // Agent loop
+      runAgentTurn: async (opts) => kernel.runAgentTurn(opts),
       runAgentLoop: async (opts) => kernel.runAgentLoop(opts),
       executeToolCall: async (tc) => kernel.executeToolCall(tc),
       buildToolDefinitions: async (extra) => kernel.buildToolDefinitions(extra),
@@ -1605,6 +1606,50 @@ class Kernel {
       await this.karmaRecord({ event: "hook_error", hook: hookName, error: err.message });
       return null;  // broken hook degrades to no hook, not crash
     }
+  }
+
+  async runAgentTurn({ systemPrompt, messages, tools, model, effort,
+                       maxTokens, step, budgetCap }) {
+    const response = await this.callLLM({
+      model, effort, maxTokens,
+      systemPrompt, messages, tools,
+      step, budgetCap,
+    });
+    const cost = response.cost || 0;
+
+    if (response.toolCalls?.length) {
+      // Append assistant message with tool calls
+      messages.push({
+        role: 'assistant',
+        content: response.content || null,
+        tool_calls: response.toolCalls,
+      });
+
+      // Execute tools in parallel, catch errors gracefully
+      const toolResults = await Promise.all(
+        response.toolCalls.map(tc => this.executeToolCall(tc)
+          .catch(err => ({ error: err.message })))
+      );
+
+      // Append one tool result message per call
+      for (let i = 0; i < response.toolCalls.length; i++) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: response.toolCalls[i].id,
+          content: JSON.stringify(toolResults[i]),
+        });
+      }
+
+      return { response, toolResults, cost, done: false };
+    }
+
+    // No tool calls — append assistant message, signal done
+    messages.push({
+      role: 'assistant',
+      content: response.content || null,
+    });
+
+    return { response, toolResults: [], cost, done: true };
   }
 
   async runAgentLoop({ systemPrompt, initialContext, tools, model, effort,

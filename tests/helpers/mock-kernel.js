@@ -46,6 +46,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
     }),
 
     // Agent loop
+    runAgentTurn: vi.fn(async () => ({ response: { content: null }, toolResults: [], cost: 0, done: true })),
+    callLLM: vi.fn(async () => ({ content: '{}', cost: 0, toolCalls: null })),
     runAgentLoop: vi.fn(async () => ({})),
     executeToolCall: vi.fn(async () => ({})),
     buildToolDefinitions: vi.fn(async () => []),

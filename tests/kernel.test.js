@@ -607,7 +607,133 @@ describe("runAgentLoop", () => {
   });
 });
 
-// ── 5. executeToolCall ─────────────────────────────────────
+// ── 5. runAgentTurn ────────────────────────────────────────
+
+describe("runAgentTurn", () => {
+  it("no tool calls: appends assistant message, returns done: true", async () => {
+    const { kernel } = makeKernel();
+    kernel.callLLM = vi.fn(async () => ({
+      content: '{"result":"ok"}',
+      cost: 0.01,
+      toolCalls: null,
+    }));
+
+    const messages = [{ role: "user", content: "hello" }];
+    const result = await kernel.runAgentTurn({
+      systemPrompt: "test",
+      messages,
+      tools: [],
+      model: "test",
+      effort: "low",
+      maxTokens: 100,
+      step: "test_turn",
+    });
+
+    expect(result.done).toBe(true);
+    expect(result.response.content).toBe('{"result":"ok"}');
+    expect(result.toolResults).toEqual([]);
+    expect(result.cost).toBe(0.01);
+    // assistant message appended
+    expect(messages).toHaveLength(2);
+    expect(messages[1].role).toBe("assistant");
+    expect(messages[1].content).toBe('{"result":"ok"}');
+  });
+
+  it("tool calls: appends assistant + tool messages, returns done: false", async () => {
+    const { kernel } = makeKernel();
+    kernel.callLLM = vi.fn(async () => ({
+      content: null,
+      cost: 0.005,
+      toolCalls: [{ id: "tc1", function: { name: "some_tool", arguments: '{"x":1}' } }],
+    }));
+    kernel.executeToolCall = vi.fn(async () => ({ result: "tool_output" }));
+
+    const messages = [{ role: "user", content: "do it" }];
+    const result = await kernel.runAgentTurn({
+      systemPrompt: "test",
+      messages,
+      tools: [],
+      model: "test",
+      effort: "low",
+      maxTokens: 100,
+      step: "test_turn",
+    });
+
+    expect(result.done).toBe(false);
+    expect(result.toolResults).toHaveLength(1);
+    expect(result.toolResults[0]).toEqual({ result: "tool_output" });
+    // assistant message + tool result message appended
+    expect(messages).toHaveLength(3);
+    expect(messages[1].role).toBe("assistant");
+    expect(messages[1].tool_calls).toBeDefined();
+    expect(messages[2].role).toBe("tool");
+    expect(messages[2].tool_call_id).toBe("tc1");
+  });
+
+  it("tool execution error handled gracefully", async () => {
+    const { kernel } = makeKernel();
+    kernel.callLLM = vi.fn(async () => ({
+      content: null,
+      cost: 0.005,
+      toolCalls: [{ id: "tc2", function: { name: "broken_tool", arguments: "{}" } }],
+    }));
+    kernel.executeToolCall = vi.fn(async () => { throw new Error("tool exploded"); });
+
+    const messages = [{ role: "user", content: "run" }];
+    const result = await kernel.runAgentTurn({
+      systemPrompt: "test",
+      messages,
+      tools: [],
+      model: "test",
+      effort: "low",
+      maxTokens: 100,
+      step: "test_turn",
+    });
+
+    expect(result.done).toBe(false);
+    expect(result.toolResults[0]).toEqual({ error: "tool exploded" });
+    // tool result message has error content
+    expect(messages[2].role).toBe("tool");
+    expect(messages[2].content).toContain("tool exploded");
+  });
+
+  it("multiple tool calls dispatched in parallel", async () => {
+    const { kernel } = makeKernel();
+    kernel.callLLM = vi.fn(async () => ({
+      content: null,
+      cost: 0.005,
+      toolCalls: [
+        { id: "tc1", function: { name: "tool_a", arguments: "{}" } },
+        { id: "tc2", function: { name: "tool_b", arguments: "{}" } },
+      ],
+    }));
+
+    const order = [];
+    kernel.executeToolCall = vi.fn(async (tc) => {
+      order.push(tc.function.name);
+      return { ok: true };
+    });
+
+    const messages = [{ role: "user", content: "parallel" }];
+    const result = await kernel.runAgentTurn({
+      systemPrompt: "test",
+      messages,
+      tools: [],
+      model: "test",
+      effort: "low",
+      maxTokens: 100,
+      step: "test_turn",
+    });
+
+    expect(result.done).toBe(false);
+    expect(result.toolResults).toHaveLength(2);
+    expect(order).toContain("tool_a");
+    expect(order).toContain("tool_b");
+    expect(kernel.executeToolCall).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── 6. executeToolCall ─────────────────────────────────────
 
 describe("executeToolCall", () => {
   it("routes other tools to executeAction", async () => {
