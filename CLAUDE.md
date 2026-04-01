@@ -126,7 +126,9 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 | File | Role | Mutable? |
 |------|------|----------|
 | `kernel.js` | Safety gates, execution engine, session infrastructure (~1914 LOC) | No (governor enforces) |
-| `act.js` | Session policy — act flow, context building | Yes (via code staging) |
+| `session.js` | Session hook — plan→act→eval→review cycle, cold start | Yes (via code staging) |
+| `act.js` | Act library — prompt rendering, tool defs, context formatting | Yes (via code staging) |
+| `eval.js` | Eval stub — mechanical σ/α computation (typed zeros in M3) | Yes (via code staging) |
 | `reflect.js` | Reflection policy — scheduling, deep reflect dispatch | Yes (via code staging) |
 | `tools/*.js` | Tool implementations | Yes (via code staging) |
 | `providers/*.js` | LLM/balance provider adapters | Yes (via code staging) |
