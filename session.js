@@ -147,7 +147,7 @@ async function actPhase(K, { plan, systemPrompt, messages, tools, model, effort,
   const maxActSteps = defaults?.execution?.max_steps?.act || 12;
   const budget = defaults?.session_budget || {};
   const maxCost = budget.max_cost || 0.50;
-  const minReviewCost = 0.005; // minimum cost reserved for review
+  const minReviewCost = defaults?.session?.min_review_cost || 0.05;
 
   const ledger = {
     action_id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -374,7 +374,8 @@ export async function run(K, { crashData, balances, events, schedule }) {
   const maxCycles = 10;
   const budget = defaults?.session_budget || {};
   const maxCost = budget.max_cost || 0.50;
-  const minReviewCost = 0.005;
+  const minReviewCost = defaults?.session?.min_review_cost || 0.05;
+  let cyclesRun = 0;
 
   for (let cycle = 0; cycle < maxCycles; cycle++) {
     // 7a. Budget preflight
@@ -405,6 +406,8 @@ export async function run(K, { crashData, balances, events, schedule }) {
 
     // 7f. Memory writes
     await writeMemory(K, { ledger, evalResult, review, desires, assumptions });
+
+    cyclesRun++;
 
     // 7g. Refresh circumstances
     const freshBalances = await K.checkBalance();
@@ -439,7 +442,7 @@ export async function run(K, { crashData, balances, events, schedule }) {
   const finalCost = await K.getSessionCost();
   await K.karmaRecord({
     event: "session_complete",
-    cycles_run: messages.filter(m => m.role === "user").length,
+    cycles_run: cyclesRun,
     total_cost: finalCost,
   });
 }
