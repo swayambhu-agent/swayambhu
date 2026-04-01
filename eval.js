@@ -24,13 +24,13 @@ function extractOutcomeText(ledger) {
 
 function computeMetrics(classified, extras) {
   let sigma = 0;
-  const assumptionScores = {};
+  const samskaraScores = {};
   const alpha = {};
 
   for (const c of classified) {
-    if (c.type === "assumption") {
+    if (c.type === "samskara") {
       const surprise = c.surprise || 0;
-      assumptionScores[c.slug] = { direction: c.direction, surprise };
+      samskaraScores[c.slug] = { direction: c.direction, surprise };
       if (surprise > sigma) sigma = surprise;
     }
     if (c.type === "desire") {
@@ -44,7 +44,7 @@ function computeMetrics(classified, extras) {
     sigma,
     alpha,
     salience: sigma + l1Norm(alpha),
-    assumption_scores: assumptionScores,
+    samskara_scores: samskaraScores,
     ...extras,
   };
 }
@@ -84,26 +84,23 @@ Respond with ONLY a JSON array: [{"id":"...","direction":"...","confidence":0.0-
 
 // ── Main pipeline ──────────────────────────────────────
 
-export async function evaluateAction(K, ledger, desires, assumptions, config) {
+export async function evaluateAction(K, ledger, desires, samskaras, config) {
   const toolOutcomes = (ledger.tool_calls || []).map(tc => ({
     tool: tc.tool,
     ok: tc.ok,
   }));
 
-  const candidateCheckIds = Object.values(assumptions).map(a => a.slug);
-
   const baseResult = {
     eval_method: "pipeline",
     tool_outcomes: toolOutcomes,
     plan_success_criteria: ledger.plan.success,
-    assumptions_relied_on: ledger.plan.relies_on || [],
-    candidate_check_ids: candidateCheckIds,
+    samskaras_relied_on: ledger.plan.relies_on || [],
   };
 
   const desireEntries = Object.entries(desires);
-  const assumptionEntries = Object.entries(assumptions);
+  const samskaraEntries = Object.entries(samskaras);
 
-  // Empty assumptions → maximum surprise (σ = 1). Having no model of the
+  // Empty samskaras → maximum surprise (σ = 1). Having no model of the
   // world means you cannot predict anything — that is maximum uncertainty,
   // not minimum surprise. This is what bootstraps the agent: the first
   // session records a high-salience experience, reflect picks it up, and
@@ -114,12 +111,12 @@ export async function evaluateAction(K, ledger, desires, assumptions, config) {
   // want. With no desires there is no vector to measure against — affinity
   // is genuinely zero, not max. The surprise axis alone drives salience
   // during bootstrap.
-  if (assumptionEntries.length === 0) {
+  if (samskaraEntries.length === 0) {
     return {
       sigma: 1,
       alpha: {},
       salience: 1,
-      assumption_scores: {},
+      samskara_scores: {},
       ...baseResult,
     };
   }
@@ -135,13 +132,13 @@ export async function evaluateAction(K, ledger, desires, assumptions, config) {
       embedding: d._embedding || null,
     });
   }
-  for (const [key, a] of assumptionEntries) {
+  for (const [key, s] of samskaraEntries) {
     pairs.push({
       id: key,
-      type: "assumption",
-      slug: a.slug,
-      text: a.check,
-      embedding: a._embedding || null,
+      type: "samskara",
+      slug: key,
+      text: s.pattern,
+      embedding: s._embedding || null,
     });
   }
 
@@ -223,7 +220,7 @@ export async function evaluateAction(K, ledger, desires, assumptions, config) {
         sigma: 0,
         alpha: {},
         salience: 0,
-        assumption_scores: {},
+        samskara_scores: {},
         ...baseResult,
         eval_method: "degraded",
       };
