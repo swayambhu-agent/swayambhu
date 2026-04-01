@@ -5,8 +5,8 @@
 
 import { runReflect, highestReflectDepthDue, isReflectDue, applyReflectOutput } from './reflect.js';
 import { evaluateAction } from './eval.js';
-import { updateMu, callInference, embeddingCacheKey } from './memory.js';
-import { renderActPrompt, buildToolSet, formatDesires, formatAssumptions, formatCircumstances } from './act.js';
+import { updateSamskaraStrength, callInference, embeddingCacheKey } from './memory.js';
+import { renderActPrompt, buildToolSet, formatDesires, formatSamskaras, formatCircumstances } from './act.js';
 
 // ── Snapshot loaders ────────────────────────────────────────
 
@@ -20,18 +20,14 @@ async function loadDesires(K) {
   return desires;
 }
 
-async function loadAssumptions(K) {
-  const list = await K.kvList({ prefix: "assumption:" });
-  const now = Date.now();
-  const assumptions = {};
+async function loadSamskaras(K) {
+  const list = await K.kvList({ prefix: "samskara:" });
+  const samskaras = {};
   for (const entry of list.keys) {
     const val = await K.kvGet(entry.name);
-    if (!val) continue;
-    // Filter expired TTLs
-    if (val.ttl_expires && new Date(val.ttl_expires).getTime() < now) continue;
-    assumptions[entry.name] = val;
+    if (val) samskaras[entry.name] = val;
   }
-  return assumptions;
+  return samskaras;
 }
 
 // ── Circumstances builder ───────────────────────────────────
@@ -81,16 +77,16 @@ async function cacheEmbeddings(K, entities, textField, model, config) {
 
 // ── Plan phase ──────────────────────────────────────────────
 
-async function planPhase(K, { desires, assumptions, circumstances, defaults, modelsConfig }) {
+async function planPhase(K, { desires, samskaras, circumstances, defaults, modelsConfig }) {
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
   const systemPrompt = planPrompt
     ? await K.buildPrompt(planPrompt, { config: defaults })
-    : "You are a planning agent. Given desires, assumptions, and circumstances, output a JSON action plan.";
+    : "You are a planning agent. Given desires, samskaras, and circumstances, output a JSON action plan.";
 
   const userContent = [
     "[DESIRES]", formatDesires(desires), "",
-    "[ASSUMPTIONS]", formatAssumptions(assumptions), "",
+    "[SAMSKARAS]", formatSamskaras(samskaras), "",
     "[CIRCUMSTANCES]", formatCircumstances(circumstances),
     "",
     "Respond with a JSON plan object: { action, success, relies_on, defer_if, no_action }",
@@ -132,17 +128,13 @@ async function planPhase(K, { desires, assumptions, circumstances, defaults, mod
 
   if (plan.no_action) return plan;
 
-  // Validate relies_on slugs against assumption snapshot
+  // Validate relies_on keys against samskara snapshot
   if (plan.relies_on?.length) {
-    const knownSlugs = new Set(Object.values(assumptions).map(a => a.slug));
-    const unknown = plan.relies_on.filter(s => !knownSlugs.has(s));
+    const knownKeys = new Set(Object.keys(samskaras));
+    const unknown = plan.relies_on.filter(k => !knownKeys.has(k));
     if (unknown.length) {
-      await K.karmaRecord({
-        event: "plan_unknown_relies_on",
-        unknown_slugs: unknown,
-        stripped: true,
-      });
-      plan.relies_on = plan.relies_on.filter(s => knownSlugs.has(s));
+      await K.karmaRecord({ event: "plan_unknown_relies_on", unknown_keys: unknown, stripped: true });
+      plan.relies_on = plan.relies_on.filter(k => knownKeys.has(k));
     }
   }
 
@@ -225,7 +217,7 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
     `eval_method: ${evalResult.eval_method}`,
     `tool_outcomes: ${JSON.stringify(evalResult.tool_outcomes)}`,
     `plan_success_criteria: ${evalResult.plan_success_criteria || "none"}`,
-    `assumptions_relied_on: ${JSON.stringify(evalResult.assumptions_relied_on)}`,
+    `samskaras_relied_on: ${JSON.stringify(evalResult.samskaras_relied_on)}`,
   ].join("\n");
 
   const systemPrompt = reviewPrompt
@@ -271,20 +263,20 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
 
 // ── Memory writes ───────────────────────────────────────────
 
-async function writeMemory(K, { ledger, evalResult, review, desires, assumptions, inferenceConfig }) {
+async function writeMemory(K, { ledger, evalResult, review, desires, samskaras, inferenceConfig }) {
   const now = new Date().toISOString();
 
-  // μ writes — from eval's mechanical assumption_scores (not review's LLM output)
-  if (evalResult.assumption_scores) {
-    for (const [checkId, score] of Object.entries(evalResult.assumption_scores)) {
-      const muKey = `mu:${checkId}`;
-      const existing = await K.kvGet(muKey);
-      const updated = updateMu(existing, checkId, score);
-      await K.kvWriteSafe(muKey, updated);
+  // Samskara strength updates — from eval's per-samskara surprise scores
+  if (evalResult.samskara_scores) {
+    for (const [key, score] of Object.entries(evalResult.samskara_scores)) {
+      const existing = samskaras[key];
+      if (!existing) continue;
+      const newStrength = updateSamskaraStrength(existing.strength, score.surprise);
+      await K.kvWriteSafe(key, { ...existing, strength: newStrength });
     }
   }
 
-  // ε writes — if salience exceeds threshold
+  // Experience writes — if salience exceeds threshold
   const salienceThreshold = 0.5;
   const salience = evalResult.salience > 0
     ? evalResult.salience
@@ -295,7 +287,7 @@ async function writeMemory(K, { ledger, evalResult, review, desires, assumptions
     if (inferenceConfig) {
       try {
         const resp = await callInference(inferenceConfig.url, inferenceConfig.secret, '/embed', {
-          texts: [review?.narrative || review?.assessment || '']
+          texts: [review?.narrative || review?.assessment || ledger.final_text || '']
         });
         embedding = resp.embeddings?.[0] || null;
       } catch {
@@ -306,13 +298,11 @@ async function writeMemory(K, { ledger, evalResult, review, desires, assumptions
     const experienceKey = `experience:${Date.now()}`;
     await K.kvWriteSafe(experienceKey, {
       timestamp: now,
-      action_taken: ledger.plan.action,
-      outcome: ledger.final_text || review?.assessment,
-      active_assumptions: ledger.plan.relies_on || [],
-      active_desires: Object.keys(desires),
+      action_taken: ledger.plan?.action || "no_action",
+      outcome: ledger.final_text || review?.assessment || "",
       surprise_score: evalResult.sigma,
-      affinity_vector: evalResult.alpha,
-      narrative: review?.narrative || review?.assessment,
+      salience,
+      narrative: review?.narrative || review?.assessment || ledger.plan?.reason || "",
       embedding,
     });
   }
@@ -335,15 +325,15 @@ export async function run(K, { crashData, balances, events, schedule }) {
     ambiguity_threshold: defaults?.inference?.ambiguity_threshold || 0.6,
   } : null;
 
-  // 2. Snapshot desires and assumptions
+  // 2. Snapshot desires and samskaras
   let desires = await loadDesires(K);
-  let assumptions = await loadAssumptions(K);
+  let samskaras = await loadSamskaras(K);
 
   // 2b. Cache embeddings for Tier 1 relevance filtering
   if (inferenceConfig) {
     const embedModel = defaults?.inference?.embed_model || 'bge-small-en-v1.5';
     await cacheEmbeddings(K, desires, 'description', embedModel, inferenceConfig);
-    await cacheEmbeddings(K, assumptions, 'check', embedModel, inferenceConfig);
+    await cacheEmbeddings(K, samskaras, 'pattern', embedModel, inferenceConfig);
   }
 
   // 2c. Process deep-reflect job completions from events
@@ -364,11 +354,11 @@ export async function run(K, { crashData, balances, events, schedule }) {
         const resultKey = `job_result:${job.id}`;
         const jobResult = await K.kvGet(resultKey);
         if (jobResult?.result) {
-          // Filter kv_operations to only desire:*/assumption:*
+          // Filter kv_operations to only desire:*/samskara:*
           const output = { ...jobResult.result };
           if (output.kv_operations) {
             output.kv_operations = output.kv_operations.filter(op =>
-              op.key?.startsWith("desire:") || op.key?.startsWith("assumption:")
+              op.key?.startsWith("desire:") || op.key?.startsWith("samskara:")
             );
           }
 
@@ -382,9 +372,9 @@ export async function run(K, { crashData, balances, events, schedule }) {
             operations: output.kv_operations?.length || 0,
           });
 
-          // Re-snapshot (desires/assumptions may have changed)
+          // Re-snapshot (desires/samskaras may have changed)
           desires = await loadDesires(K);
-          assumptions = await loadAssumptions(K);
+          samskaras = await loadSamskaras(K);
         }
       }
     }
@@ -419,13 +409,13 @@ export async function run(K, { crashData, balances, events, schedule }) {
     }
 
     // 6b. Plan phase
-    const plan = await planPhase(K, { desires, assumptions, circumstances, defaults, modelsConfig });
+    const plan = await planPhase(K, { desires, samskaras, circumstances, defaults, modelsConfig });
     if (!plan) break; // parse failure
     if (plan.no_action) {
       await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
 
       // Still run eval + memory so the experience gets recorded. When
-      // assumptions are empty, eval returns σ=1 (max surprise) — this is
+      // samskaras are empty, eval returns σ=1 (max surprise) — this is
       // what bootstraps the agent by making "no desires" a high-salience
       // experience that reflect can act on.
       const noActionLedger = {
@@ -434,8 +424,8 @@ export async function run(K, { crashData, balances, events, schedule }) {
         tool_calls: [],
         final_text: plan.reason,
       };
-      const evalResult = await evaluateAction(K, noActionLedger, desires, assumptions, inferenceConfig || {});
-      await writeMemory(K, { ledger: noActionLedger, evalResult, review: null, desires, assumptions, inferenceConfig });
+      const evalResult = await evaluateAction(K, noActionLedger, desires, samskaras, inferenceConfig || {});
+      await writeMemory(K, { ledger: noActionLedger, evalResult, review: null, desires, samskaras, inferenceConfig });
 
       break;
     }
@@ -446,13 +436,13 @@ export async function run(K, { crashData, balances, events, schedule }) {
     });
 
     // 6d. Eval phase
-    const evalResult = await evaluateAction(K, ledger, desires, assumptions, inferenceConfig || {});
+    const evalResult = await evaluateAction(K, ledger, desires, samskaras, inferenceConfig || {});
 
     // 6e. Review phase
     const review = await reviewPhase(K, { ledger, evalResult, defaults });
 
     // 6f. Memory writes
-    await writeMemory(K, { ledger, evalResult, review, desires, assumptions, inferenceConfig });
+    await writeMemory(K, { ledger, evalResult, review, desires, samskaras, inferenceConfig });
 
     cyclesRun++;
 

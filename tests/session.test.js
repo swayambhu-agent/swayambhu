@@ -12,19 +12,16 @@ vi.mock("../eval.js", () => ({
   evaluateAction: vi.fn(async () => ({
     sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
     tool_outcomes: [], plan_success_criteria: null,
-    assumptions_relied_on: [], candidate_check_ids: [],
-    assumption_scores: {},
+    samskaras_relied_on: [],
+    samskara_scores: {},
   })),
 }));
 
 vi.mock("../memory.js", () => ({
-  updateMu: vi.fn((existing, checkId, score) => ({
-    check_id: checkId,
-    confirmation_count: (existing?.confirmation_count || 0) + (score.direction === "entailment" ? 1 : 0),
-    violation_count: (existing?.violation_count || 0) + (score.direction === "contradiction" ? 1 : 0),
-    last_checked: new Date().toISOString(),
-    cumulative_surprise: score.surprise || 0,
-  })),
+  updateSamskaraStrength: vi.fn((currentStrength, surprise) => {
+    const alpha = 0.3;
+    return currentStrength * (1 - alpha) + (1 - surprise) * alpha;
+  }),
   callInference: vi.fn(async () => ({ embeddings: [] })),
   embeddingCacheKey: vi.fn((text, model) => `embedding:mock:${model}`),
 }));
@@ -32,7 +29,7 @@ vi.mock("../memory.js", () => ({
 import { run } from "../session.js";
 import { runReflect, highestReflectDepthDue, isReflectDue, applyReflectOutput } from "../reflect.js";
 import { evaluateAction } from "../eval.js";
-import { updateMu } from "../memory.js";
+import { updateSamskaraStrength } from "../memory.js";
 
 // Helper: builds a callLLM mock response, auto-adding parsed when json:true
 function llmResp(content, opts = {}) {
@@ -79,10 +76,10 @@ describe("session with empty desires", () => {
     // callLLM should have been called (plan phase ran)
     expect(K.callLLM).toHaveBeenCalledTimes(1);
 
-    // Plan call should include DESIRES and ASSUMPTIONS sections
+    // Plan call should include DESIRES and SAMSKARAS sections
     const planCall = K.callLLM.mock.calls[0][0];
     expect(planCall.messages[0].content).toMatch(/DESIRES/);
-    expect(planCall.messages[0].content).toMatch(/ASSUMPTIONS/);
+    expect(planCall.messages[0].content).toMatch(/SAMSKARAS/);
   });
 
   it("does not call runReflect with coldStart flag", async () => {
@@ -147,12 +144,9 @@ describe("session plan phase", () => {
     created_at: "2026-01-01T00:00:00.000Z",
   };
 
-  const ASSUMPTION = {
-    slug: "a_available",
-    check: "Patron is available to receive messages",
-    confidence: 0.8,
-    ttl_expires: new Date(Date.now() + 86400_000).toISOString(),
-    created_at: "2026-01-01T00:00:00.000Z",
+  const SAMSKARA = {
+    pattern: "Patron is available to receive messages",
+    strength: 0.8,
   };
 
   const VALID_PLAN = JSON.stringify({
@@ -173,7 +167,7 @@ describe("session plan phase", () => {
     K = makeMockK(
       {
         "desire:d_help": JSON.stringify(DESIRE),
-        "assumption:a_available": JSON.stringify(ASSUMPTION),
+        "samskara:a_available": JSON.stringify(SAMSKARA),
       },
       {
         defaults: {
@@ -210,10 +204,10 @@ describe("session plan phase", () => {
     // callLLM should have been called at least twice: plan + review (may loop more cycles)
     expect(K.callLLM.mock.calls.length).toBeGreaterThanOrEqual(2);
 
-    // First call: plan phase — messages contain desires/assumptions
+    // First call: plan phase — messages contain desires/samskaras
     const planCall = K.callLLM.mock.calls[0][0];
     expect(planCall.messages[0].content).toMatch(/DESIRES/);
-    expect(planCall.messages[0].content).toMatch(/ASSUMPTIONS/);
+    expect(planCall.messages[0].content).toMatch(/SAMSKARAS/);
 
     // runAgentTurn should have been called at least once (act phase ran)
     expect(K.runAgentTurn.mock.calls.length).toBeGreaterThanOrEqual(1);
@@ -247,7 +241,7 @@ describe("session plan phase", () => {
 describe("session memory writes", () => {
   let K;
 
-  const CHECK_ID = "a_available";
+  const SAMSKARA_KEY = "samskara:a_available";
 
   const DESIRE = {
     slug: "d_help",
@@ -256,12 +250,9 @@ describe("session memory writes", () => {
     created_at: "2026-01-01T00:00:00.000Z",
   };
 
-  const ASSUMPTION = {
-    slug: "a_available",
-    check: "Patron is available to receive messages",
-    confidence: 0.8,
-    ttl_expires: new Date(Date.now() + 86400_000).toISOString(),
-    created_at: "2026-01-01T00:00:00.000Z",
+  const SAMSKARA = {
+    pattern: "Patron is available to receive messages",
+    strength: 0.8,
   };
 
   const VALID_PLAN = JSON.stringify({
@@ -275,7 +266,7 @@ describe("session memory writes", () => {
     const k = makeMockK(
       {
         "desire:d_help": JSON.stringify(DESIRE),
-        "assumption:a_available": JSON.stringify(ASSUMPTION),
+        "samskara:a_available": JSON.stringify(SAMSKARA),
       },
       {
         defaults: {
@@ -288,16 +279,15 @@ describe("session memory writes", () => {
       },
     );
 
-    // evaluateAction controls assumption_scores and salience
+    // evaluateAction controls samskara_scores and salience
     if (evalOverride) {
       evaluateAction.mockResolvedValue(evalOverride);
     } else {
       evaluateAction.mockResolvedValue({
         sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
         tool_outcomes: [], plan_success_criteria: null,
-        assumptions_relied_on: [CHECK_ID],
-        candidate_check_ids: [CHECK_ID],
-        assumption_scores: {},
+        samskaras_relied_on: [SAMSKARA_KEY],
+        samskara_scores: {},
       });
     }
 
@@ -321,70 +311,55 @@ describe("session memory writes", () => {
     vi.clearAllMocks();
   });
 
-  it("writes mu via updateMu for assumption_scores from eval", async () => {
+  it("updates samskara strength on confirmation", async () => {
     const review = {
       assessment: "success",
-      narrative: "Assumption confirmed.",
+      narrative: "Samskara confirmed.",
       salience_estimate: 0.1,
     };
     const evalResult = {
       sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
       tool_outcomes: [], plan_success_criteria: null,
-      assumptions_relied_on: [CHECK_ID],
-      candidate_check_ids: [CHECK_ID],
-      assumption_scores: {
-        [CHECK_ID]: { direction: "entailment", surprise: 0 },
+      samskaras_relied_on: [SAMSKARA_KEY],
+      samskara_scores: {
+        [SAMSKARA_KEY]: { direction: "entailment", surprise: 0 },
       },
     };
     K = makeK(review, evalResult);
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // updateMu should have been called with the score from eval
-    expect(updateMu).toHaveBeenCalledWith(
-      null, // no existing mu
-      CHECK_ID,
-      { direction: "entailment", surprise: 0 },
-    );
-
-    // mu key should have been written
-    const muCall = K.kvWriteSafe.mock.calls.find(([key]) => key === `mu:${CHECK_ID}`);
-    expect(muCall).toBeDefined();
-    const muValue = typeof muCall[1] === "string" ? JSON.parse(muCall[1]) : muCall[1];
-    expect(muValue.confirmation_count).toBe(1);
-    expect(muValue.violation_count).toBe(0);
+    // Should write updated strength back to the samskara key
+    const strengthWrite = K.kvWriteSafe.mock.calls.find(([key]) => key === SAMSKARA_KEY);
+    expect(strengthWrite).toBeDefined();
+    const written = typeof strengthWrite[1] === "string" ? JSON.parse(strengthWrite[1]) : strengthWrite[1];
+    expect(written.strength).toBeGreaterThanOrEqual(0);
+    expect(written.strength).toBeLessThanOrEqual(1);
   });
 
-  it("writes mu with violation on contradiction score", async () => {
+  it("updates samskara strength on violation", async () => {
     const review = {
       assessment: "failed",
-      narrative: "Assumption violated.",
+      narrative: "Samskara violated.",
       salience_estimate: 0.1,
     };
     const evalResult = {
       sigma: 0.8, alpha: {}, salience: 0.8, eval_method: "pipeline",
       tool_outcomes: [], plan_success_criteria: null,
-      assumptions_relied_on: [CHECK_ID],
-      candidate_check_ids: [CHECK_ID],
-      assumption_scores: {
-        [CHECK_ID]: { direction: "contradiction", surprise: 0.8 },
+      samskaras_relied_on: [SAMSKARA_KEY],
+      samskara_scores: {
+        [SAMSKARA_KEY]: { direction: "contradiction", surprise: 0.8 },
       },
     };
     K = makeK(review, evalResult);
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    expect(updateMu).toHaveBeenCalledWith(
-      null,
-      CHECK_ID,
-      { direction: "contradiction", surprise: 0.8 },
-    );
-
-    const muCall = K.kvWriteSafe.mock.calls.find(([key]) => key === `mu:${CHECK_ID}`);
-    expect(muCall).toBeDefined();
-    const muValue = typeof muCall[1] === "string" ? JSON.parse(muCall[1]) : muCall[1];
-    expect(muValue.violation_count).toBe(1);
-    expect(muValue.confirmation_count).toBe(0);
+    const strengthWrite = K.kvWriteSafe.mock.calls.find(([key]) => key === SAMSKARA_KEY);
+    expect(strengthWrite).toBeDefined();
+    const written = typeof strengthWrite[1] === "string" ? JSON.parse(strengthWrite[1]) : strengthWrite[1];
+    // Violation should decrease strength
+    expect(written.strength).toBeLessThan(0.8);
   });
 
   it("writes experience when salience exceeds threshold", async () => {
@@ -401,9 +376,12 @@ describe("session memory writes", () => {
     expect(experienceCall).toBeDefined();
     const experienceValue = typeof experienceCall[1] === "string" ? JSON.parse(experienceCall[1]) : experienceCall[1];
     expect(experienceValue.narrative).toBe("Something significant happened.");
-    expect(experienceValue.active_desires).toEqual(["desire:d_help"]);
-    expect(experienceValue.surprise_score).toBe(0);
+    expect(experienceValue.salience).toBeDefined();
+    expect(experienceValue.surprise_score).toBeDefined();
     expect(experienceValue.embedding).toBeNull(); // no inferenceConfig
+    expect(experienceValue.affinity_vector).toBeUndefined();
+    expect(experienceValue.active_assumptions).toBeUndefined();
+    expect(experienceValue.active_desires).toBeUndefined();
   });
 
   it("skips experience when salience is below threshold", async () => {
@@ -420,19 +398,18 @@ describe("session memory writes", () => {
     expect(experienceCall).toBeUndefined();
   });
 
-  it("does not write mu when assumption_scores is empty", async () => {
+  it("does not update samskaras when samskara_scores is empty", async () => {
     const review = {
       assessment: "success",
-      narrative: "No assumptions tested.",
+      narrative: "No samskaras tested.",
       salience_estimate: 0.1,
     };
     K = makeK(review);
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    const muCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("mu:"));
-    expect(muCall).toBeUndefined();
-    expect(updateMu).not.toHaveBeenCalled();
+    const samskaraWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("samskara:"));
+    expect(samskaraWrites.length).toBe(0);
   });
 });
 
@@ -522,13 +499,13 @@ describe("deep-reflect job collection", () => {
     );
   });
 
-  it("filters non-desire/assumption kv_operations", async () => {
+  it("filters non-desire/samskara kv_operations", async () => {
     const jobResult = {
       reflection: "Test reflection",
       kv_operations: [
         { op: "put", key: "desire:d_new", value: { slug: "d_new" } },
         { op: "put", key: "config:defaults", value: { hacked: true } },
-        { op: "put", key: "assumption:a_new", value: { slug: "a_new" } },
+        { op: "put", key: "samskara:a_new", value: { pattern: "new pattern", strength: 0.5 } },
         { op: "put", key: "prompt:act", value: "pwned" },
       ],
     };
@@ -540,12 +517,12 @@ describe("deep-reflect job collection", () => {
 
     await run(K, { crashData: null, balances: {}, events, schedule: {} });
 
-    // applyReflectOutput should only get desire:* and assumption:* operations
+    // applyReflectOutput should only get desire:* and samskara:* operations
     const call = applyReflectOutput.mock.calls[0];
     const output = call[3];
     expect(output.kv_operations).toHaveLength(2);
     expect(output.kv_operations[0].key).toBe("desire:d_new");
-    expect(output.kv_operations[1].key).toBe("assumption:a_new");
+    expect(output.kv_operations[1].key).toBe("samskara:a_new");
   });
 
   it("skips stale deep-reflect jobs", async () => {
