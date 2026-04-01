@@ -158,14 +158,11 @@ Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignme
 | `doc:proposal_guide` | Text (markdown) | `seed-local-kv.mjs` | Agent via `kv_query` tool | Yes | System (prefix `doc:`) |
 | `doc:architecture` | Text (markdown) | `seed-local-kv.mjs` | Agent via `kv_query` tool | Yes | System |
 
-### 1.18 Wisdom (Communication)
+### 1.18 Samskaras (Conditioned Patterns)
 
 | Key pattern | Stored type | Written by | Read by | Seeded | Protection |
 |-------------|-------------|------------|---------|--------|------------|
-| `upaya:comms:defaults` | JSON `{ text, type, created, sources }` | `seed-local-kv.mjs` | `kernel.js:loadCommsUpaya()` (prefix scan `upaya:comms:`) | Yes | System (prefix `upaya:`) |
-| `upaya:comms:{topic}` | JSON | Agent via `kvWriteGated` | `kernel.js:loadCommsUpaya()` | No | System |
-| `upaya:channel:{name}` | JSON | Agent via `kvWriteGated` | `kernel.js:loadCommsUpaya()` (prefix scan `upaya:channel:`) | No | System |
-| `prajna:*` | JSON | Agent via `kvWriteGated` | None (prefix reserved in SYSTEM_KEY_PREFIXES and kvWrite metadata defaults, but no runtime code reads it) | No | System (prefix `prajna:`) |
+| `samskara:{slug}` | JSON `{ slug, description, pattern, strength, confidence, context_tags, observed_count, ... }` | Deep reflect via `kvWriteGated` | `reflect.js:loadSamskaraManifest()` (prefix scan `samskara:`) | Yes (from `config/seed-samskaras.json`) | Protected (prefix `samskara:`) |
 
 ### 1.19 Tool Data (Scoped Tool Storage)
 
@@ -179,11 +176,6 @@ Seeded niyamas: `health`, `acceptance`, `transformation`, `reflection`, `alignme
 |-------------|-------------|------------|---------|--------|------------|
 | `sealed:quarantine:{channel}:{senderId}:{ts}` | JSON `{ sender, content, tool, timestamp, subject?, from? }` | `kernel.js:executeToolCall()` (inbound content gate — redacts content from unknown senders) | `dashboard-api:GET /quarantine` (patron-only); agent reads blocked by `ScopedKV`, `KernelRPC.kvGet()`, and `kv.list()` filter | No | Kernel-only (prefix `sealed:`) — all read paths return null for `sealed:` prefix |
 
-### 1.21 Communication Blocked Queue
-
-| Key pattern | Stored type | Written by | Read by | Seeded | Protection |
-|-------------|-------------|------------|---------|--------|------------|
-| `comms_blocked:{id}` | JSON (blocked message record: tool, args, channel, recipient, mode, reason, gate verdict, session info) | `kernel.js:queueBlockedComm()` | `kernel.js:listBlockedComms()`, `processCommsVerdict()` | No | System (prefix `comms_blocked:`) |
 
 ### 1.22 Secrets (Agent-Provisioned)
 
@@ -233,7 +225,7 @@ Total keys seeded by `seed-local-kv.mjs`: **~60** (exact count depends on tool/p
 | `contact:swami_kevala` | Yes | `kernel.js:resolveContact()`, `loadPatronContext()` |
 | `patron:contact` | Yes | `kernel.js:loadPatronContext()` |
 | `patron:public_key` | Yes | `kernel.js:verifyPatronSignature()` |
-| `upaya:comms:defaults` | Yes | `kernel.js:loadCommsUpaya()` |
+| `samskara:*` | Yes | `reflect.js:loadSamskaraManifest()` |
 | `doc:proposal_guide` | **No direct reader** | Available via `kv_query` tool |
 | `doc:architecture` | **No direct reader** | Available via `kv_query` tool |
 
@@ -247,10 +239,9 @@ Keys seeded but with no code-level reader (only accessible via `kv_query` tool):
 
 These are intentionally available for the agent to read via tools — they are not truly orphaned, just agent-facing reference data rather than code-consumed keys.
 
-### Reserved prefixes (in SYSTEM_KEY_PREFIXES but no seeded keys)
+### Reserved prefixes (in key tiers but no seeded keys)
 
-- `prajna:` — Wisdom prefix. In `SYSTEM_KEY_PREFIXES` and `kvWrite` metadata defaults, but no code reads these keys and nothing is seeded. Reserved for future use.
-- `secret:` — Agent-provisioned secrets. In `SYSTEM_KEY_PREFIXES`, read by `buildToolContext()` and `runAdapter()`, but nothing is seeded. Created at runtime if needed.
+- `secret:` — Agent-provisioned secrets. In `protected` tier, read by `buildToolContext()` and `runAdapter()`, but nothing is seeded. Created at runtime if needed.
 
 ---
 

@@ -47,3 +47,43 @@ Tracked ideas for future improvement. Not prioritized — just captured.
 ## Tool Management
 
 - **First-class tool add/remove operations**: Currently adding or removing a tool requires updating multiple KV keys in sync (`tool:*:code`, `tool:*:meta`, `config:tool_registry`, `kernel:tool_grants`, and the governor rebuild). There's no atomic operation for this. A kernel-level `registerTool` / `deregisterTool` method would handle all keys atomically — update the registry, write/delete code+meta, trigger a governor rebuild. The agent could invoke these via `proposal_requests` in deep reflect, and the patron could use them via a script or dashboard action.
+
+## Lessons from Claude Code (Anthropic CLI v2.1.88)
+
+Comparison based on the extracted source at `andrew-kramer-inno/claude-code-source-build`. Claude Code is an interactive developer tool (human drives); Swayambhu is an autonomous agent (drives itself). Different problems, but several patterns transfer.
+
+### Context compaction for act sessions
+
+Claude Code dedicates 11 files to managing context window pressure — auto-compaction, micro-compaction, time-based configuration, post-compact cleanup. Swayambhu's sessions are discrete and short today, but as act sessions get more complex (12-step tool loops, deep context building), earlier context becomes dead weight.
+
+**Idea:** After step N of the agent loop, compress earlier tool-call results into a summary before the next LLM call. Start simple — strip raw tool output and keep a one-line result summary. Especially relevant for deep-reflect at depth 2+ where context is already rich before the agent loop even starts. The kernel's `runAgentLoop` already tracks steps; it could inject a compaction pass at configurable intervals (e.g. every 4 steps).
+
+### Lightweight dream mode
+
+Claude Code has `DreamTask` and `autoDream` with consolidation locks — background autonomous processing for memory consolidation between active interactions. Conceptually similar to deep-reflect but much cheaper and lighter.
+
+**Idea:** A "dream" session type that runs between act sessions on a fast/cheap model. No tools, no proposals, no communication. Just reads recent mu and epsilon entries and produces consolidation outputs: merge redundant mu counters, flag epsilon clusters for deep-reflect attention, pre-compute embedding caches. Runs at near-zero cost (single cheap LLM call). Complements deep-reflect without replacing it — dream handles housekeeping so deep-reflect can focus on cognitive updates. Could be triggered by a mu/epsilon growth threshold or simply run every N sessions.
+
+### KV migration framework
+
+Claude Code has explicit model version migrations as migration files, similar to database migrations. Swayambhu currently handles schema changes through `--reset-all-state` which wipes everything.
+
+**Idea:** Migration scripts in `scripts/migrations/` with sequential numbering: `001_add_desires.mjs`, `002_assumption_ttl.mjs`, etc. A `kernel:schema_version` KV key tracks which migrations have run. The seed script runs pending migrations on `--reset-all-state`. The governor runs them on deploy (for production). Each migration is a function that receives a KV interface and performs reads/writes/deletes. Reversible migrations include a `down()` function. This prevents "wipe and re-seed" from being the only upgrade path — important as real agents accumulate state that can't be recreated.
+
+### Feature flags via governor
+
+Claude Code uses ~90 compile-time `feature('FLAG_NAME')` toggles for dead-code elimination. Swayambhu's governor builds `index.js` dynamically but doesn't have a feature flag system.
+
+**Idea:** A `config:features` KV key (object of flag → boolean). Governor reads it during `generateIndexJS()` and conditionally includes/excludes imports. Use cases: disable a broken tool without a full rollback, enable experimental providers for testing, gate channels (e.g. WhatsApp only when credentials exist). Lighter than a full rollback, more granular than the current all-or-nothing build.
+
+### Worktree-based code testing in governor
+
+Claude Code has first-class git worktree support for isolated parallel work. Swayambhu's governor deploys staged code and relies on crash tripwire for rollback — deploy first, detect breakage after.
+
+**Idea:** Governor creates a temporary worktree, applies staged code changes, runs `npm test` in the worktree. Only proceeds to deploy if tests pass. Falls back to current version if tests fail, marks proposals as `failed` with test output. More expensive per deploy cycle but catches breakage *before* it reaches production. The crash tripwire becomes a second safety net rather than the primary one.
+
+### Team/swarm coordination (future)
+
+Claude Code has `teamMemorySync`, `InProcessTeammateTask`, and swarm initialization — multi-agent coordination built into the architecture. Swayambhu is single-agent today but has `spawn_subplan` as a concept.
+
+**Idea:** Low priority now. When subagent spawning is implemented, the KV namespace is a natural shared state layer. Each subagent could get a scoped KV prefix (`subagent:{id}:*`) with read access to parent state. The parent agent's review phase would drain subagent results. Claude Code's model of "in-process teammate" (shared memory, coordinated tasks) vs "remote agent" (independent, async) maps well to Swayambhu's act-session vs event-driven patterns.

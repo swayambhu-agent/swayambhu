@@ -107,4 +107,4 @@ if (typeof raw === "string") {
 
 **Root cause:** `note_to_future_self` mixed empirical claims (which go stale) with orientation (which persists). Once an empirical claim was written as a behavioral directive, nothing in the system forced re-verification.
 
-**Fix:** Added `assessments` field to deep reflect output — structured empirical claims about the world, each with a `reverify_by_session` expiry. Session reflect checks assessment TTLs and plans re-verification probes when they expire. `note_to_future_self` is now orientation-only in deep reflect. Also seeded `prajna:assessments:stale-beliefs` to teach the agent that conclusions decay.
+**Fix:** Added `assessments` field to deep reflect output — structured empirical claims about the world, each with a `reverify_by_session` expiry. Session reflect checks assessment TTLs and plans re-verification probes when they expire. `note_to_future_self` is now orientation-only in deep reflect.

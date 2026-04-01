@@ -107,8 +107,8 @@ that session.
 ### KV Browser
 
 The **KV Explorer** tab lets you browse every key in the store. Use the
-prefix filter to narrow results (e.g. `upaya:` to see all wisdom
-entries, `karma:` to see session logs).
+prefix filter to narrow results (e.g. `samskara:` to see learned
+patterns, `karma:` to see session logs).
 
 Click any key to view its value. JSON values are formatted for
 readability. Text values (like source code) are shown raw.
@@ -156,19 +156,10 @@ Or use the dashboard's KV Explorer.
 
 ### Blocked Communications
 
-When the agent tries to send an outbound message that gets blocked by the
-communication gate, it's stored as a `comms_blocked:{id}` key. Reasons a
-message gets blocked:
-
-- **Unknown recipient** — No contact record or upaya entry for the
-  recipient. Blocked mechanically without an LLM call.
-- **Model insufficient** — The current model doesn't have
-  `comms_gate_capable` set. Message queued for deep reflect review.
-- **Gate judgment** — The communication gate LLM evaluated the message
-  and decided it shouldn't be sent.
-
-Blocked messages are reviewed during the next deep reflect session. The
-agent decides for each one: send as-is, revise and send, or drop.
+When the agent tries to send an outbound message to a person with no
+approved contact record, the kernel blocks it mechanically without an LLM
+call. The agent must have a contact record approved by the patron before
+it can reach out to anyone.
 
 You can see blocked communications in the KV Explorer under the
 `comms_blocked:` prefix.
@@ -324,12 +315,12 @@ agent processes corrections during its next reflection cycle:
 
 1. The correction appears in the session's karma log.
 2. Session reflect notes the correction.
-3. Deep reflect may distill the correction into wisdom (`upaya:*` or
-   `prajna:*` entries) through the proposal protocol.
+3. Deep reflect may distill the correction into samskaras (`samskara:*`
+   entries) through the proposal protocol.
 
-Corrections that become wisdom entries carry the session reference as a
-source, so the agent can trace its wisdom back to specific interactions.
-Wisdom entries go through the staged proposal lifecycle — proposed in
+Corrections that become samskara entries carry the session reference as a
+source, so the agent can trace its patterns back to specific interactions.
+Samskara updates go through the staged proposal lifecycle — proposed in
 one session, reviewed and validated in a subsequent deep reflect.
 
 ### Rolling Back a Session
@@ -532,9 +523,9 @@ In the Cloudflare dashboard, go to **Workers & Pages** > your worker >
 
 1. **Review recent reflections** in the dashboard. Deep reflections show
    the agent's self-assessment — look for patterns it has identified.
-2. **Check upaya entries.** Browse `upaya:*` keys in the KV Explorer.
-   These are the agent's accumulated wisdom — if a upaya entry is
-   misleading, it will affect future behavior.
+2. **Check samskara entries.** Browse `samskara:*` keys in the KV
+   Explorer. These are the agent's conditioned patterns — if a samskara
+   has a misleading association, it will affect future behavior.
 3. **Check the orient prompt.** Read `prompt:orient` to see what
    instructions shape the agent's behavior on each session.
 4. **Correct via message.** Tell the agent what went wrong in Slack. Be

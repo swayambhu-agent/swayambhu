@@ -55,7 +55,7 @@ Seeds 70 keys into local KV. Runs in ~2s via Miniflare API (replacing
 | Kernel | 5 | `kernel:alert_config`, `kernel:llm_fallback`, `kernel:llm_fallback:meta`, `kernel:fallback_model`, `kernel:tool_grants` |
 | Docs | 2 | `doc:proposal_guide`, `doc:architecture` — from `docs/doc-*.md` |
 | Contacts | 3 | `contact:swami_kevala`, `patron:contact`, `patron:public_key` |
-| Upaya | 1 | `upaya:comms:defaults` — seed communication wisdom |
+| Samskaras | 1 | seed samskaras from `config/seed-samskaras.json` |
 | Skills | 3 | `skill:model-config`, `skill:model-config:ref`, `skill:skill-authoring` — from `skills/*.json` + `skills/*.md` |
 | **Total** | **73** | |
 

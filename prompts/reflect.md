@@ -12,11 +12,11 @@ Session data is provided below as JSON. The `proposals` field shows any code cha
 
 {{systemKeyPatterns}}
 
-## Available wisdom
+## Available samskaras
 
-{{wisdom_manifest}}
+{{samskara_manifest}}
 
-You can see available wisdom entries but cannot load them this session.
+You can see available samskara entries but cannot load them this session.
 Reference relevant entries by name in your observations so deep reflect
 can follow up.
 

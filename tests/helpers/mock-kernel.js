@@ -81,9 +81,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
     isSystemKey: vi.fn(async (key) => {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'hook:', 'doc:',
-        'principle:', 'upaya:', 'prajna:',
-        'contact:', 'contact_platform:', 'sealed:',
+        'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+        'principle:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -93,9 +92,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
     getSystemKeyPatterns: vi.fn(async () => ({
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'hook:', 'doc:',
-        'principle:', 'upaya:', 'prajna:',
-        'contact:', 'contact_platform:', 'sealed:',
+        'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+        'principle:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
@@ -130,9 +128,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
   // kvWriteGated mock — mirrors kernel context-based permission logic
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'hook:', 'doc:',
-    'principle:', 'upaya:', 'prajna:', 'skill:',
-    'contact:', 'contact_platform:', 'sealed:',
+    'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+    'principle:', 'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];

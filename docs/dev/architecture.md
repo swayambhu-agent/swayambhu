@@ -211,7 +211,7 @@ Deep reflect output processing (`applyReflectOutput`):
 Two types of proposals:
 
 - **Code** (prompts, config, tools, hooks): requires `claims` (array), `ops` (array), `checks` (array). Goes through staged → inflight → promoted lifecycle.
-- **Wisdom** (system keys like `upaya:*`): requires `validation` and `ops`. Can only be staged by deep reflect (depth >= 1). Cannot use `acceptDirect()`. No circuit breaker rollback.
+- **System key changes** (config, prompts, samskaras, desires): requires `validation` and `ops`. Can only be staged by deep reflect (depth >= 1). Cannot use `acceptDirect()`. No circuit breaker rollback.
 
 Lifecycle:
 1. **`stageModification(K, request, sessionId, depth)`** — validates fields, writes to `proposal:{id}` via `kvWriteGated`.

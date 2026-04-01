@@ -481,52 +481,17 @@ To give unknown contacts access to specific tools:
 
 ### The Outbound Communication Gate
 
-Every outbound message passes through a three-layer gate before it's
-sent. This is kernel-enforced — the agent cannot bypass it.
+Every outbound message to a person passes through a kernel-enforced
+contact gate before it's sent. The agent cannot bypass this.
 
-**Layer 1 — Mechanical floor.** If the tool is initiating contact (not
-replying to someone who messaged first) and the recipient has no
-`upaya:contact:*` entry, the message is blocked immediately. No LLM call
-is made. Unknown recipients require upaya entries before the agent can
-reach out.
+**Mechanical floor.** Before the agent can send to a person, that person
+must have a `contact:` record with an approved platform binding. If no
+approved contact exists, the message is blocked immediately. Unknown
+recipients require a contact record approved by the patron before the
+agent can reach out.
 
-**Layer 2 — Model gate.** The current model must have
-`comms_gate_capable: true` in `config:model_capabilities`. If not (e.g.
-using Haiku or DeepSeek), the message is queued for review during deep
-reflect rather than evaluated by the gate.
-
-**Layer 3 — LLM judgment.** A gate LLM call evaluates the message against
-accumulated communication wisdom (`upaya:contact:*`, `upaya:channel:*`,
-`upaya:comms:*`). The gate can:
-- **Send** — message goes through as-is
-- **Revise** — message is rewritten and then sent
-- **Block** — message is stored for review
-
-### Default Communication Stance — `upaya:comms:defaults`
-
-The seed value establishes a conservative baseline:
-
-> When in doubt, do not send. Silence is safer than a poorly judged
-> message. A blocked message can be reviewed later; a sent message cannot
-> be unsent. Be especially cautious when initiating — responding carries
-> implicit standing, initiating requires justification.
-
-The agent can evolve this stance through the wisdom proposal protocol
-during deep reflection.
-
-### Blocked Communications
-
-Messages blocked by the gate are stored as `comms_blocked:{id}` keys.
-They accumulate until the next deep reflect session, which reviews each
-one and issues a verdict:
-
-- **send** — the original message was appropriate, send it now
-- **revise_and_send** — right intent, needs better execution; provide
-  revised text
-- **drop** — should not have been sent; discard with a reason
-
-You can see blocked communications in the deep reflect output or by
-browsing `comms_blocked:*` keys in the dashboard's KV Explorer.
+`send_slack` (channel type) is not subject to this gate. `send_email`
+(person type) is always gated.
 
 ---
 
@@ -610,9 +575,7 @@ numbers, everything else is a string.
 | `session_schedule` | Next session time, interval, effort | Agent (after each session) |
 | `reflect:schedule:{depth}` | When next deep reflect is due | Agent (after deep reflect) |
 | `contact:{slug}` | Contact records | Patron (dashboard API or seed) |
-| `upaya:comms:defaults` | Default communication stance | Agent (via wisdom proposal) |
-| `upaya:comms:*` | Communication wisdom entries | Agent (via wisdom proposal) |
-| `upaya:contact:*` | Per-contact communication wisdom | Agent (via wisdom proposal) |
+| `samskara:*` | Conditioned patterns — strength, context, observed counts | Agent (deep reflect) |
 | `prompt:orient` | Orient session system prompt | Agent (via proposal protocol) |
 | `prompt:reflect` | Session reflect prompt | Agent (via proposal protocol) |
 | `prompt:reflect:1` | Deep reflect prompt | Agent (via proposal protocol) |

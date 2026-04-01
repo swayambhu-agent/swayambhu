@@ -29,7 +29,7 @@
       "name": "kv_query",
       "description": "Read a KV value. Returns small values directly. For large arrays/objects, returns a summary — use path to drill in.",
       "input": {
-        "key": "required — full KV key (e.g. karma:s_123, upaya:timing:urgency, config:defaults)",
+        "key": "required — full KV key (e.g. karma:s_123, samskara:pacing, config:defaults)",
         "path": "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)"
       }
     },

@@ -269,171 +269,21 @@ Key meta fields:
   otherwise `"initiating"`.
 - **`content_field`**: which arg contains the message body (used for revisions).
 
-### Gate flow (5 steps)
+### Gate flow
 
-**Step 1 — Mechanical floor** (`kernel.js:538-561`)
+**Mechanical floor** (`kernel.js:executeAdapter`)
 
 Only blocks `person`-type tools. Two checks:
 
-1. **No contact record** + initiating mode → hard block. Responding to
-   unknown contacts falls through to the LLM gate (they already reached
-   out).
+1. **No contact record** → hard block. Unknown contacts cannot receive
+   messages — the agent must have a contact record with an approved
+   platform binding before sending.
 2. **Unapproved contact** (contact exists but `approved` is false) →
-   hard block for **both** initiating and responding. All communication
-   with unapproved contacts is blocked until the patron approves.
+   hard block. All communication with unapproved contacts is blocked
+   until the patron approves via the dashboard.
 
-This means `send_email` to an unknown or unapproved recipient is
-mechanically blocked, but `send_slack` (destination type) always
-proceeds to the LLM gate.
-
-**Step 2 — Model capability check** (`kernel.js:532-539`)
-
-The current model (last model used in `callLLM`) must have
-`comms_gate_capable: true` in `config:model_capabilities`. If not:
-returns `{ verdict: 'queue' }` — the message is queued for deep reflect
-review instead of being evaluated inline.
-
-**Step 3 — Load upaya context** (`kernel.js:541-551`)
-
-Loads all keys under `upaya:channel:*` and `upaya:comms:*` — these are
-accumulated communication wisdom entries. If the recipient has a contact
-record, adds their `communication` field (or full record) to the context.
-
-If no upaya entries exist, injects: `"(No accumulated communication wisdom
-yet. Be conservative.)"`
-
-**Step 4 — Gate LLM call** (`kernel.js:553-575`)
-
-Calls `callLLM` with:
-- System prompt: `COMMS_GATE_PROMPT` with `{{upaya}}` replaced
-- User message: JSON with tool name, channel, recipient_type, mode,
-  recipient, message_content, subject, is_reply, reply_to
-- Step label: `comms_gate:{toolName}`
-- Effort: `low`, max tokens: 500
-
-**Step 5 — Parse verdict** (`kernel.js:577-593`)
-
-Parses the LLM response as JSON. Three possible verdicts:
-
-| Verdict | What happens in executeToolCall |
-|---------|-------------------------------|
-| `send` | Tool executes normally. Records `comms_approved` karma. |
-| `revise` | Message content is replaced with `revision.text`, then tool executes. Records `comms_revised` karma. |
-| `block` | Message is queued via `queueBlockedComm`. Tool returns error to agent. |
-
-If the response isn't valid JSON: defaults to `block`.
-
-Additionally, `queue` (from step 2) also routes to `queueBlockedComm`.
-
-### COMMS_GATE_PROMPT
-
-`kernel.js:434`
-
-The static prompt instructs the LLM to evaluate:
-- Standing (responding vs initiating)
-- Recipient type (person vs destination)
-- Recipient context from upaya
-- Content appropriateness
-- Tone
-- Authority
-
-Output format: `{ "verdict": "send"|"revise"|"block", "reasoning": "...",
-"revision": { "text": "..." } }`. Revision required only for `revise`.
-
-### executeAction gate check
-
-`kernel.js:1126`
-
-A second enforcement point exists in `executeAction` itself. If a tool has
-`meta.communication` and `this._commsGateApproved` is not `true`, the call
-is rejected with: `"Communication tools require gate approval — cannot call
-executeAction directly"`.
-
-This prevents bypassing the gate by calling `executeAction` via RPC instead
-of going through `executeToolCall`.
-
-The `_commsGateApproved` flag is a transient boolean:
-- Set to `true` before `executeAction` in `executeToolCall` (after gate
-  passes) (`kernel.js:1703`)
-- Set to `true` before `executeAction` in `processCommsVerdict` (deep
-  reflect approval) (`kernel.js:624`)
-- Always reset to `false` in `finally` blocks
-
----
-
-## Blocked Communication Queue
-
-### queueBlockedComm(toolName, args, meta, reason, gateResult)
-
-`kernel.js:486`
-
-Creates a `comms_blocked:{id}` record. ID format: `cb_{timestamp}_{random6}`.
-
-Record contains:
-- `id`, `tool`, `args` — everything needed to re-execute the tool
-- `channel`, `content_field`, `recipient`, `mode` — from meta
-- `reason`, `gate_verdict` — why it was blocked
-- `session_id`, `model`, `timestamp`
-
-The write uses `this.kvWrite` (kernel-internal), not `kvWriteSafe` or
-`kvWriteGated` — this is a direct kernel write.
-
-### listBlockedComms()
-
-`kernel.js:596`
-
-Lists all `comms_blocked:*` keys and returns their values. Exposed to
-hooks via `K interface.listBlockedComms()`. Used by deep reflect to see
-pending communications (`reflect.js:173`).
-
-### processCommsVerdict(id, verdict, revision)
-
-`kernel.js:609`
-
-Called by deep reflect via `applyReflectOutput` (`reflect.js:227-235`).
-
-Three verdicts:
-
-| Verdict | Action |
-|---------|--------|
-| `send` | Re-executes the tool with original args. Sets `_commsGateApproved = true` to bypass the gate check. Deletes the `comms_blocked:` record. Records `comms_verdict_sent`. |
-| `revise_and_send` | Replaces `args[content_field]` with `revision.text`, then executes. Deletes record. Records `comms_verdict_sent` with `revised: true`. |
-| `drop` | Deletes the `comms_blocked:` record. Records `comms_verdict_dropped`. |
-
-### Deep reflect integration
-
-In `gatherReflectContext` (`reflect.js:173`), blocked comms are loaded
-and passed as `blockedComms` template variable. If none exist, the value is
-`"(none)"`. Deep reflect sees the pending messages and their block reasons,
-and can issue `comms_verdicts` in its output.
-
-`applyReflectOutput` processes `comms_verdicts` at step 2b
-(`reflect.js:227-235`):
-
-```js
-for (const cv of output.comms_verdicts) {
-  await K.processCommsVerdict(cv.id, cv.verdict, cv.revision);
-}
-```
-
----
-
-## Upaya: Communication Wisdom
-
-`upaya:comms:*` and `upaya:channel:*` are agent-writable KV keys that
-accumulate communication wisdom over time. They are in the `upaya:` system
-prefix — writes require `kvWriteGated` in deep-reflect context.
-
-These keys are loaded by `loadCommsUpaya()` (`kernel.js:469`) and
-injected into the `COMMS_GATE_PROMPT` as the `[COMMUNICATION WISDOM]`
-block. Each entry is formatted as `[key]\n{value}\n[/key]`.
-
-If a recipient has a contact record, the contact's `communication` field
-(or full record if no `communication` field) is also added to the upaya
-block under the key `contact:{id}`.
-
-This means the comms gate's decisions evolve as the agent accumulates
-wisdom about how to communicate — without changing the gate logic itself.
+`send_slack` (destination type) is not subject to this gate.
+`send_email` (person type) is always gated.
 
 ---
 
@@ -448,32 +298,24 @@ Channel message                            Agent calls send_slack / send_email
       ▼                                          ▼
 resolveContact()                           ┌─ Mechanical floor ──────┐
       │                                    │ person + unknown         │
-  ┌───┼────────┐                           │   = block initiating     │
+  ┌───┼────────┐                           │   = block               │
   │   │        │                           │ person + unapproved      │
-approved │  unknown                        │   = block ALL            │
+approved │  unknown                        │   = block               │
   │  unapproved │                          └─────────┬────────────────┘
   │       │     ▼                                    │
   │       │   toolless chat                          ▼
-  │       ▼   (or allowlist)               ┌─ Model capable? ──┐
-  │   toolless chat                        │ no = queue for     │
-  │   (or allowlist)                       │ deep reflect       │
-  ▼                                        └─────────┬──────────┘
-full tools                                           │
-  │                                                  ▼
-  │                                        ┌─ LLM gate ────────┐
-  │                                        │ upaya context     │
-  │                                        │ → send/revise/block│
-  │                                        └─────────┬──────────┘
-  │                                                  │
-  ▼                                              ┌───┴───┐
-Tool executes                               send/revise  block/queue
-  │                                              │          │
-  ▼                                              ▼          ▼
-┌─ Inbound gate ──┐                        Tool executes  comms_blocked:*
-│ check results    │                                        │
-│ for unknown /    │                                        ▼
-│ unapproved       │                                  Deep reflect
-│ senders          │                                  reviews later
+  │       ▼   (or allowlist)               Tool executes normally
+  │   toolless chat
+  │   (or allowlist)
+  ▼
+full tools
+  │
+  ▼
+┌─ Inbound gate ──┐
+│ check results    │
+│ for unknown /    │
+│ unapproved       │
+│ senders          │
 └─────┬────────────┘
       │
   ┌───┼────────┐

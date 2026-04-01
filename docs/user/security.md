@@ -270,64 +270,30 @@ logic through the Proposal Protocol:
 Every write to a `hook:act:code` or `hook:reflect:code` key triggers an
 alert to Slack. You see what changed.
 
-### Write Wisdom
+### Write Samskaras
 
-The agent accumulates wisdom through two prefixes:
-- `upaya:*` — discernment about the external world
-- `prajna:*` — self-knowledge about its own patterns
-
-Wisdom proposals follow the same staged protocol but with lighter
-safety: no circuit breaker (wisdom can't crash the system) and no git
-sync. They still require staging and review.
+The agent accumulates conditioned patterns as `samskara:*` entries —
+associations between context patterns and outcomes, with strength and
+confidence scores. Samskara proposals follow the same staged protocol
+but with lighter safety: no circuit breaker (samskaras can't crash the
+system) and no git sync. They still require staging and review.
 
 ---
 
 ## Communication Gate
 
-Every outbound message from a communication tool (`send_slack`,
-`send_email`) passes through a three-layer gate enforced by the kernel.
+Every outbound message to a person (`send_email`) passes through a
+kernel-enforced gate.
 
-### Layer 1: Mechanical Floor
+### Mechanical Floor
 
-If the tool is *initiating* contact (not replying) and the recipient has
-no `upaya:contact:*` entry, the message is blocked. No LLM call is
-made. This is a hard block — the agent cannot send a first message to
-someone unless it has accumulated communication wisdom about that
-recipient.
+The agent cannot send to a person unless there is a `contact:` record
+with an approved platform binding for that recipient. If no approved
+contact exists, the message is blocked immediately — no LLM call is
+made. This is a hard constraint that the agent cannot bypass.
 
-Replies to incoming messages pass this layer (the recipient already
-reached out).
-
-### Layer 2: Model Gate
-
-The current model must have `comms_gate_capable: true` in
-`config:model_capabilities`. If not (e.g. running Haiku or DeepSeek for
-cost savings), the message is queued as `comms_blocked:{id}` for review
-during the next deep reflect session rather than evaluated now.
-
-This prevents cheap models — which may not have the judgment for
-communication decisions — from sending messages.
-
-### Layer 3: LLM Judgment
-
-A dedicated LLM call evaluates the message against accumulated
-communication wisdom (`upaya:contact:*`, `upaya:channel:*`,
-`upaya:comms:*`). The gate returns one of three verdicts:
-
-- **Send** — message goes through unchanged
-- **Revise** — message is rewritten by the gate and then sent
-- **Block** — message is stored as `comms_blocked:{id}` for deep reflect
-  review
-
-### What Happens to Blocked Messages
-
-Blocked and queued messages accumulate as `comms_blocked:*` keys. During
-the next deep reflect, the agent reviews each one and decides:
-- **send** — the original was fine, send it now
-- **revise_and_send** — fix it and send
-- **drop** — it shouldn't have been sent, discard it
-
-You can browse blocked messages in the KV Explorer under `comms_blocked:`.
+Destination-type tools like `send_slack` (channel, not person) are not
+subject to this gate.
 
 ---
 
@@ -346,10 +312,10 @@ automatically rolled back — its snapshotted old values are restored.
 hook module that breaks the agent. The danger signal triggers rollback
 without waiting for human intervention.
 
-**What it doesn't cover:** Wisdom proposals (`upaya:*`, `prajna:*`)
-are excluded from circuit breaker rollback. Bad wisdom can't crash the
-system — it just leads to suboptimal decisions, which get corrected
-through normal reflection.
+**What it doesn't cover:** Samskara proposals (`samskara:*`) are excluded
+from circuit breaker rollback. Bad samskaras can't crash the system —
+they just lead to suboptimal decisions, which get corrected through
+normal reflection.
 
 ---
 

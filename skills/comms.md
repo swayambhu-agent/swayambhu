@@ -7,8 +7,9 @@ Load this skill before sending any message via send_slack or send_email.
 1. **Check the contact record** — load `contact:{name}` to understand the
    recipient's preferences, timezone, communication style, and your relationship.
 
-2. **Load communication wisdom** — query `upaya:comms:defaults` and any
-   contact-specific upaya (`upaya:comms:{contact}`) for accumulated guidance.
+2. **Check relevant samskaras** — look for samskaras tagged with
+   `communication` or the contact's name for accumulated guidance on tone,
+   timing, and approach.
 
 ## Channel conventions
 
