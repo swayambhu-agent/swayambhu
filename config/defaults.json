@@ -39,7 +39,11 @@
   },
   "memory": {
     "default_load_keys": ["config:models", "config:resources"],
-    "max_context_budget_tokens": 8000
+    "max_context_budget_tokens": 8000,
+    "surprise_ema_alpha": 0.3,
+    "max_episodes_for_reflect": 20,
+    "salience_weight": 0.7,
+    "similarity_weight": 0.3
   },
   "execution": {
     "max_subplan_depth": 3,
@@ -69,5 +73,11 @@
     "default_ttl_minutes": 120,
     "max_concurrent_jobs": 2,
     "callback_advance_seconds": 30
+  },
+  "inference": {
+    "url": null,
+    "relevance_threshold": 0.3,
+    "ambiguity_threshold": 0.6,
+    "embed_model": "bge-small-en-v1.5"
   }
 }

@@ -217,6 +217,11 @@ await put("session_schedule", {
   interval_seconds: readJSON("config/defaults.json").schedule?.interval_seconds || 21600,
 }, "json", "Session schedule — seeded in the past for immediate first session");
 
+// ── Secrets (local dev placeholders) ─────────────────────────
+
+console.log("--- Secrets ---");
+await put("secret:inference", "test-secret", "text", "Shared auth token for inference server (local dev)");
+
 // ── Skills (from skills/*.json + skills/*.md) ─────────────────
 
 console.log("--- Skills ---");
