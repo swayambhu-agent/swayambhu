@@ -56,18 +56,18 @@ export function formatDesires(d) {
   );
 }
 
-export function formatAssumptions(m) {
-  return JSON.stringify(
-    Object.entries(m).map(([key, val]) => ({
-      key,
-      slug: val.slug,
-      check: val.check,
-      confidence: val.confidence,
-      ttl_expires: val.ttl_expires,
-    })),
-    null, 2
-  );
+export function formatSamskaras(s) {
+  if (!s || Object.keys(s).length === 0) return "(no samskaras)";
+  const arr = Object.entries(s).map(([key, val]) => ({
+    key,
+    pattern: val.pattern,
+    strength: val.strength,
+  }));
+  return JSON.stringify(arr, null, 2);
 }
+
+// Temporary alias — removed in Task 5
+export { formatSamskaras as formatAssumptions };
 
 export function formatCircumstances(c) {
   return JSON.stringify(c, null, 2);
