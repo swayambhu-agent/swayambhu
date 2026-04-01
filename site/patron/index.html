@@ -1607,22 +1607,52 @@
             samskaras: data.samskaras.length,
             desires: data.desires.length,
             experiences: data.experiences.length,
-          }} />
+          }} onRefresh={loadData} />
           <MindFlowGraph data={data} selected={selected} onSelect={setSelected} />
           <MindDetailPanels data={data} selected={selected} onSelect={setSelected} />
         </div>
       );
     }
 
-    function MindHealthBar({ health, counts }) {
+    function MindHealthBar({ health, counts, onRefresh }) {
+      const bootstrap = health?.bootstrap_complete;
+      const sincedr = health?.sessions_since_dr ?? '?';
+      const nextdr = health?.next_dr_due;
+      const currentSession = (health?.last_deep_reflect_session || 0) + sincedr;
+      const sessionsUntilDr = nextdr ? Math.max(0, nextdr - currentSession) : '?';
+
       return (
         <div className="px-4 py-2 bg-bg-panel border-b border-border flex gap-5 flex-wrap items-center text-xs">
-          <span className="text-gray-500">Cognitive state loaded</span>
-          <span className="text-gray-500 ml-auto">
-            <span className="text-green-400">●</span> {counts.samskaras}s
-            <span className="text-purple-400 ml-2">●</span> {counts.desires}d
-            <span className="text-cyan-400 ml-2">●</span> {counts.experiences}ε
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span style={{
+              width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
+              background: bootstrap ? '#22c55e' : '#f59e0b',
+            }} />
+            <span className="text-gray-500">Bootstrap:</span>
+            <span className="text-gray-200">{bootstrap ? 'Complete' : 'Pending'}</span>
+          </div>
+
+          <div className="text-gray-500">
+            Last DR: <span className="text-purple-400 font-semibold">{sincedr} sessions ago</span>
+          </div>
+
+          <div className="text-gray-500">
+            Next DR: <span className="text-gray-200">~{sessionsUntilDr} sessions</span>
+          </div>
+
+          {health?.last_reflect_output && (
+            <div className="text-gray-500">
+              DR output: <span className="text-green-400">
+                {health.last_reflect_output.has_kv_operations ? 'wrote KV' : 'observations only'}
+              </span>
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 ml-auto text-gray-500">
+            <span><span className="text-green-400">●</span> {counts.samskaras} samskaras</span>
+            <span><span className="text-purple-400">●</span> {counts.desires} desires</span>
+            <span><span className="text-cyan-400">●</span> {counts.experiences} experiences</span>
+          </div>
         </div>
       );
     }
