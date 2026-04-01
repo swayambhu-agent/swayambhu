@@ -128,7 +128,8 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 | `kernel.js` | Safety gates, execution engine, session infrastructure (~1914 LOC) | No (governor enforces) |
 | `session.js` | Session hook — plan→act→eval→review cycle, cold start | Yes (via code staging) |
 | `act.js` | Act library — prompt rendering, tool defs, context formatting | Yes (via code staging) |
-| `eval.js` | Eval stub — mechanical σ/α computation (typed zeros in M3) | Yes (via code staging) |
+| `eval.js` | Three-tier eval pipeline (embeddings → NLI → LLM fallback) | Yes (via code staging) |
+| `memory.js` | Memory utilities — μ operators, episode selection, vector math | Yes (via code staging) |
 | `reflect.js` | Reflection policy — scheduling, deep reflect dispatch | Yes (via code staging) |
 | `tools/*.js` | Tool implementations | Yes (via code staging) |
 | `providers/*.js` | LLM/balance provider adapters | Yes (via code staging) |
@@ -202,6 +203,18 @@ If it's about *what the agent cannot do* → kernel.
 
 The governor is optional for local dev — `index.js` is hand-written and
 imports directly from disk. Use `--governor` flag with start.sh to run it.
+
+**Inference Server** (`inference/`):
+
+| File | Role |
+|------|------|
+| `inference/main.py` | FastAPI: /embed (bge-small-en-v1.5), /nli (DeBERTa-v3-base), /health |
+| `inference/Dockerfile` | Multi-stage ONNX Runtime build |
+| `inference/deploy.yaml` | Akash SDL for production deployment |
+
+The inference server runs on Akash (production) or docker-compose (local dev).
+The eval pipeline calls it for Tier 1 (embeddings) and Tier 2 (NLI). Falls back
+to LLM-only evaluation when unavailable.
 
 ### Code staging and deployment
 
