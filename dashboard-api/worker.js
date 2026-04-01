@@ -80,6 +80,77 @@ export default {
       return json({ sessionCounter, schedule, lastReflect, session: activeSession || session });
     }
 
+    // GET /mind — cognitive state snapshot (samskaras, desires, experiences, operator health)
+    if (path === "/mind") {
+      const [
+        samskaraKeys, desireKeys, experienceKeys,
+        reflectSchedule, sessionCounter,
+      ] = await Promise.all([
+        kvListAll(env.KV, { prefix: "samskara:" }),
+        kvListAll(env.KV, { prefix: "desire:" }),
+        kvListAll(env.KV, { prefix: "experience:" }),
+        env.KV.get("reflect:schedule:1", "json"),
+        env.KV.get("session_counter", "json"),
+      ]);
+
+      // Batch read all values
+      const allKeys = [
+        ...samskaraKeys.map(k => k.name),
+        ...desireKeys.map(k => k.name),
+        ...experienceKeys.map(k => k.name).slice(-20),
+      ];
+
+      const values = {};
+      await Promise.all(allKeys.map(async (key) => {
+        const val = await env.KV.get(key, "json");
+        if (val) values[key] = val;
+      }));
+
+      const samskaras = samskaraKeys
+        .map(k => ({ key: k.name, ...values[k.name] }))
+        .filter(s => s.pattern);
+
+      const desires = desireKeys
+        .map(k => ({ key: k.name, ...values[k.name] }))
+        .filter(d => d.description || d.slug);
+
+      const experiences = experienceKeys
+        .slice(-20)
+        .map(k => ({ key: k.name, ...values[k.name] }))
+        .filter(e => e.narrative || e.action_taken)
+        .reverse();
+
+      // Find latest deep-reflect output
+      const reflectKeys = await kvListAll(env.KV, { prefix: "reflect:1:" });
+      const latestReflectKey = reflectKeys
+        .filter(k => !k.name.includes("schedule"))
+        .sort((a, b) => b.name.localeCompare(a.name))[0];
+      const latestReflect = latestReflectKey
+        ? await env.KV.get(latestReflectKey.name, "json")
+        : null;
+
+      const lastDrSession = reflectSchedule?.last_reflect_session || 0;
+      const currentSession = sessionCounter || 0;
+      const sessionsSinceDr = currentSession - lastDrSession;
+      const nextDrDue = reflectSchedule?.after_sessions
+        ? lastDrSession + reflectSchedule.after_sessions
+        : null;
+
+      const operatorHealth = {
+        bootstrap_complete: samskaras.length > 0 || desires.length > 0,
+        last_deep_reflect_session: lastDrSession,
+        sessions_since_dr: sessionsSinceDr,
+        next_dr_due: nextDrDue,
+        last_reflect_output: latestReflect ? {
+          session_id: latestReflect.session_id,
+          reflection: latestReflect.reflection?.slice(0, 200),
+          has_kv_operations: !!(latestReflect.kv_operations?.length),
+        } : null,
+      };
+
+      return json({ samskaras, desires, experiences, operator_health: operatorHealth });
+    }
+
     // GET /sessions — discover all sessions (act + deep reflect)
     if (path === "/sessions") {
       const [karmaKeys, reflectKeys, cached] = await Promise.all([
