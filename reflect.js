@@ -264,7 +264,7 @@ async function runReflectInWorker(K, state, depth, context) {
 async function dispatchDeepReflect(K, state, depth) {
   const { defaults } = state;
 
-  // Load the M/D operator prompt
+  // Load the S/D operator prompt
   const prompt = await K.kvGet("prompt:deep_reflect");
   if (!prompt) {
     await K.karmaRecord({ event: "deep_reflect_no_prompt", depth });
@@ -280,7 +280,7 @@ async function dispatchDeepReflect(K, state, depth) {
         type: "cc_analysis",
         prompt,
         context_keys: [
-          "mu:*", "experience:*", "desire:*", "assumption:*",
+          "samskara:*", "experience:*", "desire:*",
           "principle:*", "config:defaults", `reflect:schedule:${depth}`,
         ],
       }),
