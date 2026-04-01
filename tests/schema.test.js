@@ -16,24 +16,10 @@ function validateDesire(d) {
   return errors;
 }
 
-function validateAssumption(a) {
+function validateSamskara(s) {
   const errors = [];
-  if (typeof a.slug !== "string" || !a.slug) errors.push("slug must be a non-empty string");
-  if (typeof a.check !== "string" || !a.check) errors.push("check must be a non-empty string");
-  if (typeof a.confidence !== "number" || a.confidence < 0 || a.confidence > 1) errors.push("confidence must be a number between 0 and 1");
-  if (typeof a.ttl_expires !== "string") errors.push("ttl_expires must be an ISO 8601 string");
-  if (!["observation", "inference", "statistical"].includes(a.source)) errors.push("source must be 'observation', 'inference', or 'statistical'");
-  if (typeof a.created_at !== "string") errors.push("created_at must be an ISO 8601 string");
-  return errors;
-}
-
-function validateMu(m) {
-  const errors = [];
-  if (typeof m.check_id !== "string" || !m.check_id) errors.push("check_id must be a non-empty string");
-  if (typeof m.confirmation_count !== "number" || !Number.isInteger(m.confirmation_count)) errors.push("confirmation_count must be an integer");
-  if (typeof m.violation_count !== "number" || !Number.isInteger(m.violation_count)) errors.push("violation_count must be an integer");
-  if (m.last_checked !== null && typeof m.last_checked !== "string") errors.push("last_checked must be an ISO 8601 string or null");
-  if (typeof m.cumulative_surprise !== "number") errors.push("cumulative_surprise must be a number");
+  if (typeof s.pattern !== "string" || !s.pattern) errors.push("pattern must be a non-empty string");
+  if (typeof s.strength !== "number" || s.strength < 0 || s.strength > 1) errors.push("strength must be a number between 0 and 1");
   return errors;
 }
 
@@ -42,10 +28,8 @@ function validateExperience(e) {
   if (typeof e.timestamp !== "string") errors.push("timestamp must be an ISO 8601 string");
   if (typeof e.action_taken !== "string") errors.push("action_taken must be a string");
   if (typeof e.outcome !== "string") errors.push("outcome must be a string");
-  if (!Array.isArray(e.active_assumptions)) errors.push("active_assumptions must be an array");
-  if (!Array.isArray(e.active_desires)) errors.push("active_desires must be an array");
   if (typeof e.surprise_score !== "number") errors.push("surprise_score must be a number");
-  if (typeof e.affinity_vector !== "object" || e.affinity_vector === null || Array.isArray(e.affinity_vector)) errors.push("affinity_vector must be a plain object");
+  if (typeof e.salience !== "number") errors.push("salience must be a number");
   if (typeof e.narrative !== "string") errors.push("narrative must be a string");
   if (e.embedding !== null && !Array.isArray(e.embedding)) errors.push("embedding must be a number array or null");
   return errors;
@@ -104,123 +88,72 @@ describe("Cognitive architecture schemas", () => {
     });
   });
 
-  describe("Assumption", () => {
-    it("validates a well-formed assumption", () => {
-      const assumption = {
-        slug: "slack-channel-working",
-        check: "The Slack channel is operational",
-        confidence: 0.8,
-        ttl_expires: "2026-04-10T00:00:00.000Z",
-        source: "observation",
-        created_at: "2026-03-31T00:00:00.000Z",
+  describe("Samskara", () => {
+    it("validates a well-formed samskara", () => {
+      const samskara = {
+        pattern: "Slack fails silently — success responses don't guarantee delivery",
+        strength: 0.85,
       };
-      expect(validateAssumption(assumption)).toEqual([]);
+      expect(validateSamskara(samskara)).toEqual([]);
     });
 
-    it("rejects confidence out of range", () => {
-      const assumption = {
-        slug: "test",
-        check: "test",
-        confidence: 1.5,
-        ttl_expires: "2026-04-10T00:00:00.000Z",
-        source: "observation",
-        created_at: "2026-03-31T00:00:00.000Z",
-      };
-      expect(validateAssumption(assumption)).toContainEqual(expect.stringContaining("confidence"));
+    it("rejects missing pattern", () => {
+      const samskara = { strength: 0.5 };
+      const errors = validateSamskara(samskara);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0]).toMatch(/pattern/);
     });
 
-    it("rejects invalid source", () => {
-      const assumption = {
-        slug: "test",
-        check: "test",
-        confidence: 0.5,
-        ttl_expires: "2026-04-10T00:00:00.000Z",
-        source: "guess",
-        created_at: "2026-03-31T00:00:00.000Z",
-      };
-      expect(validateAssumption(assumption)).toContainEqual(expect.stringContaining("source"));
+    it("rejects strength out of range", () => {
+      expect(validateSamskara({ pattern: "test", strength: 1.5 }).length).toBeGreaterThan(0);
+      expect(validateSamskara({ pattern: "test", strength: -0.1 }).length).toBeGreaterThan(0);
+    });
+
+    it("accepts strength at boundaries", () => {
+      expect(validateSamskara({ pattern: "test", strength: 0 })).toEqual([]);
+      expect(validateSamskara({ pattern: "test", strength: 1 })).toEqual([]);
     });
   });
 
-  describe("Statistical memory (μ)", () => {
-    it("validates a well-formed mu entry", () => {
-      const mu = {
-        check_id: "slack-delivery",
-        confirmation_count: 12,
-        violation_count: 1,
-        last_checked: "2026-03-31T12:00:00.000Z",
-        cumulative_surprise: 0.15,
-      };
-      expect(validateMu(mu)).toEqual([]);
-    });
-
-    it("accepts null last_checked (never checked)", () => {
-      const mu = {
-        check_id: "new-check",
-        confirmation_count: 0,
-        violation_count: 0,
-        last_checked: null,
-        cumulative_surprise: 0,
-      };
-      expect(validateMu(mu)).toEqual([]);
-    });
-
-    it("rejects non-integer counts", () => {
-      const mu = {
-        check_id: "test",
-        confirmation_count: 1.5,
-        violation_count: 0,
-        last_checked: null,
-        cumulative_surprise: 0,
-      };
-      expect(validateMu(mu)).toContainEqual(expect.stringContaining("confirmation_count"));
-    });
-  });
-
-  describe("Experience memory (ε)", () => {
+  describe("Experience", () => {
     it("validates a well-formed experience", () => {
       const experience = {
-        timestamp: "2026-03-31T12:00:00.000Z",
-        action_taken: "Compiled research doc",
-        outcome: "Doc saved, 3200 words",
-        active_assumptions: ["assumption:google-docs-accessible"],
-        active_desires: ["desire:serve"],
-        surprise_score: 0.2,
-        affinity_vector: { serve: 0.7, conserve: -0.1 },
-        narrative: "Successfully compiled the research doc",
+        timestamp: "2026-03-20T10:00:00.000Z",
+        action_taken: "Sent a greeting to the patron",
+        outcome: "Message delivered successfully",
+        surprise_score: 0.1,
+        salience: 0.3,
+        narrative: "Routine greeting. No issues.",
         embedding: null,
       };
       expect(validateExperience(experience)).toEqual([]);
     });
 
-    it("accepts embedding as number array", () => {
+    it("accepts embedding as array of numbers", () => {
       const experience = {
-        timestamp: "2026-03-31T12:00:00.000Z",
+        timestamp: "2026-03-20T10:00:00.000Z",
         action_taken: "test",
         outcome: "test",
-        active_assumptions: [],
-        active_desires: [],
-        surprise_score: 0,
-        affinity_vector: {},
+        surprise_score: 0.5,
+        salience: 0.7,
         narrative: "test",
         embedding: [0.1, 0.2, 0.3],
       };
       expect(validateExperience(experience)).toEqual([]);
     });
 
-    it("rejects affinity_vector as array", () => {
+    it("rejects missing salience", () => {
       const experience = {
-        timestamp: "2026-03-31T12:00:00.000Z",
+        timestamp: "2026-03-20T10:00:00.000Z",
         action_taken: "test",
         outcome: "test",
-        active_assumptions: [],
-        active_desires: [],
-        surprise_score: 0,
-        affinity_vector: [0.1, 0.2],
+        surprise_score: 0.5,
         narrative: "test",
         embedding: null,
       };
-      expect(validateExperience(experience)).toContainEqual(expect.stringContaining("affinity_vector"));
+      const errors = validateExperience(experience);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0]).toMatch(/salience/);
     });
   });
 });
