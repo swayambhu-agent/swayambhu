@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { updateMu, selectExperiences, cosineSimilarity, embeddingCacheKey } from "../memory.js";
+import { updateSamskaraStrength, selectExperiences, cosineSimilarity, embeddingCacheKey } from "../memory.js";
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {
@@ -29,57 +29,31 @@ describe("cosineSimilarity", () => {
   });
 });
 
-describe("updateMu", () => {
-  it("seeds cumulative_surprise on first update", () => {
-    const result = updateMu(null, "slack-ok", { direction: "contradiction", surprise: 0.8 });
-    expect(result.check_id).toBe("slack-ok");
-    expect(result.violation_count).toBe(1);
-    expect(result.confirmation_count).toBe(0);
-    expect(result.cumulative_surprise).toBe(0.8);
-    expect(result.last_checked).toBeTruthy();
+describe("updateSamskaraStrength", () => {
+  it("moves strength toward 1 on confirmation (low surprise)", () => {
+    const result = updateSamskaraStrength(0.5, 0.1);
+    expect(result).toBeCloseTo(0.62, 2);
   });
 
-  it("applies EMA on subsequent updates", () => {
-    const existing = {
-      check_id: "slack-ok",
-      confirmation_count: 5,
-      violation_count: 1,
-      last_checked: "2026-01-01T00:00:00Z",
-      cumulative_surprise: 0.2,
-    };
-    const result = updateMu(existing, "slack-ok", { direction: "contradiction", surprise: 0.9 });
-    // EMA: 0.3 * 0.9 + 0.7 * 0.2 = 0.27 + 0.14 = 0.41
-    expect(result.cumulative_surprise).toBeCloseTo(0.41);
-    expect(result.violation_count).toBe(2);
-    expect(result.confirmation_count).toBe(5);
+  it("moves strength toward 0 on violation (high surprise)", () => {
+    const result = updateSamskaraStrength(0.5, 0.9);
+    expect(result).toBeCloseTo(0.38, 2);
   });
 
-  it("increments confirmation on entailment", () => {
-    const existing = {
-      check_id: "test",
-      confirmation_count: 3,
-      violation_count: 0,
-      last_checked: null,
-      cumulative_surprise: 0.1,
-    };
-    const result = updateMu(existing, "test", { direction: "entailment", surprise: 0.05 });
-    expect(result.confirmation_count).toBe(4);
-    expect(result.violation_count).toBe(0);
-    // EMA: 0.3 * 0.05 + 0.7 * 0.1 = 0.015 + 0.07 = 0.085
-    expect(result.cumulative_surprise).toBeCloseTo(0.085);
+  it("uses custom alpha", () => {
+    const result = updateSamskaraStrength(0.5, 0.0, 0.5);
+    expect(result).toBeCloseTo(0.75, 2);
   });
 
-  it("handles neutral direction (no count change)", () => {
-    const existing = {
-      check_id: "test",
-      confirmation_count: 2,
-      violation_count: 1,
-      last_checked: null,
-      cumulative_surprise: 0.3,
-    };
-    const result = updateMu(existing, "test", { direction: "neutral", surprise: 0 });
-    expect(result.confirmation_count).toBe(2);
-    expect(result.violation_count).toBe(1);
+  it("clamps result to [0, 1]", () => {
+    expect(updateSamskaraStrength(1.0, 0.0)).toBeLessThanOrEqual(1);
+    expect(updateSamskaraStrength(0.0, 1.0)).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns unchanged for zero surprise with strength near 1", () => {
+    const result = updateSamskaraStrength(0.95, 0.0);
+    expect(result).toBeGreaterThan(0.95);
+    expect(result).toBeLessThanOrEqual(1);
   });
 });
 

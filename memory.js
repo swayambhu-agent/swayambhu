@@ -21,34 +21,16 @@ export function l1Norm(vec) {
   return Object.values(vec).reduce((sum, v) => sum + Math.abs(v), 0);
 }
 
-// ── μ update (R operator) ───────────────────────────────
+// ── Samskara strength update ─────────────────────────────
 
+// EMA strength update for samskaras. Confirmation (low surprise) moves
+// strength toward 1. Violation (high surprise) moves strength toward 0.
+// Same α as surprise tracking — they measure the same signal.
 const EMA_ALPHA = 0.3;
 
-export function updateMu(existing, checkId, score, alpha = EMA_ALPHA) {
-  const mu = existing ? { ...existing } : {
-    check_id: checkId,
-    confirmation_count: 0,
-    violation_count: 0,
-    last_checked: null,
-    cumulative_surprise: 0,
-  };
-
-  const surprised = score.direction === "contradiction";
-  const confirmed = score.direction === "entailment";
-  const surpriseValue = score.surprise || 0;
-
-  if (confirmed) mu.confirmation_count += 1;
-  if (surprised) mu.violation_count += 1;
-  mu.last_checked = new Date().toISOString();
-
-  // EMA: seed on first real update, blend after
-  const isFirst = mu.confirmation_count + mu.violation_count <= 1;
-  mu.cumulative_surprise = isFirst
-    ? surpriseValue
-    : alpha * surpriseValue + (1 - alpha) * mu.cumulative_surprise;
-
-  return mu;
+export function updateSamskaraStrength(currentStrength, surprise, alpha = EMA_ALPHA) {
+  const updated = currentStrength * (1 - alpha) + (1 - surprise) * alpha;
+  return Math.max(0, Math.min(1, updated));
 }
 
 // ── Experience selection ─────────────────────────────────
