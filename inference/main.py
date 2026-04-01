@@ -121,7 +121,7 @@ def mean_pool_and_normalize(token_embeddings: np.ndarray, attention_mask: np.nda
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest):
     if not request.texts:
-        raise HTTPException(status_code=422, detail="texts must not be empty")
+        return EmbedResponse(embeddings=[])
 
     session, tokenizer = load_embed_model()
     valid_inputs = get_onnx_input_names(session)
@@ -148,7 +148,7 @@ async def embed(request: EmbedRequest):
 @app.post("/nli", response_model=NLIResponse)
 async def nli(request: NLIRequest):
     if not request.pairs:
-        raise HTTPException(status_code=422, detail="pairs must not be empty")
+        return NLIResponse(results=[])
 
     session, tokenizer = load_nli_model()
     valid_inputs = get_onnx_input_names(session)
