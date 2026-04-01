@@ -34,6 +34,17 @@ import { runReflect, highestReflectDepthDue, isReflectDue, applyReflectOutput } 
 import { evaluateAction } from "../eval.js";
 import { updateMu } from "../memory.js";
 
+// Helper: builds a callLLM mock response, auto-adding parsed when json:true
+function llmResp(content, opts = {}) {
+  return (callOpts) => {
+    const resp = { content, cost: opts.cost ?? 0.01, toolCalls: opts.toolCalls ?? null };
+    if (callOpts?.json) {
+      try { resp.parsed = JSON.parse(content); } catch { resp.parsed = null; }
+    }
+    return resp;
+  };
+}
+
 // ── Empty desires tests ─────────────────────────────────────
 // When d=∅, the session runs normally — plan phase handles it.
 
@@ -53,11 +64,8 @@ describe("session with empty desires", () => {
     });
 
     // Plan returns no_action when desires are empty
-    K.callLLM = vi.fn(async () => ({
-      content: JSON.stringify({ no_action: true, reason: "no desires to act on" }),
-      cost: 0.01,
-      toolCalls: null,
-    }));
+    const noActionContent = JSON.stringify({ no_action: true, reason: "no desires to act on" });
+    K.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
   });
 
   it("runs normal plan phase even with no desires — no cold_start karma", async () => {
@@ -103,11 +111,11 @@ describe("session with empty desires", () => {
     });
 
     let callCount = 0;
-    K.callLLM = vi.fn(async () => {
+    K.callLLM = vi.fn(async (opts) => {
       callCount++;
       return callCount === 1
-        ? { content: VALID_PLAN, cost: 0.01, toolCalls: null }
-        : { content: VALID_REVIEW, cost: 0.01, toolCalls: null };
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
     });
 
     K.runAgentTurn = vi.fn(async ({ messages }) => {
@@ -180,12 +188,12 @@ describe("session plan phase", () => {
 
     // callLLM returns plan JSON for plan call, review JSON for review call
     let callCount = 0;
-    K.callLLM = vi.fn(async () => {
+    K.callLLM = vi.fn(async (opts) => {
       callCount++;
       // First call is plan phase, second is review phase
       return callCount === 1
-        ? { content: VALID_PLAN, cost: 0.01, toolCalls: null }
-        : { content: VALID_REVIEW, cost: 0.01, toolCalls: null };
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
     });
 
     // runAgentTurn returns done:true immediately
@@ -216,11 +224,8 @@ describe("session plan phase", () => {
   });
 
   it("stops loop when plan returns no_action", async () => {
-    K.callLLM = vi.fn(async () => ({
-      content: JSON.stringify({ no_action: true, reason: "nothing to do" }),
-      cost: 0.01,
-      toolCalls: null,
-    }));
+    const noActionContent = JSON.stringify({ no_action: true, reason: "nothing to do" });
+    K.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
@@ -297,11 +302,11 @@ describe("session memory writes", () => {
     }
 
     let callCount = 0;
-    k.callLLM = vi.fn(async () => {
+    k.callLLM = vi.fn(async (opts) => {
       callCount++;
       return callCount === 1
-        ? { content: VALID_PLAN, cost: 0.01, toolCalls: null }
-        : { content: JSON.stringify(overrideReview), cost: 0.01, toolCalls: null };
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(JSON.stringify(overrideReview))(opts);
     });
 
     k.runAgentTurn = vi.fn(async ({ messages }) => {
@@ -473,11 +478,8 @@ describe("deep-reflect job collection", () => {
     });
 
     // Plan returns no_action (budget exhausted anyway)
-    k.callLLM = vi.fn(async () => ({
-      content: JSON.stringify({ no_action: true, reason: "budget" }),
-      cost: 0.01,
-      toolCalls: null,
-    }));
+    const noActionContent = JSON.stringify({ no_action: true, reason: "budget" });
+    k.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
 
     // getSessionCost returns high cost so main loop skips
     k.getSessionCost = vi.fn(async () => 0.50);
@@ -574,11 +576,8 @@ describe("deep-reflect job collection", () => {
       sessionCount: 10, // 10 - 0 = 10 > 5 max_stale
     });
 
-    K.callLLM = vi.fn(async () => ({
-      content: JSON.stringify({ no_action: true, reason: "budget" }),
-      cost: 0.01,
-      toolCalls: null,
-    }));
+    const noActionContent = JSON.stringify({ no_action: true, reason: "budget" });
+    K.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
     K.getSessionCost = vi.fn(async () => 0.50);
 
     const events = [
@@ -615,11 +614,8 @@ describe("per-depth reflect dispatch", () => {
       },
     });
 
-    K.callLLM = vi.fn(async () => ({
-      content: JSON.stringify({ no_action: true, reason: "budget" }),
-      cost: 0.01,
-      toolCalls: null,
-    }));
+    const noActionContent = JSON.stringify({ no_action: true, reason: "budget" });
+    K.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
     K.getSessionCost = vi.fn(async () => 0.50);
   });
 

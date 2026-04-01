@@ -449,7 +449,6 @@ class Kernel {
       resolveModel: async (m) => kernel.resolveModel(m),
       estimateCost: async (model, usage) => kernel.estimateCost(model, usage),
       buildPrompt: async (template, vars) => kernel.buildPrompt(template, vars),
-      parseAgentOutput: async (content) => kernel.parseAgentOutput(content),
       loadKeys: async (keys) => {
         const filtered = keys.filter(k => !k.startsWith("sealed:"));
         return kernel.loadKeys(filtered);
@@ -1275,7 +1274,7 @@ class Kernel {
 
   // ── LLM calls (dynamic provider with cascade fallback) ─────
 
-  async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap }) {
+  async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap, json }) {
     const budget = this.defaults?.session_budget;
     const costLimit = budgetCap ?? (this.mode === 'chat' ? null : budget?.max_cost);
     if (costLimit && this.sessionCost >= costLimit)
@@ -1382,7 +1381,13 @@ class Kernel {
     this.sessionCost += cost;
     this.sessionLLMCalls++;
 
-    return { content: result.content, usage: result.usage, cost, toolCalls: result.toolCalls, finish_reason: result.finish_reason };
+    const response = { content: result.content, usage: result.usage, cost, toolCalls: result.toolCalls, finish_reason: result.finish_reason };
+
+    if (json) {
+      response.parsed = this._parseJSON(result.content);
+    }
+
+    return response;
   }
 
   async callWithCascade(request, step) {
@@ -1689,9 +1694,9 @@ class Kernel {
               'Budget hard limit reached. Produce your final JSON output NOW. No more tool calls.' });
             const finalResp = await this.callLLM({
               model, effort, maxTokens, systemPrompt, messages,
-              step: `${step}_budget_final`, budgetCap,
+              step: `${step}_budget_final`, budgetCap, json: true,
             });
-            return await this.parseAgentOutput(finalResp.content);
+            return finalResp.parsed ?? {};
           }
 
           // Soft limit — warn once, tools still available
@@ -1734,9 +1739,9 @@ class Kernel {
           continue;
         }
 
-        // No tool calls — final output
-        const parsed = await this.parseAgentOutput(response.content);
-        if (parsed.parse_error && !parseRetried) {
+        // No tool calls — parse JSON from response
+        const parsed = this._parseJSON(response.content);
+        if (parsed === null && !parseRetried) {
           parseRetried = true;
           messages.push(
             { role: 'assistant', content: response.content },
@@ -1744,16 +1749,16 @@ class Kernel {
           );
           continue;  // burns one step, loop retries once
         }
-        return parsed;
+        return parsed ?? { parse_error: true, raw: response.content };
       }
 
       // Max steps reached — force final output (no tools, forces text)
       messages.push({ role: 'user', content: 'Maximum steps reached. Produce your final output now.' });
       const finalResponse = await this.callLLM({
         model, effort, maxTokens, systemPrompt, messages,
-        step: `${step}_final`, budgetCap,
+        step: `${step}_final`, budgetCap, json: true,
       });
-      return await this.parseAgentOutput(finalResponse.content);
+      return finalResponse.parsed ?? {};
 
     } catch (err) {
       if (err.message.startsWith("Budget exceeded")) {
@@ -1764,21 +1769,12 @@ class Kernel {
     }
   }
 
-  async parseAgentOutput(content) {
-    if (!content) return {};
+  // Try JSON.parse, then fence stripping, then brace matching. Returns parsed
+  // object or null. Pure mechanical extraction — no LLM calls, no side effects.
+  _parseJSON(content) {
+    if (!content) return null;
     try { return JSON.parse(content); }
-    catch {
-      // Try extracting JSON from markdown fences or surrounding prose
-      const extracted = this._extractJSON(content);
-      if (extracted) return extracted;
-
-      const repaired = await this.callHook('parse_repair', { content });
-      if (repaired?.content) {
-        try { return JSON.parse(repaired.content); }
-        catch { /* fall through */ }
-      }
-      return { parse_error: true, raw: content };
-    }
+    catch { return this._extractJSON(content); }
   }
 
   _extractJSON(content) {

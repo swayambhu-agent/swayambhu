@@ -7,7 +7,7 @@
 Fast, no network, no Workers runtime. Uses vitest with mock KV and mock fetch.
 
 **What's tested:**
-- Kernel logic (kernel.test.js): parseAgentOutput, buildPrompt, budget
+- Kernel logic (kernel.test.js): _parseJSON, buildPrompt, budget
   enforcement, karma recording, tool definitions, session management
 - Session hook (wake-hook.test.js): orient context, reflect scheduling, proposal
   system, circuit breaker, tripwire evaluation

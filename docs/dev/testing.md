@@ -109,7 +109,7 @@ helper that constructs a real `Kernel` instance with a mock KV store
 and environment.
 
 **Core parsing and output:**
-- `parseAgentOutput` (6 tests) — valid JSON, invalid JSON (raw fallback),
+- `_parseJSON` (6 tests) — valid JSON, invalid JSON (raw fallback),
   empty/null content, markdown code fence extraction, JSON extraction
   from prose
 - `_extractJSON` (8 tests) — code fence variants, nested braces, escaped

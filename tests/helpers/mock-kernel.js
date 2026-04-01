@@ -47,7 +47,12 @@ export function makeMockK(kvInit = {}, opts = {}) {
 
     // Agent loop
     runAgentTurn: vi.fn(async () => ({ response: { content: null }, toolResults: [], cost: 0, done: true })),
-    callLLM: vi.fn(async () => ({ content: '{}', cost: 0, toolCalls: null })),
+    callLLM: vi.fn(async (opts) => {
+      const content = '{}';
+      const resp = { content, cost: 0, toolCalls: null };
+      if (opts?.json) resp.parsed = JSON.parse(content);
+      return resp;
+    }),
     runAgentLoop: vi.fn(async () => ({})),
     executeToolCall: vi.fn(async () => ({})),
     buildToolDefinitions: vi.fn(async () => []),
@@ -63,7 +68,6 @@ export function makeMockK(kvInit = {}, opts = {}) {
     resolveModel: vi.fn(async (m) => m),
     estimateCost: vi.fn(async () => 0),
     buildPrompt: vi.fn(async (t, v) => t || JSON.stringify(v)),
-    parseAgentOutput: vi.fn(async (c) => (c ? JSON.parse(c) : {})),
     loadKeys: vi.fn(async (keys) => {
       const result = {};
       for (const key of keys) {

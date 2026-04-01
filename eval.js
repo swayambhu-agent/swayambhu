@@ -100,15 +100,25 @@ export async function evaluateAction(K, ledger, desires, assumptions, config) {
     candidate_check_ids: candidateCheckIds,
   };
 
-  // Short-circuit: no desires AND no assumptions → zeros
   const desireEntries = Object.entries(desires);
   const assumptionEntries = Object.entries(assumptions);
 
-  if (desireEntries.length === 0 && assumptionEntries.length === 0) {
+  // Empty assumptions → maximum surprise (σ = 1). Having no model of the
+  // world means you cannot predict anything — that is maximum uncertainty,
+  // not minimum surprise. This is what bootstraps the agent: the first
+  // session records a high-salience experience, reflect picks it up, and
+  // derives initial desires from principles.
+  //
+  // Empty desires → zero affinity (α = {}). An experience is memorable on
+  // the desire axis when it is strongly aligned or misaligned with what you
+  // want. With no desires there is no vector to measure against — affinity
+  // is genuinely zero, not max. The surprise axis alone drives salience
+  // during bootstrap.
+  if (assumptionEntries.length === 0) {
     return {
-      sigma: 0,
+      sigma: 1,
       alpha: {},
-      salience: 0,
+      salience: 1,
       assumption_scores: {},
       ...baseResult,
     };

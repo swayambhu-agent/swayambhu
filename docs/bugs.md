@@ -67,7 +67,7 @@ if (typeof raw === "string") {
 **Root cause chain:**
 1. `spawnSubplan` defaults to `max_output_tokens: 1000` (kernel.js line 2107)
 2. Haiku's response hit exactly 1000 tokens — truncated mid-JSON, no closing braces
-3. `parseAgentOutput` tried `JSON.parse` → failed (incomplete JSON)
+3. `_parseJSON` tried `JSON.parse` → failed (incomplete JSON)
 4. `_extractJSON` tried fence extraction → failed (incomplete JSON inside fences)
 5. `_extractJSON` fell back to `_findBraces(content, "[", "]")` — found the first balanced `[...]` in the response, which happened to be the `sessions_affected` array from deep inside the nested JSON
 6. That parsed successfully and was returned as the subplan result
@@ -76,7 +76,7 @@ if (typeof raw === "string") {
 
 **Fix considerations:**
 - `_findBraces` with `[` fallback after `{` failure is dangerous on truncated output — the first balanced array is almost never the intended top-level result
-- `parseAgentOutput` should detect truncation (e.g. output_tokens == max_output_tokens) and return a clear `{ truncated: true, raw: ... }` instead of guessing
+- `_parseJSON` (called via `callLLM({ json: true })`) should detect truncation (e.g. output_tokens == max_output_tokens) and return a clear `{ truncated: true, raw: ... }` instead of guessing
 - Subplan `max_output_tokens` of 1000 is too low for complex analysis tasks — the Haiku subplan produced a thorough multi-section analysis that needed ~2000+ tokens
 - Could also retry with higher token limit on truncation, or at minimum flag it in karma
 

@@ -104,12 +104,11 @@ async function planPhase(K, { desires, assumptions, circumstances, defaults, mod
     systemPrompt,
     messages: [{ role: "user", content: userContent }],
     tools: [],
+    json: true,
   });
 
-  let plan;
-  try {
-    plan = JSON.parse(response.content);
-  } catch {
+  let plan = response.parsed;
+  if (!plan) {
     // One retry on parse failure
     const retry = await K.callLLM({
       model,
@@ -122,13 +121,13 @@ async function planPhase(K, { desires, assumptions, circumstances, defaults, mod
         { role: "user", content: "Respond with ONLY a valid JSON plan object." },
       ],
       tools: [],
+      json: true,
     });
-    try {
-      plan = JSON.parse(retry.content);
-    } catch {
+    if (!retry.parsed) {
       await K.karmaRecord({ event: "plan_parse_failure", raw: response.content?.slice(0, 500) });
       return null;
     }
+    plan = retry.parsed;
   }
 
   if (plan.no_action) return plan;
@@ -259,17 +258,15 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
     systemPrompt: finalSystem,
     messages: [{ role: "user", content: userContent }],
     tools: [],
+    json: true,
   });
 
-  let review;
-  try {
-    review = JSON.parse(response.content);
-  } catch {
+  if (!response.parsed) {
     await K.karmaRecord({ event: "review_parse_failure", raw: response.content?.slice(0, 500) });
     return null;
   }
 
-  return review;
+  return response.parsed;
 }
 
 // ── Memory writes ───────────────────────────────────────────
@@ -426,6 +423,20 @@ export async function run(K, { crashData, balances, events, schedule }) {
     if (!plan) break; // parse failure
     if (plan.no_action) {
       await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
+
+      // Still run eval + memory so the experience gets recorded. When
+      // assumptions are empty, eval returns σ=1 (max surprise) — this is
+      // what bootstraps the agent by making "no desires" a high-salience
+      // experience that reflect can act on.
+      const noActionLedger = {
+        action_id: `a_${Date.now()}_noaction`,
+        plan,
+        tool_calls: [],
+        final_text: plan.reason,
+      };
+      const evalResult = await evaluateAction(K, noActionLedger, desires, assumptions, inferenceConfig || {});
+      await writeMemory(K, { ledger: noActionLedger, evalResult, review: null, desires, assumptions, inferenceConfig });
+
       break;
     }
 

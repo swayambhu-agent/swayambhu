@@ -169,14 +169,16 @@ describe("evaluateAction (three-tier pipeline)", () => {
     expect(result.assumptions_relied_on).toEqual(["assumption:google-docs-accessible"]);
   });
 
-  it("handles empty desires and assumptions (short-circuit)", async () => {
+  it("empty assumptions → max surprise (bootstrap signal)", async () => {
+    // No assumptions means no world model — maximum uncertainty, not minimum
+    // surprise. σ=1 makes this a high-salience experience that reflect can
+    // use to bootstrap desires from principles.
     const result = await evaluateAction(K, ledger, {}, {}, config);
 
-    expect(result.sigma).toBe(0);
+    expect(result.sigma).toBe(1);
     expect(result.alpha).toEqual({});
-    expect(result.salience).toBe(0);
+    expect(result.salience).toBe(1);
     expect(result.eval_method).toBe("pipeline");
-    // No inference calls needed
     expect(callInference).not.toHaveBeenCalled();
     expect(K.callLLM).not.toHaveBeenCalled();
   });

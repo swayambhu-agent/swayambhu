@@ -143,7 +143,7 @@ Exposes these categories of methods:
 | Communication | `listBlockedComms()`, `processCommsVerdict(id, verdict, revision)` |
 | Execution | `executeAction(step)`, `executeAdapter(adapterKey, input)`, `checkBalance(args)` |
 | Karma | `karmaRecord(entry)` |
-| Utility | `resolveModel(m)`, `estimateCost(model, usage)`, `buildPrompt(template, vars)`, `parseAgentOutput(content)`, `loadKeys(keys)`, `getSessionCount()`, `mergeDefaults(defaults, overrides)`, `isSystemKey(key)`, `getSystemKeyPatterns()` |
+| Utility | `resolveModel(m)`, `estimateCost(model, usage)`, `buildPrompt(template, vars)`, `loadKeys(keys)`, `getSessionCount()`, `mergeDefaults(defaults, overrides)`, `isSystemKey(key)`, `getSystemKeyPatterns()` |
 | Patron identity | `rotatePatronKey(newPublicKey, signature)` — self-authenticating key rotation (verifies against current key) |
 | State (read-only) | `getSessionId()`, `getSessionCost()`, `getKarma()`, `getDefaults()`, `getModelsConfig()`, `getModelCapabilities()`, `getDharma()`, `getToolRegistry()`, `getYamas()`, `getNiyamas()`, `getPatronId()`, `getPatronContact()`, `isPatronIdentityDisputed()`, `resolveContact(platform, platformUserId)`, `elapsed()` |
 
@@ -286,11 +286,11 @@ runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
 2. Loops up to `maxSteps` times:
    a. Calls `callLLM()` with the current messages and tools.
    b. If response has `toolCalls`: adds assistant message with tool calls, executes all tools **in parallel** via `Promise.all(response.toolCalls.map(tc => this.executeToolCall(tc)))`, adds tool result messages (one per call), continues loop.
-   c. If no tool calls: parses the text response as JSON via `parseAgentOutput()`. If parse fails and this is the first failure, injects a retry message and continues (burns one step). Otherwise returns the parsed output.
+   c. If no tool calls: parses the text response as JSON via `callLLM({ json: true })`. If parse fails and this is the first failure, injects a retry message and continues (burns one step). Otherwise returns `response.parsed`.
 3. If `maxSteps` exhausted: sends a "produce your final output now" message **without tools** (forces text response), parses and returns.
 4. Budget exceeded errors are caught and returned as `{ budget_exceeded: true }`.
 
-`parseAgentOutput()` tries: direct `JSON.parse()` → extract from markdown fences → find outermost `{}` or `[]` → call `parse_repair` hook → return `{ parse_error: true, raw: content }`.
+When `json: true` is passed to `callLLM()`, the response goes through `_parseJSON()`: direct `JSON.parse()` → strip markdown fences → find outermost `{}` or `[]`. Returns `{ parse_error: true, raw: content }` on failure. The repair hook (`parse_repair`) has been removed.
 
 ---
 

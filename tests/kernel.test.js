@@ -25,57 +25,34 @@ function makeKernel(kvInit = {}, opts = {}) {
   return { kernel, env };
 }
 
-// ── 1. parseAgentOutput ─────────────────────────────────────
+// ── 1. _parseJSON ─────────────────────────────────────
 
-describe("parseAgentOutput", () => {
-  it("returns parsed object for valid JSON", async () => {
+describe("_parseJSON", () => {
+  it("returns parsed object for valid JSON", () => {
     const { kernel } = makeKernel();
-    const result = await kernel.parseAgentOutput('{"key":"value","n":42}');
-    expect(result).toEqual({ key: "value", n: 42 });
+    expect(kernel._parseJSON('{"key":"value","n":42}')).toEqual({ key: "value", n: 42 });
   });
 
-  it("returns { parse_error, raw } for invalid JSON (no hook)", async () => {
+  it("returns null for unparseable content", () => {
     const { kernel } = makeKernel();
-    kernel.callHook = vi.fn(async () => null);
-    const result = await kernel.parseAgentOutput("not json at all");
-    expect(result).toEqual({ parse_error: true, raw: "not json at all" });
+    expect(kernel._parseJSON("not json at all")).toBeNull();
   });
 
-  it("returns {} for empty/null content", async () => {
+  it("returns null for empty/null content", () => {
     const { kernel } = makeKernel();
-    expect(await kernel.parseAgentOutput(null)).toEqual({});
-    expect(await kernel.parseAgentOutput("")).toEqual({});
-    expect(await kernel.parseAgentOutput(undefined)).toEqual({});
+    expect(kernel._parseJSON(null)).toBeNull();
+    expect(kernel._parseJSON("")).toBeNull();
+    expect(kernel._parseJSON(undefined)).toBeNull();
   });
 
-  it("calls parse_repair hook on failure", async () => {
+  it("extracts JSON from markdown code fences", () => {
     const { kernel } = makeKernel();
-    kernel.callHook = vi.fn(async () => ({ content: '{"fixed":true}' }));
-    const result = await kernel.parseAgentOutput("not json");
-    expect(result).toEqual({ fixed: true });
-    expect(kernel.callHook).toHaveBeenCalledWith("parse_repair", { content: "not json" });
+    expect(kernel._parseJSON('```json\n{"key":"value"}\n```')).toEqual({ key: "value" });
   });
 
-  it("returns parse_error when hook returns bad JSON", async () => {
+  it("extracts JSON from prose with surrounding text", () => {
     const { kernel } = makeKernel();
-    kernel.callHook = vi.fn(async () => ({ content: "still bad" }));
-    const result = await kernel.parseAgentOutput("not json");
-    expect(result).toEqual({ parse_error: true, raw: "not json" });
-  });
-
-  it("extracts JSON from markdown code fences", async () => {
-    const { kernel } = makeKernel();
-    kernel.callHook = vi.fn(async () => null);
-    const result = await kernel.parseAgentOutput('```json\n{"key":"value"}\n```');
-    expect(result).toEqual({ key: "value" });
-    expect(kernel.callHook).not.toHaveBeenCalled();
-  });
-
-  it("extracts JSON from prose with surrounding text", async () => {
-    const { kernel } = makeKernel();
-    kernel.callHook = vi.fn(async () => null);
-    const result = await kernel.parseAgentOutput('Here is my output:\n{"key":"value"}\nDone.');
-    expect(result).toEqual({ key: "value" });
+    expect(kernel._parseJSON('Here is my output:\n{"key":"value"}\nDone.')).toEqual({ key: "value" });
   });
 });
 
@@ -540,10 +517,11 @@ describe("runAgentLoop", () => {
     const { kernel } = makeKernel();
     kernel.executeToolCall = vi.fn(async () => ({ result: "ok" }));
     let callCount = 0;
-    kernel.callLLM = vi.fn(async ({ step }) => {
+    kernel.callLLM = vi.fn(async ({ step, json }) => {
       callCount++;
       if (step?.endsWith("_final")) {
-        return { content: '{"forced":true}', cost: 0.001, toolCalls: null };
+        const content = '{"forced":true}';
+        return { content, cost: 0.001, toolCalls: null, ...(json ? { parsed: JSON.parse(content) } : {}) };
       }
       return {
         content: null,

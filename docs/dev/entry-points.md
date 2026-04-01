@@ -555,17 +555,17 @@ runAgentLoop({ systemPrompt, initialContext, tools, model, effort,
 │   │     continue
 │   │
 │   │   NO (text response):
-│   │     parseAgentOutput(content)
-│   │       JSON.parse → extract from markdown fences → find {} or [] → parse_repair hook → { parse_error, raw }
+│   │     callLLM({ json: true }) → _parseJSON(content)
+│   │       JSON.parse → strip markdown fences → find {} or [] → { parse_error, raw }
 │   │     If parse_error and first failure:
 │   │       Inject retry message, continue (burns one step)
 │   │     Else:
-│   │       return parsed output
+│   │       return response.parsed
 │   │
 ├─► [maxSteps exhausted]
 │   messages.push("Maximum steps reached. Produce your final output now.")
-│   callLLM({ ...no tools... })  ← forces text output
-│   parseAgentOutput, return
+│   callLLM({ ...no tools, json: true... })  ← forces text output
+│   return response.parsed
 │
 └─► [catch Budget exceeded]
     Return { budget_exceeded: true, reason }
