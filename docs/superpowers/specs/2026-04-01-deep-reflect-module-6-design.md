@@ -168,7 +168,7 @@ Only output kv_operations for desire:* and assumption:* keys. Do not modify any 
 
 The cold start ceremony (`D_p(∅, ∅)` — synchronous in-Worker deep-reflect) is eliminated. When `d = ∅`:
 
-1. The plan prompt handles it naturally: "If you have no desires yet, orient: observe your environment, understand your situation, act from principles. The absence of desires is itself a circumstance."
+1. The plan prompt sees `[DESIRES] []` alongside rich principles and circumstances. The model naturally orients — no explicit instruction needed.
 2. The first session orients — reads environment, observes available tools/resources/patron, notices the absence of desires and assumptions
 3. That orientation is the first experience, written to `experience:0`
 4. Deep-reflect runs (async, normal path), reads the first experience + principles, derives `d_1` organically
@@ -179,8 +179,8 @@ The cold start ceremony (`D_p(∅, ∅)` — synchronous in-Worker deep-reflect)
 - The `if (Object.keys(desires).length === 0)` cold start branch in session.js
 - The synchronous `runReflectInWorker` fallback (no longer needed for cold start)
 
-**What changes:**
-- Plan prompt updated to handle `d = ∅` gracefully
+**What does NOT change:**
+- Plan prompt — no modifications. Empty desires is just data the model sees.
 - `highestReflectDepthDue` returns depth 1 on session 0 (already does this — triggers deep-reflect after first session)
 
 The yogic model: awareness precedes desire. The agent arrives with awareness (principles + circumstances), not with wants. Desires crystallize from awareness meeting reality.
