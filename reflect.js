@@ -199,6 +199,19 @@ export async function executeReflect(K, state, step) {
 
 export async function runReflect(K, state, depth, context) {
   const { defaults } = state;
+
+  // Dispatch as async job if akash jobs configured
+  const jobsConfig = defaults?.jobs;
+  if (jobsConfig?.base_url) {
+    return dispatchDeepReflect(K, state, depth);
+  }
+
+  // Fallback: run in-Worker (no akash configured)
+  return runReflectInWorker(K, state, depth, context);
+}
+
+async function runReflectInWorker(K, state, depth, context) {
+  const { defaults } = state;
   const sessionId = await K.getSessionId();
 
   const prompt = await loadReflectPrompt(K, state, depth);
@@ -246,6 +259,56 @@ export async function runReflect(K, state, depth, context) {
   // Cascade — run next depth down
   if (depth > 1) {
     await runReflect(K, state, depth - 1, context);
+  }
+}
+
+async function dispatchDeepReflect(K, state, depth) {
+  const { defaults } = state;
+
+  // Load the M/D operator prompt
+  const prompt = await K.kvGet("prompt:deep_reflect");
+  if (!prompt) {
+    await K.karmaRecord({ event: "deep_reflect_no_prompt", depth });
+    return runReflectInWorker(K, state, depth, {});
+  }
+
+  // Dispatch via start_job tool
+  const result = await K.executeToolCall({
+    id: `dr_dispatch_${Date.now()}`,
+    function: {
+      name: "start_job",
+      arguments: JSON.stringify({
+        type: "cc_analysis",
+        prompt,
+        context_keys: [
+          "mu:*", "experience:*", "desire:*", "assumption:*",
+          "principle:*", "config:defaults", `reflect:schedule:${depth}`,
+        ],
+      }),
+    },
+  });
+
+  if (result?.ok) {
+    // Tag the job record as deep-reflect
+    const jobRecord = await K.kvGet(`job:${result.job_id}`);
+    if (jobRecord) {
+      jobRecord.config = jobRecord.config || {};
+      jobRecord.config.deep_reflect = true;
+      jobRecord.config.depth = depth;
+      const sessionCount = await K.getSessionCount();
+      jobRecord.config.dispatch_session = sessionCount;
+      await K.kvWriteSafe(`job:${result.job_id}`, jobRecord);
+    }
+
+    await K.karmaRecord({
+      event: "deep_reflect_dispatched",
+      job_id: result.job_id,
+      depth,
+    });
+  } else {
+    // Dispatch failed — fall back to in-Worker
+    await K.karmaRecord({ event: "deep_reflect_dispatch_failed", error: result?.error });
+    return runReflectInWorker(K, state, depth, {});
   }
 }
 
