@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { updateMu, selectEpisodes, cosineSimilarity, embeddingCacheKey } from "../memory.js";
+import { updateMu, selectExperiences, cosineSimilarity, embeddingCacheKey } from "../memory.js";
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {
@@ -83,8 +83,8 @@ describe("updateMu", () => {
   });
 });
 
-describe("selectEpisodes", () => {
-  const episodes = [
+describe("selectExperiences", () => {
+  const experiences = [
     { timestamp: "2026-03-01T00:00:00Z", salience: 0.9, surprise_score: 0.8, affinity_vector: { serve: 0.1 }, embedding: [1, 0, 0] },
     { timestamp: "2026-03-15T00:00:00Z", salience: 0.3, surprise_score: 0.2, affinity_vector: { serve: 0.1 }, embedding: [0, 1, 0] },
     { timestamp: "2026-03-29T00:00:00Z", salience: 0.7, surprise_score: 0.5, affinity_vector: { serve: 0.2 }, embedding: [0.7, 0.7, 0] },
@@ -92,14 +92,14 @@ describe("selectEpisodes", () => {
   ];
 
   it("returns top N by salience", () => {
-    const result = selectEpisodes(episodes, [], { maxEpisodes: 2 });
+    const result = selectExperiences(experiences, [], { maxEpisodes: 2 });
     expect(result).toHaveLength(2);
     expect(result[0].salience).toBe(0.9);
     expect(result[1].salience).toBe(0.7);
   });
 
-  it("prioritizes recent episodes when lastReflectTimestamp set", () => {
-    const result = selectEpisodes(episodes, [], {
+  it("prioritizes recent experiences when lastReflectTimestamp set", () => {
+    const result = selectExperiences(experiences, [], {
       maxEpisodes: 2,
       lastReflectTimestamp: "2026-03-20T00:00:00Z",
     });
@@ -109,18 +109,18 @@ describe("selectEpisodes", () => {
 
   it("boosts score with embedding similarity when desire embeddings provided", () => {
     const desireEmbeddings = [[1, 0, 0]];
-    const result = selectEpisodes(episodes, desireEmbeddings, { maxEpisodes: 2 });
-    expect(result[0]).toBe(episodes[0]);
+    const result = selectExperiences(experiences, desireEmbeddings, { maxEpisodes: 2 });
+    expect(result[0]).toBe(experiences[0]);
   });
 
-  it("handles episodes without embeddings", () => {
-    const noEmbedEpisodes = episodes.map(e => ({ ...e, embedding: null }));
-    const result = selectEpisodes(noEmbedEpisodes, [[1, 0, 0]], { maxEpisodes: 2 });
+  it("handles experiences without embeddings", () => {
+    const noEmbedExperiences = experiences.map(e => ({ ...e, embedding: null }));
+    const result = selectExperiences(noEmbedExperiences, [[1, 0, 0]], { maxEpisodes: 2 });
     expect(result).toHaveLength(2);
   });
 
-  it("returns all episodes when fewer than maxEpisodes", () => {
-    const result = selectEpisodes(episodes, [], { maxEpisodes: 100 });
+  it("returns all experiences when fewer than maxEpisodes", () => {
+    const result = selectExperiences(experiences, [], { maxEpisodes: 100 });
     expect(result).toHaveLength(4);
   });
 });

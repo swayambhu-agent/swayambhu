@@ -8,7 +8,7 @@
 // Proposal system methods are on K (kernel interface):
 // K.createProposal, K.loadProposals, K.processProposalVerdicts
 
-import { selectEpisodes } from './memory.js';
+import { selectExperiences } from './memory.js';
 
 // ── Wisdom manifest ─────────────────────────────────────────
 
@@ -357,15 +357,15 @@ export async function gatherReflectContext(K, state, depth, context) {
     }
   }
 
-  // Load episodes for deep-reflect
-  const episodeList = await K.kvList({ prefix: "episode:" });
-  const episodes = [];
-  for (const key of episodeList.keys) {
-    const ep = await K.kvGet(key.name);
-    if (ep) episodes.push(ep);
+  // Load experiences for deep-reflect
+  const experienceList = await K.kvList({ prefix: "experience:" });
+  const experiences = [];
+  for (const key of experienceList.keys) {
+    const exp = await K.kvGet(key.name);
+    if (exp) experiences.push(exp);
   }
 
-  // Load desire embeddings for similarity-based episode selection
+  // Load desire embeddings for similarity-based experience selection
   const desireList = await K.kvList({ prefix: "desire:" });
   const desireEmbeddings = [];
   for (const key of desireList.keys) {
@@ -373,9 +373,9 @@ export async function gatherReflectContext(K, state, depth, context) {
     if (d?._embedding) desireEmbeddings.push(d._embedding);
   }
 
-  // Select relevant episodes
+  // Select relevant experiences
   const lastReflectSchedule = await K.kvGet(`reflect:schedule:${depth}`);
-  const selectedEpisodes = selectEpisodes(episodes, desireEmbeddings, {
+  const selectedExperiences = selectExperiences(experiences, desireEmbeddings, {
     maxEpisodes: defaults?.memory?.max_episodes_for_reflect || 20,
     lastReflectTimestamp: lastReflectSchedule?.last_reflect,
     salienceWeight: defaults?.memory?.salience_weight || 0.7,
@@ -391,7 +391,7 @@ export async function gatherReflectContext(K, state, depth, context) {
   }
 
   // Add to template vars
-  templateVars.episodes = selectedEpisodes;
+  templateVars.experiences = selectedExperiences;
   templateVars.mu_entries = muEntries;
 
   return { userMessage: "Begin.", templateVars };

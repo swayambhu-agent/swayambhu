@@ -1,6 +1,6 @@
 // Swayambhu — Memory utilities
-// Pure functions for μ updates, episode selection, and vector math.
-// Used by session.js (μ writes, episode selection) and eval.js (embeddings).
+// Pure functions for μ updates, experience selection, and vector math.
+// Used by session.js (μ writes, experience selection) and eval.js (embeddings).
 
 // ── Vector math ─────────────────────────────────────────
 
@@ -51,9 +51,9 @@ export function updateMu(existing, checkId, score, alpha = EMA_ALPHA) {
   return mu;
 }
 
-// ── Episode selection ───────────────────────────────────
+// ── Experience selection ─────────────────────────────────
 
-export function selectEpisodes(episodes, desireEmbeddings, options = {}) {
+export function selectExperiences(experiences, desireEmbeddings, options = {}) {
   const {
     maxEpisodes = 20,
     salienceWeight = 0.7,
@@ -62,22 +62,22 @@ export function selectEpisodes(episodes, desireEmbeddings, options = {}) {
   } = options;
 
   // 1. Recency filter
-  let candidates = episodes;
+  let candidates = experiences;
   if (lastReflectTimestamp) {
     const cutoff = new Date(lastReflectTimestamp).getTime();
-    const recent = episodes.filter(e => new Date(e.timestamp).getTime() > cutoff);
-    candidates = recent.length >= maxEpisodes ? recent : episodes;
+    const recent = experiences.filter(e => new Date(e.timestamp).getTime() > cutoff);
+    candidates = recent.length >= maxEpisodes ? recent : experiences;
   }
 
-  // 2. Score each episode
-  const scored = candidates.map(ep => {
-    const baseSalience = ep.salience || (ep.surprise_score + l1Norm(ep.affinity_vector));
+  // 2. Score each experience
+  const scored = candidates.map(exp => {
+    const baseSalience = exp.salience || (exp.surprise_score + l1Norm(exp.affinity_vector));
 
     // 3. Embedding similarity boost
     let similarityBoost = 0;
-    if (ep.embedding && desireEmbeddings.length > 0) {
+    if (exp.embedding && desireEmbeddings.length > 0) {
       similarityBoost = Math.max(
-        ...desireEmbeddings.map(de => cosineSimilarity(ep.embedding, de))
+        ...desireEmbeddings.map(de => cosineSimilarity(exp.embedding, de))
       );
     }
 
@@ -85,12 +85,12 @@ export function selectEpisodes(episodes, desireEmbeddings, options = {}) {
       ? salienceWeight * baseSalience + similarityWeight * similarityBoost
       : baseSalience;
 
-    return { episode: ep, score };
+    return { experience: exp, score };
   });
 
   // 4. Sort and limit
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, maxEpisodes).map(s => s.episode);
+  return scored.slice(0, maxEpisodes).map(s => s.experience);
 }
 
 // ── Inference client ────────────────────────────────────

@@ -37,7 +37,7 @@ function validateMu(m) {
   return errors;
 }
 
-function validateEpisode(e) {
+function validateExperience(e) {
   const errors = [];
   if (typeof e.timestamp !== "string") errors.push("timestamp must be an ISO 8601 string");
   if (typeof e.action_taken !== "string") errors.push("action_taken must be a string");
@@ -177,9 +177,9 @@ describe("Cognitive architecture schemas", () => {
     });
   });
 
-  describe("Episodic memory (ε)", () => {
-    it("validates a well-formed episode", () => {
-      const episode = {
+  describe("Experience memory (ε)", () => {
+    it("validates a well-formed experience", () => {
+      const experience = {
         timestamp: "2026-03-31T12:00:00.000Z",
         action_taken: "Compiled research doc",
         outcome: "Doc saved, 3200 words",
@@ -190,11 +190,11 @@ describe("Cognitive architecture schemas", () => {
         narrative: "Successfully compiled the research doc",
         embedding: null,
       };
-      expect(validateEpisode(episode)).toEqual([]);
+      expect(validateExperience(experience)).toEqual([]);
     });
 
     it("accepts embedding as number array", () => {
-      const episode = {
+      const experience = {
         timestamp: "2026-03-31T12:00:00.000Z",
         action_taken: "test",
         outcome: "test",
@@ -205,11 +205,11 @@ describe("Cognitive architecture schemas", () => {
         narrative: "test",
         embedding: [0.1, 0.2, 0.3],
       };
-      expect(validateEpisode(episode)).toEqual([]);
+      expect(validateExperience(experience)).toEqual([]);
     });
 
     it("rejects affinity_vector as array", () => {
-      const episode = {
+      const experience = {
         timestamp: "2026-03-31T12:00:00.000Z",
         action_taken: "test",
         outcome: "test",
@@ -220,7 +220,7 @@ describe("Cognitive architecture schemas", () => {
         narrative: "test",
         embedding: null,
       };
-      expect(validateEpisode(episode)).toContainEqual(expect.stringContaining("affinity_vector"));
+      expect(validateExperience(experience)).toContainEqual(expect.stringContaining("affinity_vector"));
     });
   });
 });

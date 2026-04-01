@@ -1245,9 +1245,9 @@ describe("kvWriteSafe", () => {
     // Should not throw
   });
 
-  it("allows episode keys (agent-writable)", async () => {
+  it("allows experience keys (agent-writable)", async () => {
     const { kernel } = makeKernel();
-    await kernel.kvWriteSafe("episode:1711352400000", {
+    await kernel.kvWriteSafe("experience:1711352400000", {
       timestamp: "2026-03-31T12:00:00.000Z",
       action_taken: "test action",
       outcome: "test outcome",
@@ -1307,9 +1307,9 @@ describe("kvDeleteSafe", () => {
     // Should not throw
   });
 
-  it("allows episode keys (agent-writable)", async () => {
+  it("allows experience keys (agent-writable)", async () => {
     const { kernel } = makeKernel();
-    await kernel.kvDeleteSafe("episode:1711352400000");
+    await kernel.kvDeleteSafe("experience:1711352400000");
     // Should not throw
   });
 });

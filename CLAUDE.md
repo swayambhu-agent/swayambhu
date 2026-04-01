@@ -129,7 +129,7 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 | `session.js` | Session hook — plan→act→eval→review cycle, cold start | Yes (via code staging) |
 | `act.js` | Act library — prompt rendering, tool defs, context formatting | Yes (via code staging) |
 | `eval.js` | Three-tier eval pipeline (embeddings → NLI → LLM fallback) | Yes (via code staging) |
-| `memory.js` | Memory utilities — μ operators, episode selection, vector math | Yes (via code staging) |
+| `memory.js` | Memory utilities — μ operators, experience selection, vector math | Yes (via code staging) |
 | `reflect.js` | Reflection policy — scheduling, deep reflect dispatch | Yes (via code staging) |
 | `tools/*.js` | Tool implementations | Yes (via code staging) |
 | `providers/*.js` | LLM/balance provider adapters | Yes (via code staging) |
@@ -175,7 +175,7 @@ to `DEFAULT_KEY_TIERS`):
 | Kernel-only | `karma:*`, `sealed:*`, `event:*`, `kernel:*` | Only kernel internals can write |
 | Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*`, `desire:*`, `assumption:*` | Writable via `kvWriteGated` with privileged context flag |
 | Code keys | `tool:*:code`, `hook:*:code` | Must go through `K.stageCode()` → governor deploys |
-| Agent keys | `mu:*`, `episode:*`, everything else | `kvWriteSafe` — direct write |
+| Agent keys | `mu:*`, `experience:*`, everything else | `kvWriteSafe` — direct write |
 
 **Principles:** `principle:*` keys are loaded at boot via `loadPrinciples()`
 and injected into every LLM call as a `[PRINCIPLES]` block after dharma.
@@ -281,7 +281,7 @@ four entity types stored in KV:
 | `desire:*` | Desires (d) — directional vectors | Protected | Deep-reflect only | Act (plan phase) |
 | `assumption:*` | Assumptions (m) — cached heuristics with TTL | Protected | Deep-reflect only | Act (plan phase) |
 | `mu:*` | Statistical memory (μ) — rolling counters | Agent | Review phase (every session) | Deep-reflect |
-| `episode:*` | Episodic memory (ε) — salient experiences | Agent | Review phase (conditional) | Deep-reflect |
+| `experience:*` | Experience memory (ε) — salient experiences | Agent | Review phase (conditional) | Deep-reflect |
 
 Cold start: all stores empty (`d_0 = ∅`, `m_0 = ∅`, `μ_0 = ∅`, `ε_0 = ∅`).
 The first session triggers deep-reflect, which runs `D_p(∅, ∅)` to derive

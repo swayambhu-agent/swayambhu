@@ -360,7 +360,7 @@ describe("session memory writes", () => {
     expect(muValue.confirmation_count).toBe(0);
   });
 
-  it("writes episode when salience exceeds threshold", async () => {
+  it("writes experience when salience exceeds threshold", async () => {
     const review = {
       assessment: "success",
       narrative: "Something significant happened.",
@@ -370,16 +370,16 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    const episodeCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("episode:"));
-    expect(episodeCall).toBeDefined();
-    const episodeValue = typeof episodeCall[1] === "string" ? JSON.parse(episodeCall[1]) : episodeCall[1];
-    expect(episodeValue.narrative).toBe("Something significant happened.");
-    expect(episodeValue.active_desires).toEqual(["desire:d_help"]);
-    expect(episodeValue.surprise_score).toBe(0);
-    expect(episodeValue.embedding).toBeNull(); // no inferenceConfig
+    const experienceCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("experience:"));
+    expect(experienceCall).toBeDefined();
+    const experienceValue = typeof experienceCall[1] === "string" ? JSON.parse(experienceCall[1]) : experienceCall[1];
+    expect(experienceValue.narrative).toBe("Something significant happened.");
+    expect(experienceValue.active_desires).toEqual(["desire:d_help"]);
+    expect(experienceValue.surprise_score).toBe(0);
+    expect(experienceValue.embedding).toBeNull(); // no inferenceConfig
   });
 
-  it("skips episode when salience is below threshold", async () => {
+  it("skips experience when salience is below threshold", async () => {
     const review = {
       assessment: "routine",
       narrative: "Nothing notable.",
@@ -389,8 +389,8 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    const episodeCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("episode:"));
-    expect(episodeCall).toBeUndefined();
+    const experienceCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("experience:"));
+    expect(experienceCall).toBeUndefined();
   });
 
   it("does not write mu when assumption_scores is empty", async () => {

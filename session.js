@@ -302,12 +302,12 @@ async function writeMemory(K, { ledger, evalResult, review, desires, assumptions
         });
         embedding = resp.embeddings?.[0] || null;
       } catch {
-        await K.karmaRecord({ event: "episode_embedding_failed" });
+        await K.karmaRecord({ event: "experience_embedding_failed" });
       }
     }
 
-    const episodeKey = `episode:${Date.now()}`;
-    await K.kvWriteSafe(episodeKey, {
+    const experienceKey = `experience:${Date.now()}`;
+    await K.kvWriteSafe(experienceKey, {
       timestamp: now,
       action_taken: ledger.plan.action,
       outcome: ledger.final_text || review?.assessment,
