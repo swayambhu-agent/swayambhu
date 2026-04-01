@@ -32,9 +32,10 @@ import { runReflect, highestReflectDepthDue } from "../reflect.js";
 import { evaluateAction } from "../eval.js";
 import { updateMu } from "../memory.js";
 
-// ── Cold start tests ────────────────────────────────────────
+// ── Empty desires tests ─────────────────────────────────────
+// When d=∅, the session runs normally — plan phase handles it.
 
-describe("session cold start", () => {
+describe("session with empty desires", () => {
   let K;
 
   beforeEach(() => {
@@ -48,60 +49,79 @@ describe("session cold start", () => {
         execution: { max_steps: { act: 5 } },
       },
     });
+
+    // Plan returns no_action when desires are empty
+    K.callLLM = vi.fn(async () => ({
+      content: JSON.stringify({ no_action: true, reason: "no desires to act on" }),
+      cost: 0.01,
+      toolCalls: null,
+    }));
   });
 
-  it("dispatches deep-reflect when no desires exist", async () => {
-    // kvList returns empty for desire: prefix (default behavior — no desires seeded)
+  it("runs normal plan phase even with no desires — no cold_start karma", async () => {
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // Should log cold_start karma
-    expect(K.karmaRecord).toHaveBeenCalledWith(
+    // Should NOT log cold_start karma
+    expect(K.karmaRecord).not.toHaveBeenCalledWith(
       expect.objectContaining({ event: "cold_start" }),
     );
 
-    // Should dispatch deep-reflect with coldStart flag
-    expect(runReflect).toHaveBeenCalledTimes(1);
-    expect(runReflect).toHaveBeenCalledWith(
-      K,
-      expect.objectContaining({ defaults: expect.any(Object) }),
-      1,
-      { coldStart: true },
-    );
+    // callLLM should have been called (plan phase ran)
+    expect(K.callLLM).toHaveBeenCalledTimes(1);
+
+    // Plan call should include DESIRES and ASSUMPTIONS sections
+    const planCall = K.callLLM.mock.calls[0][0];
+    expect(planCall.messages[0].content).toMatch(/DESIRES/);
+    expect(planCall.messages[0].content).toMatch(/ASSUMPTIONS/);
   });
 
-  it("schedules next session after cold start deep-reflect", async () => {
+  it("does not call runReflect with coldStart flag", async () => {
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // Should write session_schedule with a near-future next_session_after
-    const scheduleCall = K.kvWriteSafe.mock.calls.find(
-      ([key]) => key === "session_schedule",
-    );
-    expect(scheduleCall).toBeDefined();
-
-    const schedule = typeof scheduleCall[1] === "string"
-      ? JSON.parse(scheduleCall[1])
-      : scheduleCall[1];
-    expect(schedule).toHaveProperty("next_session_after");
-    expect(schedule.reason).toBe("post_cold_start");
-
-    // Interval should be short (~60s)
-    const nextTime = new Date(schedule.next_session_after).getTime();
-    const now = Date.now();
-    expect(nextTime - now).toBeLessThan(120_000); // within 2 minutes
-    expect(nextTime - now).toBeGreaterThan(0);
+    // runReflect may or may not be called (depending on highestReflectDepthDue)
+    // but it should never be called with coldStart: true
+    for (const call of runReflect.mock.calls) {
+      const context = call[3];
+      expect(context?.coldStart).not.toBe(true);
+    }
   });
 
-  it("does not run act loop on cold start", async () => {
+  it("can precipitate an action even with empty desires", async () => {
+    // Override: plan returns an action despite empty desires
+    const VALID_PLAN = JSON.stringify({
+      action: "orient_from_principles",
+      success: "initial orientation complete",
+      relies_on: [],
+      defer_if: [],
+    });
+    const VALID_REVIEW = JSON.stringify({
+      assessment: "success",
+      narrative: "Oriented from principles.",
+      salience_estimate: 0.1,
+    });
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async () => {
+      callCount++;
+      return callCount === 1
+        ? { content: VALID_PLAN, cost: 0.01, toolCalls: null }
+        : { content: VALID_REVIEW, cost: 0.01, toolCalls: null };
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // callLLM should NOT have been called (no plan, no act, no review)
-    expect(K.callLLM).not.toHaveBeenCalled();
+    // Act phase ran (runAgentTurn called)
+    expect(K.runAgentTurn).toHaveBeenCalled();
 
-    // runAgentTurn should NOT have been called
-    expect(K.runAgentTurn).not.toHaveBeenCalled();
-
-    // highestReflectDepthDue should NOT have been called (we returned early)
-    expect(highestReflectDepthDue).not.toHaveBeenCalled();
+    // Session completed normally
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "session_complete" }),
+    );
   });
 });
 

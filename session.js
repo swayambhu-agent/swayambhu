@@ -349,38 +349,20 @@ export async function run(K, { crashData, balances, events, schedule }) {
     await cacheEmbeddings(K, assumptions, 'check', embedModel, inferenceConfig);
   }
 
-  // 3. Cold start: no desires → deep reflect to derive them
-  if (Object.keys(desires).length === 0) {
-    await K.karmaRecord({ event: "cold_start", reason: "no desires found" });
-
-    const state = { defaults, modelsConfig };
-    await runReflect(K, state, 1, { coldStart: true });
-
-    // Schedule next session soon so we can act on new desires
-    const interval = 60; // seconds
-    await K.kvWriteSafe("session_schedule", {
-      next_session_after: new Date(Date.now() + interval * 1000).toISOString(),
-      interval_seconds: interval,
-      reason: "post_cold_start",
-    });
-
-    return;
-  }
-
-  // 4. Build initial circumstances
+  // 3. Build initial circumstances
   let circumstances = buildCircumstances(events, balances, crashData);
 
-  // 5. Build system prompt, tools, model
+  // 4. Build system prompt, tools, model
   const systemPrompt = await renderActPrompt(K, { defaults });
   const tools = await buildToolSet(K);
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const effort = defaults?.act?.effort || "low";
   const maxTokens = defaults?.act?.max_output_tokens || 4000;
 
-  // 6. Shared messages array
+  // 5. Shared messages array
   const messages = [];
 
-  // 7. Main loop
+  // 6. Main loop
   const maxCycles = 10;
   const budget = defaults?.session_budget || {};
   const maxCost = budget.max_cost || 0.50;
@@ -388,14 +370,14 @@ export async function run(K, { crashData, balances, events, schedule }) {
   let cyclesRun = 0;
 
   for (let cycle = 0; cycle < maxCycles; cycle++) {
-    // 7a. Budget preflight
+    // 6a. Budget preflight
     const spent = await K.getSessionCost();
     if (spent + minReviewCost >= maxCost) {
       await K.karmaRecord({ event: "session_budget_exhausted", spent, cycle });
       break;
     }
 
-    // 7b. Plan phase
+    // 6b. Plan phase
     const plan = await planPhase(K, { desires, assumptions, circumstances, defaults, modelsConfig });
     if (!plan) break; // parse failure
     if (plan.no_action) {
@@ -403,23 +385,23 @@ export async function run(K, { crashData, balances, events, schedule }) {
       break;
     }
 
-    // 7c. Act phase
+    // 6c. Act phase
     const ledger = await actPhase(K, {
       plan, systemPrompt, messages, tools, model, effort, maxTokens, defaults,
     });
 
-    // 7d. Eval phase
+    // 6d. Eval phase
     const evalResult = await evaluateAction(K, ledger, desires, assumptions, inferenceConfig || {});
 
-    // 7e. Review phase
+    // 6e. Review phase
     const review = await reviewPhase(K, { ledger, evalResult, defaults });
 
-    // 7f. Memory writes
+    // 6f. Memory writes
     await writeMemory(K, { ledger, evalResult, review, desires, assumptions, inferenceConfig });
 
     cyclesRun++;
 
-    // 7g. Refresh circumstances
+    // 6g. Refresh circumstances
     const freshBalances = await K.checkBalance();
     circumstances = buildCircumstances(
       null, // events only on first cycle
@@ -434,21 +416,21 @@ export async function run(K, { crashData, balances, events, schedule }) {
     }
   }
 
-  // 8. Check deep-reflect due
+  // 7. Check deep-reflect due
   const state = { defaults, modelsConfig };
   const reflectDepth = await highestReflectDepthDue(K, state);
   if (reflectDepth > 0) {
     await runReflect(K, state, reflectDepth, {});
   }
 
-  // 9. Update session schedule
+  // 8. Update session schedule
   const scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
   await K.kvWriteSafe("session_schedule", {
     next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
     interval_seconds: scheduleInterval,
   });
 
-  // 10. Karma log session complete
+  // 9. Karma log session complete
   const finalCost = await K.getSessionCost();
   await K.karmaRecord({
     event: "session_complete",
