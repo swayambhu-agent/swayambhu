@@ -409,17 +409,10 @@
       const watchRef = useRef(null);
       const karmaRef = useRef([]);
 
-      // Map session ID → type for color lookup
-      const sessionTypeMap = useMemo(() => {
-        const m = {};
-        sessions.forEach(s => { m[s.id] = s.type; });
-        return m;
-      }, [sessions]);
-
       const refreshSessions = useCallback(async () => {
         try {
           const d = await api('/sessions', patronKey);
-          const list = (d.sessions || []).reverse();
+          const list = (d.sessions || []).filter(s => s.type !== 'deep_reflect').reverse();
           if (list.length > 0) {
             setSessions(list);
             setSelectedSession(prev => prev || list[0].id);
@@ -567,21 +560,12 @@
             <select
               value={selectedSession || ''}
               onChange={(e) => setSelectedSession(e.target.value)}
-              className={`bg-bg border rounded px-2 py-1 text-xs focus:outline-none ${
-                sessionTypeMap[selectedSession] === 'deep_reflect'
-                  ? 'border-purple-600 text-purple-300 focus:border-deep'
-                  : 'border-border text-gray-300 focus:border-accent'
-              }`}
+              className="bg-bg border border-border rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-accent"
             >
               {sessions.map(s => (
-                <option key={s.id} value={s.id}>
-                  {s.type === 'deep_reflect' ? '\u25C6 ' : ''}{s.id}
-                </option>
+                <option key={s.id} value={s.id}>{s.id}</option>
               ))}
             </select>
-            {sessionTypeMap[selectedSession] === 'deep_reflect' && (
-              <span className="text-deep text-[10px] font-semibold px-1.5 py-0.5 bg-deep-dim rounded">DEEP REFLECT</span>
-            )}
             <button
               onClick={toggleWatch}
               className={`px-2 py-1 rounded font-semibold border transition ${
