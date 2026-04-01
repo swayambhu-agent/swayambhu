@@ -1576,6 +1576,65 @@
       );
     }
 
+    // ── Mind Tab ────────────────────────────────────────────
+
+    function MindTab({ patronKey }) {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [selected, setSelected] = useState(null);
+
+      const loadData = useCallback(async () => {
+        try {
+          const result = await api('/mind', patronKey);
+          setData(result);
+          setError(null);
+        } catch (e) {
+          setError(e.message);
+        }
+        setLoading(false);
+      }, [patronKey]);
+
+      useEffect(() => { loadData(); }, [loadData]);
+
+      if (loading) return <div className="p-8 text-gray-500">Loading cognitive state...</div>;
+      if (error) return <div className="p-8 text-red-400">Error: {error}</div>;
+      if (!data) return <div className="p-8 text-gray-500">No data</div>;
+
+      return (
+        <div className="flex flex-col h-full">
+          <MindHealthBar health={data.operator_health} counts={{
+            samskaras: data.samskaras.length,
+            desires: data.desires.length,
+            experiences: data.experiences.length,
+          }} />
+          <MindFlowGraph data={data} selected={selected} onSelect={setSelected} />
+          <MindDetailPanels data={data} selected={selected} onSelect={setSelected} />
+        </div>
+      );
+    }
+
+    function MindHealthBar({ health, counts }) {
+      return (
+        <div className="px-4 py-2 bg-bg-panel border-b border-border flex gap-5 flex-wrap items-center text-xs">
+          <span className="text-gray-500">Cognitive state loaded</span>
+          <span className="text-gray-500 ml-auto">
+            <span className="text-green-400">●</span> {counts.samskaras}s
+            <span className="text-purple-400 ml-2">●</span> {counts.desires}d
+            <span className="text-cyan-400 ml-2">●</span> {counts.experiences}ε
+          </span>
+        </div>
+      );
+    }
+
+    function MindFlowGraph({ data, selected, onSelect }) {
+      return <div className="px-4 py-3 border-b border-border text-gray-500 text-xs">Flow graph — coming next</div>;
+    }
+
+    function MindDetailPanels({ data, selected, onSelect }) {
+      return <div className="flex-1 p-4 text-gray-500 text-xs">Select a node in the graph above</div>;
+    }
+
     // ── Main App ──────────────────────────────────────────────
     function App() {
       const [patronKey, setPatronKey] = useState(() => sessionStorage.getItem('patronKey'));
@@ -1668,6 +1727,7 @@
         { id: 'kv', label: 'KV Explorer' },
         { id: 'reflections', label: 'Reflections' },
         { id: 'mutations', label: 'Modifications' },
+        { id: 'mind', label: 'Mind' },
       ];
 
       return (
@@ -1774,6 +1834,9 @@
             </div>
             <div style={{ display: activeTab === 'mutations' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
               <MutationsTab patronKey={patronKey} />
+            </div>
+            <div style={{ display: activeTab === 'mind' ? 'block' : 'none' }} className="flex-1 overflow-auto">
+              <MindTab patronKey={patronKey} />
             </div>
           </div>
         </div>
