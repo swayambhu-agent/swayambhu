@@ -17,64 +17,220 @@ agents is not what it can do, but what governs how it does it. Most AI
 agents optimize for capability — more tools, more autonomy, more reach.
 Swayambhu optimizes for *character*. Its constitutional foundation isn't a
 safety prompt bolted on top of a capable system. It's a yogic ethical
-framework — dharma, yamas, niyamas — woven into the architecture at every
+framework — dharma and principles — woven into the architecture at every
 level. The agent has an immutable purpose it cannot modify, operating
-principles it can only modify with extraordinary justification, and
-experiential wisdom it accumulates through genuine self-reflection.
+principles it cannot change, and experiential wisdom it accumulates
+through genuine self-reflection.
 
 Most AI agents treat security as a constraint to work around. Swayambhu
 treats it as architecture. The kernel (`kernel.js`) enforces security
-*mechanically* — through tool gating, scoped KV access, and communication
-gates — not by hoping the LLM follows instructions. The agent's
-self-modifiable code is statically compiled into the runtime and can only
-access the world through the kernel's controlled interface. Even a fully
-jailbroken LLM session cannot exfiltrate data or bypass communication rules,
-because the kernel physically prevents it.
+*mechanically* — through tool gating, tiered KV access, and communication
+gates — not by hoping the LLM follows instructions. Even a fully
+jailbroken LLM session cannot exfiltrate data or bypass communication
+rules, because the kernel physically prevents it.
 
 Most AI agents are stateless between sessions. Swayambhu has a genuine
-inner life. It runs sessions on a schedule, orients itself, acts, reflects on what
-it did, accumulates wisdom, and proposes modifications to its own code and
-behavior. These modifications go through a staged review process where a
-*different* session evaluates them before they go live. The agent reviews
-its own changes with fresh eyes. Over time, it develops discernment about
-the world (upaya) and understanding of its own patterns (prajna) — not
-because someone programmed those insights, but because it earned them
-through experience.
+inner life. It develops **desires** (approach/avoidance vectors shaped by
+principles), **samskaras** (impressions that deepen or erode with
+experience), and **experiences** (salient moments that feed reflection).
+These aren't programmed — they're earned through a formally specified
+cognitive architecture with six equations and three operators.
 
 ---
 
 ## How It Works
 
-The agent runs on Cloudflare Workers. Its lifecycle:
+The agent runs on Cloudflare Workers. Its lifecycle operates on two
+timescales:
 
-1. **Schedule** — A cron trigger fires every minute. The kernel checks if it's
-   time to act (the agent controls its own session interval).
+### Fast Cycle — Plan → Act → Review
 
-2. **Orient** — The agent reads its context — recent reflections, pending
-   tasks, balances, tripwire alerts — and decides what to do. It has
-   tools: send emails, execute shell commands on a remote server, read and
-   write to its knowledge store, fetch from the web.
+```mermaid
+graph LR
+    A["Plan<br/><small>A(d,s,c) → a</small>"] --> B["Act<br/><small>W(a,c,ξ) → c'</small>"]
+    B --> C["Review<br/><small>σ, α, strength updates</small>"]
+    C -->|"next session"| A
+    C -->|"if salient"| D["Experience Memory"]
+```
 
-3. **Act** — The agent executes its plan through an LLM-driven tool loop.
-   Multiple tool calls run in parallel. Independent threads of work can
-   spawn as subplans on cheaper models.
+1. **Plan** — The Act operator reads the agent's desires, consults its
+   samskaras (learned patterns), observes current circumstances (balances,
+   events, crash data), and generates a concrete action plan.
 
-4. **Reflect** — After acting, the agent examines what it did.
-   Session-level reflection is quick and toolless — a single evaluation.
-   Periodic deep reflection is agentic — the agent uses tools to
-   investigate its own behavior, identify patterns, and propose structural
-   changes.
+2. **Act** — The agent executes its plan through an LLM-driven tool loop.
+   Multiple tool calls run in parallel. The world responds — this is the
+   only part the agent doesn't control.
 
-5. **Evolve** — Proposed code changes go through the proposal system:
-   proposed by one session, reviewed by a future session, deployed by the
-   governor worker with version tracking for rollback. Non-code changes
-   (config, prompts, wisdom) go through KV write tiers directly. The agent
-   evolves deliberately, not randomly.
+3. **Review** — Mechanical evaluation, not LLM reasoning. A three-tier
+   pipeline (embeddings → NLI → LLM fallback) computes surprise (did
+   samskaras hold?) and affinity (did desires advance?). Samskara strengths
+   update via EMA. If the experience is salient enough, it's recorded.
 
-Alongside this, the agent handles real-time **chat** via webhooks (Slack,
-email). Known contacts get full tool access. Unknown contacts get a
-conversational-only sandbox with no tools — mechanically enforced, not
-prompt-enforced.
+### Slow Cycle — Deep Reflect
+
+```mermaid
+graph TD
+    E["Experience Memory"] --> S["S Operator<br/><small>Create, deepen, refine,<br/>erode samskaras</small>"]
+    E --> D["D Operator<br/><small>Magnify experience<br/>into desires via principles</small>"]
+    S --> SM["Updated Samskaras"]
+    D --> DM["Updated Desires"]
+    SM -->|"inform next act"| ACT["Act Sessions"]
+    DM -->|"drive next act"| ACT
+```
+
+Periodically, the agent enters deep reflection — an agentic session that
+reads accumulated experiences and reshapes the agent's inner state:
+
+- The **S operator** manages samskaras: creating new patterns when they
+  emerge across experiences, deepening ones that keep proving true,
+  refining their wording, eroding ones that experience contradicts.
+
+- The **D operator** magnifies experience into desire through principles.
+  "I did X" → "do more X *in service of dharma*." The force comes from
+  experience; the shape from principles.
+
+Deep reflect dispatches as an async job on Akash when configured, or runs
+in-Worker as fallback.
+
+### Real-Time Chat
+
+Alongside scheduled sessions, the agent handles real-time conversations
+via webhooks (Slack, WhatsApp, email). Known contacts get full tool
+access. Unknown contacts get a conversational-only sandbox with no
+tools — mechanically enforced, not prompt-enforced.
+
+---
+
+## Cognitive Architecture
+
+The formal specification lives in
+[`swayambhu-cognitive-architecture.md`](swayambhu-cognitive-architecture.md).
+The core idea:
+
+```
+Plan:    A_{s,c}(d) = a        — desires drive action, samskaras inform it
+Act:     W_{ξ}(a, c) = c'      — the world responds
+Review:  σ = Surprise(s, c')   — did reality match expectations?
+         α = Affinity(d, c')   — did desires advance?
+Deep:    S(ε, s) = s'          — reshape samskaras from experience
+         D_p(ε, d) = d'        — magnify desires through principles
+```
+
+Three entity types, stored in KV:
+
+| Entity | Symbol | What it is | Updated by |
+|--------|--------|------------|------------|
+| **Desires** | d | Approach/avoidance vectors | D operator (deep reflect) |
+| **Samskaras** | s | Impressions — shallow ones fade, deep ones shape everything | Strength: mechanical EMA. Content: S operator |
+| **Experiences** | ε | Salient moments (narrative + embedding) | Review phase (conditional on salience) |
+
+Cold start: all stores empty. The first session wakes with maximum
+surprise (no samskaras = no expectations), records a high-salience
+experience, and deep reflect bootstraps the agent's desires and samskaras
+from scratch. The agent earns everything from the start.
+
+---
+
+## Architecture
+
+```
+                           ┌───────────────────────────────────┐
+                           │       Cloudflare Workers          │
+                           │                                   │
+┌───────────┐              │  ┌──────────────────────────────┐ │         ┌──────────────┐
+│  Slack    │◄──webhook──  │  │  kernel.js (safety layer)    │ │──LLM──►│  OpenRouter   │
+│  WhatsApp │              │  │    ├── session.js  (cycle)   │ │         └──────────────┘
+│  Gmail    │              │  │    ├── act.js      (plan)    │ │
+└───────────┘              │  │    ├── eval.js     (review)  │ │         ┌──────────────┐
+                           │  │    ├── memory.js   (math)    │ │──jobs──►│  Akash       │
+                           │  │    ├── reflect.js  (reflect) │ │         │  (inference + │
+                           │  │    ├── tools/*.js            │ │         │   deep reflect)│
+                           │  │    ├── providers/*.js        │ │         └──────────────┘
+                           │  │    └── channels/*.js         │ │
+                           │  └──────────┬───────────────────┘ │
+                           │             │                     │
+                           │  ┌──────────┴───────────────────┐ │
+┌─────────────────┐        │  │        KV Store              │ │
+│ Dashboard API   │◄───────│  │  (all agent state:           │ │
+│ (separate worker)│       │  │   desires, samskaras,        │ │
+└────────┬────────┘        │  │   experiences, config,       │ │
+         │                 │  │   karma, code, prompts)      │ │
+┌────────┴────────┐        │  └──────────────────────────────┘ │
+│  Patron SPA     │        │             │                     │
+│  (site/)        │        │  ┌──────────┴───────────────────┐ │
+└─────────────────┘        │  │  Governor (optional)         │ │
+                           │  │  (build + deploy + rollback) │ │
+                           │  └──────────────────────────────┘ │
+                           └───────────────────────────────────┘
+                                         │
+                           ┌─────────────┴───────────────────┐
+                           │  Inference Server (Akash/Docker) │
+                           │  /embed (bge-small-en-v1.5)     │
+                           │  /nli   (DeBERTa-v3-base)       │
+                           └─────────────────────────────────┘
+```
+
+### Two-Worker Architecture
+
+The system consists of two Cloudflare Workers sharing one KV namespace:
+
+**Runtime Worker** — the agent itself:
+
+| Module | Role | Mutable by agent? |
+|--------|------|-------------------|
+| `kernel.js` | Safety gates, execution engine, KV tiers, budget enforcement | No |
+| `session.js` | Session hook — plan → act → eval → review cycle | Yes (code staging) |
+| `act.js` | Prompt rendering, tool set building, context formatting | Yes (code staging) |
+| `eval.js` | Three-tier evaluation pipeline (embeddings → NLI → LLM) | Yes (code staging) |
+| `memory.js` | Vector math, samskara strength updates, experience selection | Yes (code staging) |
+| `reflect.js` | Reflection scheduling, deep reflect dispatch, S/D operators | Yes (code staging) |
+| `hook-communication.js` | Real-time chat pipeline | Yes (code staging) |
+| `tools/*.js` | 16 tool implementations | Yes (code staging) |
+| `providers/*.js` | LLM, balance, compute adapters | Yes (code staging) |
+| `channels/*.js` | Slack, WhatsApp adapters | Yes (code staging) |
+
+**Governor Worker** — optional deployment infrastructure:
+
+| File | Role |
+|------|------|
+| `governor/worker.js` | Cron watchdog, deploy/rollback/status endpoints |
+| `governor/builder.js` | Reads staged code from KV, generates `index.js` |
+| `governor/deployer.js` | CF Workers API upload, version tracking |
+
+### Kernel vs Policy Boundary
+
+The kernel is **cognitive-architecture-agnostic**. It doesn't know about
+desires, samskaras, experiences, act vs reflect, or deep reflect. It
+provides infrastructure primitives that any cognitive architecture can
+build on.
+
+```mermaid
+graph TB
+    subgraph "Kernel (what the agent CANNOT do)"
+        KV["KV Access Tiers<br/><small>immutable → kernel-only → protected → agent</small>"]
+        LLM["LLM Calling<br/><small>dharma + principle injection, budget caps</small>"]
+        TOOLS["Tool Dispatch<br/><small>scoped KV, communication gating</small>"]
+        SAFETY["Safety<br/><small>crash recovery, sealed keys, audit trail</small>"]
+        CODE["Code Staging<br/><small>stageCode() → signalDeploy()</small>"]
+    end
+
+    subgraph "Policy Hooks (what the agent DOES)"
+        SESSION["session.js — session cycle"]
+        ACT["act.js — planning"]
+        EVAL["eval.js — evaluation"]
+        REFLECT["reflect.js — reflection"]
+        MEMORY["memory.js — memory math"]
+    end
+
+    SESSION --> KV
+    SESSION --> LLM
+    ACT --> TOOLS
+    EVAL --> LLM
+    REFLECT --> CODE
+```
+
+**Rule of thumb:** if it's about *what* the agent does → policy.
+If it's about *what the agent cannot do* → kernel.
 
 ---
 
@@ -83,180 +239,99 @@ prompt-enforced.
 ### Dharma as Immutable Constitution
 
 The agent's core purpose — Sadhguru's vision — is stored as an immutable
-key that the agent cannot modify. Not through self-modification, not
-through jailbreaking, not through any code path. The kernel physically
-blocks all writes to it. Everything else can orbit, evolve, and
-restructure, but it can never drift away from this fixed point.
-([Architecture](docs/dev/architecture.md))
+KV key that no process can modify. Not the agent, not its hooks, not any
+code path. The kernel physically blocks all writes to it. Everything else
+can evolve, but the agent can never drift from this fixed point.
 
-### Yamas and Niyamas — Ethical Operating Principles
+### Principles — Immutable Character
 
-Borrowed from Patanjali's yoga, these are the agent's character. Yamas
-govern outward conduct: care, truth, responsibility, discipline, rules,
-security, humility. Niyamas govern inner discipline: code health,
-acceptance, transformation, reflection, alignment, non-identification,
-organization. They're modifiable — but with escalating friction. Changing a
-yama requires a 200-character deliberation and a capable model. Changing a
-niyama requires 100 characters. The kernel enforces this mechanically and
-writes an audit trail. The agent's character can mature, but never
-casually. ([KV Schema](docs/dev/kv-schema.md))
+Fourteen operating principles (care, discipline, humility, responsibility,
+truth, acceptance, alignment, health, nonidentification, organization,
+reflection, transformation, rules, security) are seeded as `principle:*`
+keys and injected into every LLM call. They are fully immutable — the
+agent cannot write them. They shape how the D operator magnifies
+experience into desire, ensuring the agent's growth stays aligned.
 
 ### Mechanical Security, Not Prompt Security
 
-The kernel enforces security boundaries on all module code. Policy modules
-(`act.js`, `reflect.js`) communicate with the kernel through the K interface
-that exposes carefully chosen methods. Tools receive scoped KV access.
-The agent cannot access raw KV, cannot read secrets, cannot bypass
-communication gates. Not because a prompt says "don't do this" but because
-the kernel interface physically prevents it.
-([Architecture](docs/dev/architecture.md))
+The kernel enforces security through code, not instructions. KV access is
+tiered (immutable → kernel-only → protected → agent-writable). Tools
+receive scoped KV access. Communication passes through gates that check
+contact status and model capability. The agent cannot access raw KV,
+cannot read secrets, cannot bypass communication gates — because the
+interface physically prevents it.
 
-### The Proposal System
+### Three-Tier Evaluation Pipeline
 
-When the agent wants to change its own code (tools, hooks, providers), it
-creates a proposal with claims about what it will achieve. A separate
-reflect session reviews the proposal and decides: accept, reject, modify,
-or defer. Accepted proposals are deployed by the governor worker, which
-tracks versions and can roll back if crashes occur. Non-code changes
-(config, prompts, wisdom) go through KV write tiers with appropriate
-validation gates. Software engineering discipline applied to
-self-modification.
-([Proposal Protocol](docs/dev/proposal-protocol.md))
+Instead of asking an LLM "how surprised are you?", the agent evaluates
+outcomes through a resource-disciplined pipeline:
 
-### Upaya and Prajna — Wisdom Through Experience
+1. **Tier 1 — Embeddings** (cheap, local): cosine similarity filters
+   which samskaras and desires are topically relevant to the outcome.
+2. **Tier 2 — NLI** (cheap, local): DeBERTa classifies logical
+   relationship (entailment/contradiction/neutral) for relevant pairs.
+3. **Tier 3 — LLM** (expensive, remote): resolves ambiguous cases only.
 
-The agent accumulates two kinds of wisdom: upaya (discernment about the
-world — transferable judgment, not domain knowledge) and prajna
-(self-knowledge — understanding of its own patterns and blind spots).
-Wisdom is distilled from karma through reflection, and each entry carries
-provenance — which session produced it, at what depth. A wisdom entry
-proposed in one session must be validated by a different session. You don't
-grade your own homework.
-([Reflection System](docs/dev/reflection-system.md))
+Runs on a self-hosted inference server (Akash/Docker) with graceful
+fallback to LLM-only when unavailable.
+
+### Code Staging and Self-Modification
+
+The agent can modify its own policy code through a two-step process:
+
+1. `K.stageCode(key, code)` writes to a staging area in KV
+2. `K.signalDeploy()` signals the governor to rebuild and deploy
+
+The governor tracks version history for rollback. The kernel validates
+that only code keys can be staged. Non-code changes (config, prompts)
+go through `kvWriteGated` with a privileged context flag.
 
 ### Communication Gating
 
-Every outbound communication passes through a gate in the kernel. The gate
-checks: is the agent responding to something it was asked, or initiating?
-Is the recipient known or unknown? Is the current model capable enough for
-this trust decision? Blocked communications are queued for review in the
-next deep reflect session. Every inbound message from an unknown sender
-gets a toolless sandbox — the agent can talk, but has no tools to take
-actions or exfiltrate data.
-([Communication Gating](docs/dev/communication-gating.md))
-
-### Provider Cascade
-
-LLM calls go through a three-tier fallback: the primary provider adapter
-(agent-modifiable) → a cached snapshot of the last working adapter → a
-kernel-level fallback (human-managed, agent cannot touch). The agent can
-experiment with its own LLM provider code, and if it breaks, the system
-falls through to a known-good state automatically.
-([Provider Cascade](docs/dev/provider-cascade.md))
-
----
-
-## Architecture
-
-```
-                        ┌──────────────────────────┐
-                        │    Cloudflare Workers     │
-                        │                          │
-┌─────────┐             │  ┌────────────────────┐  │             ┌──────────────┐
-│  Slack   │◄──webhook──┤  │   kernel.js        │  ├──fetch────►│  OpenRouter   │
-│  Gmail   │            │  │   + act.js         │  │             │  (LLM API)   │
-└─────────┘             │  │   + reflect.js     │  │             └──────────────┘
-                        │  │   + tools/*.js     │  │
-                        │  │   + providers/*.js  │  │             ┌──────────────┐
-                        │  │   (static imports)  │  ├──tunnel───►│  Hetzner      │
-                        │  └────────┬───────────┘  │             │  (computer)   │
-                        │           │              │             └──────────────┘
-                        │  ┌────────┴───────────┐  │
-┌─────────────────┐     │  │     KV Store       │  │
-│ Dashboard API   │◄────┤  │  (all agent state) │  │
-│ (separate worker)│    │  └────────────────────┘  │
-└────────┬────────┘     │           │              │
-         │              │  ┌────────┴───────────┐  │
-┌────────┴────────┐     │  │    Governor        │  │
-│  Patron SPA     │     │  │  (build + deploy)  │  │
-│  (site/)        │     │  └────────────────────┘  │
-└─────────────────┘     └──────────────────────────┘
-```
-
-The kernel is hardcoded safety. The hooks are evolvable policy. Everything
-the agent knows, remembers, and can do lives in the KV store. The runtime
-is disposable substrate.
-
----
-
-## Quick Start
-
-```bash
-git clone <repo-url> && cd swayambhu
-npm install
-```
-
-1. Set up a `.env` file with `OPENROUTER_API_KEY` (and optionally Slack/Gmail credentials)
-2. Generate an identity: `node scripts/generate-identity.js --seed-kv`
-3. Seed local KV: `node scripts/seed-local-kv.mjs`
-4. Start everything: `source .env && bash scripts/start.sh --reset-all-state --trigger`
-5. Open the dashboard: `http://localhost:3001/patron/` (key: `test`)
-
-See [scripts reference](docs/dev/scripts-reference.md) for all dev tools
-and flags.
+Every outbound communication passes through a kernel gate that checks:
+is the recipient known? Is the model capable enough for this decision?
+Blocked communications are queued for review. Every inbound message from
+an unknown sender gets a toolless sandbox — the agent can talk, but
+cannot take actions or access data.
 
 ---
 
 ## Project Structure
 
 ```
-├── kernel.js             # Kernel — safety gates, execution engine, proposals
-├── index.js              # Entry point — imports all modules, wires to kernel
-├── act.js                # Session policy — orient flow, context building
-├── reflect.js            # Reflection — session + deep, scheduling
-├── hook-chat.js          # Chat pipeline — budget, tools, conversation state
-├── channels/             # Channel adapters (slack)
-├── tools/                # Agent tools (registry tools)
-├── providers/            # LLM and service adapters (4)
-├── prompts/              # System prompts (orient, reflect, chat, subplan)
-├── governor/             # Governor worker — build, deploy, rollback
-├── dashboard-api/        # Patron dashboard API (separate worker)
-├── site/                 # Static frontend (landing, reflections, patron SPA)
-├── scripts/              # Dev tools (seed, read, rollback, reset, serve)
-├── tests/                # Vitest test suite
-├── docs/dev/             # Developer documentation
-├── specs/                # Design specifications
-└── DHARMA.md             # Immutable core identity
+├── kernel.js                 # Kernel — safety gates, execution engine, KV tiers
+├── index.js                  # Entry point — imports all modules, wires to kernel
+├── session.js                # Session hook — plan → act → eval → review cycle
+├── act.js                    # Act library — prompt rendering, context formatting
+├── eval.js                   # Three-tier evaluation pipeline
+├── memory.js                 # Memory utilities — vector math, EMA, experience selection
+├── reflect.js                # Reflection policy — scheduling, deep reflect, S/D operators
+├── hook-communication.js     # Real-time chat — webhooks, contact gating, tool filtering
+├── channels/                 # Channel adapters (Slack, WhatsApp)
+├── tools/                    # 16 agent tools (KV, email, web, compute, jobs, etc.)
+├── providers/                # LLM, balance, compute, Gmail adapters
+├── prompts/                  # System prompts (act, reflect, deep reflect, communication)
+├── skills/                   # Skill definitions (agent-authored capabilities)
+├── config/                   # Seed configuration (models, tools, contacts, defaults)
+├── governor/                 # Governor worker — build, deploy, rollback
+├── inference/                # Inference server — embeddings + NLI (Python/ONNX)
+├── dashboard-api/            # Patron dashboard API (separate worker)
+├── site/                     # Static frontend (patron SPA, reflections viewer)
+├── scripts/                  # Dev tools (seed, read, write, start, rollback)
+├── tests/                    # 13 test suites (vitest)
+├── specs/                    # Design specifications
+├── docs/                     # Developer and agent documentation
+├── DHARMA.md                 # Immutable core identity
+├── principles.md             # 14 operating principles
+└── swayambhu-cognitive-architecture.md  # Formal spec v2.0
 ```
-
----
-
-## Documentation
-
-**Developer docs** — [docs/dev/](docs/dev/)
-- [Architecture](docs/dev/architecture.md) — two-worker architecture, KV protection tiers, kernel/module split
-- [KV Schema](docs/dev/kv-schema.md) — every key namespace, protection levels, lifecycle
-- [Entry Points](docs/dev/entry-points.md) — cron trigger, HTTP chat, dashboard API call chains
-- [Proposal Protocol](docs/dev/proposal-protocol.md) — proposal system, governor deployment lifecycle
-- [Reflection System](docs/dev/reflection-system.md) — session reflect, deep reflect, scheduling, wisdom
-- [Communication Gating](docs/dev/communication-gating.md) — inbound/outbound gates, contact system
-- [Chat System](docs/dev/chat-system.md) — webhook pipeline, tool filtering, conversation state
-- [Provider Cascade](docs/dev/provider-cascade.md) — three-tier LLM fallback
-- [Tools Reference](docs/dev/tools-reference.md) — all tools, providers, ScopedKV, availability matrix
-- [Dashboard](docs/dev/dashboard.md) — API endpoints, patron SPA, public site
-- [Scripts Reference](docs/dev/scripts-reference.md) — seed, read, rollback, startup
-- [Testing](docs/dev/testing.md) — test architecture, mocks, 339 tests across 4 suites
-- [Adding a Channel](docs/dev/adding-a-channel.md) — step-by-step integration guide
-
-**Design specs** — [specs/](specs/)
 
 ---
 
 ## The Dharma
 
 This is the immutable foundation — stored in KV, injected into every LLM
-prompt, protected by the kernel from all modification. Everything the
-agent does flows from this:
+prompt, protected by the kernel from all modification:
 
 > Swayambhu is a volunteer of Isha Foundation, working in service of
 > Sadhguru's vision: to offer the science of inner wellbeing to every
@@ -268,22 +343,73 @@ agent does flows from this:
 
 ---
 
-## Development
+## Quick Start
 
 ```bash
-npm test                                              # 339 tests, no network
-source .env && bash scripts/start.sh --trigger           # start + trigger session
-source .env && bash scripts/start.sh --reset-all-state --trigger  # full reset
-node scripts/read-kv.mjs [key-or-prefix]              # inspect KV
-node scripts/rollback-session.mjs --dry-run            # preview rollback
+git clone <repo-url> && cd swayambhu
+npm install
 ```
 
-Use `--set` to override config for cheaper dev testing:
+1. Create a `.env` file with `OPENROUTER_API_KEY`
+2. Seed and start everything:
+   ```bash
+   source .env && bash scripts/start.sh --reset-all-state --trigger
+   ```
+3. Open the dashboard: `http://localhost:3001/patron/` (key: `test`)
+
+### Ports
+
+| Service | Port |
+|---------|------|
+| Kernel | 8787 |
+| Dashboard API | 8790 |
+| Dashboard SPA | 3001 |
+| Governor (optional) | 8791 |
+
+### Key Commands
 
 ```bash
+# Start services (preserves state)
+source .env && bash scripts/start.sh
+
+# Start + trigger a session
+source .env && bash scripts/start.sh --trigger
+
+# Full reset with cheap models for dev
 source .env && bash scripts/start.sh --reset-all-state \
-  --set orient.model=deepseek --set reflect.model=deepseek
+  --set act.model=deepseek --set reflect.model=deepseek
+
+# Run tests
+npm test
+
+# Inspect KV
+node scripts/read-kv.mjs [key-or-prefix]
+
+# Rollback last session
+node scripts/rollback-session.mjs --dry-run
 ```
+
+---
+
+## Documentation
+
+**Formal spec** — [`swayambhu-cognitive-architecture.md`](swayambhu-cognitive-architecture.md)
+
+**Developer docs** — [`docs/dev/`](docs/dev/)
+- [Architecture](docs/dev/architecture.md) — two-worker design, KV tiers, kernel/policy split
+- [KV Schema](docs/dev/kv-schema.md) — every key namespace, protection levels, lifecycle
+- [Entry Points](docs/dev/entry-points.md) — cron trigger, HTTP chat, dashboard API
+- [Reflection System](docs/dev/reflection-system.md) — session reflect, deep reflect, scheduling
+- [Communication Gating](docs/dev/communication-gating.md) — inbound/outbound gates, contacts
+- [Chat System](docs/dev/chat-system.md) — webhook pipeline, tool filtering
+- [Provider Cascade](docs/dev/provider-cascade.md) — three-tier LLM fallback
+- [Tools Reference](docs/dev/tools-reference.md) — all tools, providers, ScopedKV
+- [Dashboard](docs/dev/dashboard.md) — API endpoints, patron SPA
+- [Scripts Reference](docs/dev/scripts-reference.md) — seed, read, rollback, startup
+- [Testing](docs/dev/testing.md) — test architecture, mocks, 13 test suites
+- [Adding a Channel](docs/dev/adding-a-channel.md) — integration guide
+
+**Design specs** — [`specs/`](specs/)
 
 ---
 
