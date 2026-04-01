@@ -83,12 +83,13 @@ export default {
     // GET /mind — cognitive state snapshot (samskaras, desires, experiences, operator health)
     if (path === "/mind") {
       const [
-        samskaraKeys, desireKeys, experienceKeys,
+        samskaraKeys, desireKeys, experienceKeys, principleKeys,
         reflectSchedule, sessionCounter,
       ] = await Promise.all([
         kvListAll(env.KV, { prefix: "samskara:" }),
         kvListAll(env.KV, { prefix: "desire:" }),
         kvListAll(env.KV, { prefix: "experience:" }),
+        kvListAll(env.KV, { prefix: "principle:" }),
         env.KV.get("reflect:schedule:1", "json"),
         env.KV.get("session_counter", "json"),
       ]);
@@ -98,12 +99,19 @@ export default {
         ...samskaraKeys.map(k => k.name),
         ...desireKeys.map(k => k.name),
         ...experienceKeys.map(k => k.name).slice(-20),
+        ...principleKeys.map(k => k.name),
       ];
 
       const values = {};
       await Promise.all(allKeys.map(async (key) => {
-        const val = await env.KV.get(key, "json");
-        if (val) values[key] = val;
+        // principle:* values may be plain strings, not JSON
+        if (key.startsWith("principle:")) {
+          const val = await env.KV.get(key);
+          if (val) values[key] = val;
+        } else {
+          const val = await env.KV.get(key, "json");
+          if (val) values[key] = val;
+        }
       }));
 
       const samskaras = samskaraKeys
@@ -119,6 +127,13 @@ export default {
         .map(k => ({ key: k.name, ...values[k.name] }))
         .filter(e => e.narrative || e.action_taken)
         .reverse();
+
+      const principles = principleKeys
+        .map(k => {
+          const val = values[k.name];
+          return { key: k.name, text: typeof val === 'string' ? val : (val?.text || JSON.stringify(val)) };
+        })
+        .filter(p => p.text);
 
       // Find latest deep-reflect output
       const reflectKeys = await kvListAll(env.KV, { prefix: "reflect:1:" });
@@ -148,7 +163,7 @@ export default {
         } : null,
       };
 
-      return json({ samskaras, desires, experiences, operator_health: operatorHealth });
+      return json({ principles, samskaras, desires, experiences, operator_health: operatorHealth });
     }
 
     // GET /sessions — discover all sessions (act + deep reflect)
