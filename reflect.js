@@ -10,15 +10,14 @@
 
 import { selectExperiences } from './memory.js';
 
-// ── Wisdom manifest ─────────────────────────────────────────
+// ── Samskara manifest ────────────────────────────────────────
 
-async function loadWisdomManifest(K) {
-  const prajnaList = await K.kvList({ prefix: "prajna:", limit: 100 });
-  const upayaList = await K.kvList({ prefix: "upaya:", limit: 100 });
-  return {
-    prajna: prajnaList.keys.map(k => ({ key: k.name, summary: k.metadata?.summary || k.name })),
-    upaya: upayaList.keys.map(k => ({ key: k.name, summary: k.metadata?.summary || k.name })),
-  };
+async function loadSamskaraManifest(K) {
+  const list = await K.kvList({ prefix: "samskara:", limit: 200 });
+  return list.keys.map(k => ({
+    key: k.name,
+    summary: k.metadata?.summary || k.name,
+  }));
 }
 
 // ── Session reflect ─────────────────────────────────────────
@@ -31,12 +30,12 @@ export async function executeReflect(K, state, step) {
   const proposals = await K.loadProposals('proposed');
 
   const systemKeyPatterns = await K.getSystemKeyPatterns();
-  const wisdom_manifest = await loadWisdomManifest(K);
+  const samskara_manifest = await loadSamskaraManifest(K);
 
   const sessionCounter = await K.getSessionCount();
   const systemPrompt = await K.buildPrompt(
     reflectPrompt || defaultReflectPrompt(),
-    { systemKeyPatterns, wisdom_manifest, session_counter: sessionCounter }
+    { systemKeyPatterns, samskara_manifest, session_counter: sessionCounter }
   );
 
   const rawKarma = await K.getKarma();
@@ -384,8 +383,8 @@ export async function gatherReflectContext(K, state, depth, context) {
     templateVars.priorReflections = await loadReflectHistory(K, depth, historyCount);
   }
 
-  // Wisdom manifest — lazy loading for all depths
-  templateVars.wisdom_manifest = await loadWisdomManifest(K);
+  // Samskara manifest — lazy loading for all depths
+  templateVars.samskara_manifest = await loadSamskaraManifest(K);
 
   // Events — session requests and other signals since last session
   if (depth >= 1 && context?.events?.length) {
@@ -438,17 +437,8 @@ export async function gatherReflectContext(K, state, depth, context) {
     similarityWeight: defaults?.memory?.similarity_weight || 0.3,
   });
 
-  // Load μ entries
-  const muList = await K.kvList({ prefix: "mu:" });
-  const muEntries = {};
-  for (const key of muList.keys) {
-    const mu = await K.kvGet(key.name);
-    if (mu) muEntries[key.name] = mu;
-  }
-
   // Add to template vars
   templateVars.experiences = selectedExperiences;
-  templateVars.mu_entries = muEntries;
 
   return { userMessage: "Begin.", templateVars };
 }
@@ -708,11 +698,11 @@ indicate broken scheduling.
 
 Read these for continuity. If you set sankalpas, honor or explicitly revise them.
 
-## Available wisdom
+## Available samskaras
 
-{{wisdom_manifest}}
+{{samskara_manifest}}
 
-Use kv_query to load specific entries relevant to your examination.
+Use kv_query to load specific samskara:* or desire:* entries relevant to your examination.
 
 Examine your karma, your act prompt, your patterns. Produce a JSON object:
 {
@@ -727,7 +717,7 @@ Examine your karma, your act prompt, your patterns. Produce a JSON object:
   "next_session_config": { "interval_seconds": 21600, "effort": "low" }
 }
 
-kv_operations: write to any key including system keys (config, prompts, wisdom). Principle keys are immutable — cannot be written.
+kv_operations: write to any key including system keys (config, prompts, samskara:*, desire:*). Principle keys are immutable — cannot be written.
 proposal_requests: code changes ONLY — become proposals (governor deploys).
 proposal_verdicts: accept/reject/modify/withdraw proposals.
 Required: reflection, note_to_future_self. Everything else optional.`;
@@ -745,11 +735,11 @@ Your output is stored at reflect:${depth}:{sessionId}.
 
 Read these for continuity. If you set sankalpas, honor or explicitly revise them.
 
-## Available wisdom
+## Available samskaras
 
-{{wisdom_manifest}}
+{{samskara_manifest}}
 
-Use kv_query to load specific entries relevant to your examination.
+Use kv_query to load specific samskara:* or desire:* entries relevant to your examination.
 
 ## One-level-below write discipline
 You can only propose changes targeting prompt:reflect:${depth - 1} (the prompt for the level below you).
