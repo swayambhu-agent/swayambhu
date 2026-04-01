@@ -1597,6 +1597,19 @@
 
       useEffect(() => { loadData(); }, [loadData]);
 
+      useEffect(() => {
+        if (data && !selected) {
+          const first = data.principles?.[0] || data.desires?.[0] || data.samskaras?.[0] || data.experiences?.[0];
+          if (first) {
+            const type = first.pattern !== undefined ? 'samskara'
+              : first.direction !== undefined ? 'desire'
+              : first.surprise_score !== undefined ? 'experience'
+              : 'principle';
+            setSelected({ type, key: first.key });
+          }
+        }
+      }, [data, selected]);
+
       if (loading) return <div className="p-8 text-gray-500">Loading cognitive state...</div>;
       if (error) return <div className="p-8 text-red-400">Error: {error}</div>;
       if (!data) return <div className="p-8 text-gray-500">No data</div>;
