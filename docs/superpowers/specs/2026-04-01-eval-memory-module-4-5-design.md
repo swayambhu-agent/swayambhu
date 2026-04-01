@@ -481,31 +481,19 @@ Configuration from `config:defaults`:
 }
 ```
 
-Secret from `env.AKASH_INFERENCE_SECRET` — passed through kernel to hooks. Need to add to K interface:
+Secret stored in KV as `secret:inference`, seeded by the seed script. Hooks read it via `K.kvGet("secret:inference")`. URL is in `config:defaults.inference.url`.
 
-```javascript
-// In buildKernelInterface:
-getInferenceConfig: async () => ({
-  url: env.AKASH_INFERENCE_URL || null,
-  secret: env.AKASH_INFERENCE_SECRET || null,
-}),
-```
-
-This is the only kernel change — a config passthrough, not an inference capability.
+No kernel changes needed — hooks access config and secrets through existing K interface.
 
 ---
 
 ## 8. Wiring Changes
 
-### kernel.js (minimal)
+### kernel.js
 
-Add to `buildKernelInterface()`:
-```javascript
-getInferenceConfig: async () => ({
-  url: env.AKASH_INFERENCE_URL || null,
-  secret: env.AKASH_INFERENCE_SECRET || null,
-}),
-```
+No changes. Hooks access inference config through existing K interface:
+- URL: `K.getDefaults()` → `defaults.inference.url`
+- Secret: `K.kvGet("secret:inference")`
 
 ### eval.js (rewrite)
 
@@ -559,15 +547,12 @@ Remove `mu_updates` from review. Keep `assessment`, `narrative`, `salience_estim
 }
 ```
 
-### Env vars (wrangler.toml)
+### Seed script additions
 
-```toml
-[vars]
-AKASH_INFERENCE_URL = "https://inference.swayambhu.akash.network"
+- `config:defaults.inference.url` — akash inference server URL
+- `secret:inference` — shared auth token for the inference server
 
-# In .dev.vars or secrets:
-# AKASH_INFERENCE_SECRET = "..."
-```
+Both seeded by `scripts/seed-local-kv.mjs`. No wrangler.toml changes needed.
 
 ---
 
