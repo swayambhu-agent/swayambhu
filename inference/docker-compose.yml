@@ -1,0 +1,13 @@
+services:
+  inference:
+    build: .
+    ports:
+      - "8080:8000"
+    environment:
+      - AUTH_TOKEN=test-secret
+      - OMP_NUM_THREADS=1
+      - TOKENIZERS_PARALLELISM=false
+    deploy:
+      resources:
+        limits:
+          memory: 3G

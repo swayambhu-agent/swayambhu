@@ -1,0 +1,43 @@
+---
+version: "2.0"
+
+services:
+  inference:
+    image: ghcr.io/swayambhu-agent/inference:0.1.0
+    env:
+      - TOKENIZERS_PARALLELISM=false
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - AUTH_TOKEN=${AKASH_INFERENCE_SECRET}
+    expose:
+      - port: 8000
+        as: 80
+        to:
+          - global: true
+        http_options:
+          max_body_size: 2097152
+          read_timeout: 60000
+          send_timeout: 60000
+
+profiles:
+  compute:
+    inference:
+      resources:
+        cpu:
+          units: 1.0
+        memory:
+          size: 3Gi
+        storage:
+          size: 2Gi
+  placement:
+    akash:
+      pricing:
+        inference:
+          denom: uakt
+          amount: 100
+
+deployment:
+  inference:
+    akash:
+      profile: inference
+      count: 1
