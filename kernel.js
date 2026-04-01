@@ -48,9 +48,9 @@ class Kernel {
     protected: [
       "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
       "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-      "secret:*", "doc:*", "upaya:*", "prajna:*", "skill:*", "task:*",
+      "secret:*", "doc:*", "samskara:*", "skill:*", "task:*",
       "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-      "desire:*", "assumption:*",
+      "desire:*",
     ],
   };
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
@@ -1862,8 +1862,7 @@ class Kernel {
       reflect:    { type: "reflect_output", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
-      upaya:     { type: "wisdom", format: "json" },
-      prajna:     { type: "wisdom", format: "json" },
+      samskara:  { type: "samskara", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },
       principle:  { type: "principle", format: "text" },
