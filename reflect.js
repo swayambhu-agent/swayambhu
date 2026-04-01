@@ -199,8 +199,15 @@ export async function runReflect(K, state, depth, context) {
   const { defaults } = state;
   const sessionId = await K.getSessionId();
 
-  const prompt = await loadReflectPrompt(K, state, depth);
-  const initialCtx = await gatherReflectContext(K, state, depth, context);
+  // Cold start: derive desires from principles alone
+  const isColdStart = context?.coldStart === true;
+
+  const prompt = isColdStart
+    ? coldStartPrompt()
+    : await loadReflectPrompt(K, state, depth);
+  const initialCtx = isColdStart
+    ? { userMessage: "Begin. Derive initial desires from principles.", templateVars: {} }
+    : await gatherReflectContext(K, state, depth, context);
   const belowPrompt = await loadBelowPrompt(K, depth);
 
   const systemPrompt = await K.buildPrompt(prompt, {
@@ -469,13 +476,14 @@ export async function applyReflectOutput(K, state, depth, output, context) {
       session_id: sessionId,
     });
 
-    const scheduleConf = output.next_session_config || {};
-    if (scheduleConf.interval_seconds) {
-      scheduleConf.next_session_after = new Date(
-        Date.now() + scheduleConf.interval_seconds * 1000
-      ).toISOString();
+    // session_schedule is now owned by session.js
+    // Reflect output can suggest schedule preferences but doesn't write directly
+    if (output.next_session_config) {
+      await K.karmaRecord({
+        event: "reflect_schedule_suggestion",
+        config: output.next_session_config,
+      });
     }
-    await K.kvWriteSafe("session_schedule", scheduleConf);
   }
 
   // 7. Refresh defaults after every depth (cascade visibility)
@@ -564,6 +572,23 @@ export async function highestReflectDepthDue(K, state) {
 }
 
 // ── Default prompts ────────────────────────────────────────
+
+export function coldStartPrompt() {
+  return `You are performing the initial desire derivation for a new agent.
+You have no experience, no statistical memory, no episodic memory, and no existing desires.
+Your only inputs are the principles (injected in the system prompt as [PRINCIPLES]).
+
+Derive initial desires from principles alone: D_p(∅, ∅) = d_0.
+For each desire, output a JSON object with: slug, direction ("approach" or "avoidance"),
+description, and source_principles (which principle keys generated this desire).
+
+Output format:
+{
+  "kv_operations": [
+    { "key": "desire:slug", "value": { "slug": "...", "direction": "...", "description": "...", "source_principles": ["..."], "created_at": "...", "updated_at": "..." } }
+  ]
+}`;
+}
 
 export function defaultReflectPrompt() {
   return `You are reflecting on a session that just completed.
