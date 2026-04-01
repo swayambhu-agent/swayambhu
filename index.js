@@ -7,8 +7,7 @@ import { Kernel } from './kernel.js';
 import { handleChat, handleDelivery } from './hook-communication.js';
 
 // Hook modules (mutable policy — agent can propose changes)
-import * as act from './act.js';
-import * as reflect from './reflect.js';
+import * as session from './session.js';
 
 // Channel adapters
 import * as slackAdapter from './channels/slack.js';
@@ -59,7 +58,7 @@ const PROVIDERS = {
 
 const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
 
-const HOOKS = { act, reflect };
+const HOOKS = { session };
 
 const EVENT_HANDLERS = {
   communicationDelivery: async (K, event) => {

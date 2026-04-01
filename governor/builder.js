@@ -13,6 +13,7 @@ export function keyToFilePath(key) {
   if (!key.endsWith(':code')) return null;
   if (key === 'hook:act:code') return 'act.js';
   if (key === 'hook:reflect:code') return 'reflect.js';
+  if (key === 'hook:session:code') return 'session.js';
   if (key.startsWith('tool:')) return `tools/${keyToVarName(key)}.js`;
   if (key.startsWith('provider:')) return `providers/${keyToVarName(key)}.js`;
   if (key.startsWith('channel:')) return `channels/${keyToVarName(key)}.js`;
@@ -69,6 +70,9 @@ export async function readCodeFromKV(kv) {
   const reflectCode = await kv.get('hook:reflect:code', 'text');
   if (reflectCode) files['reflect.js'] = reflectCode;
 
+  const sessionCode = await kv.get('hook:session:code', 'text');
+  if (sessionCode) files['session.js'] = sessionCode;
+
   // Immutable kernel source (kernel:* — agent cannot modify)
   const kernelCode = await kv.get('kernel:source:kernel.js', 'text');
   if (kernelCode) files['kernel.js'] = kernelCode;
@@ -89,8 +93,7 @@ export function generateIndexJS(metadata) {
   lines.push("");
 
   // Policy hooks
-  lines.push("import * as act from './act.js';");
-  lines.push("import * as reflect from './reflect.js';");
+  lines.push("import * as session from './session.js';");
   lines.push("");
 
   // Channel adapters
@@ -133,7 +136,7 @@ export function generateIndexJS(metadata) {
   lines.push("};");
   lines.push("");
 
-  lines.push("const HOOKS = { act, reflect };");
+  lines.push("const HOOKS = { session };");
   lines.push("");
 
   // Entry points
