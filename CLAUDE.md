@@ -203,6 +203,12 @@ They are fully immutable — the agent cannot write them.
 **Rule of thumb:** if it's about *what* the agent does → userspace.
 If it's about *what the agent cannot do* → kernel.
 
+**Communication boundary:** Act sessions do NOT communicate with contacts
+directly. Communication is handled by the comms subsystem
+(`hook-communication.js`), triggered by events. The act agent and planner
+should not reference or plan to use communication tools (send_slack,
+send_whatsapp, send_email). Contact-facing messages flow through events.
+
 **Governor Worker** (`governor/`):
 
 | File | Role |
