@@ -596,7 +596,7 @@
             )}
           </div>
 
-          {/* Karma entries — grouped into Act Session and Deep Reflect sections */}
+          {/* Karma entries — grouped into Act and Deep Reflect sections */}
           <div className="flex-1 overflow-y-auto scrollbar-thin space-y-1.5">
             {loading && <p className="text-gray-500 text-sm">Loading karma...</p>}
             {!loading && karma.length === 0 && (
@@ -654,7 +654,7 @@
                   {actEntries.length > 0 && (
                     <>
                       <div className="flex items-center gap-2 pt-1 pb-0.5">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-green-500">Act Session</span>
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-green-500">Act</span>
                         <div className="flex-1 border-t border-green-900/50"></div>
                       </div>
                       {actEntries.map(renderEntry)}
