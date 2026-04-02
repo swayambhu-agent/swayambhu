@@ -272,7 +272,7 @@ async function writeMemory(K, { ledger, evalResult, review, desires, samskaras, 
       const existing = samskaras[key];
       if (!existing) continue;
       const newStrength = updateSamskaraStrength(existing.strength, score.surprise);
-      await K.kvWriteSafe(key, { ...existing, strength: newStrength });
+      await K.kvWriteGated({ op: "put", key, value: { ...existing, strength: newStrength } }, "act");
     }
   }
 
