@@ -510,14 +510,6 @@
                 setKarma(entries);
                 karmaRef.current = entries;
               }
-              try {
-                const h = await api('/health', patronKey);
-                if (!h.session) {
-                  clearInterval(watchRef.current);
-                  watchRef.current = null;
-                  setWatching(false);
-                }
-              } catch {}
             } catch {}
           }, WATCH_INTERVAL);
         }
