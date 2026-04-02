@@ -477,20 +477,6 @@
         setLoading(false);
       }, [patronKey]);
 
-      useEffect(() => {
-        if (!selectedSession) return;
-        loadKarma(selectedSession);
-        if (initialLoadRef.current) {
-          initialLoadRef.current = false;
-          startWatching();
-        } else {
-          // Switching sessions — stop watching
-          if (watchRef.current) { clearInterval(watchRef.current); watchRef.current = null; }
-          setWatching(false);
-        }
-        return () => { if (watchRef.current) { clearInterval(watchRef.current); watchRef.current = null; } };
-      }, [selectedSession, loadKarma, startWatching]);
-
       const startWatching = useCallback(() => {
         if (watchRef.current) return;
         watchRef.current = setInterval(async () => {
@@ -536,6 +522,20 @@
           startWatching();
         }
       };
+
+      useEffect(() => {
+        if (!selectedSession) return;
+        loadKarma(selectedSession);
+        if (initialLoadRef.current) {
+          initialLoadRef.current = false;
+          startWatching();
+        } else {
+          // Switching sessions — stop watching
+          if (watchRef.current) { clearInterval(watchRef.current); watchRef.current = null; }
+          setWatching(false);
+        }
+        return () => { if (watchRef.current) { clearInterval(watchRef.current); watchRef.current = null; } };
+      }, [selectedSession, loadKarma, startWatching]);
 
       // Precompute request-response pairs (tool_start↔tool_complete)
       const [selectedIdx, setSelectedIdx] = useState(null);
