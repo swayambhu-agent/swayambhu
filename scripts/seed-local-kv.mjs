@@ -132,7 +132,8 @@ await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool (k
 console.log("--- Prompts ---");
 await put("prompt:act", read("prompts/act.md"), "text", "Act session system prompt");
 await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
-await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1)");
+// prompt:reflect:1 removed — depth-1 in-session reflect replaced by async DR operator
+// Old prompt preserved as prompts/deep_reflect_old.md for reference
 await put("prompt:communication", read("prompts/communication.md"), "text", "Communication system prompt");
 await put("prompt:deep_reflect", read("prompts/deep_reflect.md"), "text", "Deep-reflect S/D operator prompt — dispatched as CC analysis job on akash");
 
