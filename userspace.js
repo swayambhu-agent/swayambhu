@@ -6,6 +6,7 @@
 import { evaluateAction } from './eval.js';
 import { updateSamskaraStrength, callInference, embeddingCacheKey } from './memory.js';
 import { renderActPrompt, buildToolSet, formatDesires, formatSamskaras, formatCircumstances } from './act.js';
+import { parseJobOutput } from './lib/parse-job-output.js';
 
 // ── Snapshot loaders ────────────────────────────────────────
 
@@ -647,15 +648,14 @@ async function pollJobResult(K, state, defaults) {
     ? outputResult.output.map(o => o.data || '').join('')
     : String(outputResult.output || '');
 
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed.reflection && !parsed.kv_operations?.length) {
-      return { status: "failed", error: "output.json has no reflection or kv_operations" };
-    }
-    return { status: "completed", output: parsed };
-  } catch {
-    return { status: "failed", error: "invalid JSON in output.json" };
+  const { payload, meta } = parseJobOutput(raw);
+  if (!payload) {
+    return { status: "failed", error: "could not parse output.json" };
   }
+  if (!payload.reflection && !payload.kv_operations?.length) {
+    return { status: "failed", error: "output.json has no reflection or kv_operations" };
+  }
+  return { status: "completed", output: payload, meta };
 }
 
 async function applyDrResults(K, state, output) {

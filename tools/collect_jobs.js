@@ -2,6 +2,8 @@
 // Primary notification path is the /job-complete callback → inbox; this tool is for
 // explicit mid-session checks.
 
+import { parseJobOutput } from '../lib/parse-job-output.js';
+
 export const meta = {
   secrets: ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "COMPUTER_API_KEY"],
   kv_access: "read_all",
@@ -83,6 +85,7 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
 
     // Read output.json
     let resultData = null;
+    let resultMeta = null;
     const outputResult = await provider.call({
       command: `cat '${esc(job.workdir)}/output.json' 2>/dev/null || echo '{}'`,
       baseUrl,
@@ -95,7 +98,9 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
       const raw = Array.isArray(outputResult.output)
         ? outputResult.output.map(o => o.data || '').join('')
         : String(outputResult.output || '');
-      try { resultData = JSON.parse(raw); } catch { resultData = { raw_output: raw.slice(0, 5000) }; }
+      const { payload, meta } = parseJobOutput(raw);
+      resultData = payload || { raw_output: raw.slice(0, 5000) };
+      resultMeta = meta;
     }
 
     // Write job_result
@@ -104,6 +109,7 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
       job_id: job.id,
       type: job.type,
       result: resultData,
+      ...(resultMeta ? { meta: resultMeta } : {}),
     }));
 
     // Update job record
