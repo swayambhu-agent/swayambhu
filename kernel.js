@@ -20,7 +20,7 @@ class Kernel {
     this.CHANNELS = opts.CHANNELS || {};
     this._eventHandlers = opts.EVENT_HANDLERS || {};
     this.startTime = Date.now();
-    this.sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.executionId = `x_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.sessionCost = 0;
     this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
@@ -330,14 +330,14 @@ class Kernel {
     // In chat mode, karma stays in-memory only — handleChat embeds it in the chat object.
     // In session mode, persist to KV after every event for crash recovery.
     if (this.mode !== 'chat') {
-      await this.kvWrite(`karma:${this.sessionId}`, this.karma);
+      await this.kvWrite(`karma:${this.executionId}`, this.karma);
     }
 
     if (Kernel.DANGER_SIGNALS.includes(entry.event)) {
       await this.kvWrite("last_danger", {
         t: record.t,
         event: entry.event,
-        session_id: this.sessionId,
+        execution_id: this.executionId,
       });
     }
   }
@@ -355,8 +355,8 @@ class Kernel {
       // Resolve {{ENV_VAR}} patterns in URL from this.env
       const url = config.url.replace(/\{\{(\w+)\}\}/g, (_, name) => this.env[name] || "");
 
-      // Build body from template, interpolating {{message}}, {{event}}, {{session}}
-      const vars = { message, event, session: this.sessionId };
+      // Build body from template, interpolating {{message}}, {{event}}, {{execution}}
+      const vars = { message, event, execution: this.executionId };
       const bodyStr = JSON.stringify(config.body_template || {})
         .replace(/\{\{(\w+)\}\}/g, (_, name) => vars[name] || "");
 
@@ -453,7 +453,7 @@ class Kernel {
         const filtered = keys.filter(k => !k.startsWith("sealed:"));
         return kernel.loadKeys(filtered);
       },
-      getSessionCount: async () => kernel.getSessionCount(),
+      // getSessionCount removed — userspace reads session_counter directly via kvGet
       mergeDefaults: async (defaults, overrides) => kernel.mergeDefaults(defaults, overrides),
       isSystemKey: async (key) => kernel.isSystemKey(key),
       getSystemKeyPatterns: async () => kernel.keyTiers || Kernel.DEFAULT_KEY_TIERS,
@@ -466,7 +466,7 @@ class Kernel {
       signalDeploy: async () => kernel.signalDeploy(),
 
       // State (read-only)
-      getSessionId: async () => kernel.sessionId,
+      getExecutionId: async () => kernel.executionId,
       getSessionCost: async () => kernel.sessionCost,
       getKarma: async () => kernel.karma,
       getChatKarma: async () => kernel.mode === 'chat' ? [...kernel.karma] : [],
@@ -631,7 +631,7 @@ class Kernel {
     // Alert on hook: key writes
     if (key.startsWith("hook:")) {
       await this.sendKernelAlert("hook_write",
-        `Privileged write to ${key} in session ${this.sessionId}`);
+        `Privileged write to ${key} in execution ${this.executionId}`);
     }
 
     // Auto-reload cached config
@@ -692,7 +692,7 @@ class Kernel {
     const record = {
       code,
       staged_at: new Date().toISOString(),
-      session_id: this.sessionId,
+      session_id: this.executionId,
     };
     await this.kvWrite(`code_staging:${targetKey}`, record);
     await this.karmaRecord({ event: "code_staged", target: targetKey });
@@ -701,7 +701,7 @@ class Kernel {
   async signalDeploy() {
     await this.kvWrite("deploy:pending", {
       requested_at: new Date().toISOString(),
-      session_id: this.sessionId,
+      session_id: this.executionId,
     });
     await this.karmaRecord({ event: "deploy_signaled" });
   }
@@ -728,8 +728,8 @@ class Kernel {
   // ── Hook dispatch (scheduled entry point) ─────────────────
 
   async runScheduled() {
-    // 1. Session lock — prevent overlapping sessions
-    const active = await this.kvGet("kernel:active_session");
+    // 1. Execution lock — prevent overlapping executions
+    const active = await this.kvGet("kernel:active_execution");
     if (active?.started_at) {
       const maxDuration = this.defaults?.session_budget?.max_duration_seconds
         || (await this.kvGet("config:defaults"))?.session_budget?.max_duration_seconds
@@ -742,16 +742,16 @@ class Kernel {
         return;
       }
 
-      // Stale marker — previous session is dead (platform kill / OOM)
-      const history = await this.kvGet("kernel:last_sessions") || [];
+      // Stale marker — previous execution is dead (platform kill / OOM)
+      const history = await this.kvGet("kernel:last_executions") || [];
       history.unshift({ id: active.id, outcome: "killed", ts: new Date().toISOString() });
       while (history.length > 5) history.pop();
-      await this.kvWrite("kernel:last_sessions", history);
+      await this.kvWrite("kernel:last_executions", history);
     }
 
     // 2. Acquire lock — write marker before any work
-    await this.kvWrite("kernel:active_session", {
-      id: this.sessionId,
+    await this.kvWrite("kernel:active_execution", {
+      id: this.executionId,
       started_at: new Date().toISOString(),
     });
 
@@ -767,7 +767,7 @@ class Kernel {
   }
 
   async checkHookSafety() {
-    const history = await this.kvGet("kernel:last_sessions") || [];
+    const history = await this.kvGet("kernel:last_executions") || [];
     if (history.length < 3) return true;
 
     const last3 = history.slice(0, 3);
@@ -777,11 +777,11 @@ class Kernel {
     // Tripwire fires — signal governor to rollback
     await this.kvWrite("deploy:rollback_requested", {
       reason: "3_consecutive_crashes",
-      last_sessions: last3,
+      last_executions: last3,
       requested_at: new Date().toISOString(),
     });
 
-    await this.karmaRecord({ event: "hook_safety_reset", last_sessions: last3 });
+    await this.karmaRecord({ event: "hook_safety_reset", last_executions: last3 });
     await this.sendKernelAlert("hook_reset",
       "3 consecutive crashes detected. Signaled governor for rollback. Running minimal mode.");
     return false;
@@ -803,11 +803,11 @@ class Kernel {
       await this.runMinimalFallback();
     }
 
-    // Update session history
-    await this.updateSessionOutcome(outcome);
+    // Update execution history
+    await this.updateExecutionOutcome(outcome);
 
-    // Clean up active session marker
-    await this.kv.delete("kernel:active_session");
+    // Clean up active execution marker
+    await this.kv.delete("kernel:active_execution");
   }
 
   // Session orchestration — schedule gate, infrastructure inputs, hook dispatch
@@ -839,12 +839,12 @@ class Kernel {
       const count = await this.getSessionCount();
       await this.kvWriteSafe("session_counter", count + 1);
       const sessionIds = await this.kvGet("cache:session_ids") || [];
-      sessionIds.push(this.sessionId);
+      sessionIds.push(this.executionId);
       await this.kvWriteSafe("cache:session_ids", sessionIds);
 
       await this.karmaRecord({
         event: "session_start",
-        session_id: this.sessionId,
+        session_id: this.executionId,
         session_number: count + 1,
         scheduled_at: schedule?.next_session_after || null,
         crash_detected: !!crashData,
@@ -857,8 +857,8 @@ class Kernel {
       await run(K, { crashData, balances, events, schedule });
 
       // 5. Post-session bookkeeping
-      await this._writeSessionHealth("clean");
-      await this.updateSessionOutcome("clean");
+      await this._writeExecutionHealth("clean");
+      await this.updateExecutionOutcome("clean");
 
       return { ok: true };
 
@@ -868,7 +868,7 @@ class Kernel {
         error: err.message,
         stack: err.stack,
       });
-      await this._writeSessionHealth("error");
+      await this._writeExecutionHealth("error");
       return { ok: false, error: err.message };
     }
   }
@@ -882,12 +882,12 @@ class Kernel {
   // ── Crash detection ───────────────────────────────────────
 
   async _detectCrash() {
-    // The active_session marker is always the current session at this point
+    // The active_execution marker is always the current execution at this point
     // (written by runScheduled before runSession). Crash detection for dead
-    // sessions is now handled in runScheduled's lock check, which records
-    // killed sessions in kernel:last_sessions before we get here.
-    // This method now just checks if a killed session was recorded.
-    const history = await this.kvGet("kernel:last_sessions") || [];
+    // executions is now handled in runScheduled's lock check, which records
+    // killed executions in kernel:last_executions before we get here.
+    // This method now just checks if a killed execution was recorded.
+    const history = await this.kvGet("kernel:last_executions") || [];
     const lastKilled = history.find(s => s.outcome === "killed");
     if (!lastKilled) return null;
 
@@ -899,7 +899,7 @@ class Kernel {
     };
   }
 
-  async _writeSessionHealth(outcome) {
+  async _writeExecutionHealth(outcome) {
     const karma = this.karma || [];
     const health = {
       outcome,
@@ -926,18 +926,18 @@ class Kernel {
     if (!health.updates_missed) delete health.updates_missed;
     try {
       await this.kv.put(
-        `session_health:${this.sessionId}`,
+        `execution_health:${this.executionId}`,
         JSON.stringify(health),
         { expirationTtl: 30 * 24 * 60 * 60, metadata: { format: "json" } }
       );
     } catch {}
   }
 
-  async updateSessionOutcome(outcome) {
-    const history = await this.kvGet("kernel:last_sessions") || [];
-    history.unshift({ id: this.sessionId, outcome, ts: new Date().toISOString() });
+  async updateExecutionOutcome(outcome) {
+    const history = await this.kvGet("kernel:last_executions") || [];
+    history.unshift({ id: this.executionId, outcome, ts: new Date().toISOString() });
     while (history.length > 5) history.pop();
-    await this.kvWrite("kernel:last_sessions", history);
+    await this.kvWrite("kernel:last_executions", history);
   }
 
   async runMinimalFallback() {
@@ -975,7 +975,7 @@ class Kernel {
     }
 
     // Write session counter via internal kvWrite
-    const count = await this.getSessionCount();
+    const count = (await this.kvGet("session_counter")) || 0;
     await this.kvWrite("session_counter", count + 1);
   }
 
@@ -988,7 +988,7 @@ class Kernel {
 
   async runFallbackSession() {
     await this.runMinimalFallback();
-    await this.updateSessionOutcome("clean");
+    await this.updateExecutionOutcome("clean");
   }
 
   // ── Actions (dynamic tools) ─────────────────────────────────
@@ -1166,7 +1166,7 @@ class Kernel {
     });
 
     await this.sendKernelAlert("patron_key_rotated",
-      `Patron public key rotated in session ${this.sessionId}`);
+      `Patron public key rotated in execution ${this.executionId}`);
 
     return { rotated: true };
   }
