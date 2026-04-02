@@ -2190,12 +2190,12 @@
             {health && (
               <>
                 <span className="text-gray-600">|</span>
-                <span className="text-gray-500">Sessions:</span>
+                <span className="text-gray-500">Runs:</span>
                 <span className="text-accent font-semibold">{health.sessionCounter || 0}</span>
                 {countdown && (
                   <>
                     <span className="text-gray-600">|</span>
-                    <span className="text-gray-500">Next session:</span>
+                    <span className="text-gray-500">Next run:</span>
                     <span className={`font-semibold ${countdown === 'now' ? 'text-green-400' : 'text-blue-400'}`}>
                       {countdown}
                     </span>
