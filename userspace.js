@@ -608,11 +608,12 @@ async function dispatchDr(K, defaults) {
 
 async function pollJobResult(K, state, defaults) {
   const jobs = defaults?.jobs || {};
+  const esc = s => s.replace(/'/g, "'\\''");
 
   let checkResult;
   try {
     checkResult = await K.executeAdapter("provider:compute", {
-      command: `test -f ${state.workdir}/exit_code && cat ${state.workdir}/exit_code || echo RUNNING`,
+      command: `test -f '${esc(state.workdir)}/exit_code' && cat '${esc(state.workdir)}/exit_code' || echo RUNNING`,
       baseUrl: jobs.base_url, timeout: 5,
     });
   } catch {
@@ -633,7 +634,7 @@ async function pollJobResult(K, state, defaults) {
   let outputResult;
   try {
     outputResult = await K.executeAdapter("provider:compute", {
-      command: `cat ${state.workdir}/output.json 2>/dev/null || echo '{}'`,
+      command: `cat '${esc(state.workdir)}/output.json' 2>/dev/null || echo '{}'`,
       baseUrl: jobs.base_url, timeout: 10,
     });
   } catch {
