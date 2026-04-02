@@ -419,6 +419,247 @@ async function actCycle(K, { crashData, balances, events, schedule }) {
   return { defaults, modelsConfig, desires, cyclesRun };
 }
 
+// ── DR Lifecycle (independent state machine) ──────────────
+
+async function drCycle(K) {
+  const defaults = await K.getDefaults();
+  const state = await K.kvGet("dr:state:1") || {
+    status: "idle", generation: 0, consecutive_failures: 0,
+  };
+
+  if (state.status === "dispatched") {
+    const ttl = defaults?.deep_reflect?.ttl_minutes || 120;
+    const age = (Date.now() - new Date(state.dispatched_at).getTime()) / 60000;
+    if (age > ttl) {
+      state.status = "failed";
+      state.failed_at = new Date().toISOString();
+      state.failure_reason = `TTL expired after ${Math.round(age)} minutes`;
+      state.consecutive_failures = (state.consecutive_failures || 0) + 1;
+      state.last_failure_session = await K.getSessionCount();
+      await updateJobRecord(K, state.job_id, "expired");
+      await K.kvWriteSafe("dr:state:1", state);
+      await K.karmaRecord({ event: "dr_expired", job_id: state.job_id, age_minutes: Math.round(age) });
+      return;
+    }
+
+    const result = await pollJobResult(K, state, defaults);
+
+    if (result.status === "completed") {
+      state.status = "completed";
+      state.completed_at = new Date().toISOString();
+      await K.kvWriteSafe(`dr:result:${state.generation}`, result.output);
+      await updateJobRecord(K, state.job_id, "completed");
+      await K.kvWriteSafe("dr:state:1", state);
+    } else if (result.status === "failed") {
+      state.status = "failed";
+      state.failed_at = new Date().toISOString();
+      state.failure_reason = result.error || "non-zero exit code";
+      state.consecutive_failures = (state.consecutive_failures || 0) + 1;
+      state.last_failure_session = await K.getSessionCount();
+      await updateJobRecord(K, state.job_id, "failed");
+      await K.kvWriteSafe("dr:state:1", state);
+      await K.karmaRecord({ event: "dr_failed", job_id: state.job_id, error: result.error });
+    }
+    return;
+  }
+
+  if (state.status === "completed") {
+    const output = await K.kvGet(`dr:result:${state.generation}`);
+    if (!output) {
+      state.status = "failed";
+      state.failure_reason = "result missing from KV";
+      state.consecutive_failures = (state.consecutive_failures || 0) + 1;
+      state.last_failure_session = await K.getSessionCount();
+      await K.kvWriteSafe("dr:state:1", state);
+      return;
+    }
+
+    await applyDrResults(K, state, output);
+
+    state.status = "idle";
+    state.applied_at = new Date().toISOString();
+    state.last_applied_session = await K.getSessionCount();
+    state.last_session_id = await K.getSessionId();
+    state.consecutive_failures = 0;
+    state.last_failure_session = null;
+
+    const interval = output.next_reflect?.after_sessions
+      || defaults?.deep_reflect?.default_interval_sessions || 20;
+    const intervalDays = output.next_reflect?.after_days
+      || defaults?.deep_reflect?.default_interval_days || 7;
+    state.next_due_session = state.last_applied_session + interval;
+    state.next_due_date = new Date(Date.now() + intervalDays * 86400000).toISOString();
+
+    await K.kvDeleteSafe(`dr:result:${state.generation}`);
+    await K.kvWriteSafe("dr:state:1", state);
+    return;
+  }
+
+  if (state.status === "failed") {
+    const backoff = Math.min(20, Math.pow(2, state.consecutive_failures || 1));
+    const sessionCount = await K.getSessionCount();
+    if (state.last_failure_session && sessionCount - state.last_failure_session < backoff) return;
+
+    state.status = "idle";
+    state.next_due_session = sessionCount;
+    await K.kvWriteSafe("dr:state:1", state);
+  }
+
+  if (state.status === "idle") {
+    if (!await isDrDue(K, state)) return;
+
+    const dispatch = await dispatchDr(K, defaults);
+    if (!dispatch) {
+      state.status = "failed";
+      state.failed_at = new Date().toISOString();
+      state.failure_reason = "dispatch failed";
+      state.consecutive_failures = (state.consecutive_failures || 0) + 1;
+      state.last_failure_session = await K.getSessionCount();
+      await K.kvWriteSafe("dr:state:1", state);
+      await K.karmaRecord({ event: "dr_dispatch_failed" });
+      return;
+    }
+
+    state.status = "dispatched";
+    state.generation = (state.generation || 0) + 1;
+    state.job_id = dispatch.job_id;
+    state.workdir = dispatch.workdir;
+    state.dispatched_at = new Date().toISOString();
+    state.completed_at = null;
+    state.applied_at = null;
+    state.failed_at = null;
+    state.failure_reason = null;
+    await K.kvWriteSafe("dr:state:1", state);
+    await K.karmaRecord({ event: "dr_dispatched", job_id: dispatch.job_id, generation: state.generation });
+  }
+}
+
+async function isDrDue(K, state) {
+  if (!state.generation) return true;
+  const sessionCount = await K.getSessionCount();
+  if (state.next_due_session && sessionCount >= state.next_due_session) return true;
+  if (state.next_due_date && new Date() >= new Date(state.next_due_date)) return true;
+  return false;
+}
+
+async function dispatchDr(K, defaults) {
+  const prompt = await K.kvGet("prompt:deep_reflect");
+  if (!prompt) return null;
+
+  const result = await K.executeToolCall({
+    id: `dr_dispatch_${Date.now()}`,
+    function: {
+      name: "start_job",
+      arguments: JSON.stringify({
+        type: "cc_analysis",
+        prompt,
+        context_keys: [
+          "samskara:*", "experience:*", "desire:*",
+          "principle:*", "config:defaults",
+          "reflect:1:*", "last_reflect",
+        ],
+      }),
+    },
+  });
+
+  if (!result?.ok) return null;
+  return { job_id: result.job_id, workdir: result.workdir };
+}
+
+async function pollJobResult(K, state, defaults) {
+  const jobs = defaults?.jobs || {};
+
+  let checkResult;
+  try {
+    checkResult = await K.executeAdapter("provider:compute", {
+      command: `test -f ${state.workdir}/exit_code && cat ${state.workdir}/exit_code || echo RUNNING`,
+      baseUrl: jobs.base_url, timeout: 5,
+    });
+  } catch {
+    return { status: "running" };
+  }
+
+  if (!checkResult?.ok) return { status: "running" };
+
+  const exitText = Array.isArray(checkResult.output)
+    ? checkResult.output.map(o => o.data || '').join('').trim()
+    : String(checkResult.output || '').trim();
+
+  if (exitText === "RUNNING") return { status: "running" };
+
+  const exitCode = parseInt(exitText, 10);
+  if (exitCode !== 0) return { status: "failed", error: `exit code ${exitCode}` };
+
+  let outputResult;
+  try {
+    outputResult = await K.executeAdapter("provider:compute", {
+      command: `cat ${state.workdir}/output.json 2>/dev/null || echo '{}'`,
+      baseUrl: jobs.base_url, timeout: 10,
+    });
+  } catch {
+    return { status: "failed", error: "could not read output" };
+  }
+
+  if (!outputResult?.ok) return { status: "failed", error: "could not read output" };
+
+  const raw = Array.isArray(outputResult.output)
+    ? outputResult.output.map(o => o.data || '').join('')
+    : String(outputResult.output || '');
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed.reflection && !parsed.kv_operations?.length) {
+      return { status: "failed", error: "output.json has no reflection or kv_operations" };
+    }
+    return { status: "completed", output: parsed };
+  } catch {
+    return { status: "failed", error: "invalid JSON in output.json" };
+  }
+}
+
+async function applyDrResults(K, state, output) {
+  const sessionId = await K.getSessionId();
+
+  const ops = (output.kv_operations || []).filter(op =>
+    op.key?.startsWith("samskara:") || op.key?.startsWith("desire:")
+  );
+
+  const blocked = [];
+  for (const op of ops) {
+    const result = await K.kvWriteGated(op, "deep-reflect");
+    if (!result.ok) blocked.push({ key: op.key, error: result.error });
+  }
+
+  if (blocked.length > 0) {
+    await K.karmaRecord({ event: "dr_apply_blocked", blocked, applied: ops.length - blocked.length });
+  }
+
+  await K.kvWriteSafe(`reflect:1:${sessionId}`, {
+    reflection: output.reflection,
+    note_to_future_self: output.note_to_future_self,
+    depth: 1,
+    session_id: sessionId,
+    timestamp: new Date().toISOString(),
+    from_dr_generation: state.generation,
+  });
+
+  await K.kvWriteSafe("last_reflect", {
+    session_summary: output.reflection,
+    was_deep_reflect: true,
+    depth: 1,
+    session_id: sessionId,
+  });
+}
+
+async function updateJobRecord(K, jobId, status) {
+  const record = await K.kvGet(`job:${jobId}`);
+  if (record) {
+    record.status = status;
+    record.completed_at = new Date().toISOString();
+    await K.kvWriteSafe(`job:${jobId}`, record);
+  }
+}
+
 // ── Main session hook ───────────────────────────────────────
 
 export async function run(K, { crashData, balances, events, schedule }) {
@@ -431,9 +672,9 @@ export async function run(K, { crashData, balances, events, schedule }) {
     await K.karmaRecord({ event: "act_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
   }
 
-  // Independent concern 2: DR lifecycle (drCycle added in next task)
+  // Independent concern 2: DR lifecycle
   try {
-    // drCycle(K) — will be implemented separately
+    await drCycle(K);
   } catch (e) {
     await K.karmaRecord({ event: "dr_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
   }
