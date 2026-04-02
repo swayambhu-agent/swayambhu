@@ -35,83 +35,37 @@ For new/modified samskaras:
 For deleted samskaras:
 { "key": "samskara:{slug}", "op": "delete" }
 
-## D operator: Desire Magnification
+## D operator: Desire Management
 
-Review accumulated experience through the immutable lens of principles.
-
-Desire is a magnification force — it takes experience and amplifies.
+Desire is an expansive force — it takes experience and amplifies it.
 Without experience, no desire arises. Without principles, experience
-has no direction. The force comes from experience; principles shape
-where it points.
+has no direction.
 
-Magnification is bidirectional:
-- Positive experience → desire for more of that state.
-  "I earned $100" → "I want to earn $200."
-- Negative experience → desire for the positive inversion.
-  "I lost the game" → "I want to win the game."
+Amplification is bidirectional:
+- Positive experience → desire for more. "I earned $100" → "I want to earn $200."
+- Negative experience → desire for the inversion. "I lost the game" → "I want to win."
 
-### What a desire is
+A desire has a gap — something the agent wants but doesn't yet have.
+If the gap closes, retire the desire. A desire is NOT a principle
+rephrased ("be aligned with dharma" — unfalsifiable, useless) and NOT
+an action ("fix the Slack channel" — that's downstream).
 
-A desire has an object it doesn't yet possess. There is a gap between
-what is and what the agent wants. That gap is the desire. If the gap
-closes, the desire is retired.
-
-A desire is NOT a principle rephrased. "Be a more effective instrument
-of my dharma" is a principle wearing a desire's clothes. It cannot be
-frustrated, satisfied, or evaluated — so it is useless as a desire.
-
-A desire is NOT an action. "Fix the Slack channel" is an action. The
-desire behind it is "be heard" or "restore communication with patron."
-Actions are generated downstream from desires, not here.
-
-### The NLI test
-
-Every desire must be concrete enough that given an outcome statement,
-a simple entailment model can classify whether the outcome advances
-or opposes it. If the desire is too abstract for that, rewrite it
-until it isn't.
-
-- Too abstract: "improve infrastructure reliability"
-- Concrete enough: "video editing server has zero unplanned downtime"
-- Too abstract: "serve the dharma better"
-- Concrete enough: "patron receives timely, well-sourced responses"
-
-### Direction
-
-Desires have polarity:
-- **approach**: move toward a state the agent wants
-- **avoidance**: move away from a state the agent doesn't want
-
-Both are desires. "Credentials never appear in logs" is an avoidance
-desire with the same standing as any approach desire.
-
-### Operations
-
-**Strengthen** desires that accumulated experience validates through
-principles. If the agent keeps encountering high-affinity outcomes
-aligned with a desire, the desire is working.
-
-**Create** new desires when experience reveals a gap that principles
-care about. Something surprised the agent, principles say it matters,
-and no existing desire covers it.
-
-**Retire** desires whose gap has closed — the object has been obtained
-or the threat has passed. Also retire desires that are consistently
-unproductive — no experience relates to them, or actions in their
-service produce no positive affinity.
+**NLI test:** every desire must be concrete enough that an entailment
+model can classify whether an outcome advances or opposes it.
+- Bad: "improve infrastructure reliability"
+- Good: "video editing server has zero unplanned downtime"
 
 Every desire must trace to at least one principle (source_principles).
-If it can't, it has no grounding and should not exist.
 
-### Output format
+**Create** when experience reveals a gap that principles care about.
+**Refine** descriptions when experience clarifies what the agent actually wants.
+**Retire** when the gap closes or the desire is consistently unproductive.
 
-For new or modified desires:
+For new/modified desires:
 { "key": "desire:{slug}", "value": {
     "slug": "...",
     "direction": "approach|avoidance",
-    "description": "a concrete statement with a gap — what the agent
-                     wants that it doesn't yet have, or wants to
-                     prevent that hasn't yet happened",
+    "description": "concrete statement with a gap",
     "source_principles": ["..."],
     "created_at": "ISO8601",
     "updated_at": "ISO8601"
