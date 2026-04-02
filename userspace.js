@@ -308,9 +308,9 @@ async function writeMemory(K, { ledger, evalResult, review, desires, samskaras, 
   }
 }
 
-// ── Main session hook ───────────────────────────────────────
+// ── Act cycle ─────────────────────────────────────────────
 
-export async function run(K, { crashData, balances, events, schedule }) {
+async function actCycle(K, { crashData, balances, events, schedule }) {
   // 1. Load config
   const defaults = await K.getDefaults();
   const modelsConfig = await K.getModelsConfig();
@@ -364,6 +364,9 @@ export async function run(K, { crashData, balances, events, schedule }) {
 
           // Apply via existing applyReflectOutput
           const state = { defaults, modelsConfig };
+          state.refreshDefaults = async () => {
+            state.defaults = await K.getDefaults();
+          };
           await applyReflectOutput(K, state, job.config.depth || 1, output, { fromJob: job.id });
 
           await K.karmaRecord({
@@ -461,27 +464,63 @@ export async function run(K, { crashData, balances, events, schedule }) {
     }
   }
 
-  // 7. Per-depth reflect dispatch
+  return { defaults, modelsConfig, desires, cyclesRun };
+}
+
+// ── Reflect dispatch ──────────────────────────────────────
+
+async function reflectDispatch(K, { defaults, modelsConfig, desires }) {
   const state = { defaults, modelsConfig, desires };
+  state.refreshDefaults = async () => {
+    state.defaults = await K.getDefaults();
+  };
   const maxDepth = defaults?.execution?.max_reflect_depth || 1;
   for (let d = maxDepth; d >= 1; d--) {
     if (await isReflectDue(K, state, d)) {
       await runReflect(K, state, d, {});
     }
   }
+}
 
-  // 8. Update session schedule
-  const scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
-  await K.kvWriteSafe("session_schedule", {
-    next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
-    interval_seconds: scheduleInterval,
-  });
+// ── Main session hook ───────────────────────────────────────
 
-  // 9. Karma log session complete
+export async function run(K, { crashData, balances, events, schedule }) {
+  let actResult = {};
+
+  // Independent concern 1: act cycle
+  try {
+    actResult = await actCycle(K, { crashData, balances, events, schedule });
+  } catch (e) {
+    await K.karmaRecord({ event: "act_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
+  }
+
+  // Independent concern 2: DR dispatch
+  try {
+    const defaults = actResult.defaults || await K.getDefaults();
+    const modelsConfig = actResult.modelsConfig || await K.getModelsConfig();
+    const desires = actResult.desires || {};
+    await reflectDispatch(K, { defaults, modelsConfig, desires });
+  } catch (e) {
+    await K.karmaRecord({ event: "reflect_dispatch_error", error: e.message, stack: e.stack?.slice(0, 500) });
+  }
+
+  // Schedule next (always runs, even if above failed)
+  try {
+    const defaults = actResult.defaults || await K.getDefaults();
+    const scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
+    await K.kvWriteSafe("session_schedule", {
+      next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
+      interval_seconds: scheduleInterval,
+    });
+  } catch (e) {
+    await K.karmaRecord({ event: "schedule_update_error", error: e.message });
+  }
+
+  // Session complete (always fires)
   const finalCost = await K.getSessionCost();
   await K.karmaRecord({
     event: "session_complete",
-    cycles_run: cyclesRun,
+    cycles_run: actResult.cyclesRun || 0,
     total_cost: finalCost,
   });
 }
