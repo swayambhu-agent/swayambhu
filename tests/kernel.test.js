@@ -1666,7 +1666,7 @@ describe("_writeExecutionHealth", () => {
     kernel.sessionLLMCalls = 3;
     kernel._sessionStart = Date.now() - 5000;
     kernel.karma = [
-      { event: "session_start" },
+      { event: "act_start" },
       { event: "llm_call", step: "act_turn_0" },
       { event: "llm_call", step: "reflect_turn_0" },
     ];
@@ -1691,7 +1691,7 @@ describe("_writeExecutionHealth", () => {
     kernel.sessionLLMCalls = 8;
     kernel._sessionStart = Date.now() - 10000;
     kernel.karma = [
-      { event: "session_start" },
+      { event: "act_start" },
       { event: "llm_call", step: "act_turn_0" },
       { event: "budget_exceeded", step: "act" },
       { event: "budget_exceeded", step: "reflect" },
@@ -1712,7 +1712,7 @@ describe("_writeExecutionHealth", () => {
     kernel.sessionLLMCalls = 4;
     kernel._sessionStart = Date.now() - 8000;
     kernel.karma = [
-      { event: "session_start" },
+      { event: "act_start" },
       { event: "llm_call", step: "reflect_turn_0", truncated: true },
       { event: "tool_complete", tool: "computer", ok: false },
       { event: "tool_complete", tool: "computer", ok: false },
@@ -1738,7 +1738,7 @@ describe("_writeExecutionHealth", () => {
     kernel.sessionLLMCalls = 1;
     kernel._sessionStart = Date.now() - 2000;
     kernel.karma = [
-      { event: "session_start" },
+      { event: "act_start" },
       { event: "fatal_error", error: "boom" },
     ];
 

@@ -887,7 +887,7 @@ class Kernel {
 
     await this.loadEagerConfig();
     this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 120 } };
-    await this.karmaRecord({ event: "session_start", mode: "recovery" });
+    await this.karmaRecord({ event: "act_start", mode: "recovery" });
 
     const tools = this.buildToolDefinitions();
     const fallbackModel = await this.getFallbackModel();

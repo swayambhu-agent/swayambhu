@@ -328,7 +328,7 @@ async function actCycle(K, { crashData, balances, events }) {
   await K.kvWriteSafe("cache:session_ids", sessionIds);
 
   await K.karmaRecord({
-    event: "session_start",
+    event: "act_start",
     session_number: sessionCount + 1,
     scheduled_at: schedule?.next_session_after || null,
     crash_detected: !!crashData,
@@ -451,7 +451,7 @@ async function actCycle(K, { crashData, balances, events }) {
   // Session complete
   const finalCost = await K.getSessionCost();
   await K.karmaRecord({
-    event: "session_complete",
+    event: "act_complete",
     cycles_run: cyclesRun,
     total_cost: finalCost,
   });
