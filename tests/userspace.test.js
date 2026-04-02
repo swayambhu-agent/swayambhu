@@ -329,10 +329,10 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // Should write updated strength back to the samskara key
-    const strengthWrite = K.kvWriteSafe.mock.calls.find(([key]) => key === SAMSKARA_KEY);
+    // Should write updated strength via kvWriteGated (samskara:* is protected)
+    const strengthWrite = K.kvWriteGated.mock.calls.find(([op]) => op.key === SAMSKARA_KEY);
     expect(strengthWrite).toBeDefined();
-    const written = typeof strengthWrite[1] === "string" ? JSON.parse(strengthWrite[1]) : strengthWrite[1];
+    const written = strengthWrite[0].value;
     expect(written.strength).toBeGreaterThanOrEqual(0);
     expect(written.strength).toBeLessThanOrEqual(1);
   });
@@ -355,9 +355,9 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    const strengthWrite = K.kvWriteSafe.mock.calls.find(([key]) => key === SAMSKARA_KEY);
+    const strengthWrite = K.kvWriteGated.mock.calls.find(([op]) => op.key === SAMSKARA_KEY);
     expect(strengthWrite).toBeDefined();
-    const written = typeof strengthWrite[1] === "string" ? JSON.parse(strengthWrite[1]) : strengthWrite[1];
+    const written = strengthWrite[0].value;
     // Violation should decrease strength
     expect(written.strength).toBeLessThan(0.8);
   });
