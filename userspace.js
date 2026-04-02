@@ -32,6 +32,8 @@ async function loadSamskaras(K) {
 
 // ── Plan prompt vars ────────────────────────────────────────
 
+const COMMS_TOOLS = new Set(["send_slack", "send_whatsapp", "send_email", "check_email"]);
+
 async function loadPlanVars(K, defaults) {
   const subagents = await K.kvGet("config:subagents");
   const skillList = await K.kvList({ prefix: "skill:", limit: 100 });
@@ -46,8 +48,16 @@ async function loadPlanVars(K, defaults) {
       } catch {}
     }
   }
+
+  // Tool manifest for planner — names and descriptions, excluding comms tools
+  const allTools = await K.buildToolDefinitions();
+  const tools = allTools
+    .filter(t => !COMMS_TOOLS.has(t.function.name))
+    .map(t => ({ name: t.function.name, description: t.function.description }));
+
   return {
     config: defaults,
+    tools: tools.length ? tools : null,
     skill_manifest: skills.length ? skills : null,
     subagents: subagents || null,
   };
