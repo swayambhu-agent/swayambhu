@@ -412,9 +412,10 @@
       const [selectedSession, setSelectedSession] = useState(null);
       const [karma, setKarma] = useState([]);
       const [loading, setLoading] = useState(false);
-      const [watching, setWatching] = useState(true);
+      const [watching, setWatching] = useState(false);
       const watchRef = useRef(null);
       const karmaRef = useRef([]);
+      const initialLoadRef = useRef(true);
 
       const refreshSessions = useCallback(async () => {
         try {
@@ -479,7 +480,14 @@
       useEffect(() => {
         if (!selectedSession) return;
         loadKarma(selectedSession);
-        startWatching();
+        if (initialLoadRef.current) {
+          initialLoadRef.current = false;
+          startWatching();
+        } else {
+          // Switching sessions — stop watching
+          if (watchRef.current) { clearInterval(watchRef.current); watchRef.current = null; }
+          setWatching(false);
+        }
         return () => { if (watchRef.current) { clearInterval(watchRef.current); watchRef.current = null; } };
       }, [selectedSession, loadKarma, startWatching]);
 
