@@ -296,8 +296,36 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
 
 // ── Memory writes ───────────────────────────────────────────
 
-async function writeMemory(K, { ledger, evalResult, review, desires, samskaras, inferenceConfig }) {
+async function writeMemory(K, { ledger, evalResult, review, desires, samskaras, inferenceConfig, executionId, sessionNumber, cycle }) {
   const now = new Date().toISOString();
+  const cap = (s, n = 500) => s && s.length > n ? s.slice(0, n) + '…' : s;
+
+  // Action record — structured audit trail
+  await K.kvWriteSafe(`action:${ledger.action_id}`, {
+    kind: ledger.plan?.no_action ? "no_action" : "action",
+    timestamp: now,
+    execution_id: executionId || null,
+    session_number: sessionNumber || null,
+    cycle: cycle ?? null,
+    plan: ledger.plan,
+    tool_calls: ledger.tool_calls.map(tc => ({
+      tool: tc.tool,
+      ok: tc.ok,
+      input_preview: cap(typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input)),
+      output_preview: cap(typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output)),
+    })),
+    final_text: cap(ledger.final_text, 1000),
+    eval: {
+      sigma: evalResult.sigma,
+      salience: evalResult.salience,
+      method: evalResult.eval_method,
+      tool_outcomes: evalResult.tool_outcomes,
+    },
+    review: review ? {
+      assessment: review.assessment,
+      narrative: review.narrative,
+    } : null,
+  });
 
   // Samskara strength updates — from eval's per-samskara surprise scores
   if (evalResult.samskara_scores) {
@@ -439,7 +467,7 @@ async function actCycle(K, { crashData, balances, events }) {
         final_text: plan.reason,
       };
       const evalResult = await evaluateAction(K, noActionLedger, desires, samskaras, inferenceConfig || {});
-      await writeMemory(K, { ledger: noActionLedger, evalResult, review: null, desires, samskaras, inferenceConfig });
+      await writeMemory(K, { ledger: noActionLedger, evalResult, review: null, desires, samskaras, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
       break;
     }
@@ -456,7 +484,7 @@ async function actCycle(K, { crashData, balances, events }) {
     const review = await reviewPhase(K, { ledger, evalResult, defaults });
 
     // 6f. Memory writes
-    await writeMemory(K, { ledger, evalResult, review, desires, samskaras, inferenceConfig });
+    await writeMemory(K, { ledger, evalResult, review, desires, samskaras, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
     cyclesRun++;
 
