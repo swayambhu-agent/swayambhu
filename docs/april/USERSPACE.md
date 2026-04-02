@@ -16,9 +16,9 @@ The `run()` function coordinates two independent concerns:
 
 ```
 run()
-  ├─ try: actCycle()         — plan → act → eval → review → memory
-  ├─ try: reflectDispatch()  — check if DR is due, dispatch to akash
-  └─ try: updateSchedule()   — always runs, even if above failed
+  ├─ try: actCycle()       — plan → act → eval → review → memory
+  ├─ try: drCycle()        — DR state machine: poll / dispatch / apply
+  └─ try: updateSchedule() — always runs, even if above failed
 ```
 
 Each is wrapped in its own try/catch. A crashed act cycle doesn't
@@ -74,19 +74,33 @@ Experience schema: `{ timestamp, action_taken, outcome, surprise_score, salience
 No affinity vector stored. No active desire/samskara lists. The
 narrative carries the qualitative meaning.
 
-## Deep-Reflect Dispatch
+## DR Lifecycle (drCycle)
 
-Checked after every act cycle. DR fires when:
-- **No desires exist** (depth 1) — an agent without direction should reflect
-- **Session interval exceeded** — `reflect:schedule:1` controls timing
-- **Day interval exceeded** — wall-clock fallback
+DR manages its own lifecycle through `dr:state:1` — a state machine
+independent of act sessions. The cron provides the clock tick; DR
+decides for itself whether to run.
 
-DR runs on akash as a background job (`start_job` tool). It does NOT
-run in-worker. If dispatch fails, it's logged and retried next session.
+```
+drCycle()
+  read dr:state:1
+  ├─ dispatched → poll akash for completion
+  ├─ completed  → apply results to KV, set idle + schedule next
+  ├─ failed     → backoff, then retry
+  └─ idle       → check if due, dispatch if so
+```
 
-The DR job receives:
-- The S/D operator prompt (`prompt:deep_reflect`)
-- Context keys: `samskara:*`, `experience:*`, `desire:*`, `principle:*`, `config:defaults`
+**States:** idle → dispatched → completed → (apply) → idle.
+Failed state has exponential backoff (2^N sessions, capped at 20).
+
+**Cold start:** generation 0 → dispatch immediately.
+After that, the schedule governs (default: 20 sessions or 7 days).
+
+**Polling:** drCycle SSHes to akash, checks for `exit_code` file,
+reads `output.json`. Short timeout (5s) prevents hangs.
+No callbacks — jobs just run and exit.
+
+**Result application:** Writes samskara:* and desire:* via kvWriteGated.
+Also writes reflect:1:{sessionId} and last_reflect for continuity.
 
 ### S Operator (Samskara Management)
 
@@ -99,12 +113,6 @@ pattern recognition — seeing what the numbers can't see.
 Magnifies experience through principles. "I did X" → "do more X."
 Bidirectional: approach (toward alignment) and avoidance (away from
 misalignment). Principles shape the direction, not the force.
-
-### Job Completion
-
-DR results arrive as `job_complete` events. The next act cycle processes
-them: filters kv_operations to `samskara:*` and `desire:*`, applies
-via `applyReflectOutput`, re-snapshots the cognitive state.
 
 ## Files
 
