@@ -1,6 +1,6 @@
 // Dispatch a long-running background job on a compute target.
 // Packs context from KV into a tarball, transfers to target, starts nohup process.
-// Returns immediately with a job ID. The job calls back on completion.
+// Returns immediately with a job ID. drCycle polls for completion.
 
 import { packAndEncode } from '../lib/tarball.js';
 
@@ -38,9 +38,6 @@ export async function execute({ type, prompt, context_keys, include_code, comman
 
   // Generate IDs
   const jobId = `j_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const callbackSecret = Array.from(
-    { length: 32 }, () => Math.floor(Math.random() * 16).toString(16)
-  ).join('');
 
   // Pack context from KV
   const files = [];
@@ -96,10 +93,6 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   // Build the workdir path
   const workdir = `${baseDir}/${jobId}`;
 
-  // Determine callback URL — use the kernel's own origin
-  // The job script curls back on completion
-  const callbackBase = jobs.callback_url || baseUrl.replace(/\/+$/, '');
-
   // Build shell script
   const shellScript = [
     `mkdir -p ${workdir}`,
@@ -107,12 +100,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     `nohup sh -c '`,
     `  cd ${workdir} &&`,
     `  ${jobCommand} > output.json 2>stderr.log;`,
-    `  EXIT=$?; echo $EXIT > exit_code;`,
-    `  curl -sf -X POST ${callbackBase}/job-complete/${jobId}`,
-    `    -H "Authorization: Bearer ${callbackSecret}"`,
-    `    -H "Content-Type: application/json"`,
-    `    -d "{\\"exit_code\\": $EXIT}"`,
-    `    || true`,
+    `  EXIT=$?; echo $EXIT > exit_code`,
     `' > /dev/null 2>&1 & echo $!`,
   ].join(' && \\\n');
 
@@ -143,7 +131,6 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     created_at: new Date().toISOString(),
     workdir,
     pid,
-    callback_secret: callbackSecret,
     config: {
       prompt_summary: (prompt || command || '').slice(0, 200),
       context_keys: context_keys || [],

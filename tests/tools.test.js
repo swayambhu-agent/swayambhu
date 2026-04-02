@@ -1557,7 +1557,7 @@ describe("start_job", () => {
     const record = JSON.parse(kv._store.get(jobKey));
     expect(record.status).toBe("running");
     expect(record.type).toBe("custom");
-    expect(record.callback_secret).toBeTruthy();
+    expect(record.callback_secret).toBeUndefined();
   });
 
   it("returns error when type is missing", async () => {
