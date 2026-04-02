@@ -1104,8 +1104,8 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
 
   it("recognizes kernel-only keys", () => {
     const { kernel } = makeKernel();
-    expect(kernel.isKernelOnly("kernel:last_sessions")).toBe(true);
-    expect(kernel.isKernelOnly("kernel:active_session")).toBe(true);
+    expect(kernel.isKernelOnly("kernel:last_executions")).toBe(true);
+    expect(kernel.isKernelOnly("kernel:active_execution")).toBe(true);
     expect(kernel.isKernelOnly("kernel:alert_config")).toBe(true);
   });
 
@@ -1183,7 +1183,7 @@ describe("kvWriteSafe", () => {
 
   it("blocks kernel-only keys", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvWriteSafe("kernel:last_sessions", []))
+    await expect(kernel.kvWriteSafe("kernel:last_executions", []))
       .rejects.toThrow("kernel-only");
   });
 
@@ -1251,7 +1251,7 @@ describe("kvDeleteSafe", () => {
 
   it("blocks kernel-only keys", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvDeleteSafe("kernel:active_session"))
+    await expect(kernel.kvDeleteSafe("kernel:active_execution"))
       .rejects.toThrow("kernel-only");
   });
 
@@ -1319,7 +1319,7 @@ describe("kvWriteGated", () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     const result = await kernel.kvWriteGated(
-      { op: "put", key: "kernel:last_sessions", value: [] }, "deep-reflect"
+      { op: "put", key: "kernel:last_executions", value: [] }, "deep-reflect"
     );
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/kernel key/);
@@ -1499,7 +1499,7 @@ describe("checkHookSafety", () => {
 
   it("returns true with mixed outcomes", async () => {
     const { kernel } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_1", outcome: "crash" },
         { id: "s_2", outcome: "clean" },
         { id: "s_3", outcome: "crash" },
@@ -1512,7 +1512,7 @@ describe("checkHookSafety", () => {
 
   it("fires tripwire on 3 consecutive crashes — writes deploy:rollback_requested", async () => {
     const { kernel, env } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_1", outcome: "crash" },
         { id: "s_2", outcome: "killed" },
         { id: "s_3", outcome: "crash" },
@@ -1537,7 +1537,7 @@ describe("checkHookSafety", () => {
 
   it("returns true when fewer than 3 sessions in history", async () => {
     const { kernel } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_1", outcome: "crash" },
         { id: "s_2", outcome: "crash" },
       ]),
@@ -1555,64 +1555,64 @@ describe("session lock", () => {
   it("proceeds when no active session marker", async () => {
     const { kernel } = makeKernel();
     kernel.checkHookSafety = vi.fn(async () => true);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
     await kernel.runScheduled();
-    expect(kernel.executeHook).toHaveBeenCalled();
+    expect(kernel.runTick).toHaveBeenCalled();
   });
 
   it("bails when active session is recent", async () => {
     const { kernel } = makeKernel({
-      "kernel:active_session": JSON.stringify({ id: "s_other", started_at: new Date().toISOString() }),
+      "kernel:active_execution": JSON.stringify({ id: "s_other", started_at: new Date().toISOString() }),
       "config:defaults": JSON.stringify({ session_budget: { max_duration_seconds: 600 } }),
     });
     kernel.checkHookSafety = vi.fn(async () => true);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
     await kernel.runScheduled();
-    expect(kernel.executeHook).not.toHaveBeenCalled();
+    expect(kernel.runTick).not.toHaveBeenCalled();
   });
 
   it("treats stale marker as killed session and proceeds", async () => {
     const staleTime = new Date(Date.now() - 1300 * 1000).toISOString(); // older than 2x 600s
     const { kernel, env } = makeKernel({
-      "kernel:active_session": JSON.stringify({ id: "s_dead", started_at: staleTime }),
+      "kernel:active_execution": JSON.stringify({ id: "s_dead", started_at: staleTime }),
       "config:defaults": JSON.stringify({ session_budget: { max_duration_seconds: 600 } }),
     });
     kernel.checkHookSafety = vi.fn(async () => true);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
     await kernel.runScheduled();
 
     // Should have recorded the killed session
-    const historyPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:last_sessions");
+    const historyPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:last_executions");
     expect(historyPut).toBeTruthy();
     const history = JSON.parse(historyPut[1]);
     expect(history[0].outcome).toBe("killed");
     expect(history[0].id).toBe("s_dead");
 
     // Should have proceeded
-    expect(kernel.executeHook).toHaveBeenCalled();
+    expect(kernel.runTick).toHaveBeenCalled();
   });
 });
 
-// ── 18. updateSessionOutcome ────────────────────────────────
+// ── 18. updateExecutionOutcome ────────────────────────────────
 
-describe("updateSessionOutcome", () => {
-  it("adds clean outcome to kernel:last_sessions", async () => {
+describe("updateExecutionOutcome", () => {
+  it("adds clean outcome to kernel:last_executions", async () => {
     const { kernel, env } = makeKernel();
-    await kernel.updateSessionOutcome("clean");
+    await kernel.updateExecutionOutcome("clean");
 
     const putCalls = env.KV.put.mock.calls;
-    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_executions");
     expect(sessionsPut).toBeTruthy();
     const sessions = JSON.parse(sessionsPut[1]);
     expect(sessions[0].outcome).toBe("clean");
   });
 
-  it("adds crash outcome to kernel:last_sessions", async () => {
+  it("adds crash outcome to kernel:last_executions", async () => {
     const { kernel, env } = makeKernel();
-    await kernel.updateSessionOutcome("crash");
+    await kernel.updateExecutionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_executions");
     expect(sessionsPut).toBeTruthy();
     const sessions = JSON.parse(sessionsPut[1]);
     expect(sessions[0].outcome).toBe("crash");
@@ -1620,14 +1620,14 @@ describe("updateSessionOutcome", () => {
 
   it("prepends to existing history", async () => {
     const { kernel, env } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_old", outcome: "clean", ts: "2026-01-01T00:00:00Z" },
       ]),
     });
-    await kernel.updateSessionOutcome("crash");
+    await kernel.updateExecutionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_executions");
     const sessions = JSON.parse(sessionsPut[1]);
     expect(sessions).toHaveLength(2);
     expect(sessions[0].outcome).toBe("crash");
@@ -1636,7 +1636,7 @@ describe("updateSessionOutcome", () => {
 
   it("caps history at 5 entries", async () => {
     const { kernel, env } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_1", outcome: "clean", ts: "t1" },
         { id: "s_2", outcome: "clean", ts: "t2" },
         { id: "s_3", outcome: "clean", ts: "t3" },
@@ -1644,10 +1644,10 @@ describe("updateSessionOutcome", () => {
         { id: "s_5", outcome: "clean", ts: "t5" },
       ]),
     });
-    await kernel.updateSessionOutcome("crash");
+    await kernel.updateExecutionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_executions");
     const sessions = JSON.parse(sessionsPut[1]);
     expect(sessions).toHaveLength(5);
     expect(sessions[0].outcome).toBe("crash");
@@ -1656,12 +1656,12 @@ describe("updateSessionOutcome", () => {
   });
 });
 
-// ── 19. _writeSessionHealth ──────────────────────────────────
+// ── 19. _writeExecutionHealth ──────────────────────────────────
 
-describe("_writeSessionHealth", () => {
+describe("_writeExecutionHealth", () => {
   it("writes a clean health summary", async () => {
     const { kernel, env } = makeKernel();
-    kernel.sessionId = "s_test_health";
+    kernel.executionId = "s_test_health";
     kernel.sessionCost = 0.05;
     kernel.sessionLLMCalls = 3;
     kernel._sessionStart = Date.now() - 5000;
@@ -1671,9 +1671,9 @@ describe("_writeSessionHealth", () => {
       { event: "llm_call", step: "reflect_turn_0" },
     ];
 
-    await kernel._writeSessionHealth("clean");
+    await kernel._writeExecutionHealth("clean");
 
-    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_health");
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "execution_health:s_test_health");
     expect(putCall).toBeTruthy();
     const health = JSON.parse(putCall[1]);
     expect(health.outcome).toBe("clean");
@@ -1686,7 +1686,7 @@ describe("_writeSessionHealth", () => {
 
   it("captures budget_exceeded and missing reflect", async () => {
     const { kernel, env } = makeKernel();
-    kernel.sessionId = "s_test_budget";
+    kernel.executionId = "s_test_budget";
     kernel.sessionCost = 0.20;
     kernel.sessionLLMCalls = 8;
     kernel._sessionStart = Date.now() - 10000;
@@ -1697,9 +1697,9 @@ describe("_writeSessionHealth", () => {
       { event: "budget_exceeded", step: "reflect" },
     ];
 
-    await kernel._writeSessionHealth("clean");
+    await kernel._writeExecutionHealth("clean");
 
-    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_budget");
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "execution_health:s_test_budget");
     const health = JSON.parse(putCall[1]);
     expect(health.budget_exceeded).toEqual(["act", "reflect"]);
     expect(health.reflect_ran).toBe(false);
@@ -1707,7 +1707,7 @@ describe("_writeSessionHealth", () => {
 
   it("captures truncations and tool failures", async () => {
     const { kernel, env } = makeKernel();
-    kernel.sessionId = "s_test_trunc";
+    kernel.executionId = "s_test_trunc";
     kernel.sessionCost = 0.10;
     kernel.sessionLLMCalls = 4;
     kernel._sessionStart = Date.now() - 8000;
@@ -1720,9 +1720,9 @@ describe("_writeSessionHealth", () => {
       { event: "vikalpa_updates_missed", missed: [] },
     ];
 
-    await kernel._writeSessionHealth("clean");
+    await kernel._writeExecutionHealth("clean");
 
-    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_trunc");
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "execution_health:s_test_trunc");
     const health = JSON.parse(putCall[1]);
     expect(health.truncations).toEqual(["reflect_turn_0"]);
     expect(health.tool_failures).toBe(2);
@@ -1733,7 +1733,7 @@ describe("_writeSessionHealth", () => {
 
   it("writes health on fatal error path", async () => {
     const { kernel, env } = makeKernel();
-    kernel.sessionId = "s_test_fatal";
+    kernel.executionId = "s_test_fatal";
     kernel.sessionCost = 0.01;
     kernel.sessionLLMCalls = 1;
     kernel._sessionStart = Date.now() - 2000;
@@ -1742,9 +1742,9 @@ describe("_writeSessionHealth", () => {
       { event: "fatal_error", error: "boom" },
     ];
 
-    await kernel._writeSessionHealth("error");
+    await kernel._writeExecutionHealth("error");
 
-    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_fatal");
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "execution_health:s_test_fatal");
     const health = JSON.parse(putCall[1]);
     expect(health.outcome).toBe("error");
     expect(health.reflect_ran).toBe(false);
@@ -1756,42 +1756,42 @@ describe("_writeSessionHealth", () => {
 // ── 20. runScheduled hook execution flow ──────────────────
 
 describe("runScheduled hook execution flow", () => {
-  it("calls checkHookSafety → executeHook when safe", async () => {
+  it("calls checkHookSafety → runTick when safe", async () => {
     const { kernel } = makeKernel();
     const callOrder = [];
     kernel.checkHookSafety = vi.fn(async () => { callOrder.push("checkHookSafety"); return true; });
-    kernel.executeHook = vi.fn(async () => callOrder.push("executeHook"));
+    kernel.runTick = vi.fn(async () => callOrder.push("runTick"));
     kernel.runFallbackSession = vi.fn(async () => callOrder.push("fallback"));
 
     await kernel.runScheduled();
 
-    expect(callOrder).toEqual(["checkHookSafety", "executeHook"]);
+    expect(callOrder).toEqual(["checkHookSafety", "runTick"]);
     expect(kernel.runFallbackSession).not.toHaveBeenCalled();
   });
 
   it("falls back to runFallbackSession() when checkHookSafety returns false", async () => {
     const { kernel } = makeKernel();
     kernel.checkHookSafety = vi.fn(async () => false);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
     kernel.runFallbackSession = vi.fn(async () => {});
 
     await kernel.runScheduled();
 
-    expect(kernel.executeHook).not.toHaveBeenCalled();
+    expect(kernel.runTick).not.toHaveBeenCalled();
     expect(kernel.runFallbackSession).toHaveBeenCalled();
   });
 
   it("writes active session marker before executing", async () => {
     const { kernel, env } = makeKernel();
     kernel.checkHookSafety = vi.fn(async () => true);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
 
     await kernel.runScheduled();
 
-    const markerPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:active_session");
+    const markerPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:active_execution");
     expect(markerPut).toBeTruthy();
     const marker = JSON.parse(markerPut[1]);
-    expect(marker.id).toBe(kernel.sessionId);
+    expect(marker.id).toBe(kernel.executionId);
     expect(marker.started_at).toBeTruthy();
   });
 });
@@ -2291,7 +2291,7 @@ describe("sealed namespace", () => {
   describe("kvWriteGated blocks sealed: keys", () => {
     it("blocks writes to sealed: keys", async () => {
       const { kernel } = makeKernel();
-      kernel.sessionId = "test_session";
+      kernel.executionId = "test_session";
       const result = await kernel.kvWriteGated(
         { op: "put", key: "sealed:quarantine:test", value: { data: 1 } }, "deep-reflect"
       );
@@ -2306,7 +2306,7 @@ describe("sealed namespace", () => {
 describe("inbound content gate", () => {
   async function setupBrainForInbound(kvInit = {}, contacts = {}) {
     const { kernel, env } = makeKernel(kvInit);
-    kernel.sessionId = "test_session";
+    kernel.executionId = "test_session";
     kernel.karma = [];
     kernel.defaults = {
       act: { model: "test-model", max_steps: 10, max_cost: 1.0 },
@@ -2600,7 +2600,7 @@ describe("rotatePatronKey", () => {
     const { kernel, env } = makeKernel({ "patron:public_key": JSON.stringify(testKey) });
     kernel.karmaRecord = vi.fn(async () => {});
     kernel.sendKernelAlert = vi.fn(async () => {});
-    kernel.sessionId = "test_session";
+    kernel.executionId = "test_session";
 
     const result = await kernel.rotatePatronKey(newKey, rotateSignature);
     expect(result.rotated).toBe(true);
@@ -2883,7 +2883,7 @@ describe("code staging", () => {
     expect(staged).toEqual({
       code: "export function execute() {}",
       staged_at: expect.any(String),
-      session_id: kernel.sessionId,
+      execution_id: kernel.executionId,
     });
   });
 
@@ -2899,7 +2899,7 @@ describe("code staging", () => {
     const pending = await kernel.kvGet("deploy:pending");
     expect(pending).toEqual({
       requested_at: expect.any(String),
-      session_id: kernel.sessionId,
+      execution_id: kernel.executionId,
     });
   });
 

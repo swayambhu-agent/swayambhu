@@ -76,7 +76,6 @@ export function makeMockK(kvInit = {}, opts = {}) {
       }
       return result;
     }),
-    getSessionCount: vi.fn(async () => opts.sessionCount || 0),
     mergeDefaults: vi.fn(async (d, o) => ({ ...d, ...o })),
     isSystemKey: vi.fn(async (key) => {
       const prefixes = [
@@ -100,7 +99,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     })),
 
     // State
-    getSessionId: vi.fn(async () => opts.sessionId || "test_session"),
+    getExecutionId: vi.fn(async () => opts.executionId || opts.sessionId || "test_execution"),
     getSessionCost: vi.fn(async () => opts.sessionCost || 0),
     getKarma: vi.fn(async () => opts.karma || []),
     getChatKarma: vi.fn(async () => []),
