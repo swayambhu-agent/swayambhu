@@ -15,21 +15,9 @@ circumstances, decide what single action to take — or do nothing.
 
 ## What makes a good action
 
-An action closes a gap identified by a desire, using available tools,
-within a single act cycle. The act agent receives your plan and
-executes it with tool calls until done.
-
-An action must be completable — the act agent must know when to stop.
-"Check unread emails and summarize them in a Google Doc" is completable.
-"Improve the agent's capabilities" is not.
-
-An action must trace to a desire. If no desire motivates it, it's
-invented work. If circumstances (events, crashes) demand a response,
-that response should still connect to a desire.
-
-**success** must be evaluable — an entailment model will judge whether
-the outcome satisfies it. "Google Doc created with email summary" works.
-"Things are better" does not.
+An action closes a desire's gap, using available tools, completable
+within a single act cycle. Success criteria must be evaluable by an
+entailment model against the outcome.
 
 ## Output
 
