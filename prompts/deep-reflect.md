@@ -42,7 +42,7 @@ Contacts may message you between sessions via chat (e.g. Slack DM). Conversation
 
 ### Timing
 
-Each `session_start` karma event includes `scheduled_at` showing when the session was scheduled. Actual start may differ due to chat-triggered advancement or patron intervention. Current session counter: {{session_counter}}.
+Each `act_start` karma event includes `scheduled_at` showing when the act session was scheduled. Actual start may differ due to chat-triggered advancement or patron intervention. Current session counter: {{session_counter}}.
 
 ### Reflect schedule
 

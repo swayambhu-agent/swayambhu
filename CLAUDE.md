@@ -196,7 +196,7 @@ They are fully immutable — the agent cannot write them.
 - Context building, summarization, digest generation
 - Session type decisions (act vs reflect, depth levels)
 - Scheduling decisions (when to run, intervals)
-- Session bookkeeping (counter, session_start karma)
+- Session bookkeeping (counter, act_start karma)
 - Tripwire/effort evaluation
 - Any logic that shapes the agent's behavior rather than enforcing safety
 

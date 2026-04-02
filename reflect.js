@@ -584,7 +584,7 @@ and do not appear in session karma. Use kv_query to read chat history if relevan
 
 ## Temporal awareness
 
-Session timing: each session_start event includes a scheduled_at field
+Session timing: each act_start event includes a scheduled_at field
 showing when this session was scheduled. Actual start time may differ due
 to chat-triggered advancement (contacts messaging you brings the next session
 forward) or patron manual intervention. Don't assume irregular intervals

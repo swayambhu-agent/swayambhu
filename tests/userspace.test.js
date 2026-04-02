@@ -108,7 +108,7 @@ describe("session with empty desires", () => {
 
     // Session completed normally
     expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "session_complete" }),
+      expect.objectContaining({ event: "act_complete" }),
     );
   });
 });

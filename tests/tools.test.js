@@ -304,7 +304,7 @@ describe("provider:wallet_balance", () => {
 // ── 5. kv_query tests ──────────────────────────────────────
 
 const SAMPLE_KARMA = [
-  { event: "session_start", session_id: "s_123", effort: "low" },
+  { event: "act_start", session_id: "s_123", effort: "low" },
   {
     event: "llm_call", step: "act_turn_0", ok: true,
     request: { model: "anthropic/claude-opus-4.6", messages: [{ role: "system", content: "long..." }] },
@@ -334,7 +334,7 @@ describe("kv_query", () => {
     const result = await kv_query.execute({ key: "karma:s_123", kv });
     // Small array returned as-is
     expect(result).toHaveLength(3);
-    expect(result[0].event).toBe("session_start");
+    expect(result[0].event).toBe("act_start");
     expect(result[1].event).toBe("llm_call");
   });
 
@@ -346,7 +346,7 @@ describe("kv_query", () => {
     });
     expect(result.type).toBe("array");
     expect(result.count).toBe(3);
-    expect(result.items[0]).toContain("session_start");
+    expect(result.items[0]).toContain("act_start");
     expect(result.items[1]).toContain("llm_call");
   });
 
