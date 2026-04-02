@@ -30,6 +30,29 @@ async function loadSamskaras(K) {
   return samskaras;
 }
 
+// ── Plan prompt vars ────────────────────────────────────────
+
+async function loadPlanVars(K, defaults) {
+  const subagents = await K.kvGet("config:subagents");
+  const skillList = await K.kvList({ prefix: "skill:", limit: 100 });
+  const skills = [];
+  for (const k of skillList.keys) {
+    if (k.name.includes(":ref")) continue;
+    const v = await K.kvGet(k.name);
+    if (v) {
+      try {
+        const parsed = typeof v === "string" ? JSON.parse(v) : v;
+        skills.push({ key: k.name, name: parsed.name, description: parsed.description });
+      } catch {}
+    }
+  }
+  return {
+    config: defaults,
+    skill_manifest: skills.length ? skills : null,
+    subagents: subagents || null,
+  };
+}
+
 // ── Circumstances builder ───────────────────────────────────
 
 function buildCircumstances(events, balances, crashData) {
@@ -81,7 +104,7 @@ async function planPhase(K, { desires, samskaras, circumstances, defaults, model
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
   const systemPrompt = planPrompt
-    ? await K.buildPrompt(planPrompt, { config: defaults })
+    ? await K.buildPrompt(planPrompt, await loadPlanVars(K, defaults))
     : "You are a planning agent. Given desires, samskaras, and circumstances, output a JSON action plan.";
 
   const userContent = [
