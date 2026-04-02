@@ -218,6 +218,15 @@ await put("session_schedule", {
   interval_seconds: readJSON("config/defaults.json").schedule?.interval_seconds || 21600,
 }, "json", "Session schedule — seeded in the past for immediate first session");
 
+// ── DR lifecycle state ────────────────────────────────────────
+
+console.log("--- DR State ---");
+await put("dr:state:1", {
+  status: "idle",
+  generation: 0,
+  consecutive_failures: 0,
+}, "json", "DR lifecycle state — idle, ready for first dispatch");
+
 // ── Secrets (local dev placeholders) ─────────────────────────
 
 console.log("--- Secrets ---");
