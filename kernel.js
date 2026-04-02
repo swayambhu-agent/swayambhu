@@ -760,7 +760,7 @@ class Kernel {
 
     // 4. Execute hook or fallback
     if (hookSafe) {
-      await this.executeHook();
+      await this.runTick();
     } else {
       await this.runFallbackSession();
     }
@@ -787,103 +787,42 @@ class Kernel {
     return false;
   }
 
-  async executeHook() {
-    let outcome = "clean";
-    try {
-      await this.runSession();
-    } catch (err) {
-      outcome = "crash";
-      await this.karmaRecord({
-        event: "hook_execution_error",
-        error: err.message,
-        stack: err.stack,
-      });
-
-      // Fall back to hardcoded minimal in same session
-      await this.runMinimalFallback();
-    }
-
-    // Update execution history
-    await this.updateExecutionOutcome(outcome);
-
-    // Clean up active execution marker
-    await this.kv.delete("kernel:active_execution");
-  }
-
-  // Session orchestration — schedule gate, infrastructure inputs, hook dispatch
-  async runSession() {
+  async runTick() {
     await this.loadEagerConfig();
     const K = this.buildKernelInterface();
+    let outcome = "clean";
 
     try {
-      // 1. Schedule gate
-      const schedule = await this.kvGet("session_schedule");
-      if (!this._isSessionDue(schedule)) {
-        if (!schedule?.next_session_after) {
-          // No valid session time — heal by writing a fallback schedule
-          const defaults = this.defaults;
-          const fallbackInterval = defaults?.schedule?.interval_seconds || 21600;
-          const fallbackTime = new Date(Date.now() + fallbackInterval * 1000).toISOString();
-          await this.kvWriteSafe("session_schedule", { ...schedule, next_session_after: fallbackTime, interval_seconds: fallbackInterval });
-          return { skipped: true, reason: "not_time_yet", healed: true };
-        }
-        return { skipped: true, reason: "not_time_yet" };
-      }
-
-      // 2. Infrastructure inputs
+      // Infrastructure inputs
       const crashData = await this._detectCrash();
       const balances = await this.checkBalance({});
       const { actContext: events } = await this.drainEvents(this._eventHandlers);
 
-      // 3. Session start bookkeeping
-      const count = await this.getSessionCount();
-      await this.kvWriteSafe("session_counter", count + 1);
-      const sessionIds = await this.kvGet("cache:session_ids") || [];
-      sessionIds.push(this.executionId);
-      await this.kvWriteSafe("cache:session_ids", sessionIds);
-
-      await this.karmaRecord({
-        event: "session_start",
-        session_id: this.executionId,
-        session_number: count + 1,
-        scheduled_at: schedule?.next_session_after || null,
-        crash_detected: !!crashData,
-        balances,
-      });
-
-      // 4. Hand everything to the session hook
-      const { run } = this.HOOKS.session || {};
-      if (!run) throw new Error("No HOOKS.session.run");
-      await run(K, { crashData, balances, events, schedule });
-
-      // 5. Post-session bookkeeping
-      await this._writeExecutionHealth("clean");
-      await this.updateExecutionOutcome("clean");
-
-      return { ok: true };
+      // Hand to userspace — one call, userspace decides everything
+      const { tick } = this.HOOKS;
+      if (!tick?.run) throw new Error("No HOOKS.tick.run");
+      await tick.run(K, { crashData, balances, events });
 
     } catch (err) {
+      outcome = "crash";
       await this.karmaRecord({
         event: "fatal_error",
         error: err.message,
         stack: err.stack,
       });
-      await this._writeExecutionHealth("error");
-      return { ok: false, error: err.message };
     }
-  }
 
-  _isSessionDue(schedule) {
-    const nextSession = schedule?.next_session_after;
-    if (!nextSession) return false;
-    return Date.now() >= new Date(nextSession).getTime();
+    // Always record execution outcome and release lock
+    await this._writeExecutionHealth(outcome);
+    await this.updateExecutionOutcome(outcome);
+    await this.kv.delete("kernel:active_execution");
   }
 
   // ── Crash detection ───────────────────────────────────────
 
   async _detectCrash() {
     // The active_execution marker is always the current execution at this point
-    // (written by runScheduled before runSession). Crash detection for dead
+    // (written by runScheduled before runTick). Crash detection for dead
     // executions is now handled in runScheduled's lock check, which records
     // killed executions in kernel:last_executions before we get here.
     // This method now just checks if a killed execution was recorded.
@@ -1929,11 +1868,6 @@ class Kernel {
       }
     }
     return merged;
-  }
-
-  async getSessionCount() {
-    const counter = await this.kvGet("session_counter");
-    return counter || 0;
   }
 
   buildPrompt(template, vars) {
