@@ -24,7 +24,7 @@ async function loadSamskaraManifest(K) {
 
 export async function executeReflect(K, state, step) {
   const { defaults } = state;
-  const sessionId = await K.getSessionId();
+  const sessionId = await K.getExecutionId();
 
   const reflectPrompt = await K.kvGet("prompt:reflect");
   const proposals = [];
@@ -32,7 +32,7 @@ export async function executeReflect(K, state, step) {
   const systemKeyPatterns = await K.getSystemKeyPatterns();
   const samskara_manifest = await loadSamskaraManifest(K);
 
-  const sessionCounter = await K.getSessionCount();
+  const sessionCounter = (await K.kvGet("session_counter")) || 0;
   const systemPrompt = await K.buildPrompt(
     reflectPrompt || defaultReflectPrompt(),
     { systemKeyPatterns, samskara_manifest, session_counter: sessionCounter }
@@ -198,7 +198,7 @@ export async function executeReflect(K, state, step) {
 
 export async function runReflectInWorker(K, state, depth, context) {
   const { defaults } = state;
-  const sessionId = await K.getSessionId();
+  const sessionId = await K.getExecutionId();
 
   const prompt = await loadReflectPrompt(K, state, depth);
   const initialCtx = await gatherReflectContext(K, state, depth, context);
@@ -332,7 +332,7 @@ export async function gatherReflectContext(K, state, depth, context) {
   // Reflect schedule — so deep reflect knows when it last ran and when next is due
   if (depth >= 1) {
     const maxReflectDepth = defaults?.execution?.max_reflect_depth || 1;
-    const sessionCount = await K.getSessionCount();
+    const sessionCount = (await K.kvGet("session_counter")) || 0;
     const scheduleInfo = {};
     for (let d = 1; d <= maxReflectDepth; d++) {
       const sched = await K.kvGet(`reflect:schedule:${d}`);
@@ -382,7 +382,7 @@ export async function gatherReflectContext(K, state, depth, context) {
 }
 
 export async function applyReflectOutput(K, state, depth, output, context) {
-  const sessionId = await K.getSessionId();
+  const sessionId = await K.getExecutionId();
 
   // 0. Detect parse failure — preserve previous last_reflect state
   if (output.raw !== undefined) {
@@ -407,7 +407,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     await K.karmaRecord({ event: "reflect_parse_error", depth, raw_length: output.raw?.length });
     // Still update the schedule so a failed DR doesn't immediately re-trigger
     if (depth >= 1) {
-      const sessionCount = await K.getSessionCount();
+      const sessionCount = (await K.kvGet("session_counter")) || 0;
       const prevSchedule = await K.kvGet(`reflect:schedule:${depth}`) || {};
       await K.kvWriteSafe(`reflect:schedule:${depth}`, {
         ...prevSchedule,
@@ -450,7 +450,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   // 4. Schedule
   const schedule = output.next_reflect || output.next_deep_reflect;
   if (schedule) {
-    const sessionCount = await K.getSessionCount();
+    const sessionCount = (await K.kvGet("session_counter")) || 0;
     await K.kvWriteSafe(`reflect:schedule:${depth}`, {
       ...schedule,
       last_reflect: new Date().toISOString(),

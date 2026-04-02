@@ -106,8 +106,7 @@ export async function writeSessionResults(K, config, { reflectRan = true } = {})
       next_session_after: new Date(Date.now() + intervalSeconds * 1000).toISOString(),
     });
   }
-  // Note: session_counter, cache:session_ids, and karma_summary are now
-  // written by kernel.js runScheduled() — runs for both act and deep reflect.
+  // Note: session_counter and cache:session_ids are managed by userspace actCycle.
 }
 
 // ── Karma summarization ─────────────────────────────────────────
@@ -161,10 +160,10 @@ export function summarizeKarma(karma) {
 // ── Crash detection (K-based, for backward compatibility with tests) ──
 
 export async function detectCrash(K) {
-  const stale = await K.kvGet("kernel:active_session");
+  const stale = await K.kvGet("kernel:active_execution");
   if (!stale) return null;
 
-  const currentId = await K.getSessionId();
+  const currentId = await K.getExecutionId();
   if (stale === currentId) return null;
 
   const deadKarma = await K.kvGet(`karma:${stale}`);
