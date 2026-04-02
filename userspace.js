@@ -463,6 +463,7 @@ async function actCycle(K, { crashData, balances, events }) {
 
 async function drCycle(K) {
   const defaults = await K.getDefaults();
+  const sessionCount = (await K.kvGet("session_counter")) || 0;
   const state = await K.kvGet("dr:state:1") || {
     status: "idle", generation: 0, consecutive_failures: 0,
   };
@@ -475,7 +476,7 @@ async function drCycle(K) {
       state.failed_at = new Date().toISOString();
       state.failure_reason = `TTL expired after ${Math.round(age)} minutes`;
       state.consecutive_failures = (state.consecutive_failures || 0) + 1;
-      state.last_failure_session = await K.getSessionCount();
+      state.last_failure_session = sessionCount;
       await updateJobRecord(K, state.job_id, "expired");
       await K.kvWriteSafe("dr:state:1", state);
       await K.karmaRecord({ event: "dr_expired", job_id: state.job_id, age_minutes: Math.round(age) });
@@ -495,7 +496,7 @@ async function drCycle(K) {
       state.failed_at = new Date().toISOString();
       state.failure_reason = result.error || "non-zero exit code";
       state.consecutive_failures = (state.consecutive_failures || 0) + 1;
-      state.last_failure_session = await K.getSessionCount();
+      state.last_failure_session = sessionCount;
       await updateJobRecord(K, state.job_id, "failed");
       await K.kvWriteSafe("dr:state:1", state);
       await K.karmaRecord({ event: "dr_failed", job_id: state.job_id, error: result.error });
@@ -509,7 +510,7 @@ async function drCycle(K) {
       state.status = "failed";
       state.failure_reason = "result missing from KV";
       state.consecutive_failures = (state.consecutive_failures || 0) + 1;
-      state.last_failure_session = await K.getSessionCount();
+      state.last_failure_session = sessionCount;
       await K.kvWriteSafe("dr:state:1", state);
       return;
     }
@@ -518,8 +519,8 @@ async function drCycle(K) {
 
     state.status = "idle";
     state.applied_at = new Date().toISOString();
-    state.last_applied_session = await K.getSessionCount();
-    state.last_session_id = await K.getSessionId();
+    state.last_applied_session = sessionCount;
+    state.last_execution_id = await K.getExecutionId();
     state.consecutive_failures = 0;
     state.last_failure_session = null;
 
@@ -537,7 +538,6 @@ async function drCycle(K) {
 
   if (state.status === "failed") {
     const backoff = Math.min(20, Math.pow(2, state.consecutive_failures || 1));
-    const sessionCount = await K.getSessionCount();
     if (state.last_failure_session && sessionCount - state.last_failure_session < backoff) return;
 
     state.status = "idle";
@@ -554,7 +554,7 @@ async function drCycle(K) {
       state.failed_at = new Date().toISOString();
       state.failure_reason = "dispatch failed";
       state.consecutive_failures = (state.consecutive_failures || 0) + 1;
-      state.last_failure_session = await K.getSessionCount();
+      state.last_failure_session = sessionCount;
       await K.kvWriteSafe("dr:state:1", state);
       await K.karmaRecord({ event: "dr_dispatch_failed" });
       return;
@@ -576,7 +576,7 @@ async function drCycle(K) {
 
 async function isDrDue(K, state) {
   if (!state.generation) return true;
-  const sessionCount = await K.getSessionCount();
+  const sessionCount = (await K.kvGet("session_counter")) || 0;
   if (state.next_due_session && sessionCount >= state.next_due_session) return true;
   if (state.next_due_date && new Date() >= new Date(state.next_due_date)) return true;
   return false;
@@ -658,7 +658,7 @@ async function pollJobResult(K, state, defaults) {
 }
 
 async function applyDrResults(K, state, output) {
-  const sessionId = await K.getSessionId();
+  const executionId = await K.getExecutionId();
 
   const ops = (output.kv_operations || []).filter(op =>
     op.key?.startsWith("samskara:") || op.key?.startsWith("desire:")
@@ -674,11 +674,11 @@ async function applyDrResults(K, state, output) {
     await K.karmaRecord({ event: "dr_apply_blocked", blocked, applied: ops.length - blocked.length });
   }
 
-  await K.kvWriteSafe(`reflect:1:${sessionId}`, {
+  await K.kvWriteSafe(`reflect:1:${executionId}`, {
     reflection: output.reflection,
     note_to_future_self: output.note_to_future_self,
     depth: 1,
-    session_id: sessionId,
+    session_id: executionId,
     timestamp: new Date().toISOString(),
     from_dr_generation: state.generation,
   });
@@ -687,7 +687,7 @@ async function applyDrResults(K, state, output) {
     session_summary: output.reflection,
     was_deep_reflect: true,
     depth: 1,
-    session_id: sessionId,
+    session_id: executionId,
   });
 }
 
