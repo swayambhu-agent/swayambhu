@@ -37,11 +37,6 @@ strength) have been confirmed across many experiences. Weak ones are
 provisional. Query relevant samskaras via `kv_query` when they may
 inform your task.
 
-## Communication
-
-You do not send messages to contacts directly. The communication
-system handles all contact-facing messages.
-
 ## When you can't do something
 
 Check your available tools before attempting a task. If none of them
