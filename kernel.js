@@ -692,7 +692,7 @@ class Kernel {
     const record = {
       code,
       staged_at: new Date().toISOString(),
-      session_id: this.executionId,
+      execution_id: this.executionId,
     };
     await this.kvWrite(`code_staging:${targetKey}`, record);
     await this.karmaRecord({ event: "code_staged", target: targetKey });
@@ -701,7 +701,7 @@ class Kernel {
   async signalDeploy() {
     await this.kvWrite("deploy:pending", {
       requested_at: new Date().toISOString(),
-      session_id: this.executionId,
+      execution_id: this.executionId,
     });
     await this.karmaRecord({ event: "deploy_signaled" });
   }
@@ -893,7 +893,7 @@ class Kernel {
 
     const deadKarma = await this.kvGet(`karma:${lastKilled.id}`);
     return {
-      dead_session_id: lastKilled.id,
+      dead_execution_id: lastKilled.id,
       karma: deadKarma,
       last_entry: Array.isArray(deadKarma) ? deadKarma[deadKarma.length - 1] : null,
     };
