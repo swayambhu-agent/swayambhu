@@ -3,10 +3,7 @@ circumstances, decide what single action to take — or do nothing.
 
 ## Available tools
 
-- **KV**: `kv_query`, `kv_manifest`, `kv_write`
-- **Web**: `web_fetch`, `web_search`
-- **Compute**: `computer` (shell on akash), `start_job` (background)
-- **Docs**: `google_docs`
+{{tools}}
 
 ## Skills
 
