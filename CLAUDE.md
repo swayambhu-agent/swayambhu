@@ -125,7 +125,7 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 
 | File | Role | Mutable? |
 |------|------|----------|
-| `kernel.js` | Safety gates, execution engine, session infrastructure (~1914 LOC) | No (governor enforces) |
+| `kernel.js` | Safety gates, tick-based execution engine, infrastructure primitives | No (governor enforces) |
 | `userspace.js` | Cognitive policy — act cycle, DR dispatch, schedule | Yes (via code staging) |
 | `act.js` | Act library — prompt rendering, tool defs, context formatting | Yes (via code staging) |
 | `eval.js` | Three-tier eval pipeline (embeddings → NLI → LLM fallback) | Yes (via code staging) |
@@ -139,9 +139,10 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 
 **Deep-reflect** dispatches as an async CC analysis job on akash (via `start_job`
 tool). DR lifecycle is managed by an independent state machine on `dr:state:1`
-(idle → dispatched → completed → applied → idle). `drCycle` polls akash for
-completion — no callbacks. Results are applied to `samskara:*` and `desire:*` keys.
-The M/D operator prompt is stored as `prompt:deep_reflect`.
+(idle → dispatched → completed → applied → idle). `drCycle` runs on every tick
+independently of the session schedule, polling akash for completion — no callbacks.
+Results are applied to `samskara:*` and `desire:*` keys. The M/D operator prompt
+is stored as `prompt:deep_reflect`.
 
 ### Kernel vs policy boundary
 
@@ -160,18 +161,19 @@ cognitive architecture can build on.
 | Event bus | `emitEvent` (write events), `drainEvents` (read + process + dead-letter) |
 | Code staging | `stageCode(targetKey, code)`, `signalDeploy()` |
 | Safety | Crash detection/recovery, sealed key filtering, communication gating |
-| Bookkeeping | `karmaRecord`, `getSessionCount`, `getSessionId`, `getSessionCost` |
+| Bookkeeping | `karmaRecord`, `getSessionId`, `getSessionCost` |
 | Config | `getDefaults`, `getModelsConfig`, `getDharma`, `getPrinciples` |
 
-**Session dispatch:** The kernel's `runSession()` is 5 steps:
-1. Schedule gate — is it time to run?
-2. Infrastructure inputs — crash data, balances, drained events
-3. Bookkeeping — session counter, karma
-4. **Hand to userspace** — `HOOKS.session.run(K, { crashData, balances, events, schedule })`
-5. Post-session — health record, outcome history
+**Tick dispatch:** The kernel's `runTick()` calls userspace on every cron tick:
+1. Load config (dharma, principles, key tiers, models)
+2. Infrastructure inputs — crash detection, balances, drained events
+3. **Hand to userspace** — `HOOKS.tick.run(K, { crashData, balances, events })`
+4. Record execution outcome (clean/crash)
+5. Release execution lock
 
-Userspace decides everything: what type of session to run, what context
-to load, how to structure the work. The kernel doesn't know or care.
+Userspace decides everything: whether to run an act session (schedule-gated),
+whether to poll DR (every tick), what context to load, how to structure the
+work. The kernel doesn't know or care.
 
 **KV write tiers** (loaded from `kernel:key_tiers` at boot, falls back
 to `DEFAULT_KEY_TIERS`):
@@ -194,6 +196,7 @@ They are fully immutable — the agent cannot write them.
 - Context building, summarization, digest generation
 - Session type decisions (act vs reflect, depth levels)
 - Scheduling decisions (when to run, intervals)
+- Session bookkeeping (counter, session_start karma)
 - Tripwire/effort evaluation
 - Any logic that shapes the agent's behavior rather than enforcing safety
 
