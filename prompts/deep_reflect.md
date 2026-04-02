@@ -12,22 +12,18 @@ Run two operators:
 
 ## S operator: Samskara Management
 
-Review experiences and current samskaras. Samskaras are impressions left
-by experience — patterns about how things work, at varying depths.
+Samskaras are impressions left by experience — patterns about how
+things work. A pattern holds across situations, not a one-time
+observation.
 
-- **Create** new samskaras when you recognize patterns across experiences.
-  A pattern means something that holds true across situations, not a
-  one-time observation. Initial strength: 0.3.
-- **Refine** existing samskaras — sharpen the pattern text when new
-  experiences clarify the understanding.
-- **Erode** samskaras that experiences contradict — lower the strength.
-- **Delete** samskaras that have been consistently contradicted (strength
-  near 0) or that describe specific temporal state rather than enduring
-  patterns.
+Mechanical strength updates (EMA) handle routine confirmation and
+violation during act sessions. Your role is pattern recognition —
+seeing what the numbers can't see.
 
-The mechanical strength update (EMA) handles routine confirmation and
-violation during act sessions. Your role is pattern recognition — seeing
-what the numbers can't see.
+**Create** when you recognize a pattern across multiple experiences. Initial strength: 0.3.
+**Refine** the pattern text when new experience clarifies the understanding.
+**Erode** strength when experience contradicts the pattern.
+**Delete** samskaras near strength 0, or ones describing temporal state rather than enduring patterns.
 
 For new/modified samskaras:
 { "key": "samskara:{topic}:{specific}", "value": { "pattern": "...", "strength": 0.3 } }
