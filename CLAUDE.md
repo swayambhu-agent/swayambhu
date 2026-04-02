@@ -75,7 +75,7 @@ npm test          # vitest — all unit tests, no network, no Workers runtime
 
 Tests cover:
 - `tests/kernel.test.js` — kernel logic, safety gates, tool dispatch, key tiers, code staging
-- `tests/session.test.js` — session flow, schedule gating, crash detection
+- `tests/userspace.test.js` — session flow, schedule gating, crash detection
 - `tests/tools.test.js` — tool/provider execute(), module structure
 - `tests/chat.test.js` — chat system
 - `tests/governor.test.js` — index.js generation, builder utilities
@@ -126,7 +126,7 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 | File | Role | Mutable? |
 |------|------|----------|
 | `kernel.js` | Safety gates, execution engine, session infrastructure (~1914 LOC) | No (governor enforces) |
-| `session.js` | Session hook — plan→act→eval→review cycle, cold start | Yes (via code staging) |
+| `userspace.js` | Cognitive policy — act cycle, DR dispatch, schedule | Yes (via code staging) |
 | `act.js` | Act library — prompt rendering, tool defs, context formatting | Yes (via code staging) |
 | `eval.js` | Three-tier eval pipeline (embeddings → NLI → LLM fallback) | Yes (via code staging) |
 | `memory.js` | Memory utilities — samskara operators, experience selection, vector math | Yes (via code staging) |
