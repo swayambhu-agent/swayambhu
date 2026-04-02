@@ -1594,6 +1594,146 @@ describe("start_job", () => {
     expect(result.ok).toBe(true);
     expect(result.context_files).toBe(3); // config/defaults.json, karma/s1.json, prompt.txt
   });
+
+  it("generates valid inner script for cc_analysis (no && contamination)", async () => {
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        expect(command).toContain("base64 -d | sh");
+        expect(command).not.toMatch(/sh -c '[^']*&&/);
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test prompt",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, cc_model: "opus", path_dirs: ["/home/swayambhu/.local/bin"] } },
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("injects path_dirs into inner script", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, path_dirs: ["/opt/bin", "/usr/local/custom"] } },
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    expect(b64Match).toBeTruthy();
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("export PATH=/opt/bin:/usr/local/custom${PATH:+:$PATH}");
+  });
+
+  it("escapes cc_model with quotes in inner script", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, cc_model: "model'injection" } },
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("--model 'model'\\''injection'");
+    expect(innerScript).not.toContain("--model model'injection");
+  });
+
+  it("filters invalid path_dirs entries", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, path_dirs: ["/valid/path", "not-absolute", "/inject;rm -rf /", 42, "/ok"] } },
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("export PATH=/valid/path:/ok${PATH:+:$PATH}");
+    expect(innerScript).not.toContain("not-absolute");
+    expect(innerScript).not.toContain("inject");
+  });
+
+  it("wraps custom command in subshell with absolute exit_code path", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "custom",
+      command: "python3 analyze.py",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv, config,
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("(python3 analyze.py)");
+    expect(innerScript).toMatch(/echo \$\? > '\/tmp\/jobs\/[^']+\/exit_code'/);
+  });
+
+  it("handles non-array path_dirs gracefully", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, path_dirs: "/not/an/array" } },
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).not.toContain("export PATH");
+  });
 });
 
 // ── collect_jobs ─────────────────────────────────────────────
