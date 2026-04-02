@@ -161,7 +161,7 @@ cognitive architecture can build on.
 | Event bus | `emitEvent` (write events), `drainEvents` (read + process + dead-letter) |
 | Code staging | `stageCode(targetKey, code)`, `signalDeploy()` |
 | Safety | Crash detection/recovery, sealed key filtering, communication gating |
-| Bookkeeping | `karmaRecord`, `getSessionId`, `getSessionCost` |
+| Bookkeeping | `karmaRecord`, `getExecutionId`, `getSessionCost` |
 | Config | `getDefaults`, `getModelsConfig`, `getDharma`, `getPrinciples` |
 
 **Tick dispatch:** The kernel's `runTick()` calls userspace on every cron tick:
