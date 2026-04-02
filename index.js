@@ -58,7 +58,7 @@ const PROVIDERS = {
 
 const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
 
-const HOOKS = { session };
+const HOOKS = { tick: session };
 
 const EVENT_HANDLERS = {
   communicationDelivery: async (K, event) => {
