@@ -2,6 +2,44 @@
 
 Bugs identified but intentionally left unfixed (e.g. waiting to see if the agent catches them) or deferred.
 
+## DR apply can be partial (no KV transactions)
+
+**Status:** Accepted risk — KV limitation, no clean fix
+
+**Symptom:** If `applyDrResults` writes 3 of 5 kv_operations and the
+4th fails (e.g. kvWriteGated rejects it), the first 3 writes are already
+committed. There's no rollback. The apply is logged as partially failed.
+
+**Root cause:** Cloudflare KV has no transaction/batch-write primitive.
+Each `kvWriteGated` call is independent. Partial application is an
+inherent limitation of the storage layer.
+
+**Mitigation:** Log both applied and blocked op counts in karma. The
+agent's next DR will see the partial state and can correct it. Full-value
+writes (not patches) mean re-applying the same op is idempotent.
+
+**Identified by:** Codex adversarial review (reviews 2-4).
+
+## Theoretical double-dispatch race on dr:state:1
+
+**Status:** Accepted risk — extremely unlikely with Cloudflare Workers
+
+**Symptom:** Two overlapping `run()` invocations could both read
+`dr:state:1` as `idle` and both dispatch a DR job.
+
+**Root cause:** `kvWriteSafe` is unconditional put, not compare-and-swap.
+The kernel's `active_session` lock is also read-then-write. No atomic
+primitives available.
+
+**Mitigation:** Cloudflare Workers cron serializes invocations at the
+platform level. For this race to occur, two Workers instances would
+need to hit the same cron within the KV propagation window (ms). The
+state machine's status field provides a second line of defense — a
+double-dispatch would see `dispatched` on the second read and do nothing.
+The `start_job` global concurrency check provides a third line.
+
+**Identified by:** Codex adversarial review (reviews 1, 2, 4).
+
 ## Computer tool blocked by Cloudflare Access (403)
 
 **Status:** Unfixed — infrastructure issue, needs CF dashboard investigation

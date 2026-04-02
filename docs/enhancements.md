@@ -44,6 +44,28 @@ Tracked ideas for future improvement. Not prioritized — just captured.
 
   **Tier 3 — Breaking interface changes:** The agent can't self-fix because a kernel interface it depends on has changed. Requires migration by an authorized support agent. Support agent takes a KV snapshot, understands both old and new interfaces, performs the migration, patron approves the result. This is a paid service — the more an agent has diverged through self-modification, the more custom the migration, the more valuable the work. Support agents that have migrated many agents build expertise and efficiency. This is the natural revenue model: open source software, paid technical support.
 
+## Deep Reflect
+
+- **DR context enrichment**: The current DR dispatch sends raw KV prefixes
+  (`samskara:*`, `experience:*`, `desire:*`, `principle:*`, `config:defaults`,
+  `reflect:1:*`, `last_reflect`). The old in-worker path had richer context
+  via `gatherReflectContext` — patron state, communication health, session
+  health, selected experiences. Consider adding more context keys to the
+  dispatch or building a pre-computed context summary key that drCycle writes
+  before dispatching. The v2 S/D prompt is intentionally narrower, but richer
+  context could improve DR quality.
+
+- **KV atomic batch write**: A `kvBatchWrite` kernel primitive that writes
+  multiple keys atomically (all-or-nothing) would eliminate the partial-apply
+  risk in DR result application. Cloudflare KV doesn't support this natively,
+  but a soft implementation could: write all values to staging keys, then
+  rename atomically (still not truly atomic, but reduces the window).
+
+- **DR depth > 1**: The current spec and implementation only handle depth 1.
+  Higher depths (depth 2 reflects on depth 1 outputs) are designed in the
+  cognitive architecture spec but not implemented. Each depth would get its
+  own `dr:state:N` record with the same state machine.
+
 ## Tool Management
 
 - **First-class tool add/remove operations**: Currently adding or removing a tool requires updating multiple KV keys in sync (`tool:*:code`, `tool:*:meta`, `config:tool_registry`, `kernel:tool_grants`, and the governor rebuild). There's no atomic operation for this. A kernel-level `registerTool` / `deregisterTool` method would handle all keys atomically — update the registry, write/delete code+meta, trigger a governor rebuild. The agent could invoke these via `proposal_requests` in deep reflect, and the patron could use them via a script or dashboard action.
