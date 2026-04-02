@@ -166,10 +166,10 @@ cognitive architecture can build on.
 1. Schedule gate — is it time to run?
 2. Infrastructure inputs — crash data, balances, drained events
 3. Bookkeeping — session counter, karma
-4. **Hand to hook** — `HOOKS.session.run(K, { crashData, balances, events, schedule })`
+4. **Hand to userspace** — `HOOKS.session.run(K, { crashData, balances, events, schedule })`
 5. Post-session — health record, outcome history
 
-The hook decides everything: what type of session to run, what context
+Userspace decides everything: what type of session to run, what context
 to load, how to structure the work. The kernel doesn't know or care.
 
 **KV write tiers** (loaded from `kernel:key_tiers` at boot, falls back
@@ -177,7 +177,7 @@ to `DEFAULT_KEY_TIERS`):
 
 | Tier | Example keys | Rule |
 |------|-------------|------|
-| Immutable | `dharma`, `principle:*`, `patron:public_key` | Never writable — not by agent, not by hooks |
+| Immutable | `dharma`, `principle:*`, `patron:public_key` | Never writable — not by agent, not by userspace |
 | Kernel-only | `karma:*`, `sealed:*`, `event:*`, `kernel:*` | Only kernel internals can write |
 | Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*`, `desire:*`, `samskara:*` | Writable via `kvWriteGated` with privileged context flag |
 | Code keys | `tool:*:code`, `hook:*:code` | Must go through `K.stageCode()` → governor deploys |
@@ -196,7 +196,7 @@ They are fully immutable — the agent cannot write them.
 - Tripwire/effort evaluation
 - Any logic that shapes the agent's behavior rather than enforcing safety
 
-**Rule of thumb:** if it's about *what* the agent does → policy (hooks).
+**Rule of thumb:** if it's about *what* the agent does → userspace.
 If it's about *what the agent cannot do* → kernel.
 
 **Governor Worker** (`governor/`):
@@ -231,7 +231,7 @@ Code changes use two kernel primitives:
 4. Governor tracks version history for rollback
 
 The kernel validates that only code keys (`tool:*:code`, `hook:*:code`,
-`provider:*:code`, `channel:*:code`) can be staged. The hook decides
+`provider:*:code`, `channel:*:code`) can be staged. Userspace decides
 *when* to stage and deploy — the kernel just provides the primitives.
 
 Non-code changes (config, prompts, insights) go through `kvWriteGated`

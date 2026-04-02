@@ -69,21 +69,21 @@ static MAX_PRIVILEGED_WRITES = 50;
 
 1. **Dharma immutability** — `kvWrite()`, `kvWriteSafe()`, and `kvWriteGated()` all reject writes to `"dharma"` and keys in `IMMUTABLE_KEYS`.
 
-2. **Dharma + principles injection** — `callLLM()` prepends dharma, yamas, and niyamas to every system prompt before the hook-provided content. No hook or prompt modification can bypass this (`kernel.js:1416-1440`).
+2. **Dharma + principles injection** — `callLLM()` prepends dharma, yamas, and niyamas to every system prompt before the userspace-provided content. No userspace or prompt modification can bypass this (`kernel.js:1416-1440`).
 
 3. **Three-tier KV write gates:**
    - `kvWrite(key, value, metadata)` — raw write, immutability check only. Internal kernel use.
    - `kvWriteSafe(key, value, metadata)` — standard gated write, blocks `dharma`, kernel-only keys, and system keys. Used for agent-created data.
    - `kvDeleteSafe(key)` — same blocks as `kvWriteSafe`.
-   - `kvWriteGated(op, context)` — context-based permissions for agent-originated writes via `kv_operations`. In "act" and "reflect" contexts: can write agent keys + contacts. In "deep-reflect" context: can also write system keys (config, prompts, wisdom, skills). Yama/niyama require deliberation. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact_platform:*` keys (patron-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on hook writes. Always returns `{ok: true}` or `{ok: false, error: "reason"}` — no silent failures. Blocked writes are collected and recorded as a `kv_writes_blocked` karma event.
+   - `kvWriteGated(op, context)` — context-based permissions for agent-originated writes via `kv_operations`. In "act" and "reflect" contexts: can write agent keys + contacts. In "deep-reflect" context: can also write system keys (config, prompts, wisdom, skills). Yama/niyama require deliberation. Blocks `dharma`, `IMMUTABLE_KEYS`, kernel-only keys, and `contact_platform:*` keys (patron-only). Snapshots old values to karma, enforces per-session rate limit (50 writes), writes audit trails for principle keys, alerts on userspace writes. Always returns `{ok: true}` or `{ok: false, error: "reason"}` — no silent failures. Blocked writes are collected and recorded as a `kv_writes_blocked` karma event.
 
 4. **Communication gate** — when providers declare `communication.recipient_type: "person"`, the kernel's `executeAdapter()` resolves the recipient via `resolveRecipient()` and checks their contact record. Unapproved contacts result in a blocked call with a `adapter_contact_blocked` karma event.
 
-5. **Inbound content gate** — tools with an `inbound` grant in `kernel:tool_grants` return external content. The kernel redacts content from unknown senders (no matching contact) and quarantines it under `sealed:*` keys (`kernel.js:1722-1751`). Sealed keys are unreadable by tools and hooks.
+5. **Inbound content gate** — tools with an `inbound` grant in `kernel:tool_grants` return external content. The kernel redacts content from unknown senders (no matching contact) and quarantines it under `sealed:*` keys (`kernel.js:1722-1751`). Sealed keys are unreadable by tools; userspace can read them via `K.kvGet()`.
 
 6. **Tool security grants** — `kernel:tool_grants` (`kernel.js:318`) is loaded at boot and controls which env secrets each tool can access, which tools pass through the communication/inbound gates, and which provider adapter each tool receives. Because it's a `kernel:*` key, the agent cannot modify it. Tool source files declare all fields in `export const meta`, but the seed script splits them: grant fields go to `kernel:tool_grants`, operational fields go to `tool:{name}:meta`.
 
-7. **Hook safety tripwire** — `checkHookSafety()` (`kernel.js:934`) checks `kernel:last_sessions`. If the last 3 outcomes are all `"crash"` or `"killed"`, the kernel deletes the current hook modules and attempts to restore from `kernel:last_good_hook`. If no good version exists, it runs a hardcoded minimal fallback.
+7. **Userspace safety tripwire** — `checkHookSafety()` (`kernel.js:934`) checks `kernel:last_sessions`. If the last 3 outcomes are all `"crash"` or `"killed"`, the kernel deletes the current userspace modules and attempts to restore from `kernel:last_good_hook`. If no good version exists, it runs a hardcoded minimal fallback.
 
 8. **Karma log** — `karmaRecord()` appends to an in-memory array and persists to `karma:{sessionId}` on every write. If the event is a danger signal, it also writes `last_danger`.
 
@@ -146,7 +146,7 @@ Exposes these categories of methods:
 
 **Not exposed:** `sendKernelAlert()` — kernel-internal only.
 
-`loadKeys(keys)` filters out `sealed:*` keys before loading — hooks cannot read sealed data even by passing keys explicitly.
+`loadKeys(keys)` filters out `sealed:*` keys before loading — userspace cannot read sealed data via `loadKeys` even by passing keys explicitly (use `K.kvGet()` directly for that).
 
 ### How tool execution works
 

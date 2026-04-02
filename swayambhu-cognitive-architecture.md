@@ -440,12 +440,12 @@ The bootstrap sequence: the first session wakes with empty samskaras, producing 
 
 ---
 
-## 10. Kernel / Hook Boundary
+## 10. Kernel / Userspace Boundary
 
 ### 10.1 Design Principle
 
 The kernel enforces things the agent cannot be trusted to enforce on
-itself. Everything else is cognitive policy and lives in hooks. The
+itself. Everything else is cognitive policy and lives in userspace. The
 kernel is cognitive-architecture-agnostic — it does not know about
 desires, samskaras, actions, plans, reviews, or deep reflect.
 
@@ -458,22 +458,22 @@ desires, samskaras, actions, plans, reviews, or deep reflect.
 - **Safety** — crash detection/recovery, code staging/deployment, sealed keys
 - **Bookkeeping** — session counter, karma recording, session health
 
-### 10.3 What Moves to Hooks
+### 10.3 What Lives in Userspace
 
 Everything in the current kernel that encodes cognitive architecture
-knowledge moves to the session hook:
+knowledge lives in userspace:
 
-| Currently in kernel | Moves to | Reason |
+| Currently in kernel | Lives in | Reason |
 |---|---|---|
-| `ACT_RELEVANT_EVENTS` list | Hook | Hook decides which events matter |
-| `session_request:*` scanning | Hook | Old cognitive model (replaced by actions) |
-| `last_reflect` loading | Hook | Old cognitive model |
-| `reflect:schedule:*` loading | Hook | Hook manages its own scheduling |
-| `highestReflectDepthDue` check | Hook | Hook decides session type |
-| Act vs reflect decision | Hook | One hook entry point: `session.run` |
-| `evaluateTripwires` → effort | Hook | Cognitive policy |
-| `getMaxSteps`, `getReflectModel` | Hook | Cognitive policy |
-| Context building (load keys, pending requests, DM handling) | Hook | Cognitive context is hook's responsibility |
+| `ACT_RELEVANT_EVENTS` list | Userspace | Userspace decides which events matter |
+| `session_request:*` scanning | Userspace | Old cognitive model (replaced by actions) |
+| `last_reflect` loading | Userspace | Old cognitive model |
+| `reflect:schedule:*` loading | Userspace | Userspace manages its own scheduling |
+| `highestReflectDepthDue` check | Userspace | Userspace decides session type |
+| Act vs reflect decision | Userspace | One userspace entry point: `session.run` |
+| `evaluateTripwires` → effort | Userspace | Cognitive policy |
+| `getMaxSteps`, `getReflectModel` | Userspace | Cognitive policy |
+| Context building (load keys, pending requests, DM handling) | Userspace | Cognitive context is userspace's responsibility |
 | `loadYamasNiyamas()` | Replaced | Generic `loadPrinciples()` loading `principle:*` |
 | `isYamaCapable`, `isNiyamaCapable` | Removed | Principles are immutable — no capability gates needed |
 | `getYamas`, `getNiyamas` on K interface | Replaced | `getPrinciples()` |
@@ -502,9 +502,9 @@ declares which of its keys need protection by having the patron set them
 in this config. The agent cannot modify `kernel:key_tiers` (it is
 kernel-only).
 
-Protected keys are writable only when the hook passes a privileged
+Protected keys are writable only when userspace passes a privileged
 context flag. The kernel does not know what "deep-reflect" means —
-it just knows "this write was flagged as privileged by the hook."
+it just knows "this write was flagged as privileged by userspace."
 
 ### 10.5 Refactored runSession()
 
@@ -527,7 +527,7 @@ async runSession() {
   await this.kvWriteSafe("session_counter", count + 1);
   await this.karmaRecord({ event: "session_start", ... });
 
-  // 4. Hand everything to the session hook
+  // 4. Hand everything to userspace
   const { run } = this.HOOKS.session;
   await run(K, { crashData, balances, events, schedule });
 
@@ -537,7 +537,7 @@ async runSession() {
 }
 ```
 
-The hook receives the kernel interface and raw infrastructure inputs.
+Userspace receives the kernel interface and raw infrastructure inputs.
 It decides everything else: what to load, what phases to run, how to
 structure the session, whether to dispatch deep reflect as a background
 job.
@@ -545,14 +545,14 @@ job.
 ### 10.6 Deep Reflect as External Process
 
 Deep reflect does not run inside the Cloudflare Worker. It runs as a
-background job on the compute server (akash), triggered by the session
-hook when conditions are met (via the existing `start_job` tool).
+background job on the compute server (akash), triggered by userspace
+when conditions are met (via the existing `start_job` tool).
 
 This is natural because:
 - Deep reflect may run longer than Workers CPU limits allow
 - The evaluation pipeline (embeddings, NLI) runs on akash
 - Deep reflect is a different kind of process — slow, reflective, not time-sensitive
-- The session hook decides when to trigger it — the kernel doesn't know
+- Userspace decides when to trigger it — the kernel doesn't know
 
 Deep reflect reads and writes KV via API. Act sessions continue
 running normally while deep reflect works. The read/write isolation
@@ -565,8 +565,8 @@ The chat handler (`handleChat` in hook-communication.js) changes:
 - `trigger_session` tool becomes `record_event` — records the patron's
   need as an event and advances the session schedule
 - Events are infrastructure (KV entries with TTLs, drained at session start)
-- The session hook folds events into circumstances (c_t)
-- The hook decides what to do about them — the kernel doesn't know
+- Userspace folds events into circumstances (c_t)
+- Userspace decides what to do about them — the kernel doesn't know
 
 Delivery is not a special pipeline. It is a normal action precipitated
 by plan when circumstances include "work is complete, contact hasn't
@@ -578,7 +578,7 @@ appropriate channel adapter.
 
 The current kernel proposal system (~185 LOC) encodes cognitive policy:
 claims, verdicts, checks, depth-based auto-accept, predicate evaluation.
-All of this moves to hooks. The kernel retains only two primitives:
+All of this lives in userspace. The kernel retains only two primitives:
 
 ```javascript
 K.stageCode(targetKey, code)   // Store code in staging area
@@ -622,7 +622,7 @@ No special proposal observations, verdicts, or review machinery needed.
 3. **No proposal system in the kernel.** Two kernel primitives
    (`stageCode`, `signalDeploy`) replace ~185 LOC of proposal
    governance. All cognitive policy (claims, verdicts, checks)
-   moves to hooks and the samskara framework.
+   lives in userspace and the samskara framework.
 
 4. **Unified belief store.** Assumptions, insights, and wisdom collapse
    into samskaras — impressions at different depths. No separate
@@ -665,7 +665,7 @@ No special proposal observations, verdicts, or review machinery needed.
 
 7. **Kernel key tier bootstrap:** How are `kernel:key_tiers` seeded? Candidate: seed script writes them alongside principles. Patron can update via dashboard.
 
-8. **Deep reflect trigger conditions on akash:** How does the session hook decide when to dispatch deep reflect? Candidate: check experience growth and session count since last DR — all readable from KV.
+8. **Deep reflect trigger conditions on akash:** How does userspace decide when to dispatch deep reflect? Candidate: check experience growth and session count since last DR — all readable from KV.
 
 ---
 
