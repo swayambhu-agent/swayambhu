@@ -27,7 +27,7 @@ export async function executeReflect(K, state, step) {
   const sessionId = await K.getSessionId();
 
   const reflectPrompt = await K.kvGet("prompt:reflect");
-  const proposals = await K.loadProposals('proposed');
+  const proposals = [];
 
   const systemKeyPatterns = await K.getSystemKeyPatterns();
   const samskara_manifest = await loadSamskaraManifest(K);
@@ -268,7 +268,7 @@ async function dispatchDeepReflect(K, state, depth) {
   const prompt = await K.kvGet("prompt:deep_reflect");
   if (!prompt) {
     await K.karmaRecord({ event: "deep_reflect_no_prompt", depth });
-    return runReflectInWorker(K, state, depth, {});
+    return;
   }
 
   // Dispatch via start_job tool
@@ -305,9 +305,8 @@ async function dispatchDeepReflect(K, state, depth) {
       depth,
     });
   } else {
-    // Dispatch failed — fall back to in-Worker
+    // Dispatch failed — log and move on. DR only runs on akash.
     await K.karmaRecord({ event: "deep_reflect_dispatch_failed", error: result?.error });
-    return runReflectInWorker(K, state, depth, {});
   }
 }
 
@@ -315,7 +314,7 @@ export async function gatherReflectContext(K, state, depth, context) {
   const { defaults, modelsConfig } = state;
 
   const actPrompt = await K.kvGet("prompt:act");
-  const proposals = await K.loadProposals();
+  const proposals = [];
   const systemKeyPatterns = await K.getSystemKeyPatterns();
 
   const recentSessionIds = await getRelevantSessionIds(K, depth);
