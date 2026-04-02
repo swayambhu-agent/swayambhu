@@ -1,6 +1,6 @@
 // Swayambhu — Userspace (cognitive policy)
 // Entry point for all scheduled cognitive work: act cycle + DR lifecycle.
-// Called by kernel via HOOKS.session.run(K, { crashData, balances, events, schedule }).
+// Called by kernel on every cron tick via HOOKS.session.run(K, { crashData, balances, events }).
 // Mutable — the agent can propose changes to this file via the proposal system.
 
 import { evaluateAction } from './eval.js';
@@ -309,7 +309,32 @@ async function writeMemory(K, { ledger, evalResult, review, desires, samskaras, 
 
 // ── Act cycle ─────────────────────────────────────────────
 
-async function actCycle(K, { crashData, balances, events, schedule }) {
+async function actCycle(K, { crashData, balances, events }) {
+  // Schedule gate — userspace decides if it's time
+  const schedule = await K.kvGet("session_schedule");
+  if (schedule?.next_session_after) {
+    if (Date.now() < new Date(schedule.next_session_after).getTime()) {
+      return { skipped: true };
+    }
+  }
+
+  // Session bookkeeping — userspace concept
+  const sessionCount = (await K.kvGet("session_counter")) || 0;
+  await K.kvWriteSafe("session_counter", sessionCount + 1);
+
+  const sessionIds = (await K.kvGet("cache:session_ids")) || [];
+  const executionId = await K.getExecutionId();
+  sessionIds.push(executionId);
+  await K.kvWriteSafe("cache:session_ids", sessionIds);
+
+  await K.karmaRecord({
+    event: "session_start",
+    session_number: sessionCount + 1,
+    scheduled_at: schedule?.next_session_after || null,
+    crash_detected: !!crashData,
+    balances,
+  });
+
   // 1. Load config
   const defaults = await K.getDefaults();
   const modelsConfig = await K.getModelsConfig();
@@ -415,6 +440,21 @@ async function actCycle(K, { crashData, balances, events, schedule }) {
       }));
     }
   }
+
+  // Schedule next session
+  const scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
+  await K.kvWriteSafe("session_schedule", {
+    next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
+    interval_seconds: scheduleInterval,
+  });
+
+  // Session complete
+  const finalCost = await K.getSessionCost();
+  await K.karmaRecord({
+    event: "session_complete",
+    cycles_run: cyclesRun,
+    total_cost: finalCost,
+  });
 
   return { defaults, modelsConfig, desires, cyclesRun };
 }
@@ -662,40 +702,18 @@ async function updateJobRecord(K, jobId, status) {
 
 // ── Main session hook ───────────────────────────────────────
 
-export async function run(K, { crashData, balances, events, schedule }) {
-  let actResult = {};
-
-  // Independent concern 1: act cycle
+export async function run(K, { crashData, balances, events }) {
+  // Independent concern 1: act cycle (schedule-gated)
   try {
-    actResult = await actCycle(K, { crashData, balances, events, schedule });
+    await actCycle(K, { crashData, balances, events });
   } catch (e) {
     await K.karmaRecord({ event: "act_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
   }
 
-  // Independent concern 2: DR lifecycle
+  // Independent concern 2: DR lifecycle (every tick)
   try {
     await drCycle(K);
   } catch (e) {
     await K.karmaRecord({ event: "dr_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
   }
-
-  // Schedule next (always runs, even if above failed)
-  try {
-    const defaults = actResult.defaults || await K.getDefaults();
-    const scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
-    await K.kvWriteSafe("session_schedule", {
-      next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
-      interval_seconds: scheduleInterval,
-    });
-  } catch (e) {
-    await K.karmaRecord({ event: "schedule_update_error", error: e.message });
-  }
-
-  // Session complete (always fires)
-  const finalCost = await K.getSessionCost();
-  await K.karmaRecord({
-    event: "session_complete",
-    cycles_run: actResult.cyclesRun || 0,
-    total_cost: finalCost,
-  });
 }
