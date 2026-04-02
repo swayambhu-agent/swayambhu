@@ -16,7 +16,7 @@ describe("generateIndexJS", () => {
     // Imports
     expect(code).toContain("import { Kernel } from './kernel.js'");
     expect(code).toContain("import { handleChat, handleDelivery } from './hook-communication.js'");
-    expect(code).toContain("import * as session from './session.js'");
+    expect(code).toContain("import * as session from './userspace.js'");
     expect(code).toContain("import * as kv_query from './tools/kv_query.js'");
     expect(code).toContain("import * as web_fetch from './tools/web_fetch.js'");
     expect(code).toContain("import * as send_slack from './tools/send_slack.js'");
@@ -48,7 +48,7 @@ describe("generateIndexJS", () => {
     expect(code).toContain("const CHANNELS = {");
     // Should still have kernel + hook imports
     expect(code).toContain("import { Kernel } from './kernel.js'");
-    expect(code).toContain("import * as session from './session.js'");
+    expect(code).toContain("import * as session from './userspace.js'");
   });
 
   it("output is syntactically valid JS (no syntax errors)", () => {
@@ -90,7 +90,7 @@ describe("keyToFilePath", () => {
   it("maps hook code keys to root paths", () => {
     expect(keyToFilePath("hook:act:code")).toBe("act.js");
     expect(keyToFilePath("hook:reflect:code")).toBe("reflect.js");
-    expect(keyToFilePath("hook:session:code")).toBe("session.js");
+    expect(keyToFilePath("hook:session:code")).toBe("userspace.js");
   });
 
   it("returns null for non-code keys", () => {

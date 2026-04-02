@@ -26,7 +26,7 @@ vi.mock("../memory.js", () => ({
   embeddingCacheKey: vi.fn((text, model) => `embedding:mock:${model}`),
 }));
 
-import { run } from "../session.js";
+import { run } from "../userspace.js";
 import { runReflect, highestReflectDepthDue, isReflectDue, applyReflectOutput } from "../reflect.js";
 import { evaluateAction } from "../eval.js";
 import { updateSamskaraStrength } from "../memory.js";

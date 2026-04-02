@@ -7,7 +7,7 @@ import { Kernel } from './kernel.js';
 import { handleChat, handleDelivery } from './hook-communication.js';
 
 // Hook modules (mutable policy — agent can propose changes)
-import * as session from './session.js';
+import * as session from './userspace.js';
 
 // Channel adapters
 import * as slackAdapter from './channels/slack.js';

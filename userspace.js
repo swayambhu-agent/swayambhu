@@ -1,5 +1,5 @@
-// Swayambhu — Session Hook (Module 3)
-// Main session entry point: plan → act → eval → review cycle.
+// Swayambhu — Userspace (cognitive policy)
+// Entry point for all scheduled cognitive work: act cycle + DR dispatch.
 // Called by kernel via HOOKS.session.run(K, { crashData, balances, events, schedule }).
 // Mutable — the agent can propose changes to this file via the proposal system.
 

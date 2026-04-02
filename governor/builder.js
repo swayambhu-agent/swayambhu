@@ -13,7 +13,7 @@ export function keyToFilePath(key) {
   if (!key.endsWith(':code')) return null;
   if (key === 'hook:act:code') return 'act.js';
   if (key === 'hook:reflect:code') return 'reflect.js';
-  if (key === 'hook:session:code') return 'session.js';
+  if (key === 'hook:session:code') return 'userspace.js';
   if (key.startsWith('tool:')) return `tools/${keyToVarName(key)}.js`;
   if (key.startsWith('provider:')) return `providers/${keyToVarName(key)}.js`;
   if (key.startsWith('channel:')) return `channels/${keyToVarName(key)}.js`;
@@ -71,7 +71,7 @@ export async function readCodeFromKV(kv) {
   if (reflectCode) files['reflect.js'] = reflectCode;
 
   const sessionCode = await kv.get('hook:session:code', 'text');
-  if (sessionCode) files['session.js'] = sessionCode;
+  if (sessionCode) files['userspace.js'] = sessionCode;
 
   // Immutable kernel source (kernel:* — agent cannot modify)
   const kernelCode = await kv.get('kernel:source:kernel.js', 'text');
@@ -93,7 +93,7 @@ export function generateIndexJS(metadata) {
   lines.push("");
 
   // Policy hooks
-  lines.push("import * as session from './session.js';");
+  lines.push("import * as session from './userspace.js';");
   lines.push("");
 
   // Channel adapters
