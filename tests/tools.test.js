@@ -1807,6 +1807,32 @@ describe("collect_jobs", () => {
     const job = JSON.parse(kv._store.get("job:j1"));
     expect(job.status).toBe("expired");
   });
+
+  it("quotes workdir in polling commands", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1", type: "custom", status: "running",
+        created_at: new Date().toISOString(),
+        workdir: "/tmp/jobs/o'reilly", config: { ttl_minutes: 120 },
+      }),
+    });
+    const commands = [];
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        commands.push(command);
+        if (command.includes("exit_code")) return { ok: true, output: [{ data: "0\r\n" }] };
+        if (command.includes("output.json")) return { ok: true, output: [{ data: '{"result":"ok"}\r\n' }] };
+        return { ok: true, output: [] };
+      }),
+    };
+
+    await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
+
+    const exitCmd = commands.find(c => c.includes("exit_code"));
+    const outputCmd = commands.find(c => c.includes("output.json"));
+    expect(exitCmd).toContain("'/tmp/jobs/o'\\''reilly/exit_code'");
+    expect(outputCmd).toContain("'/tmp/jobs/o'\\''reilly/output.json'");
+  });
 });
 
 
