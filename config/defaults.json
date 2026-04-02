@@ -73,6 +73,7 @@
     "base_url": "https://akash.swayambhu.dev",
     "base_dir": "/home/swayambhu/jobs",
     "cc_model": "opus",
+    "path_dirs": ["/home/swayambhu/.local/bin"],
     "default_ttl_minutes": 120,
     "max_concurrent_jobs": 2,
     "callback_advance_seconds": 30
