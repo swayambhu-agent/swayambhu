@@ -1,4 +1,4 @@
-# Design: DR Lifecycle — Independent State Machine (v4)
+# Design: DR Lifecycle — Independent State Machine (v5)
 
 ## Problem
 
@@ -170,7 +170,11 @@ async function drCycle(K) {
     const sessionCount = await K.getSessionCount();
     if (state.last_failure_session && sessionCount - state.last_failure_session < backoff) return;
 
+    // Set a schedule so isDrDue can trigger — without this, a failed
+    // first generation would strand forever (no next_due_session set)
+    const sessionCount = await K.getSessionCount();
     state.status = "idle";
+    state.next_due_session = sessionCount; // due now (backoff already waited)
     await K.kvWriteSafe("dr:state:1", state);
     // Fall through to idle check
   }
@@ -180,6 +184,12 @@ async function drCycle(K) {
 
     const dispatch = await dispatchDr(K, defaults);
     if (!dispatch) {
+      state.status = "failed";
+      state.failed_at = new Date().toISOString();
+      state.failure_reason = "dispatch failed";
+      state.consecutive_failures = (state.consecutive_failures || 0) + 1;
+      state.last_failure_session = await K.getSessionCount();
+      await K.kvWriteSafe("dr:state:1", state);
       await K.karmaRecord({ event: "dr_dispatch_failed" });
       return;
     }
