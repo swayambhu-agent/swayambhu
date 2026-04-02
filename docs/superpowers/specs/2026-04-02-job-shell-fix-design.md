@@ -136,7 +136,7 @@ command: `cat '${esc(job.workdir)}/output.json' 2>/dev/null || echo '{}'`
 | `tools/collect_jobs.js` | Apply `esc()` to workdir in polling commands |
 | `userspace.js` | Apply `esc()` to workdir in `pollJobResult` commands |
 | `config/defaults.json` | Add `path_dirs` to `jobs` section |
-| `scripts/seed-local-kv.mjs` | Seed `path_dirs` in defaults |
+| `scripts/seed-local-kv.mjs` | No change needed — reads `config/defaults.json` directly |
 | `tests/tools.test.js` | Add tests for shell generation, quoting, adversarial inputs |
 
 ## Security properties (Codex-verified across 6 rounds)
