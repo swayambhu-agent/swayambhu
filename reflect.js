@@ -196,20 +196,7 @@ export async function executeReflect(K, state, step) {
 
 // ── Deep reflection (recursive, depth-aware) ────────────────
 
-export async function runReflect(K, state, depth, context) {
-  const { defaults } = state;
-
-  // Dispatch as async job if akash jobs configured
-  const jobsConfig = defaults?.jobs;
-  if (jobsConfig?.base_url) {
-    return dispatchDeepReflect(K, state, depth);
-  }
-
-  // Fallback: run in-Worker (no akash configured)
-  return runReflectInWorker(K, state, depth, context);
-}
-
-async function runReflectInWorker(K, state, depth, context) {
+export async function runReflectInWorker(K, state, depth, context) {
   const { defaults } = state;
   const sessionId = await K.getSessionId();
 
@@ -257,58 +244,10 @@ async function runReflectInWorker(K, state, depth, context) {
 
   // Cascade — run next depth down
   if (depth > 1) {
-    await runReflect(K, state, depth - 1, context);
+    await runReflectInWorker(K, state, depth - 1, context);
   }
 }
 
-async function dispatchDeepReflect(K, state, depth) {
-  const { defaults } = state;
-
-  // Load the S/D operator prompt
-  const prompt = await K.kvGet("prompt:deep_reflect");
-  if (!prompt) {
-    await K.karmaRecord({ event: "deep_reflect_no_prompt", depth });
-    return;
-  }
-
-  // Dispatch via start_job tool
-  const result = await K.executeToolCall({
-    id: `dr_dispatch_${Date.now()}`,
-    function: {
-      name: "start_job",
-      arguments: JSON.stringify({
-        type: "cc_analysis",
-        prompt,
-        context_keys: [
-          "samskara:*", "experience:*", "desire:*",
-          "principle:*", "config:defaults", `reflect:schedule:${depth}`,
-        ],
-      }),
-    },
-  });
-
-  if (result?.ok) {
-    // Tag the job record as deep-reflect
-    const jobRecord = await K.kvGet(`job:${result.job_id}`);
-    if (jobRecord) {
-      jobRecord.config = jobRecord.config || {};
-      jobRecord.config.deep_reflect = true;
-      jobRecord.config.depth = depth;
-      const sessionCount = await K.getSessionCount();
-      jobRecord.config.dispatch_session = sessionCount;
-      await K.kvWriteSafe(`job:${result.job_id}`, jobRecord);
-    }
-
-    await K.karmaRecord({
-      event: "deep_reflect_dispatched",
-      job_id: result.job_id,
-      depth,
-    });
-  } else {
-    // Dispatch failed — log and move on. DR only runs on akash.
-    await K.karmaRecord({ event: "deep_reflect_dispatch_failed", error: result?.error });
-  }
-}
 
 export async function gatherReflectContext(K, state, depth, context) {
   const { defaults, modelsConfig } = state;
@@ -613,49 +552,6 @@ export async function loadReflectHistory(K, depth, count = 10) {
     .sort((a, b) => b.localeCompare(a))
     .slice(0, count);
   return K.loadKeys(keys);
-}
-
-// ── Reflect scheduling ───────────────────────────────────
-
-export async function isReflectDue(K, state, depth) {
-  const { defaults } = state;
-
-  // An agent without desires should reflect — bootstrap or recovery
-  if (depth === 1 && Object.keys(state.desires || {}).length === 0) return true;
-
-  const schedule = await K.kvGet(`reflect:schedule:${depth}`);
-
-  const sessionCount = await K.getSessionCount();
-
-  if (schedule) {
-    const sessionsSince = sessionCount - (schedule.last_reflect_session || 0);
-    const daysSince = schedule.last_reflect
-      ? (Date.now() - new Date(schedule.last_reflect).getTime()) / 86400000
-      : Infinity;
-    const maxSessions = schedule.after_sessions
-      || defaults?.deep_reflect?.default_interval_sessions || 20;
-    const maxDays = schedule.after_days
-      || defaults?.deep_reflect?.default_interval_days || 7;
-    return sessionsSince >= maxSessions || daysSince >= maxDays;
-  }
-
-  // Cold-start fallback — exponential interval
-  const baseInterval = defaults?.deep_reflect?.default_interval_sessions || 20;
-  const multiplier = defaults?.execution?.reflect_interval_multiplier || 5;
-  const threshold = baseInterval * Math.pow(multiplier, depth - 1);
-  return sessionCount >= threshold;
-}
-
-export async function highestReflectDepthDue(K, state) {
-  // First session is always deep reflect — orient before acting
-  const sessionCount = await K.getSessionCount();
-  if (sessionCount === 0) return 1;
-
-  const maxDepth = state.defaults?.execution?.max_reflect_depth || 1;
-  for (let d = maxDepth; d >= 1; d--) {
-    if (await isReflectDue(K, state, d)) return d;
-  }
-  return 0;
 }
 
 // ── Default prompts ────────────────────────────────────────
