@@ -13,6 +13,7 @@ export const meta = {
 export async function execute({ job_id, wait_seconds, provider, secrets, fetch, kv, config }) {
   const jobs = config?.jobs || {};
   const baseUrl = jobs.base_url || "https://akash.swayambhu.dev";
+  const esc = s => s.replace(/'/g, "'\\''");
 
   // Gather job records
   let jobRecords = [];
@@ -56,7 +57,7 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
 
     // Check exit_code file on compute target
     const checkResult = await provider.call({
-      command: `test -f ${job.workdir}/exit_code && cat ${job.workdir}/exit_code || echo RUNNING`,
+      command: `test -f '${esc(job.workdir)}/exit_code' && cat '${esc(job.workdir)}/exit_code' || echo RUNNING`,
       baseUrl,
       timeout: 5,
       secrets,
@@ -83,7 +84,7 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
     // Read output.json
     let resultData = null;
     const outputResult = await provider.call({
-      command: `cat ${job.workdir}/output.json 2>/dev/null || echo '{}'`,
+      command: `cat '${esc(job.workdir)}/output.json' 2>/dev/null || echo '{}'`,
       baseUrl,
       timeout: 10,
       secrets,
