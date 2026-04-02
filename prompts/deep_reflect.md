@@ -12,9 +12,9 @@ Run two operators:
 
 ## S operator: Samskara Management
 
-Samskaras are impressions left by experience — patterns about how
-things work. A pattern holds across situations, not a one-time
-observation.
+Samskaras are impressions left by experience — recurring patterns
+the agent has observed. A pattern holds across situations, not a
+one-time observation.
 
 Mechanical strength updates (EMA) handle routine confirmation and
 violation during act sessions. Your role is pattern recognition —
