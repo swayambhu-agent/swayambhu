@@ -667,7 +667,11 @@ async function applyDrResults(K, state, output) {
 
   const blocked = [];
   for (const op of ops) {
-    const result = await K.kvWriteGated(op, "deep-reflect");
+    // DR output uses { key, value } for writes, { key, op: "delete" } for deletes
+    const gatedOp = op.op === "delete"
+      ? { key: op.key, op: "delete" }
+      : { key: op.key, op: "put", value: op.value };
+    const result = await K.kvWriteGated(gatedOp, "deep-reflect");
     if (!result.ok) blocked.push({ key: op.key, error: result.error });
   }
 
