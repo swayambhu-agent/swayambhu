@@ -1,6 +1,6 @@
 // Swayambhu — Userspace (cognitive policy)
 // Entry point for all scheduled cognitive work: act cycle + DR lifecycle.
-// Called by kernel on every cron tick via HOOKS.session.run(K, { crashData, balances, events }).
+// Called by kernel on every cron tick via HOOKS.tick.run(K, { crashData, balances, events }).
 // Mutable — the agent can propose changes to this file via the proposal system.
 
 import { evaluateAction } from './eval.js';
