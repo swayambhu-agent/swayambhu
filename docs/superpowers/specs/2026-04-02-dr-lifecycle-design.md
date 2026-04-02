@@ -1,10 +1,10 @@
-# Design: DR Lifecycle — Independent State Machine (v3)
+# Design: DR Lifecycle — Independent State Machine (v4)
 
 ## Problem
 
 Act and deep-reflect were coupled: DR result collection inside the act
 cycle, callbacks to the kernel, event-based notification, shared
-scheduling. Three Codex adversarial reviews refined this design.
+scheduling. Four Codex adversarial reviews refined this design.
 
 ## Core Principle
 
@@ -220,11 +220,10 @@ check accurate without needing the callback.
 
 ```javascript
 async function isDrDue(K, state, defaults) {
-  const sessionCount = await K.getSessionCount();
+  // Cold start — no DR has ever run
+  if (!state.generation) return true;
 
-  // No desires → due (bootstrap/recovery)
-  const desires = await K.kvList({ prefix: "desire:" });
-  if (desires.keys.length === 0) return true;
+  const sessionCount = await K.getSessionCount();
 
   // Session threshold
   if (state.next_due_session && sessionCount >= state.next_due_session) return true;
@@ -235,6 +234,17 @@ async function isDrDue(K, state, defaults) {
   return false;
 }
 ```
+
+No "no desires" special case. Cold start (generation 0) is the only
+immediate trigger — a one-time condition that can never recur. After
+that, the schedule governs everything.
+
+If the D operator retires all desires mid-lifecycle, the agent produces
+`no_action` experiences until the next scheduled DR. Those experiences
+give D fresh material to work with. The normal schedule handles
+recovery. If 20 idle sessions feels too long, adjust
+`default_interval_sessions` — that's a tuning parameter, not an
+architectural problem.
 
 ### pollJobResult — SSH with timeout, normalized output
 
@@ -277,6 +287,10 @@ async function pollJobResult(K, state, defaults) {
 
   try {
     const parsed = JSON.parse(raw);
+    // Validate output has meaningful content — reject empty/stub payloads
+    if (!parsed.reflection && !parsed.kv_operations?.length) {
+      return { status: "failed", error: "output.json has no reflection or kv_operations" };
+    }
     return { status: "completed", output: parsed };
   } catch {
     return { status: "failed", error: "invalid JSON in output.json" };
@@ -333,8 +347,11 @@ async function applyDrResults(K, state, output, defaults) {
   }
 
   if (blocked.length > 0) {
-    await K.karmaRecord({ event: "dr_apply_blocked", blocked });
-    return false; // Partial apply is worse than no apply
+    await K.karmaRecord({ event: "dr_apply_blocked", blocked, applied: ops.length - blocked.length });
+    // KV has no transactions — some writes may have succeeded.
+    // Log it and continue. The applied writes are still valid;
+    // the blocked ones will be retried on the next DR cycle.
+    // This is not ideal but unavoidable without a transaction primitive.
   }
 
   // 2. Write reflect history (for continuity and dashboard)
@@ -376,7 +393,15 @@ on the second attempt and do nothing.
 
 ## Hot-Loop Prevention
 
-If desires are empty and DR repeatedly fails:
+Two mechanisms:
+
+**1. No "empty desires" special case.** `isDrDue` only triggers
+immediately on cold start (generation 0). After that, the schedule
+governs. An agent that loses all desires waits for the next scheduled
+DR — no hot loop possible.
+
+**2. Failed-state backoff for actual failures.** If DR dispatch fails,
+job fails, or apply fails:
 - Each failure increments `consecutive_failures` and records `last_failure_session`
 - Backoff: `min(20, 2^consecutive_failures)` sessions from `last_failure_session`
 - After 1 failure: wait 2 sessions. After 3: wait 8. After 5: capped at 20.
