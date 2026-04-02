@@ -167,6 +167,13 @@
       reflect: { bg: 'bg-teal-900/30', border: 'border-teal-700', text: 'text-teal-400', dot: 'bg-teal-500' },
       act: { bg: 'bg-cyan-900/30', border: 'border-cyan-700', text: 'text-cyan-400', dot: 'bg-cyan-500' },
       subplan: { bg: 'bg-indigo-900/30', border: 'border-indigo-700', text: 'text-indigo-400', dot: 'bg-indigo-500' },
+      dr_dispatched: { bg: 'bg-teal-900/30', border: 'border-teal-700', text: 'text-teal-400', dot: 'bg-teal-500' },
+      dr_failed: { bg: 'bg-red-900/30', border: 'border-red-700', text: 'text-red-400', dot: 'bg-red-500' },
+      dr_expired: { bg: 'bg-orange-900/30', border: 'border-orange-700', text: 'text-orange-400', dot: 'bg-orange-500' },
+      dr_applied: { bg: 'bg-teal-900/30', border: 'border-teal-700', text: 'text-teal-400', dot: 'bg-teal-500' },
+      dr_dispatch_failed: { bg: 'bg-red-900/20', border: 'border-red-800', text: 'text-red-400', dot: 'bg-red-400' },
+      dr_apply_blocked: { bg: 'bg-yellow-900/30', border: 'border-yellow-700', text: 'text-yellow-400', dot: 'bg-yellow-500' },
+      dr_cycle_error: { bg: 'bg-red-900/30', border: 'border-red-700', text: 'text-red-400', dot: 'bg-red-500' },
     };
 
     function eventColor(type) {
@@ -589,41 +596,82 @@
             )}
           </div>
 
-          {/* Karma entries */}
+          {/* Karma entries — grouped into Act Session and Deep Reflect sections */}
           <div className="flex-1 overflow-y-auto scrollbar-thin space-y-1.5">
             {loading && <p className="text-gray-500 text-sm">Loading karma...</p>}
             {!loading && karma.length === 0 && (
               <p className="text-gray-500 text-sm">No karma entries found</p>
             )}
-            {karma.map((entry, i) => {
-              const c = eventColor(entry.type);
-              const isResponse = ['llm_response', 'tool_complete', 'tool_result'].includes(entry.type);
-              const isSelected = selectedIdx === i;
-              const isPaired = pairedIdx === i;
-              return (
-                <div
-                  key={i}
-                  onClick={() => { setSelectedIdx(i); onSelectEntry({ ...entry, _idx: i }); }}
-                  className={`${c.bg} border ${c.border} rounded px-3 py-2 cursor-pointer hover:brightness-125 transition text-xs fade-in ${isResponse ? 'opacity-75' : ''} ${isSelected ? 'ring-1 ring-accent' : ''} ${isPaired ? 'ring-1 ring-accent/50 brightness-125' : ''}`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-gray-600 text-[10px] w-5 text-right flex-shrink-0 tabular-nums">{i + 1}</span>
-                    <span className={`w-2 h-2 rounded-full ${c.dot} flex-shrink-0 ${isResponse ? 'w-1.5 h-1.5' : ''}`}></span>
-                    <span className={`${c.text} ${isResponse ? '' : 'font-semibold'}`}>{entry.type}</span>
-                    {(isSelected || isPaired) && pairs[i] != null && (
-                      <span className="text-accent/60 text-[10px]">{isResponse ? 'response' : 'request'}</span>
-                    )}
-                    {entry.ts && (
-                      <span className="text-gray-500 ml-auto">{formatTime(entry.ts)}</span>
-                    )}
+            {(() => {
+              // Classify entries into act session vs deep reflect
+              const isDrEvent = (e) =>
+                (e.event || e.type || '').startsWith('dr_') ||
+                ((e.event || e.type) === 'tool_start' && e.step_id?.startsWith('dr_')) ||
+                ((e.event || e.type) === 'tool_complete' && e.step_id?.startsWith('dr_'));
+
+              const actEntries = [];
+              const drEntries = [];
+              karma.forEach((entry, i) => {
+                if (isDrEvent(entry)) {
+                  drEntries.push({ entry, i });
+                } else {
+                  actEntries.push({ entry, i });
+                }
+              });
+
+              const renderEntry = ({ entry, i }) => {
+                const c = eventColor(entry.type);
+                const isResponse = ['llm_response', 'tool_complete', 'tool_result'].includes(entry.type);
+                const isSelected = selectedIdx === i;
+                const isPaired = pairedIdx === i;
+                return (
+                  <div
+                    key={i}
+                    onClick={() => { setSelectedIdx(i); onSelectEntry({ ...entry, _idx: i }); }}
+                    className={`${c.bg} border ${c.border} rounded px-3 py-2 cursor-pointer hover:brightness-125 transition text-xs fade-in ${isResponse ? 'opacity-75' : ''} ${isSelected ? 'ring-1 ring-accent' : ''} ${isPaired ? 'ring-1 ring-accent/50 brightness-125' : ''}`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-gray-600 text-[10px] w-5 text-right flex-shrink-0 tabular-nums">{i + 1}</span>
+                      <span className={`w-2 h-2 rounded-full ${c.dot} flex-shrink-0 ${isResponse ? 'w-1.5 h-1.5' : ''}`}></span>
+                      <span className={`${c.text} ${isResponse ? '' : 'font-semibold'}`}>{entry.type}</span>
+                      {(isSelected || isPaired) && pairs[i] != null && (
+                        <span className="text-accent/60 text-[10px]">{isResponse ? 'response' : 'request'}</span>
+                      )}
+                      {entry.ts && (
+                        <span className="text-gray-500 ml-auto">{formatTime(entry.ts)}</span>
+                      )}
+                    </div>
+                    {entry.tool && <span className="text-purple-300 ml-4">{entry.tool}</span>}
+                    {entry.model && <span className="text-blue-300 ml-4">{entry.model}</span>}
+                    {entry.summary && <p className="text-gray-400 ml-4 mt-1 truncate">{entry.summary}</p>}
+                    {entry.error && <p className="text-red-300 ml-4 mt-1 truncate">{entry.error}</p>}
                   </div>
-                  {entry.tool && <span className="text-purple-300 ml-4">{entry.tool}</span>}
-                  {entry.model && <span className="text-blue-300 ml-4">{entry.model}</span>}
-                  {entry.summary && <p className="text-gray-400 ml-4 mt-1 truncate">{entry.summary}</p>}
-                  {entry.error && <p className="text-red-300 ml-4 mt-1 truncate">{entry.error}</p>}
-                </div>
+                );
+              };
+
+              return (
+                <>
+                  {actEntries.length > 0 && (
+                    <>
+                      <div className="flex items-center gap-2 pt-1 pb-0.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-green-500">Act Session</span>
+                        <div className="flex-1 border-t border-green-900/50"></div>
+                      </div>
+                      {actEntries.map(renderEntry)}
+                    </>
+                  )}
+                  {drEntries.length > 0 && (
+                    <>
+                      <div className="flex items-center gap-2 pt-3 pb-0.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-teal-500">Deep Reflect</span>
+                        <div className="flex-1 border-t border-teal-900/50"></div>
+                      </div>
+                      {drEntries.map(renderEntry)}
+                    </>
+                  )}
+                </>
               );
-            })}
+            })()}
           </div>
         </div>
       );
@@ -2124,7 +2172,7 @@
       if (!patronKey) return <LoginScreen onLogin={handleLogin} />;
 
       const tabs = [
-        { id: 'timeline', label: 'Timeline' },
+        { id: 'timeline', label: 'Runs' },
         { id: 'chat', label: 'Chat' },
         { id: 'contacts', label: 'Contacts' },
         { id: 'kv', label: 'KV Explorer' },
