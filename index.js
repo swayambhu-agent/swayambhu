@@ -109,56 +109,6 @@ export default {
       return new Response("session_schedule set to past", { status: 200 });
     }
 
-    // Job completion callback — compute target calls back when a job finishes
-    const jobMatch = url.pathname.match(/^\/job-complete\/(.+)$/);
-    if (jobMatch && request.method === "POST") {
-      const jobId = jobMatch[1];
-      const jsonHeaders = { "Content-Type": "application/json" };
-      try {
-        const body = await request.json();
-        const job = await env.KV.get(`job:${jobId}`, "json");
-        if (!job) return new Response(JSON.stringify({ error: "unknown job" }), { status: 404, headers: jsonHeaders });
-        if (job.status !== "running") return new Response(JSON.stringify({ error: "job not running" }), { status: 409, headers: jsonHeaders });
-
-        const auth = request.headers.get("Authorization")?.replace("Bearer ", "");
-        if (auth !== job.callback_secret) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: jsonHeaders });
-
-        job.status = body.exit_code === 0 ? "completed" : "failed";
-        job.completed_at = new Date().toISOString();
-        job.exit_code = body.exit_code;
-        if (body.artifacts) job.artifacts = body.artifacts;
-        await env.KV.put(`job:${jobId}`, JSON.stringify(job));
-
-        // Emit event into the event bus
-        const jobKernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
-        const K = jobKernel.buildKernelInterface();
-        await K.emitEvent("job_complete", {
-          source: { job_id: jobId },
-          summary: `Job ${jobId} (${job.type}) ${job.status}`,
-          ref: `job:${jobId}`,
-          result_key: `job_result:${jobId}`,
-        });
-
-        // Advance session schedule (same pattern as chat handler)
-        try {
-          const schedule = await env.KV.get("session_schedule", "json");
-          if (schedule?.next_session_after) {
-            const advanceTo = Date.now() + 30 * 1000;
-            if (new Date(schedule.next_session_after).getTime() > advanceTo) {
-              await env.KV.put("session_schedule", JSON.stringify({
-                ...schedule,
-                next_session_after: new Date(advanceTo).toISOString(),
-              }));
-            }
-          }
-        } catch {}
-
-        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: jsonHeaders });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: jsonHeaders });
-      }
-    }
-
     const match = url.pathname.match(/^\/channel\/(\w+)$/);
     if (!match) {
       return new Response("Not found", { status: 404 });
