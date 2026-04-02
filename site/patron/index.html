@@ -415,7 +415,7 @@
       const [watching, setWatching] = useState(false);
       const watchRef = useRef(null);
       const karmaRef = useRef([]);
-      const initialLoadRef = useRef(true);
+      const autoStartedRef = useRef(false);
 
       const refreshSessions = useCallback(async () => {
         try {
@@ -477,40 +477,10 @@
         setLoading(false);
       }, [patronKey]);
 
-      const startWatching = useCallback(() => {
-        if (watchRef.current) return;
-        watchRef.current = setInterval(async () => {
-          try {
-            const d = await api(`/kv/karma:${selectedSession}`, patronKey);
-            if (d.error) {
-              const fresh = await refreshSessions();
-              if (fresh.length > 0) setSelectedSession(fresh[fresh.length - 1].id);
-              clearInterval(watchRef.current);
-              watchRef.current = null;
-              setWatching(false);
-              return;
-            }
-            const entries = (d.value || []).map(e => ({
-              ...e,
-              type: e.type || e.event,
-              ts: e.ts || (e.t ? new Date(e.t).toISOString() : null),
-            }));
-            if (entries.length > karmaRef.current.length) {
-              setKarma(entries);
-              karmaRef.current = entries;
-            }
-            try {
-              const h = await api('/health', patronKey);
-              if (!h.session) {
-                clearInterval(watchRef.current);
-                watchRef.current = null;
-                setWatching(false);
-              }
-            } catch {}
-          } catch {}
-        }, WATCH_INTERVAL);
-        setWatching(true);
-      }, [selectedSession, patronKey]);
+      useEffect(() => {
+        if (selectedSession) loadKarma(selectedSession);
+        return () => { if (watchRef.current) clearInterval(watchRef.current); };
+      }, [selectedSession, loadKarma]);
 
       const toggleWatch = () => {
         if (watching) {
@@ -518,24 +488,48 @@
           watchRef.current = null;
           setWatching(false);
         } else {
+          setWatching(true);
           loadKarma(selectedSession);
-          startWatching();
+          watchRef.current = setInterval(async () => {
+            try {
+              const d = await api(`/kv/karma:${selectedSession}`, patronKey);
+              if (d.error) {
+                const fresh = await refreshSessions();
+                if (fresh.length > 0) setSelectedSession(fresh[fresh.length - 1].id);
+                clearInterval(watchRef.current);
+                watchRef.current = null;
+                setWatching(false);
+                return;
+              }
+              const entries = (d.value || []).map(e => ({
+                ...e,
+                type: e.type || e.event,
+                ts: e.ts || (e.t ? new Date(e.t).toISOString() : null),
+              }));
+              if (entries.length > karmaRef.current.length) {
+                setKarma(entries);
+                karmaRef.current = entries;
+              }
+              try {
+                const h = await api('/health', patronKey);
+                if (!h.session) {
+                  clearInterval(watchRef.current);
+                  watchRef.current = null;
+                  setWatching(false);
+                }
+              } catch {}
+            } catch {}
+          }, WATCH_INTERVAL);
         }
       };
 
+      // Auto-start watching on first session load
       useEffect(() => {
-        if (!selectedSession) return;
-        loadKarma(selectedSession);
-        if (initialLoadRef.current) {
-          initialLoadRef.current = false;
-          startWatching();
-        } else {
-          // Switching sessions — stop watching
-          if (watchRef.current) { clearInterval(watchRef.current); watchRef.current = null; }
-          setWatching(false);
+        if (selectedSession && !autoStartedRef.current) {
+          autoStartedRef.current = true;
+          toggleWatch();
         }
-        return () => { if (watchRef.current) { clearInterval(watchRef.current); watchRef.current = null; } };
-      }, [selectedSession, loadKarma, startWatching]);
+      }, [selectedSession]);
 
       // Precompute request-response pairs (tool_start↔tool_complete)
       const [selectedIdx, setSelectedIdx] = useState(null);
