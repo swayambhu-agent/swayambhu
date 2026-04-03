@@ -1,11 +1,9 @@
 // Dashboard patron config — edit these values to customize the dashboard.
 window.DASHBOARD_CONFIG = {
   // Timezone for all displayed timestamps (IANA format).
-  // Examples: "Asia/Kolkata", "America/New_York", "UTC"
   timezone: "Asia/Kolkata",
 
   // Locale for date/time formatting.
-  // Examples: "en-IN", "en-US", "en-GB"
   locale: "en-IN",
 
   // Max characters shown before "show more" truncation.
@@ -14,6 +12,11 @@ window.DASHBOARD_CONFIG = {
     textBlock: 800,    // standalone text blocks (detail panel, reflections)
   },
 
-  // Live watch polling interval (ms) when watching a session.
-  watchIntervalMs: 2000,
+  // Heartbeat polling intervals (ms).
+  heartbeat: {
+    normalMs: 5000,    // default poll interval
+    activeMs: 2000,    // when session is active
+    hiddenMs: 15000,   // when browser tab is hidden
+    safetyMs: 60000,   // per-tab safety net poll (fallback)
+  },
 };
