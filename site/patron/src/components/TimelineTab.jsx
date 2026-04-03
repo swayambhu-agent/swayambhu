@@ -45,13 +45,13 @@ function PromptViewer({ patronKey, requestKey }) {
   };
 
   return (
-    <div className="mx-4 mt-2">
-      <button onClick={load} className="text-xs text-accent hover:underline">
-        {loading ? "Loading..." : open ? "Hide prompt" : "Show prompt"}
+    <div className="mb-3">
+      <button onClick={load} className="text-[10px] text-accent hover:underline">
+        {loading ? "loading..." : open ? "▾ hide prompt" : "▸ show prompt"}
       </button>
       {open && data && (
-        <div className="mt-2 border border-border rounded p-2 bg-bg">
-          <JsonTree data={data} defaultOpen={true} />
+        <div className="mt-1 border border-border rounded p-2 bg-bg">
+          <JsonTree data={data} defaultOpen={false} />
         </div>
       )}
     </div>
@@ -94,11 +94,9 @@ function ContextPanel({ patronKey, selectedEntry }) {
         )}
       </div>
 
-      {/* Prompt viewer for LLM calls */}
-      {entry.request_key && <PromptViewer patronKey={patronKey} requestKey={entry.request_key} />}
-
       {/* Collapsible JSON tree */}
       <div className="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs font-mono">
+        {entry.request_key && <PromptViewer patronKey={patronKey} requestKey={entry.request_key} />}
         <JsonTree data={entry} defaultOpen={true} />
       </div>
     </div>
