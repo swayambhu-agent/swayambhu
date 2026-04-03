@@ -2670,14 +2670,14 @@ describe("loadKeys size guard", () => {
 // ── emitEvent ────────────────────────────────────────────────
 
 describe("emitEvent", () => {
-  it("writes a key with format event:{15-digit-timestamp}:{type}", async () => {
+  it("writes a key with format event:{15-digit-timestamp}:{type}:{4-char-nonce}", async () => {
     const { kernel, env } = makeKernel();
     const K = kernel.buildKernelInterface();
     const result = await K.emitEvent("chat_message", { source: "slack", text: "hello" });
 
     expect(result).toHaveProperty("key");
     const key = result.key;
-    expect(key).toMatch(/^event:\d{15}:chat_message$/);
+    expect(key).toMatch(/^event:\d{15}:chat_message:[a-z0-9]{4}$/);
 
     const stored = JSON.parse(await env.KV.get(key));
     expect(stored.type).toBe("chat_message");
@@ -2694,7 +2694,7 @@ describe("emitEvent", () => {
     await K.emitEvent("session_end", { session_id: "s_123" });
 
     expect(putSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/^event:\d{15}:session_end$/),
+      expect.stringMatching(/^event:\d{15}:session_end:[a-z0-9]{4}$/),
       expect.any(String),
       { expirationTtl: 86400 }
     );
@@ -2735,6 +2735,16 @@ describe("emitEvent", () => {
         key: result.key,
       })
     );
+  });
+
+  it("appends a 4-char alphanumeric nonce as the 4th key segment", async () => {
+    const { kernel } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const result = await K.emitEvent("test_event", { foo: "bar" });
+
+    const parts = result.key.split(":");
+    expect(parts).toHaveLength(4);
+    expect(parts[3]).toMatch(/^[a-z0-9]{4}$/);
   });
 });
 

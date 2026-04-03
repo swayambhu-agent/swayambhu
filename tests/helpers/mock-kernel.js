@@ -39,7 +39,8 @@ export function makeMockK(kvInit = {}, opts = {}) {
     // Event bus
     emitEvent: vi.fn(async (type, payload) => {
       const ts = Date.now().toString().padStart(15, '0');
-      const key = `event:${ts}:${type}`;
+      const nonce = Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+      const key = `event:${ts}:${type}:${nonce}`;
       const event = { type, ...payload, timestamp: payload?.timestamp || new Date().toISOString() };
       kv._store.set(key, JSON.stringify(event));
       return { key };
