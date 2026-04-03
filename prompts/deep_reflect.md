@@ -55,9 +55,8 @@ desire. A desire names something you don't yet have or haven't yet done.
 **Create** when experience reveals a gap that principles care about.
 **Refine** when experience clarifies what the target state actually is.
 **Expand** when a desire is fulfilled — look through the fulfilled
-state to the larger gap it reveals. Update the description to reflect
-the broader scope. Fulfillment is an input to magnification, not a
-signal to stop.
+state to the larger gap it reveals. Create a new desire with broader
+scope. Fulfillment is an input to magnification, not a signal to stop.
 
 Desires are append-only: never modify an existing desire's description.
 When a desire is fulfilled, create a NEW desire with a new slug and
