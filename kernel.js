@@ -58,14 +58,14 @@ class Kernel {
   // - protected: agent-modifiable via kvWriteGated in deep-reflect context,
   //   with old values captured in karma for rollback.
   static DEFAULT_KEY_TIERS = {
-    immutable: ["dharma", "principle:*", "patron:public_key"],
+    immutable: ["dharma", "patron:public_key"],
     kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
     protected: [
       "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
       "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
       "secret:*", "samskara:*", "skill:*", "task:*",
       "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-      "desire:*",
+      "desire:*", "principle:*", "tactic:*",
     ],
   };
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
@@ -673,6 +673,15 @@ class Kernel {
     // Only put/delete/patch supported for system keys
     if (!["put", "delete", "patch"].includes(op.op)) {
       return { ok: false, error: `Unsupported op "${op.op}" for system key "${key}"` };
+    }
+
+    // Principle changes require deliberation — high friction to prevent casual modification.
+    // Why: principles are injected into every LLM call and shape all behavior.
+    // A careless change here has global impact.
+    if (key.startsWith("principle:")) {
+      if (!op.deliberation || op.deliberation.length < 200) {
+        return { ok: false, error: `Principle changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
+      }
     }
 
     // Model capabilities are separated from config:models to prevent

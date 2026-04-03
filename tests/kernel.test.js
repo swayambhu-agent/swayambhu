@@ -1117,8 +1117,8 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
   it("isImmutableKey matches exact keys and wildcards", () => {
     const { kernel } = makeKernel();
     expect(kernel.isImmutableKey("dharma")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty")).toBe(false);
+    expect(kernel.isSystemKey("principle:honesty")).toBe(true);
     expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
     expect(kernel.isImmutableKey("config:defaults")).toBe(false);
   });
@@ -1130,9 +1130,9 @@ describe("config-driven key tiers", () => {
   it("reads key tiers from kernel:key_tiers at boot", async () => {
     const { kernel } = makeKernel();
     kernel.kv._store.set("kernel:key_tiers", JSON.stringify({
-      immutable: ["dharma", "principle:*"],
+      immutable: ["dharma"],
       kernel_only: ["karma:*", "sealed:*", "event:*", "kernel:*"],
-      protected: ["config:*", "prompt:*"],
+      protected: ["config:*", "prompt:*", "principle:*"],
     }));
     await kernel.loadEagerConfig();
     expect(kernel.keyTiers).toBeDefined();
@@ -1159,13 +1159,13 @@ describe("config-driven key tiers", () => {
   it("isImmutableKey matches exact keys and wildcards", () => {
     const { kernel } = makeKernel();
     kernel.keyTiers = {
-      immutable: ["dharma", "principle:*", "patron:public_key"],
+      immutable: ["dharma", "patron:public_key"],
       kernel_only: [],
-      protected: [],
+      protected: ["principle:*"],
     };
     expect(kernel.isImmutableKey("dharma")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty")).toBe(false);
+    expect(kernel.isSystemKey("principle:honesty")).toBe(true);
     expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
     expect(kernel.isImmutableKey("config:defaults")).toBe(false);
   });
@@ -2125,7 +2125,18 @@ describe("principles (generic)", () => {
     expect(sysContent).toContain("[discipline]\nBe disciplined.\n[/discipline]");
   });
 
-  it("kvWriteGated rejects principle: writes as immutable", async () => {
+  it("kvWriteGated allows principle: writes with deliberation in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const deliberation = "This principle needs refinement because experience has shown that the current wording is too vague and leads to inconsistent interpretation across different session contexts. The updated wording better captures the intent.";
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "principle:honesty", value: "refined honesty principle", deliberation },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("kvWriteGated rejects principle: writes without deliberation", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     const result = await kernel.kvWriteGated(
@@ -2133,13 +2144,13 @@ describe("principles (generic)", () => {
       "deep-reflect"
     );
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("immutable");
+    expect(result.error).toContain("deliberation");
   });
 
-  it("kvWriteSafe blocks principle: keys as immutable", async () => {
+  it("kvWriteSafe blocks principle: keys as system keys", async () => {
     const { kernel } = makeKernel();
     await expect(kernel.kvWriteSafe("principle:honesty", "new value"))
-      .rejects.toThrow("immutable");
+      .rejects.toThrow("system key");
   });
 
   it("non-principle system key writes succeed without warning", async () => {
