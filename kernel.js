@@ -233,7 +233,13 @@ class Kernel {
   // are retried up to 3 times then dead-lettered.
 
   async drainEvents(handlers) {
-    const handlerConfig = await this.kvGet('config:event_handlers') || {};
+    const rawConfig = await this.kvGet('config:event_handlers') || {};
+
+    // Backward compat: if config has handlers/deferred keys, use them;
+    // otherwise treat the whole object as handlers with no deferred.
+    const handlerConfig = rawConfig.handlers || (rawConfig.deferred ? {} : rawConfig);
+    const deferredConfig = rawConfig.deferred || {};
+
     const listResult = await this.kvListAll({ prefix: 'event:' });
     const events = [];
 
@@ -242,14 +248,16 @@ class Kernel {
       if (val) events.push({ key: name, ...val });
     }
 
-    if (events.length === 0) return { processed: [], actContext: [] };
+    if (events.length === 0) return { processed: [], actContext: [], deferred: {} };
 
     const processed = [];
     const actContext = [];
+    const deferred = {}; // { processorName: [event, ...] }
 
     for (const event of events) {
       actContext.push(event);
 
+      // --- Immediate handlers ---
       const handlerNames = handlerConfig[event.type] || [];
       let allHandlersSucceeded = true;
 
@@ -277,10 +285,20 @@ class Kernel {
         }
       }
 
-      if (allHandlersSucceeded && !event._deferDelete) {
-        await this.kv.delete(event.key);
+      // --- Deferred processors ---
+      const deferredProcessors = deferredConfig[event.type] || [];
+      const hasDeferred = deferredProcessors.length > 0;
+
+      if (hasDeferred) {
+        // Group event by processor name — processor owns deletion
+        for (const processorName of deferredProcessors) {
+          if (!deferred[processorName]) deferred[processorName] = [];
+          deferred[processorName].push(event);
+        }
+        // Event stays in KV — deferred processor will delete on terminal disposition
         processed.push(event);
-      } else if (allHandlersSucceeded && event._deferDelete) {
+      } else if (allHandlersSucceeded) {
+        await this.kv.delete(event.key);
         processed.push(event);
       } else {
         const failKey = `event_fail_count:${event.key}`;
@@ -303,7 +321,7 @@ class Kernel {
       await this.karmaRecord({ event: "events_drained", count: events.length, types: typeCounts });
     }
 
-    return { processed, actContext };
+    return { processed, actContext, deferred };
   }
 
   // ── Debug log (durable, auto-expiring) ──────────────────────
@@ -824,17 +842,24 @@ class Kernel {
       // Infrastructure inputs
       const crashData = await this._detectCrash();
       const balances = await this.checkBalance({});
-      const { actContext: events } = await this.drainEvents(this._eventHandlers);
+      const { actContext: events, deferred } = await this.drainEvents(this._eventHandlers);
 
       // Hand to userspace — one call, userspace decides everything
       const { tick } = this.HOOKS;
       if (!tick?.run) throw new Error("No HOOKS.tick.run");
       await tick.run(K, { crashData, balances, events });
 
-      // Post-tick hook — runs inside execution lock (e.g. comms processing)
-      const { postTick } = this.HOOKS;
-      if (postTick?.run) {
-        await postTick.run(K, { events });
+      // Process deferred events inside lock
+      if (this.HOOKS.deferred) {
+        for (const [processor, processorEvents] of Object.entries(deferred)) {
+          const hook = this.HOOKS.deferred[processor];
+          if (!hook?.run) continue;
+          try {
+            await hook.run(K, processorEvents);
+          } catch (err) {
+            await this.karmaRecord({ event: "deferred_processor_error", processor, error: err.message });
+          }
+        }
       }
 
     } catch (err) {
