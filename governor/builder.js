@@ -94,6 +94,7 @@ export function generateIndexJS(metadata) {
 
   // Policy hooks
   lines.push("import * as session from './userspace.js';");
+  lines.push("import { classify as pulseClassify } from './userspace.js';");
   lines.push("");
 
   // Channel adapters
@@ -246,6 +247,7 @@ export function generateIndexJS(metadata) {
   lines.push("      },");
   lines.push("    },");
   lines.push("  },");
+  lines.push("  pulse: { classify: pulseClassify },");
   lines.push("};");
   lines.push("");
 
