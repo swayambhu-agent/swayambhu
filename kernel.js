@@ -290,12 +290,25 @@ class Kernel {
       const hasDeferred = deferredProcessors.length > 0;
 
       if (hasDeferred) {
-        // Group event by processor name — processor owns deletion
-        for (const processorName of deferredProcessors) {
-          if (!deferred[processorName]) deferred[processorName] = [];
-          deferred[processorName].push(event);
+        // Track how many times this deferred event has been drained
+        const drainKey = `event_drain_count:${event.key}`;
+        const drainCount = ((await this.kvGet(drainKey)) || 0) + 1;
+
+        if (drainCount >= 5) {
+          // Dead-letter: processor never claimed terminal disposition
+          const deadKey = event.key.replace('event:', 'event_dead:');
+          await this.kv.put(deadKey, JSON.stringify({ ...event, drain_count: drainCount }), { expirationTtl: 604800 });
+          await this.kv.delete(event.key);
+          await this.kv.delete(drainKey);
+          await this.karmaRecord({ event: "event_dead_lettered", type: event.type, key: event.key, reason: "deferred_ttl" });
+        } else {
+          await this.kv.put(drainKey, JSON.stringify(drainCount), { expirationTtl: 86400 });
+          // Group event by processor name — processor owns deletion
+          for (const processorName of deferredProcessors) {
+            if (!deferred[processorName]) deferred[processorName] = [];
+            deferred[processorName].push(event);
+          }
         }
-        // Event stays in KV — deferred processor will delete on terminal disposition
         processed.push(event);
       } else if (allHandlersSucceeded) {
         await this.kv.delete(event.key);
@@ -482,6 +495,11 @@ class Kernel {
         delete event.claimed_at;
         delete event.lease_expires;
         await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+      },
+      deleteEvent: async (key) => {
+        if (!key.startsWith('event:')) throw new Error(`deleteEvent: not an event key: "${key}"`);
+        await kernel.kv.delete(key);
+        await kernel.kv.delete(`event_drain_count:${key}`);
       },
 
       // Balance

@@ -84,10 +84,6 @@ await put("config:event_handlers", {
   deferred: {
     inbound_message: ["comms"],
     comms_request: ["comms"],
-    session_complete: ["comms"],
-    dr_complete: ["comms"],
-    session_response: ["comms"],
-    job_complete: ["comms"],
   },
 }, "json", "Event bus routing — immediate handlers + deferred processors");
 

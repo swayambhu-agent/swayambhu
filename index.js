@@ -74,7 +74,12 @@ const HOOKS = {
           } else {
             turn = await ingestInternal(K, ev);
           }
-          if (!turn) continue;
+          if (!turn) {
+            // Can't route to a conversation — delete to prevent re-drain
+            if (ev.key) await K.deleteEvent(ev.key);
+            await K.karmaRecord({ event: "comms_unroutable", event_type: ev.type, event_key: ev.key });
+            continue;
+          }
           const cid = turn.conversation_id;
           if (!byConv[cid]) byConv[cid] = [];
           byConv[cid].push(turn);
@@ -101,10 +106,10 @@ const HOOKS = {
             for (const t of claimed) {
               if (!t.idempotency_key) continue;
               if (result.action === "sent" || result.action === "discarded") {
-                await K.kvDeleteSafe(t.idempotency_key);
+                await K.deleteEvent(t.idempotency_key);
               } else if (result.action === "held") {
                 await createOutboxItem(K, convId, t.content, result.reason, result.release_after, [t.idempotency_key]);
-                await K.kvDeleteSafe(t.idempotency_key);
+                await K.deleteEvent(t.idempotency_key);
               } else {
                 // error — release claim for retry
                 await K.releaseEvent(t.idempotency_key);

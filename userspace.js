@@ -126,7 +126,12 @@ async function planPhase(K, { desires, samskaras, circumstances, priorActions, d
     sections.push("", "[PRIOR ACTIONS THIS SESSION]");
     for (const pa of priorActions) {
       const tools = pa.tools.length ? ` [${pa.tools.join(", ")}]` : "";
-      sections.push(`- ${pa.action}${tools} → ${pa.review}`);
+      const findings = Array.isArray(pa.key_findings) ? pa.key_findings.join("; ") : pa.key_findings || "";
+      let line = `- ${pa.action}${tools}`;
+      if (pa.accomplished) line += ` → ${pa.accomplished}`;
+      if (findings) line += ` | Findings: ${findings}`;
+      if (pa.next_gap) line += ` | Gap: ${pa.next_gap}`;
+      sections.push(line);
     }
   }
   sections.push(
@@ -171,9 +176,9 @@ async function planPhase(K, { desires, samskaras, circumstances, priorActions, d
 
   if (plan.no_action) return plan;
 
-  // Validate relies_on keys against samskara snapshot
+  // Validate relies_on keys against desire + samskara snapshots
   if (plan.relies_on?.length) {
-    const knownKeys = new Set(Object.keys(samskaras));
+    const knownKeys = new Set([...Object.keys(desires), ...Object.keys(samskaras)]);
     const unknown = plan.relies_on.filter(k => !knownKeys.has(k));
     if (unknown.length) {
       await K.karmaRecord({ event: "plan_unknown_relies_on", unknown_keys: unknown, stripped: true });
@@ -205,7 +210,7 @@ async function actPhase(K, { plan, systemPrompt, messages, tools, model, effort,
     content: `Execute this plan:\n${JSON.stringify(plan, null, 2)}`,
   });
 
-  for (let step = 0; step < maxActSteps; step++) {
+  for (let actStep = 0; actStep < maxActSteps; actStep++) {
     // Budget check: reserve room for review
     const spent = await K.getSessionCost();
     if (spent + minReviewCost >= maxCost) {
@@ -220,7 +225,7 @@ async function actPhase(K, { plan, systemPrompt, messages, tools, model, effort,
       model,
       effort,
       maxTokens,
-      step,
+      step: `act_${actStep}`,
       budgetCap: maxCost - minReviewCost,
     });
 
@@ -283,7 +288,10 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
       final_text: ledger.final_text?.slice(0, 500),
     }, null, 2),
     "",
-    "Respond with JSON: { assessment, narrative, salience_estimate }",
+    "Respond with JSON: { assessment, narrative, salience_estimate, accomplished, key_findings, next_gap }",
+    "- accomplished: one sentence summary of what was achieved",
+    "- key_findings: array of 1-3 short factual findings",
+    "- next_gap: one sentence describing what remains unknown or unfinished (or null if complete)",
   ].join("\n");
 
   const response = await K.callLLM({
@@ -457,7 +465,9 @@ async function actCycle(K, { crashData, balances, events }) {
     priorActions.push({
       action: rec.plan?.action || rec.plan?.reason || "no_action",
       tools: (rec.tool_calls || []).map(tc => tc.tool),
-      review: (rec.review?.assessment || rec.review?.narrative || rec.kind || "").slice(0, 200),
+      accomplished: rec.review?.accomplished || String(rec.review?.narrative || "").slice(0, 150) || null,
+      key_findings: rec.review?.key_findings || null,
+      next_gap: rec.review?.next_gap || null,
     });
   }
 
@@ -493,7 +503,12 @@ async function actCycle(K, { crashData, balances, events }) {
         final_text: plan.reason,
       };
       const evalResult = await evaluateAction(K, noActionLedger, desires, samskaras, inferenceConfig || {});
-      await writeMemory(K, { ledger: noActionLedger, evalResult, review: null, desires, samskaras, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+      const syntheticReview = {
+        assessment: "no_action",
+        narrative: `No action taken: ${plan.reason}`,
+        salience_estimate: evalResult.salience || 0,
+      };
+      await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, samskaras, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
       break;
     }
@@ -518,7 +533,9 @@ async function actCycle(K, { crashData, balances, events }) {
     priorActions.push({
       action: plan.action,
       tools: ledger.tool_calls.map(tc => tc.tool),
-      review: (review?.assessment || review?.narrative || "no review").slice(0, 200),
+      accomplished: review?.accomplished || ledger.final_text?.slice(0, 150) || null,
+      key_findings: review?.key_findings || null,
+      next_gap: review?.next_gap || null,
     });
 
     // 6h. Refresh circumstances

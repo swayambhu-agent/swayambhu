@@ -3038,6 +3038,56 @@ describe("drainEvents", () => {
     await kernel.drainEvents({ sessionTrigger });
     expect(await env.KV.get('event:0001:session_request')).toBeNull();
   });
+
+  it("dead-letters deferred events after 5 drains without terminal disposition", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: {},
+        deferred: { stuck_event: ['comms'] },
+      }),
+      'event:0001:stuck_event': JSON.stringify({ type: 'stuck_event', data: 'test' }),
+    });
+
+    // Drain 4 times — event should still be alive and in deferred
+    for (let i = 0; i < 4; i++) {
+      const { deferred } = await kernel.drainEvents({});
+      expect(deferred.comms).toHaveLength(1);
+      expect(await env.KV.get('event:0001:stuck_event')).not.toBeNull();
+    }
+
+    // 5th drain — should dead-letter
+    const { deferred } = await kernel.drainEvents({});
+    expect(deferred.comms || []).toHaveLength(0);
+    expect(await env.KV.get('event:0001:stuck_event')).toBeNull();
+    expect(await env.KV.get('event_dead:0001:stuck_event', 'json')).toBeTruthy();
+    expect(await env.KV.get('event_drain_count:event:0001:stuck_event')).toBeNull();
+  });
+
+  it("deleteEvent removes event and its drain count", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: {},
+        deferred: { test_event: ['comms'] },
+      }),
+      'event:0001:test_event': JSON.stringify({ type: 'test_event' }),
+    });
+
+    // Drain once to create a drain count
+    await kernel.drainEvents({});
+    expect(await env.KV.get('event_drain_count:event:0001:test_event')).not.toBeNull();
+
+    // deleteEvent should clean up both
+    const K = kernel.buildKernelInterface();
+    await K.deleteEvent('event:0001:test_event');
+    expect(await env.KV.get('event:0001:test_event')).toBeNull();
+    expect(await env.KV.get('event_drain_count:event:0001:test_event')).toBeNull();
+  });
+
+  it("deleteEvent rejects non-event keys", async () => {
+    const { kernel } = makeKernel({});
+    const K = kernel.buildKernelInterface();
+    await expect(K.deleteEvent('config:defaults')).rejects.toThrow('not an event key');
+  });
 });
 
 // ── code staging ─────────────────────────────────────────────
