@@ -1,12 +1,12 @@
 # Cognitive Tiers and DR Ideas
 
-Two changes to the cognitive architecture: a three-tier value system
-and a DR-produced ideas mechanism that bridges abstract desires to
-concrete actions.
+Three changes to the cognitive architecture: a three-tier value system,
+the expansive property of desire, and DR-produced ideas that bridge
+abstract desires to concrete actions.
 
 ## Problem
 
-Two gaps in the current architecture:
+Three gaps in the current architecture:
 
 1. **Operationalization gap**: desires are abstract ("accumulate varied
    experience") and the cheap planner can't bridge them to concrete
@@ -15,6 +15,11 @@ Two gaps in the current architecture:
 2. **Policy smuggling**: behavioral rules ("don't stay passive") have
    no home. The agent writes them as desires, which corrupts the
    desire/principle distinction.
+
+3. **Desire stagnation**: the D operator retires fulfilled desires
+   without expanding. The agent can run out of desires and return to
+   passivity. Desire is supposed to be an expansive force — fulfillment
+   should reveal larger gaps, not empty the set.
 
 ## Design
 
@@ -59,7 +64,43 @@ Tactics differ from principles:
 - Both are injected into every LLM call, but in separate blocks
   (`[PRINCIPLES]` and `[TACTICS]`).
 
-### 2. DR ideas
+### 2. Desire expansion property
+
+The D operator's formal equation gains a constraint:
+
+```
+D_p(ε, d_t) = d_{t+1}    where |d_{t+1}| > |d_t|
+```
+
+Desire always expands. The set of desires only grows — fulfillment
+reveals more than it closes. Retirement isn't deletion, it's
+transformation: a fulfilled desire becomes the foundation for its
+successor.
+
+This makes the empty-desire passivity state mathematically impossible
+after the first DR cycle. The agent can never run out of desires as
+long as it has experiences.
+
+The DR prompt's D operator section changes:
+- Remove: "Retire when the gap closes"
+- Add: "Desire expands: closing a gap reveals what's beyond it. When
+  a desire is fulfilled, examine what the fulfillment made visible.
+  A fulfilled desire is an input to magnification, not a deletion.
+  The desire set always grows."
+
+The three D operator actions become:
+- **Create** when experience reveals a gap that principles care about
+- **Refine** when experience clarifies the target state
+- **Expand** when a desire is fulfilled — look through the fulfilled
+  state to the larger gap it reveals. The fulfilled desire's
+  description is updated to reflect the new, broader scope.
+
+"Retire" is replaced by "Expand" — desires are never deleted, only
+grown. A desire that's genuinely no longer relevant (misguided, not
+fulfilled) can be retired, but this should be rare. The normal
+lifecycle is: create → refine → expand → expand → ...
+
+### 3. DR ideas
 
 DR produces a small array of concrete, tool-grounded ideas inside
 `last_reflect`. These bridge the gap between abstract desires and
@@ -104,7 +145,7 @@ Treat as starting points when no desire gap is otherwise clearly closable.
   Why: Server capabilities unknown
 ```
 
-### 3. DR prompt changes
+### 4. DR prompt changes
 
 The deep_reflect prompt gains:
 
@@ -145,7 +186,7 @@ Format:
 }
 ```
 
-### 4. Planner wiring
+### 5. Planner wiring
 
 `planPhase` in userspace.js loads `last_reflect` and injects ideas:
 
@@ -164,7 +205,7 @@ if (lastReflect?.ideas?.length) {
 }
 ```
 
-### 5. Kernel tactic injection
+### 6. Kernel tactic injection
 
 The kernel already injects `[PRINCIPLES]` in `callLLM`. Add a
 `[TACTICS]` block using the same pattern — load `tactic:*` keys
