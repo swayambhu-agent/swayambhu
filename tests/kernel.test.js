@@ -3168,3 +3168,79 @@ describe("touchedKeys tracking", () => {
     expect(kernel.touchedKeys.size).toBeGreaterThan(0);
   });
 });
+
+// ── kernel:pulse ─────────────────────────────────────────
+
+describe("kernel:pulse", () => {
+  it("writes kernel:pulse at end of runTick", async () => {
+    const { kernel } = makeKernel();
+    kernel.HOOKS = {
+      tick: { run: async () => {} },
+    };
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+
+    const pulse = JSON.parse(await kernel.kv.get("kernel:pulse"));
+    expect(pulse.v).toBe(1);
+    expect(pulse.n).toBe(0);
+    expect(pulse.execution_id).toBe(kernel.executionId);
+    expect(pulse.outcome).toBe("clean");
+    expect(pulse.ts).toBeGreaterThan(0);
+    expect(Array.isArray(pulse.changed)).toBe(true);
+  });
+
+  it("increments pulse counter across ticks", async () => {
+    const { kernel } = makeKernel();
+    kernel.HOOKS = {
+      tick: { run: async () => {} },
+    };
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+    const p1 = JSON.parse(await kernel.kv.get("kernel:pulse"));
+
+    kernel.touchedKeys = new Set();
+    kernel.karma = [];
+    kernel.sessionCost = 0;
+    kernel.sessionLLMCalls = 0;
+    await kernel.runTick();
+    const p2 = JSON.parse(await kernel.kv.get("kernel:pulse"));
+
+    expect(p2.n).toBe(p1.n + 1);
+  });
+
+  it("calls HOOKS.pulse.classify with touchedKeys", async () => {
+    const { kernel } = makeKernel();
+    let receivedKeys = null;
+    kernel.HOOKS = {
+      tick: { run: async (K) => {
+        await K.kvWriteSafe("experience:test", { data: 1 });
+      }},
+      pulse: { classify: (keys) => {
+        receivedKeys = keys;
+        return ["mind"];
+      }},
+    };
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+
+    expect(receivedKeys).toBeInstanceOf(Set);
+    expect(receivedKeys.has("experience:test")).toBe(true);
+    const pulse = JSON.parse(await kernel.kv.get("kernel:pulse"));
+    expect(pulse.changed).toEqual(["mind"]);
+  });
+
+  it("pulse write failure does not crash the tick", async () => {
+    const { kernel } = makeKernel();
+    kernel.HOOKS = {
+      tick: { run: async () => {} },
+    };
+    const origPut = kernel.kv.put.bind(kernel.kv);
+    kernel.kv.put = async (key, ...args) => {
+      if (key === "kernel:pulse") throw new Error("KV write failed");
+      return origPut(key, ...args);
+    };
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+    // Should not throw — pulse write is best-effort
+  });
+});
