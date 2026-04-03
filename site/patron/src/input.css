@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+/* Theme — custom colors and fonts (Tailwind v4 CSS-based config) */
+@theme {
+  --color-bg: #0a0a0f;
+  --color-bg-panel: #0f0f18;
+  --color-bg-card: #14142a;
+  --color-border: #1e1e3a;
+  --color-accent: #f59e0b;
+  --color-accent-dim: rgba(245, 158, 11, 0.12);
+  --color-deep: #a78bfa;
+  --color-deep-dim: rgba(167, 139, 250, 0.15);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 /* Custom scrollbar */
 .scrollbar-thin::-webkit-scrollbar { width: 6px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
