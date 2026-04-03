@@ -1,11 +1,17 @@
-// Swayambhu Kernel
-// Hardcoded safety primitives, execution engine, and session infrastructure.
-// Policy (session flow, reflection) lives in act.js and reflect.js — mutable
-// code injected at construction via HOOKS. Tools, providers, and channels are
-// also injected. The kernel enforces safety: KV write tiers, dharma injection,
-// communication gates, budget enforcement, and code staging.
+// Swayambhu Kernel — safety floor, not ceiling.
 //
-// Entry point is index.js, which imports all modules and wires them here.
+// The kernel is deliberately thin. It enforces ~10 safety invariants and
+// nothing else. Everything beyond safety lives in KV and is agent-modifiable.
+// Features locked in the kernel are capabilities the agent can never improve.
+// If the agent could implement something itself via code staging, it doesn't
+// belong here.
+//
+// Policy (session flow, reflection) lives in userspace.js, act.js, reflect.js
+// — mutable code injected at construction via HOOKS. Tools, providers, and
+// channels are also injected. Entry point is index.js.
+//
+// The agent's identity is its KV data, not the kernel. The kernel is
+// disposable infrastructure that can be redeployed without losing anything.
 
 class Kernel {
   constructor(env, opts = {}) {
@@ -42,13 +48,20 @@ class Kernel {
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
   }
 
+  // Write tiers enforce trust boundaries:
+  // - immutable: identity anchors. Without a fixed point, everything drifts.
+  // - kernel_only: safety state the agent must not touch (audit logs, quarantine,
+  //   execution tracking). Modifying these would let the agent disable its own
+  //   safety mechanisms.
+  // - protected: agent-modifiable via kvWriteGated in deep-reflect context,
+  //   with old values captured in karma for rollback.
   static DEFAULT_KEY_TIERS = {
     immutable: ["dharma", "principle:*", "patron:public_key"],
     kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
     protected: [
       "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
       "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-      "secret:*", "doc:*", "samskara:*", "skill:*", "task:*",
+      "secret:*", "samskara:*", "skill:*", "task:*",
       "providers", "wallets", "patron:contact", "patron:identity_snapshot",
       "desire:*",
     ],
@@ -432,7 +445,9 @@ class Kernel {
       // LLM
       callLLM: async (opts) => kernel.callLLM(opts),
 
-      // KV reads (sealed keys blocked — hook code must not read quarantined data)
+      // KV reads — sealed keys blocked. Quarantined content (from unknown senders)
+      // may contain prompt injection. The agent never sees raw sealed content;
+      // the patron reviews and approves senders via the dashboard.
       kvGet: async (key) => {
         if (key.startsWith("sealed:")) return null;
         return kernel.kvGet(key);
@@ -657,7 +672,10 @@ class Kernel {
       return { ok: false, error: `Unsupported op "${op.op}" for system key "${key}"` };
     }
 
-    // Model capabilities require deliberation
+    // Model capabilities are separated from config:models to prevent
+    // self-escalation — a single write can't both add a model and grant it
+    // communication or principle-writing powers. The deliberation requirement
+    // forces careful reasoning about capability changes.
     if (key === "config:model_capabilities") {
       if (!op.deliberation || op.deliberation.length < 200) {
         return { ok: false, error: `Model capability changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
@@ -830,6 +848,10 @@ class Kernel {
     }
   }
 
+  // Hook safety tripwire: 3 consecutive crashes trigger rollback.
+  // 1 crash could be transient (network), 2 could be coincidence, 3 strongly
+  // suggests broken hook code. We signal the governor to rollback rather than
+  // restoring inline, so the deployed code is also fixed.
   async checkHookSafety() {
     const history = await this.kvGet("kernel:last_executions") || [];
     if (history.length < 3) return true;
@@ -837,8 +859,6 @@ class Kernel {
     const last3 = history.slice(0, 3);
     const allBad = last3.every(s => s.outcome === "crash" || s.outcome === "killed");
     if (!allBad) return true;
-
-    // Tripwire fires — signal governor to rollback
     await this.kvWrite("deploy:rollback_requested", {
       reason: "3_consecutive_crashes",
       last_executions: last3,
@@ -1288,7 +1308,13 @@ class Kernel {
     };
   }
 
-  // ── LLM calls (dynamic provider with cascade fallback) ─────
+  // ── LLM calls (3-tier provider cascade) ─────────────────────
+  // Tier 1: compiled provider (agent-modifiable via code staging)
+  // Tier 2: last-working snapshot (auto-captured on first success per session)
+  // Tier 3: kernel hardcoded fallback (human-managed, always works)
+  // This ensures LLM access survives the agent's own mistakes. If the agent
+  // breaks the provider adapter, tier 2 catches it. If tier 2 is also bad,
+  // tier 3 is always there.
 
   async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap, json }) {
     const budget = this.defaults?.session_budget;
@@ -1300,10 +1326,10 @@ class Kernel {
 
     const startMs = Date.now();
 
-    // Kernel-enforced dharma injection — no hook or prompt modification can bypass this
+    // Dharma and principles are injected here in the kernel, not in hook code.
+    // This guarantees every LLM call carries core identity — a bad hook
+    // modification cannot remove it.
     const dharmaPrefix = this.dharma ? `[DHARMA]\n${this.dharma}\n[/DHARMA]\n\n` : '';
-
-    // Kernel-enforced principle injection — always present
     let principlesBlock = '';
     if (this.principles && Object.keys(this.principles).length > 0) {
       const entries = Object.entries(this.principles)

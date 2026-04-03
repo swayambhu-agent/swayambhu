@@ -1084,7 +1084,6 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
     expect(kernel.isSystemKey("tool:kv_query:code")).toBe(true);
     expect(kernel.isSystemKey("hook:act:code")).toBe(true);
     expect(kernel.isSystemKey("principle:care")).toBe(true);
-    expect(kernel.isSystemKey("doc:guide")).toBe(true);
     expect(kernel.isSystemKey("skill:model-config")).toBe(true);
   });
 
