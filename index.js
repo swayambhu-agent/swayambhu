@@ -8,6 +8,7 @@ import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem
 
 // Hook modules (mutable policy — agent can propose changes)
 import * as session from './userspace.js';
+import { classify as pulseClassify } from './userspace.js';
 
 // Channel adapters
 import * as slackAdapter from './channels/slack.js';
@@ -169,6 +170,7 @@ const HOOKS = {
       },
     },
   },
+  pulse: { classify: pulseClassify },
 };
 
 const EVENT_HANDLERS = {
