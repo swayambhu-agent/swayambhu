@@ -1,8 +1,8 @@
-# Cognitive Tiers and DR Ideas
+# Cognitive Tiers and Desire Properties
 
-Three changes to the cognitive architecture: a three-tier value system,
-the expansive property of desire, and DR-produced ideas that bridge
-abstract desires to concrete actions.
+Two changes to the cognitive architecture: a three-tier value system
+and formal properties of desire (expansion, always-positive,
+append-only).
 
 ## Problem
 
@@ -18,8 +18,7 @@ Three gaps in the current architecture:
 
 3. **Desire stagnation**: the D operator retires fulfilled desires
    without expanding. The agent can run out of desires and return to
-   passivity. Desire is supposed to be an expansive force — fulfillment
-   should reveal larger gaps, not empty the set.
+   passivity.
 
 ## Design
 
@@ -28,22 +27,25 @@ Three gaps in the current architecture:
 | Tier | Name | Examples | Written by | Mutability |
 |------|------|----------|------------|------------|
 | Dharma | Purpose, identity | "Serve Isha's vision of inner wellbeing" | Patron | Immutable |
-| Principles | Operational ethics | Truthfulness, care, security, proportionality | Patron seeds; agent can modify via DR with deliberation | High friction (kvWriteGated, 200-char deliberation) |
-| Tactics | Learned policies | "Explore before concluding nothing can be done", "check email periodically" | Agent via DR | Agent-managed (same as desires) |
+| Principles | Operational ethics | Truthfulness, care, security, proportionality | Patron seeds; agent can modify via DR with deliberation | High friction (kvWriteGated, deliberation required) |
+| Tactics | Learned behavioral rules | "Explore before concluding nothing can be done" | Agent via DR | Agent-managed (same tier as desires) |
 
 **Dharma** stays exactly as-is. Immutable, kernel-injected.
 
-**Principles** stay seeded from `principles.md` but become explicitly
-modifiable by DR. They already are in the code (`kvWriteGated` with
-deliberation requirement) — the change is in the DR prompt, which
-currently treats them as read-only context. DR should be told it can
-propose principle refinements when experience warrants it.
+**Principles** move from the immutable tier to the protected tier
+in `DEFAULT_KEY_TIERS`. This is a kernel change — principles were
+originally mutable with high friction, then made immutable, now
+reverting to the original behavior. DR can modify them via
+`kvWriteGated` in deep-reflect context with a deliberation
+requirement. The DR prompt tells the agent it can propose principle
+refinements when experience warrants it. High friction ensures
+principles change slowly and deliberately.
 
-**Tactics** are a new `tactic:*` KV prefix. They're behavioral
-policies the agent creates from experience — the proper home for
-things currently smuggled as desires ("break-passivity-loop",
-"self-directed-inquiry"). Managed by DR's D operator alongside
-desires. Injected into LLM calls by the kernel alongside principles.
+**Tactics** are a new `tactic:*` KV prefix. Behavioral rules the
+agent creates from experience — the proper home for things currently
+smuggled as desires. Managed by DR's T operator. Injected into LLM
+calls for plan and act steps only (NOT eval, chat, or DR — tactics
+are action-selection heuristics, not global norms).
 
 Tactic schema:
 ```json
@@ -58,24 +60,31 @@ Tactic schema:
 
 Tactics differ from principles:
 - Principles are operational ethics (how to be). Tactics are
-  tactical heuristics (what to do in specific situations).
+  practical moves (what to do in specific situations).
 - Principles change slowly with high friction. Tactics change
   freely as the agent learns.
-- Both are injected into every LLM call, but in separate blocks
-  (`[PRINCIPLES]` and `[TACTICS]`).
+- Principles are injected into ALL LLM calls (global norms).
+  Tactics are injected only into plan + act calls (action guidance).
+- The DR prompt should address the boundary: if a behavioral rule
+  applies to all contexts (communication, reflection, evaluation),
+  it's a principle. If it applies specifically to action selection,
+  it's a tactic.
 
 ### 2. Desire properties
 
-Two formal properties of the D operator:
+Three formal properties of the D operator:
 
 **Expansion** — desire always grows:
 ```
 D_p(ε, d_t) = d_{t+1}    where |d_{t+1}| > |d_t|
 ```
 
-Fulfillment reveals larger gaps, not empty sets. Retirement is
-replaced by expansion. The empty-desire passivity state becomes
-impossible after the first DR cycle.
+Here d is desire as a force, not a set. |d| is the magnitude of
+desire, not the count. Desire is an expansive force — experience
+provides the currency, and desire always grows. This is an axiom,
+not a derived property. Fulfillment reveals larger gaps, not empty
+sets. The empty-desire passivity state becomes impossible after
+the first DR cycle.
 
 **Always-positive** — D transforms everything into approach:
 ```
@@ -85,88 +94,46 @@ D_p(ε_{+}) = d_{++}    positive experience → amplified approach desire
 
 D never produces avoidance desires. Negative experience reveals what
 would have been better; positive experience amplifies toward more.
-The `direction` field in the desire schema becomes always `"approach"`.
+The `direction` field in the desire schema is always `"approach"`.
+Remove `"avoidance"` from the architecture spec, eval pipeline,
+schema tests, and prompt.
 
-The DR prompt's D operator section changes:
-- Remove: "Retire when the gap closes"
-- Remove: `direction: "approach|avoidance"` — always `"approach"`
-- Add expansion and always-positive properties with examples
+**Append-only** — desires are never modified, only created:
 
-The three D operator actions become:
+Fulfilled desires stay as historical records. When a desire is
+fulfilled, DR creates a NEW desire with broader scope — it does not
+update the existing desire's description. This preserves identity
+continuity: the slug `desire:map-kv-structure` always means what it
+meant when created. The new broader desire gets a new slug.
+
+The D operator actions:
 - **Create** when experience reveals a gap that principles care about
-- **Refine** when experience clarifies the target state
-- **Expand** when a desire is fulfilled — look through the fulfilled
-  state to the larger gap it reveals. The fulfilled desire's
-  description is updated to reflect the new, broader scope.
+- **Create (expand)** when a desire is fulfilled — create a new desire
+  with broader scope informed by the fulfilled state
+- **Retire** only when a desire was misguided (rare). Fulfilled
+  desires are not retired — they remain as history while the expanded
+  successor takes over as the active pursuit.
 
-"Retire" is replaced by "Expand" — desires are never deleted, only
-grown. A desire that's genuinely no longer relevant (misguided, not
-fulfilled) can be retired, but this should be rare. The normal
-lifecycle is: create → refine → expand → expand → ...
-
-### 3. DR ideas
-
-DR produces a small array of concrete, tool-grounded ideas inside
-`last_reflect`. These bridge the gap between abstract desires and
-the cheap planner's ability to select actions.
-
-Ideas are:
-- **Concrete**: "Use kv_manifest to inventory memory structure" not
-  "explore your memory"
-- **Tool-grounded**: reference specific tools the agent has
-- **Ephemeral**: refreshed every DR cycle, no lifecycle tracking
-- **Advisory**: the planner treats them as candidates, not obligations
-
-Shape inside `last_reflect`:
-```json
-{
-  "session_summary": "...",
-  "ideas": [
-    {
-      "idea": "Use kv_manifest to inventory memory under desire:, samskara:, and experience: prefixes",
-      "why": "Planner has been returning no_action — this reduces uncertainty with one cheap probe",
-      "tool_hints": ["kv_manifest", "kv_query"]
-    },
-    {
-      "idea": "Use computer tool to check what software is installed on the server",
-      "why": "Server capabilities are unknown — mapping them opens new action possibilities",
-      "tool_hints": ["computer"]
-    }
-  ],
-  "note_to_future_self": "..."
-}
-```
-
-The planner receives ideas in a `[DR IDEAS]` section:
-```
-[DR IDEAS]
-These are concrete action candidates from your last deep reflection.
-Treat as starting points when no desire gap is otherwise clearly closable.
-
-- Use kv_manifest to inventory memory (tools: kv_manifest, kv_query)
-  Why: Planner returning no_action under uncertainty
-- Use computer to check server software (tools: computer)
-  Why: Server capabilities unknown
-```
-
-### 4. DR prompt changes
+### 3. DR prompt changes
 
 The deep_reflect prompt gains:
 
-**Tactic operator** (alongside S and D operators):
+**T operator** (alongside S and D operators):
 ```
 ## T operator: Tactic Management
 
 Tactics are practical approaches learned from experience — behavioral
 rules that guide action selection. Unlike principles (operational
-ethics, slow-changing), tactics are situation-specific moves the
-agent develops through practice.
+ethics that apply everywhere), tactics are situation-specific moves
+for planning and acting.
+
+If a rule applies to all contexts (communication, reflection,
+evaluation), it belongs as a principle, not a tactic.
 
 **Create** when a pattern in experiences suggests a behavioral rule
-that would improve future sessions.
+that would improve future act sessions.
 **Refine** when new experience sharpens the rule.
-**Retire** when the tactic is no longer useful or has been
-superseded.
+**Retire** when the tactic is no longer useful or superseded.
 
 Format:
 { "key": "tactic:{slug}", "value": {
@@ -178,80 +145,108 @@ Format:
 } }
 ```
 
-**Ideas section** in the output schema:
+**D operator updates**:
+- Add expansion axiom and always-positive property
+- Remove avoidance direction
+- Add append-only rule (create new desires, don't modify existing)
+- Add principle modification permission with deliberation requirement
+
+**Output schema** adds `tactic:*` to allowed kv_operations:
 ```json
 {
-  "kv_operations": [],
-  "ideas": [
-    { "idea": "...", "why": "...", "tool_hints": ["..."] }
+  "kv_operations": [
+    // samskara, desire, and tactic changes
   ],
   "reflection": "...",
   "note_to_future_self": "..."
 }
 ```
 
-### 5. Planner wiring
+### 4. Kernel changes
 
-`planPhase` in userspace.js loads `last_reflect` and injects ideas:
+**Move principles to protected tier**: in `DEFAULT_KEY_TIERS`, move
+`principle:*` from `immutable` to `protected`. Add deliberation
+requirement in `_gateSystem` for `principle:*` keys (same pattern as
+`config:model_capabilities`).
 
-```js
-const lastReflect = await K.kvGet("last_reflect");
-if (lastReflect?.ideas?.length) {
-  sections.push("", "[DR IDEAS]",
-    "Concrete action candidates from your last deep reflection.",
-    "Treat as starting points when no desire gap is otherwise clearly closable.",
-  );
-  for (const idea of lastReflect.ideas) {
-    const tools = idea.tool_hints?.length ? ` (tools: ${idea.tool_hints.join(", ")})` : "";
-    sections.push(`- ${idea.idea}${tools}`);
-    if (idea.why) sections.push(`  Why: ${idea.why}`);
-  }
-}
-```
+**Add tactic loading and injection**: load `tactic:*` keys at boot
+(same pattern as `loadPrinciples`). Inject `[TACTICS]` block in
+`callLLM` but ONLY for plan and act steps. The `step` parameter
+already identifies the call type — check `step` before injecting.
 
-### 6. Kernel tactic injection
+**Add `tactic:*` to protected tier** in `DEFAULT_KEY_TIERS`.
 
-The kernel already injects `[PRINCIPLES]` in `callLLM`. Add a
-`[TACTICS]` block using the same pattern — load `tactic:*` keys
-at boot, inject after principles.
+**Add tool manifest to DR context**: add `config:tool_registry` to
+the context_keys sent with DR dispatch so DR knows what tools exist.
 
-Tactics are a protected tier (agent writes via `kvWriteGated` in
-DR context, same as desires). Add `tactic:*` to the protected
-tier in `DEFAULT_KEY_TIERS`.
+### 5. Userspace changes
+
+**applyDrResults**: allow `tactic:*` operations alongside `desire:*`
+and `samskara:*`.
+
+**planPhase**: load tactics for display in planner context (the
+kernel injects them into the system prompt, but the planner also
+needs to see them explicitly to reason about them).
+
+### 6. Other changes
+
+**Architecture spec** (`swayambhu-cognitive-architecture.md`): update
+desire definition (remove bidirectional, add expansion axiom,
+add always-positive, add append-only). Add tactics as a new entity.
+Update principle mutability.
+
+**Schema tests** (`tests/schema.test.js`): remove `direction:
+"avoidance"` validation, add tactic schema validation.
+
+**Eval pipeline** (`eval.js`): remove any avoidance-specific logic.
+
+**Dashboard API** (`dashboard-api/worker.js`): add tactics to the
+`/mind` endpoint alongside desires and samskaras.
+
+**Dashboard SPA**: render tactics in the Mind tab.
 
 ## Implementation scope
 
 | File | Change |
 |------|--------|
-| kernel.js | Load tactics at boot, inject `[TACTICS]` in callLLM, add `tactic:*` to protected tier |
-| userspace.js | planPhase loads last_reflect.ideas, applyDrResults preserves ideas + handles tactic ops |
-| prompts/deep_reflect.md | Add T operator (tactics), add ideas to output schema |
-| prompts/plan.md | Document [DR IDEAS] section |
-| scripts/seed-local-kv.mjs | No tactic seeding (agent earns them) |
-| tests/kernel.test.js | Test tactic injection |
-| tests/userspace.test.js | Test idea injection into planner context |
+| kernel.js | Move principle:* to protected tier, add deliberation gate, load/inject tactics (plan+act only), add tactic:* to protected |
+| userspace.js | applyDrResults allows tactic:* ops, planPhase context |
+| prompts/deep_reflect.md | Add T operator, update D operator (expansion, always-positive, append-only, principle modification) |
+| prompts/plan.md | Document tactics in planner context |
+| eval.js | Remove avoidance-specific logic |
+| swayambhu-cognitive-architecture.md | Update desire/principle/tactic definitions |
+| tests/schema.test.js | Update desire schema, add tactic schema |
+| tests/kernel.test.js | Test tactic injection scoping, principle mutability |
+| dashboard-api/worker.js | Add tactics to /mind endpoint |
+| site/patron/src/components/MindTab.jsx | Render tactics |
+| scripts/seed-local-kv.mjs | Add tactic:* to key tiers, add tool_registry to DR context keys |
 
 ## Design decisions
 
 **Why not merge tactics into principles?** Different mutability,
-different semantics. Principles are "how to be" (ethics). Tactics
-are "what to do when" (practical moves). Collapsing them loses the
-distinction between constitution and learned behavior.
+different scope, different semantics. Principles apply everywhere and
+change slowly. Tactics apply to action selection and change freely.
+The DR prompt provides the boundary: "if it applies to all contexts,
+it's a principle."
 
-**Why not give ideas lifecycle?** DR runs every 5 sessions. If an
-idea is ignored for 5 sessions, DR sees that in experiences and
-adjusts. The experiences ARE the lifecycle tracking.
+**Why move principles to protected, not keep them immutable?** The
+agent needs to be able to refine its ethics through experience. A
+principle like "proportionality" might need sharpening after the
+agent learns what proportional resource use actually looks like in
+practice. High friction (deliberation requirement) prevents casual
+modification.
 
-**Why tool-grounded ideas?** Vague ideas ("explore more") are as
-useless as abstract desires. The cheap planner needs specific tool
-references to act. DR runs on Opus and knows the tool manifest —
-it can produce concrete candidates.
+**Why append-only desires?** Modifying a desire in place under the
+same slug destroys identity continuity. Historical comparisons,
+embeddings, and dashboard views lose meaning when the key means
+something different than it used to. New desires get new slugs.
 
-**Why inject tactics into every LLM call?** Same reason as
-principles — they shape all behavior, not just planning. A tactic
-like "be concise in reviews" should influence the review model too.
+**Why scope tactics to plan+act only?** Tactics like "explore before
+concluding" are action-selection heuristics. Injecting them into
+eval calls contaminates alignment classification. Injecting them
+into chat calls puts internal behavioral rules into patron-facing
+conversation. Injecting them into DR would create feedback loops.
 
-**Why not let DR write principles directly?** It already can
-(kvWriteGated with deliberation). The change is only in the prompt —
-telling DR it's allowed to propose principle refinements. The
-high-friction gate (200-char deliberation + capable model) stays.
+**Why add tool_registry to DR context?** Without it, DR can't
+produce experience-grounded tactics about tool use. It needs to
+know what tools exist to reason about how to use them better.
