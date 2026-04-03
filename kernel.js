@@ -875,6 +875,7 @@ class Kernel {
   }
 
   async runTick() {
+    this.touchedKeys = new Set();
     await this.loadEagerConfig();
     const K = this.buildKernelInterface();
     let outcome = "clean";
@@ -916,6 +917,22 @@ class Kernel {
     await this._writeExecutionHealth(outcome);
     await this.updateExecutionOutcome(outcome);
     await this.kv.delete("kernel:active_execution");
+
+    // Pulse — written last, after everything is settled.
+    // Best-effort: failure must not crash the tick.
+    try {
+      const changed = this.HOOKS.pulse?.classify
+        ? await this.HOOKS.pulse.classify(this.touchedKeys)
+        : [];
+      await this.kv.put("kernel:pulse", JSON.stringify({
+        v: 1,
+        n: this.pulseCounter++,
+        execution_id: this.executionId,
+        outcome,
+        ts: Date.now(),
+        changed,
+      }));
+    } catch {}
   }
 
   // ── Crash detection ───────────────────────────────────────
