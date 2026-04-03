@@ -3286,173 +3286,40 @@ describe("pulse integration", () => {
   });
 });
 
+// Tactics are loaded and injected by userspace (planPhase), not by the kernel.
+// The kernel only provides the protected-tier write gate for tactic:* keys.
 describe("tactics", () => {
-  it("loads tactics at boot", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("tactic:explore-first", JSON.stringify({
-      slug: "explore-first",
-      description: "Try one exploratory tool use before planning no_action.",
-    }));
-    await kernel.loadEagerConfig();
-    expect(kernel.tactics).toBeDefined();
-    expect(kernel.tactics["tactic:explore-first"]).toBeDefined();
-  });
-
-  it("injects tactics into plan step LLM calls", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("tactic:explore-first", JSON.stringify({
-      slug: "explore-first",
-      description: "Try one exploratory tool use before planning no_action.",
-    }));
-    await kernel.loadEagerConfig();
-
-    let capturedMessages;
-    kernel.PROVIDERS = { 'provider:llm': {
-      meta: { secrets: [] },
-      call: async (req) => {
-        capturedMessages = req.messages;
-        return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
-      },
-    }};
-
-    await kernel.callLLM({
-      model: "test", systemPrompt: "test prompt",
-      messages: [{ role: "user", content: "test" }],
-      step: "plan",
-    });
-
-    const systemMsg = capturedMessages[0].content;
-    expect(systemMsg).toContain("[TACTICS]");
-    expect(systemMsg).toContain("explore-first");
-  });
-
-  it("injects tactics into act step LLM calls", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("tactic:test-tactic", JSON.stringify({
-      slug: "test-tactic", description: "Test tactic.",
-    }));
-    await kernel.loadEagerConfig();
-
-    let capturedMessages;
-    kernel.PROVIDERS = { 'provider:llm': {
-      meta: { secrets: [] },
-      call: async (req) => {
-        capturedMessages = req.messages;
-        return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
-      },
-    }};
-
-    await kernel.callLLM({
-      model: "test", systemPrompt: "test",
-      messages: [{ role: "user", content: "test" }],
-      step: "act_0",
-    });
-
-    expect(capturedMessages[0].content).toContain("[TACTICS]");
-  });
-
-  it("does NOT inject tactics into review step", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("tactic:test", JSON.stringify({ slug: "test", description: "test" }));
-    await kernel.loadEagerConfig();
-
-    let capturedMessages;
-    kernel.PROVIDERS = { 'provider:llm': {
-      meta: { secrets: [] },
-      call: async (req) => {
-        capturedMessages = req.messages;
-        return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
-      },
-    }};
-
-    await kernel.callLLM({
-      model: "test", systemPrompt: "test",
-      messages: [{ role: "user", content: "test" }],
-      step: "review",
-    });
-
-    expect(capturedMessages[0].content).not.toContain("[TACTICS]");
-  });
-
-  it("does NOT inject tactics when no step provided", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("tactic:test", JSON.stringify({ slug: "test", description: "test" }));
-    await kernel.loadEagerConfig();
-
-    let capturedMessages;
-    kernel.PROVIDERS = { 'provider:llm': {
-      meta: { secrets: [] },
-      call: async (req) => {
-        capturedMessages = req.messages;
-        return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
-      },
-    }};
-
-    await kernel.callLLM({
-      model: "test", systemPrompt: "test",
-      messages: [{ role: "user", content: "test" }],
-    });
-
-    expect(capturedMessages[0].content).not.toContain("[TACTICS]");
-  });
-
-  it("full flow: tactic written via kvWriteGated, loaded at boot, injected into plan call", async () => {
-    const { kernel, env } = makeKernel();
+  it("tactic:* keys are writable via kvWriteGated in deep-reflect", async () => {
+    const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     await kernel.loadEagerConfig();
-
-    // Write a tactic via kvWriteGated (simulating DR)
     const result = await kernel.kvWriteGated(
-      { key: "tactic:test-tactic", op: "put", value: { slug: "test-tactic", description: "Always explore before giving up." } },
+      { key: "tactic:test", op: "put", value: { slug: "test", description: "test" } },
       "deep-reflect"
     );
     expect(result.ok).toBe(true);
+  });
 
-    // Reload to pick up the new tactic
-    await kernel.loadTactics();
-    expect(kernel.tactics["tactic:test-tactic"]).toBeDefined();
+  it("kernel does NOT inject tactics into LLM calls", async () => {
+    const { kernel, env } = makeKernel();
+    await env.KV.put("tactic:test", JSON.stringify({ slug: "test", description: "test" }));
+    await kernel.loadEagerConfig();
 
-    // Verify it appears in a plan-step LLM call
-    let capturedSystem;
+    let capturedMessages;
     kernel.PROVIDERS = { 'provider:llm': {
       meta: { secrets: [] },
       call: async (req) => {
-        capturedSystem = req.messages[0]?.content;
+        capturedMessages = req.messages;
         return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
       },
     }};
 
     await kernel.callLLM({
-      model: "test", systemPrompt: "plan context",
+      model: "test", systemPrompt: "test",
       messages: [{ role: "user", content: "test" }],
       step: "plan",
     });
 
-    expect(capturedSystem).toContain("[TACTICS]");
-    expect(capturedSystem).toContain("test-tactic");
-    expect(capturedSystem).toContain("Always explore before giving up");
-  });
-
-  it("tactic NOT injected into review call", async () => {
-    const { kernel, env } = makeKernel();
-    await env.KV.put("tactic:test", JSON.stringify({ slug: "test", description: "test tactic" }));
-    await kernel.loadEagerConfig();
-
-    let capturedSystem;
-    kernel.PROVIDERS = { 'provider:llm': {
-      meta: { secrets: [] },
-      call: async (req) => {
-        capturedSystem = req.messages[0]?.content;
-        return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
-      },
-    }};
-
-    await kernel.callLLM({
-      model: "test", systemPrompt: "review context",
-      messages: [{ role: "user", content: "test" }],
-      step: "review",
-    });
-
-    expect(capturedSystem).not.toContain("[TACTICS]");
+    expect(capturedMessages[0].content).not.toContain("[TACTICS]");
   });
 });

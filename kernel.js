@@ -41,7 +41,7 @@ class Kernel {
     this._alertConfigCache = undefined; // undefined = not loaded, null = doesn't exist
     this.keyTiers = null;      // Loaded from kernel:key_tiers at boot; falls back to DEFAULT_KEY_TIERS
     this.principles = null;    // Cached generic principles (loaded at boot, immutable by agent)
-    this.tactics = null;       // Cached tactics (loaded at boot, agent-managed via DR)
+    // Tactics loaded by userspace, not kernel — they're agent-managed heuristics, not safety invariants
     this.patronId = null;      // Contact slug of patron (loaded at boot)
     this.patronContact = null; // Full patron contact record (loaded at boot)
     this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
@@ -130,7 +130,7 @@ class Kernel {
       this.toolGrants = this._buildToolGrantsFromModules();
     }
     await this.loadPrinciples();
-    await this.loadTactics();
+    // Tactics loaded by userspace planPhase, not kernel
     await this.loadPatronContext();
   }
 
@@ -141,15 +141,6 @@ class Kernel {
       if (key.endsWith(':audit')) continue;
       const value = await this.kvGet(key);
       if (value !== null) this.principles[key] = value;
-    }
-  }
-
-  async loadTactics() {
-    this.tactics = {};
-    const keys = await this.kvListAll({ prefix: 'tactic:' });
-    for (const { name: key } of keys) {
-      const value = await this.kvGet(key);
-      if (value !== null) this.tactics[key] = value;
     }
   }
 
@@ -1382,23 +1373,9 @@ class Kernel {
       principlesBlock = `[PRINCIPLES]\n${entries}\n[/PRINCIPLES]\n\n`;
     }
 
-    // Tactics injected only for plan and act steps — action-selection
-    // heuristics that shouldn't contaminate eval, chat, or DR.
-    let tacticsBlock = '';
-    const isPlanOrAct = step && (String(step).startsWith('act') || step === 'plan' || step === 'plan_retry');
-    if (isPlanOrAct && this.tactics && Object.keys(this.tactics).length > 0) {
-      const entries = Object.entries(this.tactics)
-        .map(([key, val]) => {
-          const slug = key.replace('tactic:', '');
-          const desc = typeof val === 'string' ? val : val.description || JSON.stringify(val);
-          return `[${slug}]\n${desc}\n[/${slug}]`;
-        }).join('\n');
-      tacticsBlock = `[TACTICS]\n${entries}\n[/TACTICS]\n\n`;
-    }
-
     const fullSystemPrompt = systemPrompt
-      ? dharmaPrefix + principlesBlock + tacticsBlock + systemPrompt
-      : (dharmaPrefix + principlesBlock + tacticsBlock) || null;
+      ? dharmaPrefix + principlesBlock + systemPrompt
+      : (dharmaPrefix + principlesBlock) || null;
 
     // Build messages array, prepending system prompt if provided
     const msgs = fullSystemPrompt

@@ -117,11 +117,27 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
     ? await K.buildPrompt(planPrompt, await loadPlanVars(K, defaults))
     : "You are a planning agent. Given desires, patterns, and circumstances, output a JSON action plan.";
 
+  // Load tactics — agent-managed behavioral rules, injected into planner context
+  // alongside desires (not kernel-injected, because they're not safety invariants)
+  const tacticList = await K.kvList({ prefix: "tactic:" });
+  const tactics = [];
+  for (const entry of tacticList.keys) {
+    const val = await K.kvGet(entry.name);
+    if (val) tactics.push({ key: entry.name, ...(typeof val === 'string' ? { description: val } : val) });
+  }
+
   const sections = [
     "[DESIRES]", formatDesires(desires), "",
     "[PATTERNS]", formatPatterns(patterns), "",
-    "[CIRCUMSTANCES]", formatCircumstances(circumstances),
   ];
+  if (tactics.length) {
+    sections.push("[TACTICS]");
+    for (const t of tactics) {
+      sections.push(`- ${t.slug || t.key}: ${t.description}`);
+    }
+    sections.push("");
+  }
+  sections.push("[CIRCUMSTANCES]", formatCircumstances(circumstances));
   if (priorActions?.length) {
     sections.push("", "[PRIOR ACTIONS THIS SESSION]");
     for (const pa of priorActions) {
