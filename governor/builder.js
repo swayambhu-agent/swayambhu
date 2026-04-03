@@ -168,7 +168,11 @@ export function generateIndexJS(metadata) {
   lines.push('          let turn;');
   lines.push('          if (ev.type === "inbound_message") { turn = ev; }');
   lines.push('          else { turn = await ingestInternal(K, ev); }');
-  lines.push('          if (!turn) continue;');
+  lines.push('          if (!turn) {');
+  lines.push('            if (ev.key) await K.deleteEvent(ev.key);');
+  lines.push('            await K.karmaRecord({ event: "comms_unroutable", event_type: ev.type, event_key: ev.key });');
+  lines.push('            continue;');
+  lines.push('          }');
   lines.push('          const cid = turn.conversation_id;');
   lines.push('          if (!byConv[cid]) byConv[cid] = [];');
   lines.push('          byConv[cid].push(turn);');
@@ -187,10 +191,10 @@ export function generateIndexJS(metadata) {
   lines.push("            for (const t of claimed) {");
   lines.push("              if (!t.idempotency_key) continue;");
   lines.push('              if (result.action === "sent" || result.action === "discarded") {');
-  lines.push("                await K.kvDeleteSafe(t.idempotency_key);");
+  lines.push("                await K.deleteEvent(t.idempotency_key);");
   lines.push('              } else if (result.action === "held") {');
   lines.push("                await createOutboxItem(K, convId, t.content, result.reason, result.release_after, [t.idempotency_key]);");
-  lines.push("                await K.kvDeleteSafe(t.idempotency_key);");
+  lines.push("                await K.deleteEvent(t.idempotency_key);");
   lines.push("              } else {");
   lines.push("                await K.releaseEvent(t.idempotency_key);");
   lines.push("              }");
