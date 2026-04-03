@@ -46,6 +46,8 @@ class Kernel {
     this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
     this.patronPlatforms = null; // Patron's platform bindings (loaded at boot from contact_platform: keys)
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
+    this.touchedKeys = new Set();
+    this.pulseCounter = 0;
   }
 
   // Write tiers enforce trust boundaries:
@@ -429,6 +431,7 @@ class Kernel {
     if (this.isImmutableKey(key)) throw new Error(`Cannot delete "${key}" — immutable key`);
     if (this.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
     if (this.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
+    if (this.touchedKeys) this.touchedKeys.add(key);
     return this.kv.delete(key);
   }
 
@@ -1274,6 +1277,7 @@ class Kernel {
 
   _buildScopedKV(toolName, kvAccess, writePrefixes = []) {
     const kv = this.kv;
+    const kernel = this;
     const scope = `tooldata:${toolName}:`;
     return {
       async get(key) {
@@ -1286,6 +1290,7 @@ class Kernel {
         // Allow writes to declared prefixes (e.g., job:, job_result:) without scoping
         const allowedPrefix = writePrefixes.find(p => key.startsWith(p));
         const resolved = allowedPrefix ? key : `${scope}${key}`;
+        if (kernel.touchedKeys) kernel.touchedKeys.add(resolved);
         const fmt = typeof value === "string" ? "text" : "json";
         await kv.put(resolved, typeof value === "string" ? value : JSON.stringify(value), {
           metadata: { type: allowedPrefix ? "job" : "tooldata", format: fmt, updated_at: new Date().toISOString() },
@@ -1882,6 +1887,8 @@ class Kernel {
     if (this.isImmutableKey(key)) {
       throw new Error(`Cannot write "${key}" — immutable key`);
     }
+
+    if (this.touchedKeys) this.touchedKeys.add(key);
 
     // System keys cannot be marked unprotected
     if (this.isSystemKey(key)) delete metadata.unprotected;

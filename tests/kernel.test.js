@@ -3141,3 +3141,30 @@ describe("code staging", () => {
     );
   });
 });
+
+// ── touchedKeys tracking ──────────────────────────────────────
+
+describe("touchedKeys tracking", () => {
+  it("tracks keys written via kvWriteSafe", async () => {
+    const { kernel } = makeKernel();
+    kernel.touchedKeys = new Set();
+    await kernel.kvWriteSafe("experience:test1", { data: "hello" });
+    expect(kernel.touchedKeys.has("experience:test1")).toBe(true);
+  });
+
+  it("tracks keys deleted via kvDeleteSafe", async () => {
+    const { kernel } = makeKernel();
+    kernel.touchedKeys = new Set();
+    await kernel.kvWriteSafe("experience:del1", "temp");
+    kernel.touchedKeys.clear();
+    await kernel.kvDeleteSafe("experience:del1");
+    expect(kernel.touchedKeys.has("experience:del1")).toBe(true);
+  });
+
+  it("tracks keys written via internal kvWrite", async () => {
+    const { kernel } = makeKernel();
+    kernel.touchedKeys = new Set();
+    await kernel.karmaRecord({ event: "test" });
+    expect(kernel.touchedKeys.size).toBeGreaterThan(0);
+  });
+});
