@@ -439,6 +439,31 @@ class Kernel {
         return { key };
       },
 
+      // Event lease helpers
+      claimEvent: async (key, executionId) => {
+        const raw = await kernel.kv.get(key);
+        if (!raw) return false;
+        const event = JSON.parse(raw);
+        const now = Date.now();
+        if (event.claimed_by && event.lease_expires && event.lease_expires > now) {
+          return false;
+        }
+        event.claimed_by = executionId;
+        event.claimed_at = now;
+        event.lease_expires = now + 60000;
+        await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+        return true;
+      },
+      releaseEvent: async (key) => {
+        const raw = await kernel.kv.get(key);
+        if (!raw) return;
+        const event = JSON.parse(raw);
+        delete event.claimed_by;
+        delete event.claimed_at;
+        delete event.lease_expires;
+        await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+      },
+
       // Balance
       checkBalance: async (args) => kernel.checkBalance(args),
 
