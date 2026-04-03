@@ -38,6 +38,7 @@ function MindHealthBar({ health, counts, onRefresh }) {
       <div className="flex items-center gap-3 ml-auto text-gray-500">
         <span><span className="text-green-400">{'\u25cf'}</span> {counts.samskaras} samskaras</span>
         <span><span className="text-purple-400">{'\u25cf'}</span> {counts.desires} desires</span>
+        <span><span className="text-amber-400">{'\u25cf'}</span> {counts.tactics} tactics</span>
         <span><span className="text-cyan-400">{'\u25cf'}</span> {counts.experiences} experiences</span>
         {onRefresh && (
           <button onClick={onRefresh} className="text-gray-600 hover:text-gray-400 transition ml-2 text-sm" title="Refresh">
@@ -50,7 +51,7 @@ function MindHealthBar({ health, counts, onRefresh }) {
 }
 
 function MindGraphExplorer({ data, selected, onSelect }) {
-  const { principles = [], samskaras = [], desires = [], experiences = [] } = data;
+  const { principles = [], tactics = [], samskaras = [], desires = [], experiences = [] } = data;
 
   // Build connection map for the selected entity
   const connections = useMemo(() => {
@@ -67,6 +68,23 @@ function MindGraphExplorer({ data, selected, onSelect }) {
           downstream.push({ ...d, _type: 'desire' });
         }
       });
+      tactics.forEach(t => {
+        const sources = t.source_principles || [];
+        if (sources.some(s => s === pNum || s === `p${pNum}` || s === key)) {
+          downstream.push({ ...t, _type: 'tactic' });
+        }
+      });
+    }
+    if (type === 'tactic') {
+      const t = tactics.find(t => t.key === key);
+      if (t?.source_principles) {
+        t.source_principles.forEach(pRef => {
+          const p = principles.find(p =>
+            p.key === pRef || p.key === `principle:${pRef}` || p.key.endsWith(`:${pRef}`)
+          );
+          if (p) upstream.push({ ...p, _type: 'principle' });
+        });
+      }
     }
     if (type === 'desire') {
       const d = desires.find(d => d.key === key);
@@ -88,19 +106,20 @@ function MindGraphExplorer({ data, selected, onSelect }) {
       desires.forEach(d => downstream.push({ ...d, _type: 'desire' }));
     }
     return { upstream, downstream };
-  }, [selected, principles, samskaras, desires, experiences]);
+  }, [selected, principles, tactics, samskaras, desires, experiences]);
 
   const centerEntity = useMemo(() => {
     if (!selected) return null;
     const { type, key } = selected;
     if (type === 'principle') return principles.find(p => p.key === key);
     if (type === 'desire') return desires.find(d => d.key === key);
+    if (type === 'tactic') return tactics.find(t => t.key === key);
     if (type === 'samskara') return samskaras.find(s => s.key === key);
     if (type === 'experience') return experiences.find(e => e.key === key);
     return null;
-  }, [selected, principles, samskaras, desires, experiences]);
+  }, [selected, principles, tactics, samskaras, desires, experiences]);
 
-  const typeColor = (t) => ({ principle: '#f59e0b', desire: '#a78bfa', samskara: '#22c55e', experience: '#06b6d4' }[t] || '#666');
+  const typeColor = (t) => ({ principle: '#f59e0b', tactic: '#fb923c', desire: '#a78bfa', samskara: '#22c55e', experience: '#06b6d4' }[t] || '#666');
   const strengthColor = (s) => s > 0.7 ? '#22c55e' : s > 0.3 ? '#f59e0b' : '#ef4444';
   const trunc = (t, n) => t && t.length > n ? t.slice(0, n - 1) + '\u2026' : (t || '');
 
@@ -124,6 +143,11 @@ function MindGraphExplorer({ data, selected, onSelect }) {
             <span style={{ color: '#22c55e' }}>
               {'\u2191'}
             </span>{' '}{trunc(entity.description || entity.slug, 24)}
+          </span>
+        )}
+        {type === 'tactic' && (
+          <span>
+            <span style={{ color: '#fb923c' }}>{'\u25b8'}</span>{' '}{trunc(entity.description || entity.slug, 24)}
           </span>
         )}
         {type === 'samskara' && (
@@ -158,6 +182,11 @@ function MindGraphExplorer({ data, selected, onSelect }) {
             <span style={{ color: '#22c55e' }}>
               {'\u2191'}
             </span>{' '}{trunc(entity.description || entity.slug, 35)}
+          </div>
+        )}
+        {type === 'tactic' && (
+          <div style={{ fontSize: 12, color: '#e5e5e5' }}>
+            <span style={{ color: '#fb923c' }}>{'\u25b8'}</span>{' '}{trunc(entity.description || entity.slug, 35)}
           </div>
         )}
         {type === 'samskara' && (
@@ -200,6 +229,23 @@ function MindGraphExplorer({ data, selected, onSelect }) {
             </div>
           </>
         )}
+        {selected.type === 'tactic' && (
+          <>
+            <div style={{ fontSize: 14, color: '#e5e5e5', lineHeight: 1.5 }}>
+              <span style={{ color: '#fb923c', fontSize: 18 }}>{'\u25b8'}</span>{' '}
+              {centerEntity.description || centerEntity.slug}
+            </div>
+            <div className="text-xs text-gray-500 mt-2">
+              {centerEntity.slug && <span>{centerEntity.slug}</span>}
+              {centerEntity.source_principles?.length > 0 && (
+                <span>{centerEntity.slug ? ` ${'\u00b7'} ` : ''}principles: {centerEntity.source_principles.join(', ')}</span>
+              )}
+            </div>
+            {centerEntity.created_at && (
+              <div className="text-xs text-gray-600 mt-2">{new Date(centerEntity.created_at).toLocaleString()}</div>
+            )}
+          </>
+        )}
         {selected.type === 'samskara' && (
           <>
             <div style={{ fontSize: 14, color: '#e5e5e5', lineHeight: 1.5 }}>{centerEntity.pattern}</div>
@@ -236,6 +282,7 @@ function MindGraphExplorer({ data, selected, onSelect }) {
         {[
           { label: 'Principles', type: 'principle', items: principles, color: '#f59e0b' },
           { label: 'Desires', type: 'desire', items: desires, color: '#a78bfa' },
+          { label: 'Tactics', type: 'tactic', items: tactics, color: '#fb923c' },
           { label: 'Samskaras', type: 'samskara', items: samskaras, color: '#22c55e' },
           { label: 'Experiences', type: 'experience', items: experiences, color: '#06b6d4' },
         ].map(({ label, type, items, color }) => (
@@ -343,7 +390,7 @@ export default function MindTab({ patronKey }) {
 
   useEffect(() => {
     if (data && !selected) {
-      const first = data.principles?.[0] || data.desires?.[0] || data.samskaras?.[0] || data.experiences?.[0];
+      const first = data.principles?.[0] || data.desires?.[0] || data.tactics?.[0] || data.samskaras?.[0] || data.experiences?.[0];
       if (first) {
         const type = first.pattern !== undefined ? 'samskara'
           : first.direction !== undefined ? 'desire'
@@ -363,6 +410,7 @@ export default function MindTab({ patronKey }) {
       <MindHealthBar health={data.operator_health} counts={{
         samskaras: data.samskaras.length,
         desires: data.desires.length,
+        tactics: (data.tactics || []).length,
         experiences: data.experiences.length,
       }} onRefresh={loadData} />
       <MindGraphExplorer data={data} selected={selected} onSelect={setSelected} />

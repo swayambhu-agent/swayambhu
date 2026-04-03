@@ -89,13 +89,14 @@ export default {
     // GET /mind — cognitive state snapshot (samskaras, desires, experiences, operator health)
     if (path === "/mind") {
       const [
-        samskaraKeys, desireKeys, experienceKeys, principleKeys,
+        samskaraKeys, desireKeys, experienceKeys, principleKeys, tacticKeys,
         reflectSchedule, sessionCounter,
       ] = await Promise.all([
         kvListAll(env.KV, { prefix: "samskara:" }),
         kvListAll(env.KV, { prefix: "desire:" }),
         kvListAll(env.KV, { prefix: "experience:" }),
         kvListAll(env.KV, { prefix: "principle:" }),
+        kvListAll(env.KV, { prefix: "tactic:" }),
         env.KV.get("reflect:schedule:1", "json"),
         env.KV.get("session_counter", "json"),
       ]);
@@ -106,6 +107,7 @@ export default {
         ...desireKeys.map(k => k.name),
         ...experienceKeys.map(k => k.name).slice(-20),
         ...principleKeys.map(k => k.name),
+        ...tacticKeys.map(k => k.name),
       ];
 
       const values = {};
@@ -141,6 +143,10 @@ export default {
         })
         .filter(p => p.text);
 
+      const tactics = tacticKeys
+        .map(k => ({ key: k.name, ...values[k.name] }))
+        .filter(t => t.slug || t.description);
+
       // Find latest deep-reflect output
       const reflectKeys = await kvListAll(env.KV, { prefix: "reflect:1:" });
       const latestReflectKey = reflectKeys
@@ -169,7 +175,7 @@ export default {
         } : null,
       };
 
-      return json({ principles, samskaras, desires, experiences, operator_health: operatorHealth });
+      return json({ principles, tactics, samskaras, desires, experiences, operator_health: operatorHealth });
     }
 
     // GET /deep-reflect/:sessionId — structured DR execution data
