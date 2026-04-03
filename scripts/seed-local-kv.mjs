@@ -76,6 +76,10 @@ await put("kernel:key_tiers", {
 
 // Event handlers
 await put("config:event_handlers", {
+  inbound_message: ["communicationDelivery"],
+  comms_request: ["communicationDelivery"],
+  session_complete: ["communicationDelivery"],
+  dr_complete: ["communicationDelivery"],
   session_request: ["sessionTrigger"],
   session_response: ["communicationDelivery"],
   job_complete: ["communicationDelivery", "sessionTrigger"],
@@ -106,7 +110,7 @@ const toolNames = [
   "kv_manifest", "kv_query", "computer",
   "check_email", "send_email", "test_model",
   "web_search", "start_job", "collect_jobs",
-  "google_docs", "send_whatsapp",
+  "google_docs", "send_whatsapp", "request_message",
 ];
 const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];
 const toolGrants = {};
