@@ -394,3 +394,92 @@ describe("session memory writes", () => {
   });
 });
 
+// ── Event emission tests ─────────────────────────────────────
+
+describe("session event emission", () => {
+  let K;
+
+  const DESIRE = {
+    slug: "d_help",
+    direction: "help patrons effectively",
+    description: "Be genuinely helpful in all interactions.",
+    created_at: "2026-01-01T00:00:00.000Z",
+  };
+
+  const SAMSKARA = {
+    pattern: "Patron is available to receive messages",
+    strength: 0.8,
+  };
+
+  const VALID_PLAN = JSON.stringify({
+    action: "send_greeting",
+    success: "patron receives greeting",
+    relies_on: [],
+    defer_if: [],
+  });
+
+  const VALID_REVIEW = JSON.stringify({
+    assessment: "success",
+    narrative: "Greeting sent successfully.",
+    salience_estimate: 0.1,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "samskara:a_available": JSON.stringify(SAMSKARA),
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+  });
+
+  it("emits session_complete after act cycle with actions", async () => {
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    expect(K.emitEvent).toHaveBeenCalledWith(
+      "session_complete",
+      expect.objectContaining({
+        cycles: expect.any(Number),
+        actions_summary: expect.any(String),
+      }),
+    );
+
+    const call = K.emitEvent.mock.calls.find(([type]) => type === "session_complete");
+    expect(call).toBeDefined();
+    expect(call[1].cycles).toBeGreaterThan(0);
+  });
+
+  it("does not emit session_complete when plan returns no_action", async () => {
+    const noActionContent = JSON.stringify({ no_action: true, reason: "nothing to do" });
+    K.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const sessionCompleteCall = K.emitEvent.mock.calls.find(([type]) => type === "session_complete");
+    expect(sessionCompleteCall).toBeUndefined();
+  });
+});
+

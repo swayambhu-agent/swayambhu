@@ -110,21 +110,31 @@ async function cacheEmbeddings(K, entities, textField, model, config) {
 
 // ── Plan phase ──────────────────────────────────────────────
 
-async function planPhase(K, { desires, samskaras, circumstances, defaults, modelsConfig }) {
+async function planPhase(K, { desires, samskaras, circumstances, priorActions, defaults, modelsConfig }) {
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
   const systemPrompt = planPrompt
     ? await K.buildPrompt(planPrompt, await loadPlanVars(K, defaults))
     : "You are a planning agent. Given desires, samskaras, and circumstances, output a JSON action plan.";
 
-  const userContent = [
+  const sections = [
     "[DESIRES]", formatDesires(desires), "",
     "[SAMSKARAS]", formatSamskaras(samskaras), "",
     "[CIRCUMSTANCES]", formatCircumstances(circumstances),
+  ];
+  if (priorActions?.length) {
+    sections.push("", "[PRIOR ACTIONS THIS SESSION]");
+    for (const pa of priorActions) {
+      const tools = pa.tools.length ? ` [${pa.tools.join(", ")}]` : "";
+      sections.push(`- ${pa.action}${tools} → ${pa.review}`);
+    }
+  }
+  sections.push(
     "",
     "Respond with a JSON plan object: { action, success, relies_on, defer_if, no_action }",
     "If no action is warranted, respond: { no_action: true, reason: \"...\" }",
-  ].join("\n");
+  );
+  const userContent = sections.join("\n");
 
   const response = await K.callLLM({
     model,
@@ -435,6 +445,22 @@ async function actCycle(K, { crashData, balances, events }) {
   // 5. Shared messages array
   const messages = [];
 
+  // 5b. Load recent actions from KV for cross-session planner context
+  const actionKeys = await K.kvList({ prefix: "action:" });
+  const recentActionKeys = actionKeys.keys
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(-5);
+  const priorActions = [];
+  for (const ak of recentActionKeys) {
+    const rec = await K.kvGet(ak.name);
+    if (!rec) continue;
+    priorActions.push({
+      action: rec.plan?.action || rec.plan?.reason || "no_action",
+      tools: (rec.tool_calls || []).map(tc => tc.tool),
+      review: (rec.review?.assessment || rec.review?.narrative || rec.kind || "").slice(0, 200),
+    });
+  }
+
   // 6. Main loop
   const maxCycles = 10;
   const budget = defaults?.session_budget || {};
@@ -451,7 +477,7 @@ async function actCycle(K, { crashData, balances, events }) {
     }
 
     // 6b. Plan phase
-    const plan = await planPhase(K, { desires, samskaras, circumstances, defaults, modelsConfig });
+    const plan = await planPhase(K, { desires, samskaras, circumstances, priorActions, defaults, modelsConfig });
     if (!plan) break; // parse failure
     if (plan.no_action) {
       await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
@@ -488,7 +514,14 @@ async function actCycle(K, { crashData, balances, events }) {
 
     cyclesRun++;
 
-    // 6g. Refresh circumstances
+    // 6g. Record outcome for planner
+    priorActions.push({
+      action: plan.action,
+      tools: ledger.tool_calls.map(tc => tc.tool),
+      review: (review?.assessment || review?.narrative || "no review").slice(0, 200),
+    });
+
+    // 6h. Refresh circumstances
     const freshBalances = await K.checkBalance();
     circumstances = buildCircumstances(
       null, // events only on first cycle
@@ -501,6 +534,16 @@ async function actCycle(K, { crashData, balances, events }) {
         tool: tc.tool, ok: tc.ok,
       }));
     }
+  }
+
+  // Emit session_complete if any actions were taken
+  if (cyclesRun > 0) {
+    const summary = priorActions.map(pa => `${pa.action} [${pa.tools.join(",")}] → ${pa.review}`).join("; ");
+    await K.emitEvent("session_complete", {
+      contact: (await K.kvGet("patron:contact")) || null,
+      actions_summary: summary || "session completed",
+      cycles: cyclesRun,
+    });
   }
 
   // Schedule next session
@@ -754,6 +797,13 @@ async function applyDrResults(K, state, output) {
     was_deep_reflect: true,
     depth: 1,
     session_id: executionId,
+  });
+
+  await K.emitEvent("dr_complete", {
+    contact: (await K.kvGet("patron:contact")) || null,
+    reflection: output.reflection || "",
+    desires_changed: ops.filter(o => o.key?.startsWith("desire:")).length,
+    samskaras_changed: ops.filter(o => o.key?.startsWith("samskara:")).length,
   });
 }
 
