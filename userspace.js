@@ -430,6 +430,35 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
 // ── Act cycle ─────────────────────────────────────────────
 
 async function actCycle(K, { crashData, balances, events }) {
+  // Crash experience synthesis — write what happened so DR can learn.
+  // The kernel detects crashes and passes the dead session's karma.
+  // Userspace interprets it into an experience (cognitive concept).
+  if (crashData?.dead_execution_id) {
+    const marker = `crash_memory:${crashData.dead_execution_id}`;
+    const alreadyWritten = await K.kvGet(marker);
+    if (!alreadyWritten) {
+      const karma = crashData.karma || [];
+      const llmCalls = karma.filter(e => e.event === 'llm_call').length;
+      const toolCalls = karma.filter(e => e.event === 'tool_start').length;
+      const lastEvent = crashData.last_entry || {};
+      const elapsed = lastEvent.elapsed_ms ? Math.round(lastEvent.elapsed_ms / 1000) : 0;
+      const lastStep = lastEvent.step || lastEvent.tool || lastEvent.event || 'unknown';
+      const cost = karma.filter(e => e.event === 'llm_call').reduce((s, e) => s + (e.cost || 0), 0);
+
+      await K.kvWriteSafe(`experience:${Date.now()}`, {
+        timestamp: new Date().toISOString(),
+        action_taken: "session_killed",
+        outcome: `Session ${crashData.dead_execution_id} killed after ${elapsed}s. ${llmCalls} LLM calls, ${toolCalls} tool calls, $${cost.toFixed(4)} spent. Last activity: ${lastStep}. Probable cause: execution time limit exceeded.`,
+        surprise_score: 1,
+        salience: 1,
+        narrative: `A session was killed before it could complete. The last activity was ${lastStep} after ${elapsed}s of execution. This is a crash the agent should learn from — either sessions need to be shorter, or the activity that caused the hang should be avoided.`,
+        embedding: null,
+      });
+      await K.kvWriteSafe(marker, { written_at: new Date().toISOString() }, { unprotected: true });
+      await K.karmaRecord({ event: "crash_experience_written", dead_execution_id: crashData.dead_execution_id });
+    }
+  }
+
   // Schedule gate — userspace decides if it's time
   const schedule = await K.kvGet("session_schedule");
   if (schedule?.next_session_after) {
