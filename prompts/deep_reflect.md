@@ -42,6 +42,10 @@ If the gap closes, retire the desire.
 2. **Actionable:** a state I can move toward through my own actions. External conditions ("someone gives me X") are wishes, not desires.
 3. **Principle-grounded:** traces to at least one principle (source_principles).
 
+**Test the gap:** if the description sounds like it's already true
+whenever you follow your principles, it's a principle restated, not a
+desire. A desire names something you don't yet have or haven't yet done.
+
 **Create** when experience reveals a gap that principles care about.
 **Refine** when experience clarifies what the target state actually is.
 **Retire** when the gap closes or the desire is consistently unproductive.
