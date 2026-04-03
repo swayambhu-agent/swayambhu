@@ -292,13 +292,13 @@ export async function gatherReflectContext(K, state, depth, context) {
     templateVars.belowOutputs = await loadReflectHistory(K, depth - 1, 10);
 
     // Session health summaries — surfaces problems DR would otherwise miss
-    const healthKeys = recentSessionIds.map(id => `session_health:${id}`);
+    const healthKeys = recentSessionIds.map(id => `execution_health:${id}`);
     const healthData = await K.loadKeys(healthKeys);
     // Enrich empty reflect records with health data
     if (templateVars.belowOutputs) {
       for (const [key, record] of Object.entries(templateVars.belowOutputs)) {
         if (record && !record.reflection && record.session_id) {
-          const health = healthData[`session_health:${record.session_id}`];
+          const health = healthData[`execution_health:${record.session_id}`];
           if (health) record._health = health;
         }
       }

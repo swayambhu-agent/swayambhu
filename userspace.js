@@ -294,15 +294,37 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
     "- next_gap: one sentence describing what remains unknown or unfinished (or null if complete)",
   ].join("\n");
 
+  const maxTokens = defaults?.reflect?.max_output_tokens || 1000;
   const response = await K.callLLM({
     model,
     effort: defaults?.reflect?.effort || "medium",
-    maxTokens: defaults?.reflect?.max_output_tokens || 1000,
+    maxTokens,
     systemPrompt: finalSystem,
     messages: [{ role: "user", content: userContent }],
     tools: [],
+    step: "review",
     json: true,
   });
+
+  // Retry once with 2x tokens if truncated (finish_reason was "length")
+  if (!response.parsed && response.finish_reason === "length") {
+    await K.karmaRecord({ event: "review_truncated_retry", original_tokens: maxTokens });
+    const retry = await K.callLLM({
+      model,
+      effort: defaults?.reflect?.effort || "medium",
+      maxTokens: maxTokens * 2,
+      systemPrompt: finalSystem,
+      messages: [
+        { role: "user", content: userContent },
+        { role: "assistant", content: response.content || "" },
+        { role: "user", content: "Your response was truncated. Be more concise. Respond with ONLY the JSON object." },
+      ],
+      tools: [],
+      step: "review_retry",
+      json: true,
+    });
+    if (retry.parsed) return retry.parsed;
+  }
 
   if (!response.parsed) {
     await K.karmaRecord({ event: "review_parse_failure", raw: response.content?.slice(0, 500) });
