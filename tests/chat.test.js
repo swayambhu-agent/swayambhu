@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { runTurn, handleCommand } from "../hook-communication.js";
+import { runTurn, ingestInbound, ingestInternal, createOutboxItem, checkOutbox, handleCommand } from "../hook-communication.js";
 import { makeMockK } from "./helpers/mock-kernel.js";
 
 function makeLLMResponse(content, toolCalls = null) {
@@ -189,5 +189,115 @@ describe("handleCommand", () => {
     const conv = await K.kvGet("chat:slack:U084ASKBXB7");
     expect(conv.inbound_cost).toBe(0);
     expect(conv.internal_cost).toBe(0);
+  });
+});
+
+describe("integration: inbound message flow", () => {
+  it("ingestInbound creates valid CommTurn", () => {
+    const turn = ingestInbound("slack", {
+      chatId: "U084ASKBXB7",
+      text: "Hello",
+      userId: "U084ASKBXB7",
+      resolvedChatKey: "U084ASKBXB7",
+      sentTs: "1234567890.123456",
+    });
+
+    expect(turn.conversation_id).toBe("chat:slack:U084ASKBXB7");
+    expect(turn.source).toBe("inbound");
+    expect(turn.content).toBe("Hello");
+    expect(turn.reply_target.platform).toBe("slack");
+    expect(turn.reply_target.channel).toBe("U084ASKBXB7");
+  });
+});
+
+describe("integration: internal event flow", () => {
+  it("ingestInternal resolves conversation from contact slug", async () => {
+    const K = makeMockK({
+      "contact:swami_kevala": { name: "Swami Kevala" },
+      "contact_platform:slack:U084ASKBXB7": { contact: "swami_kevala" },
+    });
+
+    const event = {
+      type: "comms_request",
+      contact: "swami_kevala",
+      intent: "ask",
+      content: "What should I work on?",
+      key: "event:001:comms_request:a1b2",
+    };
+
+    const turn = await ingestInternal(K, event);
+
+    expect(turn).not.toBeNull();
+    expect(turn.conversation_id).toBe("chat:slack:U084ASKBXB7");
+    expect(turn.source).toBe("internal");
+    expect(turn.intent).toBe("ask");
+  });
+
+  it("ingestInternal creates conversation_index for future lookups", async () => {
+    const K = makeMockK({
+      "contact:swami_kevala": { name: "Swami Kevala" },
+      "contact_platform:slack:U084ASKBXB7": { contact: "swami_kevala" },
+    });
+
+    await ingestInternal(K, {
+      type: "comms_request",
+      contact: "swami_kevala",
+      content: "test",
+      key: "event:001:comms_request:a1b2",
+    });
+
+    const index = await K.kvGet("conversation_index:swami_kevala");
+    expect(index).toBe("chat:slack:U084ASKBXB7");
+  });
+
+  it("ingestInternal returns null for unknown contact", async () => {
+    const K = makeMockK({});
+    const turn = await ingestInternal(K, {
+      type: "comms_request",
+      contact: "nonexistent",
+      content: "test",
+    });
+    expect(turn).toBeNull();
+  });
+});
+
+describe("outbox", () => {
+  it("createOutboxItem writes to outbox: prefix", async () => {
+    const K = makeMockK({});
+    const item = await createOutboxItem(K, "chat:slack:U084ASKBXB7", "held content", "timing", "2026-04-03T12:00:00Z", []);
+
+    expect(item.id).toMatch(/^ob_/);
+    const stored = await K.kvGet(`outbox:chat:slack:U084ASKBXB7:${item.id}`);
+    expect(stored.hold_reason).toBe("timing");
+    expect(stored.release_after).toBe("2026-04-03T12:00:00Z");
+  });
+
+  it("checkOutbox returns items past release_after", async () => {
+    const K = makeMockK({});
+    const pastTime = new Date(Date.now() - 60000).toISOString();
+    await K.kvWriteSafe("outbox:chat:slack:U1:ob_1", {
+      id: "ob_1",
+      conversation_id: "chat:slack:U1",
+      content: "due",
+      release_after: pastTime,
+      attempts: 0,
+    });
+    await K.kvWriteSafe("outbox:chat:slack:U2:ob_2", {
+      id: "ob_2",
+      conversation_id: "chat:slack:U2",
+      content: "not due",
+      release_after: new Date(Date.now() + 60000).toISOString(),
+      attempts: 0,
+    });
+
+    const due = await checkOutbox(K);
+    expect(due.length).toBe(1);
+    expect(due[0].content).toBe("due");
+  });
+
+  it("checkOutbox returns empty array when no items due", async () => {
+    const K = makeMockK({});
+    const due = await checkOutbox(K);
+    expect(due.length).toBe(0);
   });
 });
