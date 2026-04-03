@@ -8,6 +8,58 @@
 
 **Tech Stack:** Cloudflare Workers (kernel.js), KV storage, React dashboard SPA.
 
+## IMPORTANT: Codex Review Corrections
+
+An adversarial review found 10 execution-level bugs in this plan.
+Implementers MUST apply these corrections:
+
+**1. planPhase missing `step` (Task 2):** `planPhase` at userspace.js:144
+and :157 never passes `step` to `callLLM`. Add `step: "plan"` to both
+`callLLM` calls in `planPhase` (the initial call and the retry). Without
+this, tactics injection keyed off `step` won't fire for real plan calls.
+
+**2. applyDrResults drops patch/deliberation (Task 3/4):** At
+userspace.js:814-816, `applyDrResults` rewrites all non-delete ops to
+`{ op: "put", value }`, dropping `patch`, `old_string`, `new_string`,
+and `deliberation`. To support principle refinement, pass through the
+raw op shape instead of normalizing: if `op.op` is `"patch"`, preserve
+`old_string`, `new_string`, and `deliberation`. If `op.op` is `"put"`,
+preserve `deliberation`.
+
+**3. makeKernel returns `{ kernel, env }` not `{ kernel, kv }` (Tasks 2,8):**
+All test code must use `const { kernel, env } = makeKernel()` and access
+KV via `env.KV`, not `kv`.
+
+**4. Additional immutability tests at lines 2128-2143 (Task 1):** The plan
+only fixes tests around lines 1117/1159. Also update lines 2128-2143 which
+assert `principle:*` is immutable and `kvWriteSafe` throws "immutable".
+After the change, `kvWriteSafe` should throw "system key" (protected, not
+immutable), and `kvWriteGated` should succeed with deliberation.
+
+**5. applyDrResults not exported (Task 4):** `applyDrResults` is internal
+to `userspace.js` and not exported. Test it indirectly through integration
+tests or export it for testing.
+
+**6. Mock kernel has no `K._writes` (Task 4):** The mock at
+`tests/helpers/mock-kernel.js` uses `_kv` store and spy functions, not
+`K._writes`. Match the existing mock pattern.
+
+**7. Mock kernel principle/tactic patterns (Task 4):** Update
+`tests/helpers/mock-kernel.js` to include `tactic:*` in its system-key
+patterns and move `principle:*` from immutable to protected.
+
+**8. MindTab type-driven rendering (Task 6):** `MindTab.jsx` classifies
+entities by type (principle/desire/samskara). Adding tactics requires a
+tactic type handler, color, and sidebar section — not just passing data.
+
+**9. UI files reference avoidance (Task 5):** `MindTab.jsx` (lines 124,
+158, 193) and `ReflectionsTab.jsx` (line 154) hard-code
+`direction === 'avoidance'`. Remove these alongside the schema change.
+
+**10. Architecture spec incomplete update (Task 5):** The spec still says
+"Three agent operators" and lists `principle:*` under `immutable`. Update
+both the operator count and the key tier table.
+
 ---
 
 ### Task 1: Move principles from immutable to protected tier
