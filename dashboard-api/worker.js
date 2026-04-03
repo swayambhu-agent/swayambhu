@@ -244,15 +244,17 @@ export default {
         }
       }
 
-      // DR execution cost and duration from karma
+      // DR execution cost and model from karma, duration from dr:state
       let cost = 0, durationMs = 0, model = null;
+      const drState = await env.KV.get("dr:state:1", "json");
+      if (drState?.dispatched_at && drState?.completed_at) {
+        durationMs = new Date(drState.completed_at) - new Date(drState.dispatched_at);
+      }
       if (drKarma) {
         for (const entry of drKarma) {
           if (entry.cost) cost += entry.cost;
           if (entry.event === 'llm_call' && entry.model) model = entry.model;
         }
-        const times = drKarma.filter(e => e.t).map(e => e.t);
-        if (times.length >= 2) durationMs = Math.max(...times) - Math.min(...times);
       }
 
       return json({
