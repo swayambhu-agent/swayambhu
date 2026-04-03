@@ -322,6 +322,12 @@ carefully reflect and think through proposals from first principles. Push
 back if you genuinely think a different approach is better, and explain why.
 Agreeing without thinking leads to worse outcomes than honest disagreement.
 
+**Comment the "why", not the "what".** Use comments to document high-level
+motivation where it isn't obvious from the code itself — why a design
+choice was made, what would go wrong without it, what constraint it
+satisfies. This prevents future refactors from undoing deliberate
+decisions and stops us going in circles.
+
 **Delete stale artifacts.** When code or architecture changes make a file,
 doc, prompt, config, or test obsolete, delete it. Don't leave dead files
 around "for reference" — git history exists for that. Stale artifacts
