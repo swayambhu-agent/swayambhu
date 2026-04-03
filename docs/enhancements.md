@@ -44,6 +44,10 @@ Tracked ideas for future improvement. Not prioritized — just captured.
 
   **Tier 3 — Breaking interface changes:** The agent can't self-fix because a kernel interface it depends on has changed. Requires migration by an authorized support agent. Support agent takes a KV snapshot, understands both old and new interfaces, performs the migration, patron approves the result. This is a paid service — the more an agent has diverged through self-modification, the more custom the migration, the more valuable the work. Support agents that have migrated many agents build expertise and efficiency. This is the natural revenue model: open source software, paid technical support.
 
+## Cognitive Architecture
+
+- **Multi-session strategy layer**: The current architecture is session-oriented — each tick plans one action with no memory of longer-term goals. Tactics + DR ideas provide session-to-session continuity, but there's no concept of "I'm working on a multi-session project" or "this week I want to accomplish X through steps A, B, C." Defer until the agent has 20-30 sessions of real experience with tactics + ideas. Watch for these failure signals: abandoned long-running work, repeated context loss across sessions, inability to sequence related actions, or thrashing between unrelated activities. If those appear, design a lightweight strategy layer (possibly just a `current_objective` field in `last_reflect` plus an "unfinished work" queue). Let usage reveal the right mechanism rather than guessing.
+
 ## Deep Reflect
 
 - **DR context enrichment**: The current DR dispatch sends raw KV prefixes
