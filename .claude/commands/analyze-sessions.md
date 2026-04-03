@@ -60,8 +60,9 @@ After all ticks, analyze these dimensions across the full session history:
 - Is the eval signal meaningful or defaulting?
 
 ### Budget efficiency
-- Total cost across all ticks
-- Cost breakdown: plan vs act vs eval vs review vs DR
+- Total cost across all ticks (OpenRouter only — agent's operating budget)
+- Cost breakdown: plan vs act vs eval vs review
+- DR runs on Akash via Anthropic subscription — zero cost to agent budget. Do NOT include DR/Akash costs in budget analysis.
 - Any wasted tokens (retries, fallbacks, parse failures)?
 - Model selection: right model for each phase?
 

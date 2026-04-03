@@ -3,22 +3,13 @@
 // Usage: node scripts/analyze-sessions.mjs [--last N]
 // Outputs structured JSON to stdout.
 
-import { readFileSync } from 'fs';
-import { Miniflare } from 'miniflare';
+import { getKV, dispose } from './shared.mjs';
 
-const persistPath = '.wrangler/shared-state';
 const lastN = process.argv.includes('--last')
   ? parseInt(process.argv[process.argv.indexOf('--last') + 1], 10) || 5
   : 999;
 
-const mf = new Miniflare({
-  kvNamespaces: ['KV'],
-  kvPersist: persistPath,
-  modules: true,
-  script: 'export default { fetch() { return new Response("ok"); } }',
-});
-
-const kv = await mf.getKVNamespace('KV');
+const kv = await getKV();
 
 async function listAll(prefix) {
   const keys = [];
@@ -111,4 +102,4 @@ const output = {
 };
 
 console.log(JSON.stringify(output, null, 2));
-await mf.dispose();
+await dispose();
