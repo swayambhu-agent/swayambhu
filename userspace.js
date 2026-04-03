@@ -833,6 +833,34 @@ async function updateJobRecord(K, jobId, status) {
   }
 }
 
+// ── Pulse bucket classifier ────────────────────────────────
+// Maps raw touched KV keys to semantic buckets for kernel:pulse.
+// The kernel tracks which keys were written; this function provides
+// the cognitive-architecture meaning the kernel deliberately lacks.
+
+const BUCKET_MAP = [
+  [['session_counter', 'cache:session_ids'], 'sessions'],
+  [['action:'], 'sessions'],
+  [['karma:'], 'sessions'],
+  [['desire:', 'samskara:', 'experience:'], 'mind'],
+  [['dr:', 'reflect:', 'last_reflect'], 'reflections'],
+  [['chat:', 'outbox:', 'conversation_index:'], 'chats'],
+  [['contact:', 'contact_platform:'], 'contacts'],
+];
+
+export function classify(touchedKeys) {
+  const buckets = new Set(['health']);
+  for (const key of touchedKeys) {
+    for (const [patterns, bucket] of BUCKET_MAP) {
+      if (patterns.some(p => p.endsWith(':') ? key.startsWith(p) : key === p)) {
+        buckets.add(bucket);
+        break;
+      }
+    }
+  }
+  return [...buckets];
+}
+
 // ── Main session hook ───────────────────────────────────────
 
 export async function run(K, { crashData, balances, events }) {

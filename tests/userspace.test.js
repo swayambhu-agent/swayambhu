@@ -19,7 +19,7 @@ vi.mock("../memory.js", () => ({
   embeddingCacheKey: vi.fn((text, model) => `embedding:mock:${model}`),
 }));
 
-import { run } from "../userspace.js";
+import { run, classify } from "../userspace.js";
 import { evaluateAction } from "../eval.js";
 import { updateSamskaraStrength } from "../memory.js";
 
@@ -480,6 +480,79 @@ describe("session event emission", () => {
 
     const sessionCompleteCall = K.emitEvent.mock.calls.find(([type]) => type === "session_complete");
     expect(sessionCompleteCall).toBeUndefined();
+  });
+});
+
+// ── Pulse classify tests ────────────────────────────────────
+
+describe("pulse classify", () => {
+  it("always includes health", () => {
+    expect(classify(new Set())).toContain("health");
+  });
+
+  it("maps desire keys to mind bucket", () => {
+    const result = classify(new Set(["desire:dharma-clarity"]));
+    expect(result).toContain("mind");
+    expect(result).toContain("health");
+  });
+
+  it("maps samskara keys to mind bucket", () => {
+    expect(classify(new Set(["samskara:pacing:slow"]))).toContain("mind");
+  });
+
+  it("maps experience keys to mind bucket", () => {
+    expect(classify(new Set(["experience:1775204183352"]))).toContain("mind");
+  });
+
+  it("maps session_counter to sessions bucket", () => {
+    expect(classify(new Set(["session_counter"]))).toContain("sessions");
+  });
+
+  it("maps karma keys to sessions bucket", () => {
+    expect(classify(new Set(["karma:x_123"]))).toContain("sessions");
+  });
+
+  it("maps action keys to sessions bucket", () => {
+    expect(classify(new Set(["action:a_123_test"]))).toContain("sessions");
+  });
+
+  it("maps dr state to reflections bucket", () => {
+    expect(classify(new Set(["dr:state:1"]))).toContain("reflections");
+  });
+
+  it("maps reflect keys to reflections bucket", () => {
+    expect(classify(new Set(["reflect:1:x_123"]))).toContain("reflections");
+  });
+
+  it("maps last_reflect to reflections bucket", () => {
+    expect(classify(new Set(["last_reflect"]))).toContain("reflections");
+  });
+
+  it("maps chat keys to chats bucket", () => {
+    expect(classify(new Set(["chat:slack:U123"]))).toContain("chats");
+  });
+
+  it("maps outbox keys to chats bucket", () => {
+    expect(classify(new Set(["outbox:chat:slack:U123:ob_1"]))).toContain("chats");
+  });
+
+  it("maps contact keys to contacts bucket", () => {
+    expect(classify(new Set(["contact:swami_kevala"]))).toContain("contacts");
+  });
+
+  it("maps contact_platform keys to contacts bucket", () => {
+    expect(classify(new Set(["contact_platform:slack:U123"]))).toContain("contacts");
+  });
+
+  it("ignores unknown prefixes", () => {
+    const result = classify(new Set(["kernel:active_execution"]));
+    expect(result).toEqual(["health"]);
+  });
+
+  it("deduplicates buckets", () => {
+    const result = classify(new Set(["desire:a", "samskara:b", "experience:c"]));
+    const mindCount = result.filter(b => b === "mind").length;
+    expect(mindCount).toBe(1);
   });
 });
 
