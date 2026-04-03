@@ -70,7 +70,7 @@ await put("kernel:key_tiers", {
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
     "secret:*", "skill:*", "task:*",
     "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-    "desire:*", "samskara:*", "principle:*", "tactic:*",
+    "desire:*", "pattern:*", "principle:*", "tactic:*",
   ],
 }, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
 
@@ -200,14 +200,14 @@ for (const [binding, data] of Object.entries(contactsConf.platform_bindings)) {
 await put("patron:contact", contactsConf.patron.slug, "text", "Patron contact slug");
 await put("patron:public_key", contactsConf.patron.public_key, "text", "Patron public key (immutable)");
 
-// ── Seed samskaras (from config/seed-samskaras.json) ────────────────
+// ── Seed patterns (from config/seed-patterns.json) ────────────────
 
-console.log("--- Seed Samskaras ---");
-const seedSamskaras = readJSON("config/seed-samskaras.json");
-for (const [key, value] of Object.entries(seedSamskaras)) {
+console.log("--- Seed Patterns ---");
+const seedPatterns = readJSON("config/seed-patterns.json");
+for (const [key, value] of Object.entries(seedPatterns)) {
   // Add created timestamp at seed time
   if (!value.created) value.created = new Date().toISOString();
-  await put(key, value, "json", `Seed samskara: ${key}`);
+  await put(key, value, "json", `Seed pattern: ${key}`);
 }
 
 // ── Session schedule (seed with past time so first session runs immediately) ──

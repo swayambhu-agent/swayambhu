@@ -1091,7 +1091,7 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
     const { kernel } = makeKernel();
     expect(kernel.isSystemKey("providers")).toBe(true);
     expect(kernel.isSystemKey("wallets")).toBe(true);
-    // wisdom is no longer a system key (replaced by samskara: prefix)
+    // wisdom is no longer a system key (replaced by pattern: prefix)
   });
 
   it("rejects non-system keys", () => {
@@ -1204,9 +1204,9 @@ describe("kvWriteSafe", () => {
       .rejects.toThrow("system key");
   });
 
-  it("blocks samskara keys (protected)", async () => {
+  it("blocks pattern keys (protected)", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvWriteSafe("samskara:slack-working", { slug: "slack-working" }))
+    await expect(kernel.kvWriteSafe("pattern:slack-working", { slug: "slack-working" }))
       .rejects.toThrow("system key");
   });
 
@@ -1272,9 +1272,9 @@ describe("kvDeleteSafe", () => {
       .rejects.toThrow("system key");
   });
 
-  it("blocks samskara keys (protected)", async () => {
+  it("blocks pattern keys (protected)", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvDeleteSafe("samskara:slack-working"))
+    await expect(kernel.kvDeleteSafe("pattern:slack-working"))
       .rejects.toThrow("system key");
   });
 

@@ -129,7 +129,7 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 | `userspace.js` | Cognitive policy — act cycle, DR dispatch, schedule | Yes (via code staging) |
 | `act.js` | Act library — prompt rendering, tool defs, context formatting | Yes (via code staging) |
 | `eval.js` | Three-tier eval pipeline (embeddings → NLI → LLM fallback) | Yes (via code staging) |
-| `memory.js` | Memory utilities — samskara operators, experience selection, vector math | Yes (via code staging) |
+| `memory.js` | Memory utilities — pattern operators, experience selection, vector math | Yes (via code staging) |
 | `reflect.js` | Reflection policy — scheduling, deep reflect dispatch | Yes (via code staging) |
 | `prompts/deep_reflect.md` | M/D operator prompt — loaded as `prompt:deep_reflect` | Yes (via code staging) |
 | `tools/*.js` | Tool implementations | Yes (via code staging) |
@@ -141,7 +141,7 @@ The system consists of two Cloudflare Workers sharing one KV namespace:
 tool). DR lifecycle is managed by an independent state machine on `dr:state:1`
 (idle → dispatched → completed → applied → idle). `drCycle` runs on every tick
 independently of the session schedule, polling akash for completion — no callbacks.
-Results are applied to `samskara:*` and `desire:*` keys. The M/D operator prompt
+Results are applied to `pattern:*` and `desire:*` keys. The M/D operator prompt
 is stored as `prompt:deep_reflect`.
 
 ### Kernel vs policy boundary
@@ -182,7 +182,7 @@ to `DEFAULT_KEY_TIERS`):
 |------|-------------|------|
 | Immutable | `dharma`, `principle:*`, `patron:public_key` | Never writable — not by agent, not by userspace |
 | Kernel-only | `karma:*`, `sealed:*`, `event:*`, `kernel:*` | Only kernel internals can write |
-| Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*`, `desire:*`, `samskara:*` | Writable via `kvWriteGated` with privileged context flag |
+| Protected | `config:*`, `prompt:*`, `tool:*`, `contact:*`, `desire:*`, `pattern:*` | Writable via `kvWriteGated` with privileged context flag |
 | Code keys | `tool:*:code`, `hook:*:code` | Must go through `K.stageCode()` → governor deploys |
 | Agent keys | `experience:*`, everything else | `kvWriteSafe` — direct write |
 
@@ -295,13 +295,13 @@ three entity types stored in KV:
 | Prefix | Entity | Tier | Written by | Read by |
 |--------|--------|------|------------|---------|
 | `desire:*` | Desires (d) — approach/avoidance vectors | Protected | Deep-reflect (D operator) | Act (plan phase) |
-| `samskara:*` | Samskaras (s) — impressions with EMA strength | Protected | Strength: review (mechanical). Create/refine/delete: deep-reflect (S operator) | Act (plan phase) |
+| `pattern:*` | Patterns (s) — impressions with EMA strength | Protected | Strength: review (mechanical). Create/refine/delete: deep-reflect (S operator) | Act (plan phase) |
 | `experience:*` | Experiences (ε) — salient experiences | Agent | Review phase (conditional) | Deep-reflect |
 
 Cold start: all stores empty (`d_0 = ∅`, `s_0 = ∅`, `ε_0 = ∅`).
-The first session wakes with empty samskaras (σ=1, max surprise), records
+The first session wakes with empty patterns (σ=1, max surprise), records
 a high-salience experience, and deep-reflect bootstraps desires via `D_p(ε, ∅)`
-and samskaras via `S(ε, ∅)`. The agent earns everything from the start.
+and patterns via `S(ε, ∅)`. The agent earns everything from the start.
 
 Schemas: see `tests/schema.test.js` for canonical field definitions and
 validation logic.
@@ -358,6 +358,16 @@ immediate issue — ask: what is preventing the agent from seeing this
 problem and fixing it itself? The goal is to close the loop so the agent
 can detect, diagnose, and resolve similar problems autonomously in the
 future. Fix the meta-problem, not just the problem.
+
+**Debugging: prefer self-correcting fixes over manual patches.** When
+diagnosing agent issues (stuck sessions, bad desires, scheduling gaps),
+the goal is to find the fix that lets the system resolve the problem on
+its own — not to solve it by hand. Manually patching KV, seeding better
+desires, or overriding config treats the symptom. The right question is:
+what mechanism is missing or miscalibrated that would have let the agent
+detect and recover from this state? Fix that mechanism, then let the
+agent run. Reserve manual intervention for bootstrapping or unblocking
+a test, not as the solution itself.
 
 ## Development Philosophy
 

@@ -34,7 +34,7 @@ The runtime then shuts down. Nothing persists except what's in the store. Next s
 
 Periodically, instead of a normal session, the kernel triggers a **deep reflection**. Normal sessions and deep reflect sessions are mutually exclusive — when reflection fires, it replaces the normal act cycle entirely, because the point is to step back and examine the pattern rather than continue acting within it.
 
-**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose changes to prompts, config, tools, desires, and samskaras through the proposal system — code changes go through `K.createProposal()` for governor deployment, while config/prompt/memory changes go through KV write tiers directly. Depth 1 also writes the session schedule that governs normal sessions.
+**Depth 1** fires roughly every 20 sessions. It reads recent karma logs, reviews the orient prompt, and looks for patterns across sessions. It can propose changes to prompts, config, tools, desires, and patterns through the proposal system — code changes go through `K.createProposal()` for governor deployment, while config/prompt/memory changes go through KV write tiers directly. Depth 1 also writes the session schedule that governs normal sessions.
 
 **Depth 2** fires less often (~100 sessions by default, but self-determined after first run). It reads depth 1's stored outputs, looking for patterns in *how depth 1 is reflecting*. Is depth 1 over-correcting? Missing systemic issues? Fixating on symptoms instead of causes?
 
@@ -162,7 +162,7 @@ Three methods gate all writes:
 
 **`kvWrite(key, value, metadata)`** — raw write, immutability check only. Internal kernel use, not exposed via the K interface.
 
-**`kvWriteSafe(key, value, metadata)`** — standard gated write, allows writes to non-system keys. Blocks writes to protected keys (e.g. `prompt:`, `config:`, `tool:`, `samskara:`, `desire:`, `hook:`), kernel-only prefixes (`kernel:`), and immutable keys (`dharma`, `patron:public_key`). This is for routine data writes.
+**`kvWriteSafe(key, value, metadata)`** — standard gated write, allows writes to non-system keys. Blocks writes to protected keys (e.g. `prompt:`, `config:`, `tool:`, `pattern:`, `desire:`, `hook:`), kernel-only prefixes (`kernel:`), and immutable keys (`dharma`, `patron:public_key`). This is for routine data writes.
 
 **`kvWriteGated(op, context)`** — context-based permissions for all agent-originated `kv_operations` writes. In "act" and "reflect" contexts: can write agent keys + contacts. In "deep-reflect" context: can also write system keys (config, prompts, wisdom, skills), with karma snapshots, rate limiting (max 50/session), and audit trails for principle keys. Yama/niyama require deliberation. Always returns `{ok: true}` or `{ok: false, error: "reason"}` — blocked writes are collected and recorded as a `kv_writes_blocked` karma event.
 

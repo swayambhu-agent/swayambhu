@@ -5,13 +5,13 @@ vi.mock("../eval.js", () => ({
   evaluateAction: vi.fn(async () => ({
     sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
     tool_outcomes: [], plan_success_criteria: null,
-    samskaras_relied_on: [],
-    samskara_scores: {},
+    patterns_relied_on: [],
+    pattern_scores: {},
   })),
 }));
 
 vi.mock("../memory.js", () => ({
-  updateSamskaraStrength: vi.fn((currentStrength, surprise) => {
+  updatePatternStrength: vi.fn((currentStrength, surprise) => {
     const alpha = 0.3;
     return currentStrength * (1 - alpha) + (1 - surprise) * alpha;
   }),
@@ -21,7 +21,7 @@ vi.mock("../memory.js", () => ({
 
 import { run, classify } from "../userspace.js";
 import { evaluateAction } from "../eval.js";
-import { updateSamskaraStrength } from "../memory.js";
+import { updatePatternStrength } from "../memory.js";
 
 // Helper: builds a callLLM mock response, auto-adding parsed when json:true
 function llmResp(content, opts = {}) {
@@ -68,10 +68,10 @@ describe("session with empty desires", () => {
     // callLLM should have been called (plan phase ran)
     expect(K.callLLM).toHaveBeenCalledTimes(1);
 
-    // Plan call should include DESIRES and SAMSKARAS sections
+    // Plan call should include DESIRES and PATTERNS sections
     const planCall = K.callLLM.mock.calls[0][0];
     expect(planCall.messages[0].content).toMatch(/DESIRES/);
-    expect(planCall.messages[0].content).toMatch(/SAMSKARAS/);
+    expect(planCall.messages[0].content).toMatch(/PATTERNS/);
   });
 
   it("can precipitate an action even with empty desires", async () => {
@@ -148,7 +148,7 @@ describe("session plan phase", () => {
     K = makeMockK(
       {
         "desire:d_help": JSON.stringify(DESIRE),
-        "samskara:a_available": JSON.stringify(SAMSKARA),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
       },
       {
         defaults: {
@@ -185,10 +185,10 @@ describe("session plan phase", () => {
     // callLLM should have been called at least twice: plan + review (may loop more cycles)
     expect(K.callLLM.mock.calls.length).toBeGreaterThanOrEqual(2);
 
-    // First call: plan phase — messages contain desires/samskaras
+    // First call: plan phase — messages contain desires/patterns
     const planCall = K.callLLM.mock.calls[0][0];
     expect(planCall.messages[0].content).toMatch(/DESIRES/);
-    expect(planCall.messages[0].content).toMatch(/SAMSKARAS/);
+    expect(planCall.messages[0].content).toMatch(/PATTERNS/);
 
     // runAgentTurn should have been called at least once (act phase ran)
     expect(K.runAgentTurn.mock.calls.length).toBeGreaterThanOrEqual(1);
@@ -222,7 +222,7 @@ describe("session plan phase", () => {
 describe("session memory writes", () => {
   let K;
 
-  const SAMSKARA_KEY = "samskara:a_available";
+  const SAMSKARA_KEY = "pattern:a_available";
 
   const DESIRE = {
     slug: "d_help",
@@ -247,7 +247,7 @@ describe("session memory writes", () => {
     const k = makeMockK(
       {
         "desire:d_help": JSON.stringify(DESIRE),
-        "samskara:a_available": JSON.stringify(SAMSKARA),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
       },
       {
         defaults: {
@@ -260,15 +260,15 @@ describe("session memory writes", () => {
       },
     );
 
-    // evaluateAction controls samskara_scores and salience
+    // evaluateAction controls pattern_scores and salience
     if (evalOverride) {
       evaluateAction.mockResolvedValue(evalOverride);
     } else {
       evaluateAction.mockResolvedValue({
         sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
         tool_outcomes: [], plan_success_criteria: null,
-        samskaras_relied_on: [SAMSKARA_KEY],
-        samskara_scores: {},
+        patterns_relied_on: [SAMSKARA_KEY],
+        pattern_scores: {},
       });
     }
 
@@ -292,17 +292,17 @@ describe("session memory writes", () => {
     vi.clearAllMocks();
   });
 
-  it("updates samskara strength on confirmation", async () => {
+  it("updates pattern strength on confirmation", async () => {
     const review = {
       assessment: "success",
-      narrative: "Samskara confirmed.",
+      narrative: "Pattern confirmed.",
       salience_estimate: 0.1,
     };
     const evalResult = {
       sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
       tool_outcomes: [], plan_success_criteria: null,
-      samskaras_relied_on: [SAMSKARA_KEY],
-      samskara_scores: {
+      patterns_relied_on: [SAMSKARA_KEY],
+      pattern_scores: {
         [SAMSKARA_KEY]: { direction: "entailment", surprise: 0 },
       },
     };
@@ -310,7 +310,7 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // Should write updated strength via kvWriteGated (samskara:* is protected)
+    // Should write updated strength via kvWriteGated (pattern:* is protected)
     const strengthWrite = K.kvWriteGated.mock.calls.find(([op]) => op.key === SAMSKARA_KEY);
     expect(strengthWrite).toBeDefined();
     const written = strengthWrite[0].value;
@@ -318,17 +318,17 @@ describe("session memory writes", () => {
     expect(written.strength).toBeLessThanOrEqual(1);
   });
 
-  it("updates samskara strength on violation", async () => {
+  it("updates pattern strength on violation", async () => {
     const review = {
       assessment: "failed",
-      narrative: "Samskara violated.",
+      narrative: "Pattern violated.",
       salience_estimate: 0.1,
     };
     const evalResult = {
       sigma: 0.8, alpha: {}, salience: 0.8, eval_method: "pipeline",
       tool_outcomes: [], plan_success_criteria: null,
-      samskaras_relied_on: [SAMSKARA_KEY],
-      samskara_scores: {
+      patterns_relied_on: [SAMSKARA_KEY],
+      pattern_scores: {
         [SAMSKARA_KEY]: { direction: "contradiction", surprise: 0.8 },
       },
     };
@@ -379,18 +379,18 @@ describe("session memory writes", () => {
     expect(experienceCall).toBeUndefined();
   });
 
-  it("does not update samskaras when samskara_scores is empty", async () => {
+  it("does not update patterns when pattern_scores is empty", async () => {
     const review = {
       assessment: "success",
-      narrative: "No samskaras tested.",
+      narrative: "No patterns tested.",
       salience_estimate: 0.1,
     };
     K = makeK(review);
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    const samskaraWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("samskara:"));
-    expect(samskaraWrites.length).toBe(0);
+    const patternWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("pattern:"));
+    expect(patternWrites.length).toBe(0);
   });
 });
 
@@ -429,7 +429,7 @@ describe("session event emission", () => {
     K = makeMockK(
       {
         "desire:d_help": JSON.stringify(DESIRE),
-        "samskara:a_available": JSON.stringify(SAMSKARA),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
       },
       {
         defaults: {
@@ -496,8 +496,8 @@ describe("pulse classify", () => {
     expect(result).toContain("health");
   });
 
-  it("maps samskara keys to mind bucket", () => {
-    expect(classify(new Set(["samskara:pacing:slow"]))).toContain("mind");
+  it("maps pattern keys to mind bucket", () => {
+    expect(classify(new Set(["pattern:pacing:slow"]))).toContain("mind");
   });
 
   it("maps experience keys to mind bucket", () => {
@@ -550,7 +550,7 @@ describe("pulse classify", () => {
   });
 
   it("deduplicates buckets", () => {
-    const result = classify(new Set(["desire:a", "samskara:b", "experience:c"]));
+    const result = classify(new Set(["desire:a", "pattern:b", "experience:c"]));
     const mindCount = result.filter(b => b === "mind").length;
     expect(mindCount).toBe(1);
   });

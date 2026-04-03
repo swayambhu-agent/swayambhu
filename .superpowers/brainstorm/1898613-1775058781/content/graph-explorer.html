@@ -1,0 +1,171 @@
+<h2>Mind Tab — Graph Explorer</h2>
+<p class="subtitle">Select any entity from the sidebar. The graph shows its neighborhood — what connects to it upstream and downstream.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Mind Tab — Graph Explorer</div>
+  <div class="mockup-body" style="padding:0; background:#0a0a0f;">
+
+    <!-- Operator Health Bar (unchanged) -->
+    <div style="padding:10px 16px; background:rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.06); display:flex; gap:20px; flex-wrap:wrap; align-items:center; font-size:12px;">
+      <div style="display:flex; align-items:center; gap:5px;">
+        <span style="width:7px;height:7px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>
+        <span style="color:#999;">Bootstrap:</span>
+        <span style="color:#e5e5e5;">Pending</span>
+      </div>
+      <div style="color:#999;">
+        Last DR: <span style="color:#a78bfa;">3 sessions ago</span>
+        · S: <span style="color:#22c55e;">+1</span> <span style="color:#f59e0b;">↑2</span>
+        · D: <span style="color:#e5e5e5;">1 evolved</span>
+      </div>
+      <div style="margin-left:auto; display:flex; gap:16px; color:#666;">
+        <span><span style="color:#f59e0b;">●</span> 14 principles</span>
+        <span><span style="color:#22c55e;">●</span> 4 samskaras</span>
+        <span><span style="color:#a78bfa;">●</span> 2 desires</span>
+        <span><span style="color:#06b6d4;">●</span> 12 experiences</span>
+      </div>
+    </div>
+
+    <!-- Main: sidebar + graph -->
+    <div style="display:flex; height:480px;">
+
+      <!-- LEFT SIDEBAR: Entity browser -->
+      <div style="width:200px; border-right:1px solid rgba(255,255,255,0.06); overflow-y:auto; flex-shrink:0;">
+
+        <!-- Principles -->
+        <div style="padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.04);">
+          <div style="font-size:10px; color:#f59e0b; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Principles</div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; border-radius:4px; cursor:pointer; margin-bottom:2px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.15);">
+            p2: align with dharma
+          </div>
+          <div style="font-size:11px; color:#666; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='none'">
+            p3: code is my body
+          </div>
+          <div style="font-size:11px; color:#666; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            p9: resource discipline
+          </div>
+          <div style="font-size:11px; color:#555; padding:3px 6px; cursor:pointer;">
+            +11 more...
+          </div>
+        </div>
+
+        <!-- Desires -->
+        <div style="padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.04);">
+          <div style="font-size:10px; color:#a78bfa; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Desires</div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            <span style="color:#22c55e;">↑</span> Serve what is asked
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            <span style="color:#ef4444;">↓</span> Avoid unasked research
+          </div>
+        </div>
+
+        <!-- Samskaras -->
+        <div style="padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.04);">
+          <div style="font-size:10px; color:#22c55e; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Samskaras</div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px; display:flex; justify-content:space-between;">
+            <span>Slack fails silently</span>
+            <span style="color:#22c55e; font-size:10px;">.92</span>
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px; display:flex; justify-content:space-between;">
+            <span>Silence safer than bad msg</span>
+            <span style="color:#22c55e; font-size:10px;">.85</span>
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px; display:flex; justify-content:space-between;">
+            <span>Docs API reliable</span>
+            <span style="color:#f59e0b; font-size:10px;">.58</span>
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px; display:flex; justify-content:space-between;">
+            <span>Patron responds AM</span>
+            <span style="color:#ef4444; font-size:10px;">.18</span>
+          </div>
+        </div>
+
+        <!-- Experiences -->
+        <div style="padding:8px 12px;">
+          <div style="font-size:10px; color:#06b6d4; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Experiences</div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            <span style="color:#06b6d4; font-size:10px;">σ0.8</span> Slack silent fail
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            <span style="color:#06b6d4; font-size:10px;">σ0.3</span> Research doc success
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            <span style="color:#06b6d4; font-size:10px;">σ0.7</span> 200 tokens wasted
+          </div>
+          <div style="font-size:11px; color:#555; padding:3px 6px; cursor:pointer;">
+            +9 more...
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER: Graph view — showing "p2: align with dharma" selected -->
+      <div style="flex:1; display:flex; flex-direction:column;">
+
+        <!-- Graph area -->
+        <div style="flex:1; position:relative; overflow:hidden;">
+          <svg viewBox="0 0 600 400" style="width:100%; height:100%;">
+
+            <!-- CENTER NODE: selected principle -->
+            <rect x="220" y="170" width="160" height="50" rx="8"
+              fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="2"/>
+            <text x="300" y="190" fill="#f59e0b" fontSize="10" textAnchor="middle" fontWeight="bold">PRINCIPLE p2</text>
+            <text x="300" y="205" fill="#e5e5e5" fontSize="9" textAnchor="middle">I continually align</text>
+            <text x="300" y="215" fill="#e5e5e5" fontSize="9" textAnchor="middle">with my dharma.</text>
+
+            <!-- DOWNSTREAM: desires shaped by this principle -->
+            <text x="510" y="120" fill="#666" fontSize="8" textAnchor="middle" fontFamily="monospace">SHAPED BY p2</text>
+
+            <!-- Connection lines to desires -->
+            <line x1="380" y1="185" x2="430" y2="155" stroke="#a78bfa" strokeWidth="1.5" opacity="0.5"/>
+            <line x1="380" y1="200" x2="430" y2="270" stroke="#a78bfa" strokeWidth="1.5" opacity="0.5"/>
+
+            <!-- Desire node 1 -->
+            <rect x="430" y="135" width="155" height="40" rx="6"
+              fill="rgba(167,139,250,0.12)" stroke="#a78bfa" strokeWidth="1"/>
+            <text x="445" y="155" fill="#22c55e" fontSize="13">↑</text>
+            <text x="460" y="153" fill="#e5e5e5" fontSize="9">Serve what is asked</text>
+            <text x="460" y="166" fill="#666" fontSize="8">approach · p2, p9</text>
+
+            <!-- Desire node 2 -->
+            <rect x="430" y="255" width="155" height="40" rx="6"
+              fill="rgba(167,139,250,0.12)" stroke="#a78bfa" strokeWidth="1"/>
+            <text x="445" y="275" fill="#ef4444" fontSize="13">↓</text>
+            <text x="460" y="273" fill="#e5e5e5" fontSize="9">Avoid unasked research</text>
+            <text x="460" y="286" fill="#666" fontSize="8">avoidance · p9, p11</text>
+
+            <!-- UPSTREAM label (no upstream for principles — they're immutable) -->
+            <text x="100" y="195" fill="#555" fontSize="9" textAnchor="middle" fontStyle="italic">
+              immutable — no upstream
+            </text>
+
+            <!-- Faint other principles for context -->
+            <text x="300" y="50" fill="#444" fontSize="8" textAnchor="middle">also: p9 (resource discipline), p11 (responsibility)</text>
+
+            <!-- Downstream label -->
+            <text x="505" y="330" fill="#555" fontSize="8" textAnchor="middle" fontFamily="monospace">
+              click a desire to explore further →
+            </text>
+          </svg>
+        </div>
+
+        <!-- Detail strip at bottom -->
+        <div style="padding:12px 16px; border-top:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.02);">
+          <div style="display:flex; gap:16px; align-items:start;">
+            <div>
+              <div style="font-size:10px; color:#f59e0b; text-transform:uppercase; letter-spacing:1px;">Principle p2</div>
+              <div style="font-size:13px; color:#e5e5e5; margin-top:4px;">I continually align with my dharma.</div>
+            </div>
+            <div style="margin-left:auto; text-align:right;">
+              <div style="font-size:10px; color:#666;">Downstream</div>
+              <div style="font-size:11px; color:#a78bfa;">2 desires shaped</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:12px;">
+  Sidebar lists all entities by type. Click any entity → it becomes the center node, and the graph shows everything connected to it. Navigate by clicking connected nodes. Scales to any number of entities because only the neighborhood is shown.
+</p>

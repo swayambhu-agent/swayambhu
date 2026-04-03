@@ -64,7 +64,7 @@ class Kernel {
     protected: [
       "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
       "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-      "secret:*", "samskara:*", "skill:*", "task:*",
+      "secret:*", "pattern:*", "skill:*", "task:*",
       "providers", "wallets", "patron:contact", "patron:identity_snapshot",
       "desire:*", "principle:*", "tactic:*",
     ],
@@ -1973,7 +1973,7 @@ class Kernel {
       reflect:    { type: "reflect_output", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
-      samskara:  { type: "samskara", format: "json" },
+      pattern:  { type: "pattern", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },
       principle:  { type: "principle", format: "text" },

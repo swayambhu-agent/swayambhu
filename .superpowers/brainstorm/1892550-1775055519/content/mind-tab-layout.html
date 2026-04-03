@@ -1,0 +1,46 @@
+<h2>Mind Tab — What should it show?</h2>
+<p class="subtitle">The Mind tab is the deep dive into the agent's cognitive state. What sections does it need?</p>
+
+<div class="options" data-multiselect>
+  <div class="option" data-choice="samskaras" onclick="toggleSelect(this)">
+    <div class="letter">S</div>
+    <div class="content">
+      <h3>Samskaras</h3>
+      <p>All samskaras sorted by strength. Each shows pattern text and a strength bar (0-1). Color-coded: strong (green), medium (amber), weak/eroding (red). Click to expand and see which sessions tested it, recent strength trajectory.</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="desires" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Desires</h3>
+      <p>Active desires with direction (approach ↑ / avoidance ↓). Shows source principles, when last evolved by D operator. Visual distinction between approach and avoidance vectors.</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="experiences" onclick="toggleSelect(this)">
+    <div class="letter">E</div>
+    <div class="content">
+      <h3>Experience Stream</h3>
+      <p>Recent experiences chronologically. Each shows surprise score, salience, narrative snippet. Sparkline of salience over time — are experiences getting more or less notable? Bootstrap indicator if ε is empty.</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="operators" onclick="toggleSelect(this)">
+    <div class="letter">O</div>
+    <div class="content">
+      <h3>Operator Health</h3>
+      <p>When did S and D last run? What did they produce? Session count since last deep-reflect. Next DR scheduled for when. Did the last DR create/deepen/erode any samskaras? Did D evolve any desires? Bootstrap status (has the agent earned its first samskaras/desires?).</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="dynamics" onclick="toggleSelect(this)">
+    <div class="letter">Δ</div>
+    <div class="content">
+      <h3>Dynamics / Timeline</h3>
+      <p>A unified timeline showing cognitive events: samskara created, samskara strength changed, desire evolved, experience recorded, deep-reflect ran. Like the session timeline but for the mind, not for actions. Shows the cognitive system developing over time.</p>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:24px;">Click all the sections you think are essential. Which ones are must-haves vs nice-to-haves?</p>

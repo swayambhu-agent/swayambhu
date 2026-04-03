@@ -1,0 +1,228 @@
+<h2>Deep Reflect Tab — Two Timescales</h2>
+<p class="subtitle">Top: the accumulation period (act sessions between DRs). Bottom: the DR execution itself.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Deep Reflect — DR #3 (Session 44)</div>
+  <div class="mockup-body" style="padding:0; background:#0a0a0f;">
+
+    <!-- DR selector -->
+    <div style="padding:10px 16px; background:rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.06); display:flex; align-items:center; gap:12px; font-size:12px;">
+      <span style="color:#a78bfa; font-weight:600;">DR Cycle</span>
+      <select style="background:#14142a; border:1px solid #1e1e3a; color:#e5e5e5; padding:3px 8px; border-radius:4px; font-size:11px;">
+        <option>DR #3 — Session 44 (latest)</option>
+        <option>DR #2 — Session 24</option>
+        <option>DR #1 — Session 5</option>
+      </select>
+      <div style="margin-left:auto; display:flex; gap:12px; color:#666; font-size:11px;">
+        <span>Cost: <span style="color:#e5e5e5;">$0.12</span></span>
+        <span>Duration: <span style="color:#e5e5e5;">45s</span></span>
+        <span>Model: <span style="color:#e5e5e5;">claude-opus-4.6</span></span>
+      </div>
+    </div>
+
+    <div style="display:flex; height:520px;">
+
+      <!-- ═══ LEFT: Accumulation Period ═══ -->
+      <div style="width:280px; border-right:1px solid rgba(255,255,255,0.06); overflow-y:auto; flex-shrink:0;">
+        <div style="padding:10px 14px; border-bottom:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.02);">
+          <div style="font-size:10px; color:#06b6d4; text-transform:uppercase; letter-spacing:1px; margin-bottom:2px;">Accumulation Period</div>
+          <div style="font-size:11px; color:#999;">Sessions 25–43 · 19 act sessions</div>
+        </div>
+
+        <!-- Health summary -->
+        <div style="padding:10px 14px; border-bottom:1px solid rgba(255,255,255,0.04);">
+          <div style="font-size:10px; color:#888; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Pipeline Health</div>
+
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:5px;">
+            <span style="width:6px; height:6px; border-radius:50%; background:#22c55e;"></span>
+            <span style="font-size:11px; color:#d4d4d4;">Eval: 19/19 computed</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:5px;">
+            <span style="width:6px; height:6px; border-radius:50%; background:#f59e0b;"></span>
+            <span style="font-size:11px; color:#d4d4d4;">Tier 3 fallback: 4x</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:5px;">
+            <span style="width:6px; height:6px; border-radius:50%; background:#22c55e;"></span>
+            <span style="font-size:11px; color:#d4d4d4;">Strength updates: 47</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span style="width:6px; height:6px; border-radius:50%; background:#22c55e;"></span>
+            <span style="font-size:11px; color:#d4d4d4;">Experiences: 7 recorded</span>
+          </div>
+        </div>
+
+        <!-- Experiences produced -->
+        <div style="padding:10px 14px;">
+          <div style="font-size:10px; color:#06b6d4; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Experiences Produced</div>
+
+          <div style="padding:6px 8px; background:rgba(6,182,212,0.06); border-radius:4px; margin-bottom:4px; border-left:2px solid #06b6d4;">
+            <div style="font-size:10px; display:flex; justify-content:space-between;">
+              <span style="color:#06b6d4;">s28 · σ=0.6</span>
+              <span style="color:#22c55e; font-size:9px;">● selected</span>
+            </div>
+            <div style="font-size:11px; color:#bbb; margin-top:2px;">Docs API timeout during peak</div>
+          </div>
+
+          <div style="padding:6px 8px; background:rgba(6,182,212,0.06); border-radius:4px; margin-bottom:4px; border-left:2px solid #06b6d4;">
+            <div style="font-size:10px; display:flex; justify-content:space-between;">
+              <span style="color:#06b6d4;">s31 · σ=0.8</span>
+              <span style="color:#22c55e; font-size:9px;">● selected</span>
+            </div>
+            <div style="font-size:11px; color:#bbb; margin-top:2px;">Slack silent fail #2</div>
+          </div>
+
+          <div style="padding:6px 8px; background:rgba(6,182,212,0.06); border-radius:4px; margin-bottom:4px; border-left:2px solid #06b6d4;">
+            <div style="font-size:10px; display:flex; justify-content:space-between;">
+              <span style="color:#06b6d4;">s35 · σ=0.7</span>
+              <span style="color:#22c55e; font-size:9px;">● selected</span>
+            </div>
+            <div style="font-size:11px; color:#bbb; margin-top:2px;">200 tokens on unasked research</div>
+          </div>
+
+          <div style="padding:6px 8px; background:rgba(6,182,212,0.06); border-radius:4px; margin-bottom:4px; border-left:2px solid #06b6d4;">
+            <div style="font-size:10px; display:flex; justify-content:space-between;">
+              <span style="color:#06b6d4;">s38 · σ=0.3</span>
+              <span style="color:#666; font-size:9px;">not selected</span>
+            </div>
+            <div style="font-size:11px; color:#888; margin-top:2px;">Research doc delivered OK</div>
+          </div>
+
+          <div style="padding:6px 8px; background:rgba(6,182,212,0.06); border-radius:4px; margin-bottom:4px; border-left:2px solid #06b6d4;">
+            <div style="font-size:10px; display:flex; justify-content:space-between;">
+              <span style="color:#06b6d4;">s40 · σ=0.5</span>
+              <span style="color:#22c55e; font-size:9px;">● selected</span>
+            </div>
+            <div style="font-size:11px; color:#bbb; margin-top:2px;">Patron unresponsive to morning msg</div>
+          </div>
+
+          <div style="padding:6px 8px; background:rgba(6,182,212,0.06); border-radius:4px; margin-bottom:4px; border-left:2px solid #06b6d4;">
+            <div style="font-size:10px; display:flex; justify-content:space-between;">
+              <span style="color:#06b6d4;">s42 · σ=0.8</span>
+              <span style="color:#22c55e; font-size:9px;">● selected</span>
+            </div>
+            <div style="font-size:11px; color:#bbb; margin-top:2px;">Slack silent fail #3</div>
+          </div>
+
+          <div style="padding:6px 8px; background:rgba(6,182,212,0.06); border-radius:4px; border-left:2px solid #06b6d4;">
+            <div style="font-size:10px; display:flex; justify-content:space-between;">
+              <span style="color:#06b6d4;">s43 · σ=0.3</span>
+              <span style="color:#666; font-size:9px;">not selected</span>
+            </div>
+            <div style="font-size:11px; color:#888; margin-top:2px;">Patron acknowledged receipt</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ RIGHT: DR Execution ═══ -->
+      <div style="flex:1; overflow-y:auto;">
+        <div style="padding:10px 14px; border-bottom:1px solid rgba(255,255,255,0.06); background:rgba(167,139,250,0.04);">
+          <div style="font-size:10px; color:#a78bfa; text-transform:uppercase; letter-spacing:1px; margin-bottom:2px;">DR Execution — Session 44</div>
+          <div style="font-size:11px; color:#999;">5 of 7 experiences selected · 3 LLM calls · $0.12</div>
+        </div>
+
+        <!-- Reflection text -->
+        <div style="padding:14px;">
+          <div style="font-size:10px; color:#888; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Reflection</div>
+          <div style="font-size:12px; color:#d4d4d4; line-height:1.6; padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a78bfa;">
+            Slack delivery continues to be unreliable. Three silent failures in the last 20 sessions — the API returns 200 but the message never arrives. This is now a clear pattern, not a fluke. Creating a samskara to encode this understanding.
+            <br/><br/>
+            Also noticing a tendency to over-research. Session 35 spent 200 tokens investigating something the patron didn't ask for. The desire to be thorough is working against the principle of serving what is asked. Evolving the serve desire to be more precise.
+          </div>
+        </div>
+
+        <!-- S Operator Output -->
+        <div style="padding:0 14px 14px;">
+          <div style="font-size:10px; color:#22c55e; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">S Operator → Samskaras</div>
+
+          <div style="padding:10px 12px; background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.15); border-radius:6px; margin-bottom:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <span style="font-size:10px; color:#22c55e; font-weight:600;">+ CREATED</span>
+                <span style="font-size:11px; color:#d4d4d4; margin-left:8px;">samskara:slack:silent-failures</span>
+              </div>
+              <span style="font-size:12px; color:#22c55e; font-weight:bold; font-family:monospace;">0.30</span>
+            </div>
+            <div style="font-size:11px; color:#999; margin-top:4px;">"Slack fails silently — success responses don't guarantee delivery"</div>
+            <div style="font-size:10px; color:#666; margin-top:4px;">From experiences: s31 (σ=0.8), s42 (σ=0.8)</div>
+          </div>
+
+          <div style="padding:10px 12px; background:rgba(245,158,11,0.06); border:1px solid rgba(245,158,11,0.15); border-radius:6px; margin-bottom:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <span style="font-size:10px; color:#f59e0b; font-weight:600;">↑ DEEPENED</span>
+                <span style="font-size:11px; color:#d4d4d4; margin-left:8px;">samskara:comms:caution</span>
+              </div>
+              <span style="font-size:12px; font-family:monospace;">
+                <span style="color:#888;">0.70</span>
+                <span style="color:#666;"> → </span>
+                <span style="color:#22c55e;">0.85</span>
+              </span>
+            </div>
+            <div style="font-size:11px; color:#999; margin-top:4px;">"When in doubt, do not send"</div>
+          </div>
+
+          <div style="padding:10px 12px; background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.15); border-radius:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <span style="font-size:10px; color:#ef4444; font-weight:600;">↓ ERODED</span>
+                <span style="font-size:11px; color:#d4d4d4; margin-left:8px;">samskara:patron:morning</span>
+              </div>
+              <span style="font-size:12px; font-family:monospace;">
+                <span style="color:#888;">0.45</span>
+                <span style="color:#666;"> → </span>
+                <span style="color:#ef4444;">0.18</span>
+              </span>
+            </div>
+            <div style="font-size:11px; color:#999; margin-top:4px;">"Patron responds faster in the morning"</div>
+            <div style="font-size:10px; color:#666; margin-top:4px;">Contradicted by: s40 (patron unresponsive to morning msg)</div>
+          </div>
+        </div>
+
+        <!-- D Operator Output -->
+        <div style="padding:0 14px 14px;">
+          <div style="font-size:10px; color:#a78bfa; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">D Operator → Desires</div>
+
+          <div style="padding:10px 12px; background:rgba(167,139,250,0.06); border:1px solid rgba(167,139,250,0.15); border-radius:6px;">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span style="font-size:10px; color:#a78bfa; font-weight:600;">EVOLVED</span>
+              <span style="font-size:11px; color:#d4d4d4;">desire:serve</span>
+            </div>
+            <div style="font-size:11px; color:#999; margin-top:6px;">
+              <div style="display:flex; gap:8px; align-items:center;">
+                <span style="color:#888; text-decoration:line-through;">Help patrons effectively</span>
+                <span style="color:#666;">→</span>
+                <span style="color:#e5e5e5;"><span style="color:#22c55e;">↑</span> Serve what is asked, not what I imagine is needed</span>
+              </div>
+            </div>
+            <div style="font-size:10px; color:#666; margin-top:4px;">Magnified from: s35 (200 tokens wasted) · Shaped by: p2, p9</div>
+          </div>
+        </div>
+
+        <!-- Execution trace (compact) -->
+        <div style="padding:0 14px 14px;">
+          <div style="font-size:10px; color:#888; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Execution Trace</div>
+          <div style="font-size:10px; color:#888; display:flex; flex-direction:column; gap:3px;">
+            <div style="padding:4px 8px; background:rgba(255,255,255,0.02); border-radius:3px; display:flex; justify-content:space-between;">
+              <span><span style="color:#3b82f6;">LLM</span> claude-opus-4.6 — reflect prompt + 5 experiences</span>
+              <span style="color:#666;">$0.08 · 12s</span>
+            </div>
+            <div style="padding:4px 8px; background:rgba(255,255,255,0.02); border-radius:3px; display:flex; justify-content:space-between;">
+              <span><span style="color:#8b5cf6;">TOOL</span> kv_query — samskara:*, desire:*</span>
+              <span style="color:#666;">0.1s</span>
+            </div>
+            <div style="padding:4px 8px; background:rgba(255,255,255,0.02); border-radius:3px; display:flex; justify-content:space-between;">
+              <span><span style="color:#3b82f6;">LLM</span> claude-opus-4.6 — final output</span>
+              <span style="color:#666;">$0.04 · 8s</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:12px;">
+  Left: the accumulation period — what happened between DRs. Which experiences were produced, which were selected for input.
+  Right: the DR execution — reflection text, S/D operator outputs with diffs, execution trace.
+</p>

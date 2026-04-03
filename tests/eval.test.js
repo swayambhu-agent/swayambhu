@@ -18,8 +18,8 @@ describe("evaluateAction (three-tier pipeline)", () => {
     },
   };
 
-  const samskaras = {
-    "samskara:google-docs-accessible": {
+  const patterns = {
+    "pattern:google-docs-accessible": {
       pattern: "Google Docs API is accessible and responsive",
       strength: 0.9,
       _embedding: [0.4, 0.2, 0.8],
@@ -31,7 +31,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
     plan: {
       action: "compile research doc",
       success: "doc saved, 5+ topics",
-      relies_on: ["samskara:google-docs-accessible"],
+      relies_on: ["pattern:google-docs-accessible"],
       defer_if: "budget < 30%",
     },
     tool_calls: [
@@ -72,20 +72,20 @@ describe("evaluateAction (three-tier pipeline)", () => {
           scores: { entailment: 0.85, contradiction: 0.05, neutral: 0.10 },
         },
         {
-          id: "samskara:google-docs-accessible",
+          id: "pattern:google-docs-accessible",
           label: "entailment",
           scores: { entailment: 0.90, contradiction: 0.02, neutral: 0.08 },
         },
       ],
     });
 
-    const result = await evaluateAction(K, ledger, desires, samskaras, config);
+    const result = await evaluateAction(K, ledger, desires, patterns, config);
 
     expect(result.eval_method).toBe("pipeline");
     expect(result.alpha).toHaveProperty("serve");
     expect(result.alpha.serve).toBeGreaterThan(0); // entailment -> positive
-    expect(result.samskara_scores).toHaveProperty("samskara:google-docs-accessible");
-    expect(result.samskara_scores["samskara:google-docs-accessible"].direction).toBe("entailment");
+    expect(result.pattern_scores).toHaveProperty("pattern:google-docs-accessible");
+    expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("entailment");
     expect(typeof result.sigma).toBe("number");
     expect(typeof result.salience).toBe("number");
     // callInference called twice: /embed, /nli
@@ -100,16 +100,16 @@ describe("evaluateAction (three-tier pipeline)", () => {
     K.callLLM.mockResolvedValueOnce({
       text: JSON.stringify([
         { id: "desire:serve", direction: "entailment", confidence: 0.7 },
-        { id: "samskara:google-docs-accessible", direction: "neutral", confidence: 0.5 },
+        { id: "pattern:google-docs-accessible", direction: "neutral", confidence: 0.5 },
       ]),
     });
 
-    const result = await evaluateAction(K, ledger, desires, samskaras, config);
+    const result = await evaluateAction(K, ledger, desires, patterns, config);
 
     expect(result.eval_method).toBe("llm_fallback");
     expect(K.callLLM).toHaveBeenCalledTimes(1);
     expect(result.alpha.serve).toBeCloseTo(0.7);
-    expect(result.samskara_scores["samskara:google-docs-accessible"].direction).toBe("neutral");
+    expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("neutral");
   });
 
   it("sends ambiguous NLI pairs to LLM Tier 3", async () => {
@@ -117,7 +117,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
     callInference.mockResolvedValueOnce({
       embeddings: [[0.5, 0.3, 0.2]],
     });
-    // Tier 2: NLI — desire is clear, samskara is ambiguous
+    // Tier 2: NLI — desire is clear, pattern is ambiguous
     callInference.mockResolvedValueOnce({
       results: [
         {
@@ -126,7 +126,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
           scores: { entailment: 0.85, contradiction: 0.05, neutral: 0.10 },
         },
         {
-          id: "samskara:google-docs-accessible",
+          id: "pattern:google-docs-accessible",
           label: "neutral",
           scores: { entailment: 0.35, contradiction: 0.30, neutral: 0.35 },
         },
@@ -135,41 +135,41 @@ describe("evaluateAction (three-tier pipeline)", () => {
     // Tier 3: LLM for ambiguous pair
     K.callLLM.mockResolvedValueOnce({
       text: JSON.stringify([
-        { id: "samskara:google-docs-accessible", direction: "entailment", confidence: 0.8 },
+        { id: "pattern:google-docs-accessible", direction: "entailment", confidence: 0.8 },
       ]),
     });
 
-    const result = await evaluateAction(K, ledger, desires, samskaras, config);
+    const result = await evaluateAction(K, ledger, desires, patterns, config);
 
     expect(result.eval_method).toBe("pipeline");
     expect(K.callLLM).toHaveBeenCalledTimes(1);
     // Desire resolved by NLI
     expect(result.alpha.serve).toBeCloseTo(0.85);
-    // Samskara resolved by LLM
-    expect(result.samskara_scores["samskara:google-docs-accessible"].direction).toBe("entailment");
+    // Pattern resolved by LLM
+    expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("entailment");
   });
 
-  it("returns tool_outcomes and samskaras_relied_on", async () => {
+  it("returns tool_outcomes and patterns_relied_on", async () => {
     callInference.mockResolvedValueOnce({ embeddings: [[0.5, 0.3, 0.2]] });
     callInference.mockResolvedValueOnce({
       results: [
         { id: "desire:serve", label: "neutral", scores: { entailment: 0.1, contradiction: 0.1, neutral: 0.8 } },
-        { id: "samskara:google-docs-accessible", label: "entailment", scores: { entailment: 0.9, contradiction: 0.01, neutral: 0.09 } },
+        { id: "pattern:google-docs-accessible", label: "entailment", scores: { entailment: 0.9, contradiction: 0.01, neutral: 0.09 } },
       ],
     });
 
-    const result = await evaluateAction(K, ledger, desires, samskaras, config);
+    const result = await evaluateAction(K, ledger, desires, patterns, config);
 
     expect(result.tool_outcomes).toEqual([
       { tool: "google_docs_create", ok: true },
       { tool: "search_kb", ok: true },
     ]);
     expect(result.plan_success_criteria).toBe("doc saved, 5+ topics");
-    expect(result.samskaras_relied_on).toEqual(["samskara:google-docs-accessible"]);
+    expect(result.patterns_relied_on).toEqual(["pattern:google-docs-accessible"]);
   });
 
-  it("empty samskaras → max surprise (bootstrap signal)", async () => {
-    // No samskaras means no world model — maximum uncertainty, not minimum
+  it("empty patterns → max surprise (bootstrap signal)", async () => {
+    // No patterns means no world model — maximum uncertainty, not minimum
     // surprise. σ=1 makes this a high-salience experience that reflect can
     // use to bootstrap desires from principles.
     const result = await evaluateAction(K, ledger, {}, {}, config);

@@ -20,7 +20,7 @@ of the key findings. Scan all the data first, then report:
 - **Top issues** — the 2-3 most important problems (errors, failures, gaps)
 - **Budget** — total cost, is it reasonable?
 - **DR status** — did deep reflect run? Did it produce useful output?
-- **Cognitive quality** — one-line verdict on desire/samskara/plan quality
+- **Cognitive quality** — one-line verdict on desire/pattern/plan quality
 - **What's working well** — anything that's functioning as designed
 
 This summary should let someone skip the rest and still know what matters.
@@ -42,7 +42,7 @@ For EACH karma record (tick), analyze in order:
 - Which eval tier ran (embeddings → NLI → LLM)?
 - What sigma (alignment signal) was produced?
 - What salience score? Was an experience written?
-- Were samskara strengths updated?
+- Were pattern strengths updated?
 
 ### Review phase
 - Did review produce output or was there a parse failure?
@@ -52,13 +52,13 @@ For EACH karma record (tick), analyze in order:
 - Was drCycle invoked? What happened?
 - If dispatched: job ID, what context was sent?
 - If polled: was the job complete? Did parsing succeed?
-- If applied: what desires/samskaras were created/modified/retired?
+- If applied: what desires/patterns were created/modified/retired?
 - If failed: why? Transient or structural?
 
 ### Memory writes
 - Was an action record written to action:{id}?
 - Was an experience written to experience:{timestamp}?
-- Were samskara strengths updated?
+- Were pattern strengths updated?
 
 ## Step 4: Cross-cutting analysis
 
@@ -71,7 +71,7 @@ After all ticks, analyze these dimensions across the full session history:
 
 ### Cognitive quality
 - Are desires concrete and NLI-evaluable? Or abstract principle restatements?
-- Are samskaras capturing real patterns or bootstrap platitudes?
+- Are patterns capturing real patterns or bootstrap platitudes?
 - Are plans driven by desires or inventing work?
 - Is the eval signal meaningful or defaulting?
 
@@ -90,7 +90,7 @@ After all ticks, analyze these dimensions across the full session history:
 
 ### DR effectiveness
 - Did DR produce good desires? (NLI test: are they evaluable?)
-- Did DR produce good samskaras? (Real patterns vs platitudes?)
+- Did DR produce good patterns? (Real patterns vs platitudes?)
 - Is the DR prompt producing the right output structure?
 - Is the full lifecycle working? (dispatch → complete → parse → apply)
 
@@ -106,7 +106,7 @@ Categorize findings:
 
 **Errors** — things that broke (parse failures, tool errors, KV errors)
 **Suboptimal** — things that worked but poorly (bad plans, wasted tokens, wrong models)
-**Missing** — things that should happen but don't (no experiences written, no samskara updates)
+**Missing** — things that should happen but don't (no experiences written, no pattern updates)
 **Design gaps** — architectural issues revealed by the session data
 
 For each finding, include:

@@ -123,7 +123,7 @@ function ReflectionsTab({ patronKey, reflectionsRev }) {
 
             {drData.execution?.s_output?.length > 0 && (
               <div className="px-4 pb-4">
-                <div style={{ fontSize: 10, color: '#22c55e', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>S Operator {'\u2192'} Samskaras</div>
+                <div style={{ fontSize: 10, color: '#22c55e', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>S Operator {'\u2192'} Patterns</div>
                 {drData.execution.s_output.map((s, i) => {
                   const isDelete = s.action === 'deleted';
                   const col = isDelete ? '#ef4444' : '#22c55e';
@@ -174,7 +174,7 @@ function ReflectionsTab({ patronKey, reflectionsRev }) {
             )}
 
             {(!drData.execution?.s_output?.length && !drData.execution?.d_output?.length) && (
-              <div className="px-4 pb-4 text-xs text-gray-600">No samskara or desire changes in this DR</div>
+              <div className="px-4 pb-4 text-xs text-gray-600">No pattern or desire changes in this DR</div>
             )}
 
             <div className="px-4 pb-4">

@@ -1,0 +1,152 @@
+<h2>Mind Tab — Connected Graph View</h2>
+<p class="subtitle">Instead of separate panels, what if the Mind tab shows the cognitive flow as a connected graph?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Flow Graph — Left to Right</h3>
+      <p>Experiences on the left flow into samskaras and desires in the middle, which flow into actions on the right. Lines connect them. Click any node to see details. The whole cognitive cycle is visible as a directed graph.</p>
+
+      <div style="margin-top:16px; padding:20px; background:#0a0a0f; border-radius:8px; overflow-x:auto;">
+        <svg viewBox="0 0 900 400" style="width:100%; max-width:860px; height:auto;">
+          <!-- Column labels -->
+          <text x="80" y="25" fill="#666" font-size="11" text-anchor="middle" font-family="monospace">EXPERIENCES</text>
+          <text x="330" y="25" fill="#666" font-size="11" text-anchor="middle" font-family="monospace">SAMSKARAS</text>
+          <text x="580" y="25" fill="#666" font-size="11" text-anchor="middle" font-family="monospace">DESIRES</text>
+          <text x="800" y="25" fill="#666" font-size="11" text-anchor="middle" font-family="monospace">ACTIONS</text>
+
+          <!-- Connections: experiences → samskaras -->
+          <line x1="160" y1="80" x2="240" y2="70" stroke="#22c55e" stroke-width="1.5" opacity="0.4"/>
+          <line x1="160" y1="80" x2="240" y2="150" stroke="#22c55e" stroke-width="1" opacity="0.3"/>
+          <line x1="160" y1="150" x2="240" y2="70" stroke="#22c55e" stroke-width="1.5" opacity="0.4"/>
+          <line x1="160" y1="220" x2="240" y2="150" stroke="#22c55e" stroke-width="1" opacity="0.3"/>
+          <line x1="160" y1="220" x2="240" y2="230" stroke="#f59e0b" stroke-width="1.5" opacity="0.4"/>
+          <line x1="160" y1="290" x2="240" y2="310" stroke="#ef4444" stroke-width="1" opacity="0.3"/>
+
+          <!-- Connections: experiences → desires -->
+          <line x1="160" y1="80" x2="490" y2="100" stroke="#a78bfa" stroke-width="1" opacity="0.2"/>
+          <line x1="160" y1="150" x2="490" y2="100" stroke="#a78bfa" stroke-width="1.5" opacity="0.3"/>
+          <line x1="160" y1="220" x2="490" y2="200" stroke="#a78bfa" stroke-width="1" opacity="0.2"/>
+
+          <!-- Connections: samskaras → actions -->
+          <line x1="420" y1="70" x2="720" y2="100" stroke="#22c55e" stroke-width="1" opacity="0.3" stroke-dasharray="4,3"/>
+          <line x1="420" y1="150" x2="720" y2="100" stroke="#f59e0b" stroke-width="1" opacity="0.3" stroke-dasharray="4,3"/>
+          <line x1="420" y1="230" x2="720" y2="200" stroke="#f59e0b" stroke-width="1" opacity="0.2" stroke-dasharray="4,3"/>
+
+          <!-- Connections: desires → actions -->
+          <line x1="670" y1="100" x2="720" y2="100" stroke="#a78bfa" stroke-width="2" opacity="0.5"/>
+          <line x1="670" y1="200" x2="720" y2="200" stroke="#a78bfa" stroke-width="2" opacity="0.5"/>
+
+          <!-- Connections: actions → experiences (feedback loop) -->
+          <path d="M 880 100 Q 900 100 900 350 Q 900 380 80 380 Q 20 380 20 290 L 20 290" stroke="#06b6d4" stroke-width="1.5" opacity="0.3" fill="none" stroke-dasharray="6,4"/>
+          <text x="460" y="375" fill="#06b6d4" font-size="10" text-anchor="middle" opacity="0.5" font-family="monospace">feedback loop</text>
+
+          <!-- Experience nodes -->
+          <rect x="20" y="60" width="140" height="40" rx="6" fill="rgba(6,182,212,0.15)" stroke="#06b6d4" stroke-width="1"/>
+          <text x="90" y="77" fill="#06b6d4" font-size="10" text-anchor="middle" font-family="monospace">σ=0.8 s=0.95</text>
+          <text x="90" y="92" fill="#999" font-size="9" text-anchor="middle">Slack silent fail #3</text>
+
+          <rect x="20" y="130" width="140" height="40" rx="6" fill="rgba(6,182,212,0.15)" stroke="#06b6d4" stroke-width="1"/>
+          <text x="90" y="147" fill="#06b6d4" font-size="10" text-anchor="middle" font-family="monospace">σ=0.3 s=0.6</text>
+          <text x="90" y="162" fill="#999" font-size="9" text-anchor="middle">Research doc success</text>
+
+          <rect x="20" y="200" width="140" height="40" rx="6" fill="rgba(6,182,212,0.15)" stroke="#06b6d4" stroke-width="1"/>
+          <text x="90" y="217" fill="#06b6d4" font-size="10" text-anchor="middle" font-family="monospace">σ=0.7 s=0.8</text>
+          <text x="90" y="232" fill="#999" font-size="9" text-anchor="middle">200 tokens wasted</text>
+
+          <rect x="20" y="270" width="140" height="40" rx="6" fill="rgba(245,158,11,0.15)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="90" y="287" fill="#f59e0b" font-size="10" text-anchor="middle" font-family="monospace">σ=1.0 s=1.0</text>
+          <text x="90" y="302" fill="#999" font-size="9" text-anchor="middle">Bootstrap (no samskaras)</text>
+
+          <!-- Samskara nodes -->
+          <rect x="240" y="50" width="180" height="40" rx="6" fill="rgba(34,197,94,0.12)" stroke="#22c55e" stroke-width="1.5"/>
+          <text x="330" y="67" fill="#e5e5e5" font-size="10" text-anchor="middle">Slack fails silently</text>
+          <text x="330" y="82" fill="#22c55e" font-size="10" text-anchor="middle" font-weight="bold">●●●●●●●●●○ 0.92</text>
+
+          <rect x="240" y="130" width="180" height="40" rx="6" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="330" y="147" fill="#e5e5e5" font-size="10" text-anchor="middle">Docs API reliable (biz hrs)</text>
+          <text x="330" y="162" fill="#f59e0b" font-size="10" text-anchor="middle" font-weight="bold">●●●●●○○○○○ 0.58</text>
+
+          <rect x="240" y="210" width="180" height="40" rx="6" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1"/>
+          <text x="330" y="227" fill="#e5e5e5" font-size="10" text-anchor="middle">Silence safer than bad msg</text>
+          <text x="330" y="242" fill="#22c55e" font-size="10" text-anchor="middle" font-weight="bold">●●●●●●●●○○ 0.85</text>
+
+          <rect x="240" y="290" width="180" height="40" rx="6" fill="rgba(239,68,68,0.12)" stroke="#ef4444" stroke-width="1"/>
+          <text x="330" y="307" fill="#e5e5e5" font-size="10" text-anchor="middle">Patron responds AM</text>
+          <text x="330" y="322" fill="#ef4444" font-size="10" text-anchor="middle" font-weight="bold">●○○○○○○○○○ 0.18</text>
+
+          <!-- Desire nodes -->
+          <rect x="490" y="80" width="180" height="40" rx="6" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="502" y="97" fill="#22c55e" font-size="14">↑</text>
+          <text x="580" y="97" fill="#e5e5e5" font-size="10" text-anchor="middle">Serve what is asked</text>
+          <text x="580" y="112" fill="#666" font-size="9" text-anchor="middle">approach · p2, p9</text>
+
+          <rect x="490" y="180" width="180" height="40" rx="6" fill="rgba(167,139,250,0.15)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="502" y="197" fill="#ef4444" font-size="14">↓</text>
+          <text x="580" y="197" fill="#e5e5e5" font-size="10" text-anchor="middle">Avoid unasked research</text>
+          <text x="580" y="212" fill="#666" font-size="9" text-anchor="middle">avoidance · p9, p11</text>
+
+          <!-- Action nodes -->
+          <rect x="720" y="80" width="160" height="40" rx="6" fill="rgba(255,255,255,0.06)" stroke="#666" stroke-width="1"/>
+          <text x="800" y="97" fill="#e5e5e5" font-size="10" text-anchor="middle">Compile research doc</text>
+          <text x="800" y="112" fill="#666" font-size="9" text-anchor="middle">session 47 · succeeded</text>
+
+          <rect x="720" y="180" width="160" height="40" rx="6" fill="rgba(255,255,255,0.06)" stroke="#666" stroke-width="1"/>
+          <text x="800" y="197" fill="#e5e5e5" font-size="10" text-anchor="middle">Send via Slack</text>
+          <text x="800" y="212" fill="#ef4444" font-size="9" text-anchor="middle">session 47 · silent fail</text>
+
+          <!-- Deep-reflect indicator -->
+          <rect x="310" y="345" width="40" height="20" rx="4" fill="rgba(167,139,250,0.3)" stroke="#a78bfa" stroke-width="1"/>
+          <text x="330" y="359" fill="#a78bfa" font-size="10" text-anchor="middle" font-weight="bold">S D</text>
+          <line x1="330" y1="345" x2="330" y2="330" stroke="#a78bfa" stroke-width="1" opacity="0.5" stroke-dasharray="3,2"/>
+          <line x1="330" y1="345" x2="580" y2="220" stroke="#a78bfa" stroke-width="1" opacity="0.3" stroke-dasharray="3,2"/>
+        </svg>
+      </div>
+      <p style="font-size:12px; color:#666; margin-top:8px;">Experiences → S/D operators → Samskaras + Desires → Actions → new Experiences. The full cycle visible at once.</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Hybrid — Graph + Panels</h3>
+      <p>Top half: the flow graph (compact). Bottom half: detail panels that expand when you click a node. Best of both — you see the relationships AND can drill into specifics.</p>
+      <div style="margin-top:12px; padding:16px; background:#0a0a0f; border-radius:8px;">
+        <div style="height:60px; background:rgba(255,255,255,0.03); border-radius:6px; display:flex; align-items:center; justify-content:center; color:#666; font-size:12px; border:1px dashed rgba(255,255,255,0.1);">
+          ← Compact flow graph (same as A, but smaller) →
+        </div>
+        <div style="height:1px; background:rgba(255,255,255,0.06); margin:12px 0;"></div>
+        <div style="display:flex; gap:8px;">
+          <div style="flex:1; height:80px; background:rgba(6,182,212,0.08); border-radius:6px; display:flex; align-items:center; justify-content:center; color:#06b6d4; font-size:11px; border:1px solid rgba(6,182,212,0.2);">
+            Experience detail<br/>(click to expand)
+          </div>
+          <div style="flex:1; height:80px; background:rgba(22,163,74,0.08); border-radius:6px; display:flex; align-items:center; justify-content:center; color:#22c55e; font-size:11px; border:1px solid rgba(22,163,74,0.2);">
+            Samskara detail<br/>(click to expand)
+          </div>
+          <div style="flex:1; height:80px; background:rgba(167,139,250,0.08); border-radius:6px; display:flex; align-items:center; justify-content:center; color:#a78bfa; font-size:11px; border:1px solid rgba(167,139,250,0.2);">
+            Desire detail<br/>(click to expand)
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Panels with Relationship Sidebar</h3>
+      <p>Keep the panels from the first mockup, but when you click any item, a sidebar shows all its connections — which experiences fed into it, which actions it informed, what the S/D operators did with it.</p>
+      <div style="margin-top:12px; padding:16px; background:#0a0a0f; border-radius:8px;">
+        <div style="display:flex; gap:8px;">
+          <div style="flex:2; height:100px; background:rgba(255,255,255,0.03); border-radius:6px; display:flex; align-items:center; justify-content:center; color:#666; font-size:11px; border:1px solid rgba(255,255,255,0.06);">
+            Main panels<br/>(samskaras, desires, etc.)
+          </div>
+          <div style="flex:1; height:100px; background:rgba(245,158,11,0.08); border-radius:6px; display:flex; align-items:center; justify-content:center; color:#f59e0b; font-size:11px; border:1px solid rgba(245,158,11,0.2); text-align:center;">
+            Relationship<br/>sidebar<br/>(click to reveal)
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

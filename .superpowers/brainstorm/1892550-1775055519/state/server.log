@@ -1,0 +1,8 @@
+{"type":"server-started","port":65032,"host":"0.0.0.0","url_host":"localhost","url":"http://localhost:65032","screen_dir":"/home/swami/swayambhu/repo/.superpowers/brainstorm/1892550-1775055519/content","state_dir":"/home/swami/swayambhu/repo/.superpowers/brainstorm/1892550-1775055519/state"}
+{"type":"screen-added","file":"/home/swami/swayambhu/repo/.superpowers/brainstorm/1892550-1775055519/content/tab-placement.html"}
+{"type":"screen-added","file":"/home/swami/swayambhu/repo/.superpowers/brainstorm/1892550-1775055519/content/mind-tab-layout.html"}
+{"type":"screen-added","file":"/home/swami/swayambhu/repo/.superpowers/brainstorm/1892550-1775055519/content/mind-tab-mockup.html"}
+{"type":"screen-added","file":"/home/swami/swayambhu/repo/.superpowers/brainstorm/1892550-1775055519/content/mind-tab-graph.html"}
+{"type":"screen-added","file":"/home/swami/swayambhu/repo/.superpowers/brainstorm/1892550-1775055519/content/mind-tab-hybrid.html"}
+{"type":"screen-added","file":"/home/swami/swayambhu/repo/.superpowers/brainstorm/1892550-1775055519/content/waiting.html"}
+{"type":"server-stopped","reason":"idle timeout"}

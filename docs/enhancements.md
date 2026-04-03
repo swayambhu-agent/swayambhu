@@ -51,7 +51,7 @@ Tracked ideas for future improvement. Not prioritized — just captured.
 ## Deep Reflect
 
 - **DR context enrichment**: The current DR dispatch sends raw KV prefixes
-  (`samskara:*`, `experience:*`, `desire:*`, `principle:*`, `config:defaults`,
+  (`pattern:*`, `experience:*`, `desire:*`, `principle:*`, `config:defaults`,
   `reflect:1:*`, `last_reflect`). The old in-worker path had richer context
   via `gatherReflectContext` — patron state, communication health, session
   health, selected experiences. Consider adding more context keys to the

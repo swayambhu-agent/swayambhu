@@ -56,8 +56,8 @@ export function formatDesires(d) {
   );
 }
 
-export function formatSamskaras(s) {
-  if (!s || Object.keys(s).length === 0) return "(no samskaras)";
+export function formatPatterns(s) {
+  if (!s || Object.keys(s).length === 0) return "(no patterns)";
   const arr = Object.entries(s).map(([key, val]) => ({
     key,
     pattern: val.pattern,

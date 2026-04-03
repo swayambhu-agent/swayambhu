@@ -1,0 +1,77 @@
+<h2>Where should cognitive monitoring live?</h2>
+<p class="subtitle">The current dashboard has 6 tabs. Where does the new "cognitive health" view fit?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>New "Mind" Tab</h3>
+      <p>A dedicated tab alongside Timeline, Chat, Contacts, KV Explorer, Reflections, Modifications. You go there specifically to see the cognitive state — samskaras, desires, experiences, operator health.</p>
+      <div style="margin-top:12px; padding:12px; background:rgba(255,255,255,0.05); border-radius:8px; font-size:13px;">
+        <div style="display:flex; gap:16px; flex-wrap:wrap; color:#999;">
+          <span>Timeline</span>
+          <span>Chat</span>
+          <span>Contacts</span>
+          <span>KV Explorer</span>
+          <span>Reflections</span>
+          <span>Modifications</span>
+          <span style="color:#f59e0b; font-weight:600; border-bottom:2px solid #f59e0b; padding-bottom:2px;">Mind</span>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:12px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Clean separation from session-level views</li><li>Dedicated space for rich visualizations</li><li>Doesn't clutter existing tabs</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Another tab to check</li><li>Cognitive state isn't visible until you navigate there</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Upgrade "Reflections" Tab</h3>
+      <p>Expand the existing Reflections tab to show the full cognitive picture. Reflections is where the S and D operators run — it's already the "mind" view, just incomplete.</p>
+      <div style="margin-top:12px; padding:12px; background:rgba(255,255,255,0.05); border-radius:8px; font-size:13px;">
+        <div style="display:flex; gap:16px; flex-wrap:wrap; color:#999;">
+          <span>Timeline</span>
+          <span>Chat</span>
+          <span>Contacts</span>
+          <span>KV Explorer</span>
+          <span style="color:#a78bfa; font-weight:600; border-bottom:2px solid #a78bfa; padding-bottom:2px;">Reflections + Mind</span>
+          <span>Modifications</span>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:12px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Fewer tabs — less navigation</li><li>Natural home (reflections produce samskaras/desires)</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Overloads one tab with two concerns</li><li>Reflection text ≠ cognitive state data</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Always-Visible Overview + Drill-Down</h3>
+      <p>A compact status bar or summary panel always visible above the tabs. Shows key health indicators at a glance. Click any metric to drill into a detailed view.</p>
+      <div style="margin-top:12px; padding:12px; background:rgba(255,255,255,0.05); border-radius:8px; font-size:13px;">
+        <div style="padding:8px 12px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.2); border-radius:6px; margin-bottom:8px; display:flex; gap:24px; font-size:12px; color:#d4d4d4;">
+          <span>🟢 <strong>4</strong> samskaras</span>
+          <span>🟡 <strong>2</strong> desires</span>
+          <span>📊 <strong>12</strong> experiences</span>
+          <span>⏱ DR: 3 sessions ago</span>
+        </div>
+        <div style="display:flex; gap:16px; flex-wrap:wrap; color:#999;">
+          <span>Timeline</span>
+          <span>Chat</span>
+          <span>Contacts</span>
+          <span>KV Explorer</span>
+          <span>Reflections</span>
+          <span>Modifications</span>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top:12px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Always visible — instant awareness</li><li>No extra navigation to see health</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Limited space for detail</li><li>Still needs a drill-down destination</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

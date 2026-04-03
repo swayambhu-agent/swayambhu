@@ -12,11 +12,11 @@ Session data is provided below as JSON. The `proposals` field shows any code cha
 
 {{systemKeyPatterns}}
 
-## Available samskaras
+## Available patterns
 
-{{samskara_manifest}}
+{{pattern_manifest}}
 
-You can see available samskara entries but cannot load them this session.
+You can see available pattern entries but cannot load them this session.
 Reference relevant entries by name in your observations so deep reflect
 can follow up.
 

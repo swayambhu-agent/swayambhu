@@ -1,0 +1,160 @@
+<h2>Graph Explorer — Desire Selected</h2>
+<p class="subtitle">Same layout, different center node. Now showing a desire with its upstream (principles + experiences) and downstream (actions).</p>
+
+<div class="mockup">
+  <div class="mockup-header">Mind Tab — "Serve what is asked" selected</div>
+  <div class="mockup-body" style="padding:0; background:#0a0a0f;">
+
+    <!-- Health bar (same) -->
+    <div style="padding:10px 16px; background:rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.06); display:flex; gap:20px; flex-wrap:wrap; align-items:center; font-size:12px;">
+      <div style="display:flex; align-items:center; gap:5px;">
+        <span style="width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block;"></span>
+        <span style="color:#999;">Bootstrap: Complete</span>
+      </div>
+      <div style="color:#999;">DR: <span style="color:#a78bfa;">3 ago</span> · Next: <span style="color:#e5e5e5;">~2</span></div>
+      <div style="margin-left:auto; display:flex; gap:16px; color:#666;">
+        <span><span style="color:#f59e0b;">●</span> 14p</span>
+        <span><span style="color:#22c55e;">●</span> 4s</span>
+        <span><span style="color:#a78bfa;">●</span> 2d</span>
+        <span><span style="color:#06b6d4;">●</span> 12ε</span>
+      </div>
+    </div>
+
+    <div style="display:flex; height:440px;">
+
+      <!-- Sidebar (desire highlighted) -->
+      <div style="width:200px; border-right:1px solid rgba(255,255,255,0.06); overflow-y:auto; flex-shrink:0;">
+        <div style="padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.04);">
+          <div style="font-size:10px; color:#f59e0b; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Principles</div>
+          <div style="font-size:11px; color:#666; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">p2: align with dharma</div>
+          <div style="font-size:11px; color:#666; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">p9: resource discipline</div>
+          <div style="font-size:11px; color:#555; padding:3px 6px;">+12 more...</div>
+        </div>
+        <div style="padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.04);">
+          <div style="font-size:10px; color:#a78bfa; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Desires</div>
+          <div style="font-size:11px; color:#e5e5e5; padding:3px 6px; margin-bottom:2px; border-radius:4px; background:rgba(167,139,250,0.15); border:1px solid rgba(167,139,250,0.3);">
+            <span style="color:#22c55e;">↑</span> Serve what is asked
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            <span style="color:#ef4444;">↓</span> Avoid unasked research
+          </div>
+        </div>
+        <div style="padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.04);">
+          <div style="font-size:10px; color:#22c55e; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Samskaras</div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px; display:flex; justify-content:space-between;">
+            <span>Slack fails silently</span><span style="color:#22c55e; font-size:10px;">.92</span>
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px; display:flex; justify-content:space-between;">
+            <span>Silence safer than bad msg</span><span style="color:#22c55e; font-size:10px;">.85</span>
+          </div>
+          <div style="font-size:11px; color:#555; padding:3px 6px;">+2 more...</div>
+        </div>
+        <div style="padding:8px 12px;">
+          <div style="font-size:10px; color:#06b6d4; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">Experiences</div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            <span style="color:#06b6d4; font-size:10px;">σ0.8</span> Slack silent fail
+          </div>
+          <div style="font-size:11px; color:#888; padding:3px 6px; cursor:pointer; margin-bottom:2px; border-radius:4px;">
+            <span style="color:#06b6d4; font-size:10px;">σ0.7</span> 200 tokens wasted
+          </div>
+          <div style="font-size:11px; color:#555; padding:3px 6px;">+10 more...</div>
+        </div>
+      </div>
+
+      <!-- CENTER GRAPH: desire "Serve what is asked" -->
+      <div style="flex:1; display:flex; flex-direction:column;">
+        <div style="flex:1; position:relative; overflow:hidden;">
+          <svg viewBox="0 0 600 380" style="width:100%; height:100%;">
+
+            <!-- UPSTREAM label -->
+            <text x="85" y="30" fill="#666" fontSize="8" textAnchor="middle" fontFamily="monospace">UPSTREAM</text>
+
+            <!-- Upstream: principles that shaped this desire -->
+            <rect x="20" y="130" width="130" height="36" rx="5"
+              fill="rgba(245,158,11,0.1)" stroke="#f59e0b" strokeWidth="0.8" style="cursor:pointer"/>
+            <text x="85" y="148" fill="#f59e0b" fontSize="9" textAnchor="middle">p2: align with dharma</text>
+            <text x="85" y="160" fill="#666" fontSize="7" textAnchor="middle">principle</text>
+
+            <rect x="20" y="190" width="130" height="36" rx="5"
+              fill="rgba(245,158,11,0.1)" stroke="#f59e0b" strokeWidth="0.8" style="cursor:pointer"/>
+            <text x="85" y="208" fill="#f59e0b" fontSize="9" textAnchor="middle">p9: resource discipline</text>
+            <text x="85" y="220" fill="#666" fontSize="7" textAnchor="middle">principle</text>
+
+            <!-- Upstream: experiences that magnified into this desire -->
+            <rect x="20" y="270" width="130" height="36" rx="5"
+              fill="rgba(6,182,212,0.1)" stroke="#06b6d4" strokeWidth="0.8" style="cursor:pointer"/>
+            <text x="85" y="285" fill="#06b6d4" fontSize="8" textAnchor="middle">σ=0.7 · 200 tokens wasted</text>
+            <text x="85" y="298" fill="#666" fontSize="7" textAnchor="middle">experience · session 25</text>
+
+            <!-- Connection lines: upstream → center -->
+            <line x1="150" y1="148" x2="220" y2="190" stroke="#f59e0b" strokeWidth="1.2" opacity="0.4"/>
+            <line x1="150" y1="208" x2="220" y2="200" stroke="#f59e0b" strokeWidth="1.2" opacity="0.4"/>
+            <line x1="150" y1="288" x2="220" y2="210" stroke="#06b6d4" strokeWidth="1" opacity="0.3"/>
+
+            <!-- CENTER NODE: selected desire -->
+            <rect x="220" y="170" width="170" height="56" rx="8"
+              fill="rgba(167,139,250,0.2)" stroke="#a78bfa" strokeWidth="2"/>
+            <text x="240" y="195" fill="#22c55e" fontSize="16">↑</text>
+            <text x="260" y="194" fill="#e5e5e5" fontSize="10">Serve what is asked,</text>
+            <text x="260" y="208" fill="#e5e5e5" fontSize="10">not what I imagine</text>
+            <text x="305" y="222" fill="#666" fontSize="8" textAnchor="middle">approach · evolved session 44</text>
+
+            <!-- DOWNSTREAM label -->
+            <text x="510" y="30" fill="#666" fontSize="8" textAnchor="middle" fontFamily="monospace">DOWNSTREAM</text>
+
+            <!-- Connection lines: center → downstream -->
+            <line x1="390" y1="190" x2="440" y2="148" stroke="#888" strokeWidth="1" opacity="0.3" strokeDasharray="4,3"/>
+            <line x1="390" y1="200" x2="440" y2="228" stroke="#888" strokeWidth="1" opacity="0.3" strokeDasharray="4,3"/>
+            <line x1="390" y1="205" x2="440" y2="298" stroke="#888" strokeWidth="1" opacity="0.2" strokeDasharray="4,3"/>
+
+            <!-- Downstream: actions generated by this desire -->
+            <rect x="440" y="130" width="145" height="36" rx="5"
+              fill="rgba(255,255,255,0.04)" stroke="#555" strokeWidth="0.8"/>
+            <text x="512" y="148" fill="#e5e5e5" fontSize="9" textAnchor="middle">Compile research doc</text>
+            <text x="512" y="160" fill="#22c55e" fontSize="7" textAnchor="middle">session 47 · ✓ succeeded</text>
+
+            <rect x="440" y="210" width="145" height="36" rx="5"
+              fill="rgba(255,255,255,0.04)" stroke="#555" strokeWidth="0.8"/>
+            <text x="512" y="228" fill="#e5e5e5" fontSize="9" textAnchor="middle">Send patron update</text>
+            <text x="512" y="240" fill="#22c55e" fontSize="7" textAnchor="middle">session 45 · ✓ succeeded</text>
+
+            <rect x="440" y="280" width="145" height="36" rx="5"
+              fill="rgba(255,255,255,0.04)" stroke="#555" strokeWidth="0.8"/>
+            <text x="512" y="298" fill="#e5e5e5" fontSize="9" textAnchor="middle">Greet patron</text>
+            <text x="512" y="310" fill="#ef4444" fontSize="7" textAnchor="middle">session 42 · ✗ silent fail</text>
+
+            <!-- Navigation hint -->
+            <text x="300" y="365" fill="#555" fontSize="9" textAnchor="middle">
+              Click any connected node to navigate · Sidebar to jump to any entity
+            </text>
+          </svg>
+        </div>
+
+        <!-- Detail strip -->
+        <div style="padding:12px 16px; border-top:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.02);">
+          <div style="display:flex; gap:24px; align-items:start;">
+            <div>
+              <div style="font-size:10px; color:#a78bfa; text-transform:uppercase; letter-spacing:1px;">Desire</div>
+              <div style="font-size:13px; color:#e5e5e5; margin-top:4px;">
+                <span style="color:#22c55e;">↑</span> Serve what is asked, not what I imagine is needed
+              </div>
+            </div>
+            <div style="text-align:right; flex-shrink:0;">
+              <div style="font-size:10px; color:#666;">Upstream</div>
+              <div style="font-size:11px; color:#f59e0b;">2 principles</div>
+              <div style="font-size:11px; color:#06b6d4;">1 experience</div>
+            </div>
+            <div style="text-align:right; flex-shrink:0;">
+              <div style="font-size:10px; color:#666;">Downstream</div>
+              <div style="font-size:11px; color:#888;">3 actions</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:12px;">
+  Same graph, different center. Navigate by clicking connected nodes. The sidebar highlight follows your selection. Each entity type has its own color and shape. The graph always shows: what feeds IN and what flows OUT.
+</p>

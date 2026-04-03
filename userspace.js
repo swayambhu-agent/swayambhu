@@ -4,8 +4,8 @@
 // Mutable — the agent can propose changes to this file via the proposal system.
 
 import { evaluateAction } from './eval.js';
-import { updateSamskaraStrength, callInference, embeddingCacheKey } from './memory.js';
-import { renderActPrompt, buildToolSet, formatDesires, formatSamskaras, formatCircumstances } from './act.js';
+import { updatePatternStrength, callInference, embeddingCacheKey } from './memory.js';
+import { renderActPrompt, buildToolSet, formatDesires, formatPatterns, formatCircumstances } from './act.js';
 import { parseJobOutput } from './lib/parse-job-output.js';
 
 // ── Snapshot loaders ────────────────────────────────────────
@@ -20,14 +20,14 @@ async function loadDesires(K) {
   return desires;
 }
 
-async function loadSamskaras(K) {
-  const list = await K.kvList({ prefix: "samskara:" });
-  const samskaras = {};
+async function loadPatterns(K) {
+  const list = await K.kvList({ prefix: "pattern:" });
+  const patterns = {};
   for (const entry of list.keys) {
     const val = await K.kvGet(entry.name);
-    if (val) samskaras[entry.name] = val;
+    if (val) patterns[entry.name] = val;
   }
-  return samskaras;
+  return patterns;
 }
 
 // ── Plan prompt vars ────────────────────────────────────────
@@ -110,16 +110,16 @@ async function cacheEmbeddings(K, entities, textField, model, config) {
 
 // ── Plan phase ──────────────────────────────────────────────
 
-async function planPhase(K, { desires, samskaras, circumstances, priorActions, defaults, modelsConfig }) {
+async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig }) {
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
   const systemPrompt = planPrompt
     ? await K.buildPrompt(planPrompt, await loadPlanVars(K, defaults))
-    : "You are a planning agent. Given desires, samskaras, and circumstances, output a JSON action plan.";
+    : "You are a planning agent. Given desires, patterns, and circumstances, output a JSON action plan.";
 
   const sections = [
     "[DESIRES]", formatDesires(desires), "",
-    "[SAMSKARAS]", formatSamskaras(samskaras), "",
+    "[PATTERNS]", formatPatterns(patterns), "",
     "[CIRCUMSTANCES]", formatCircumstances(circumstances),
   ];
   if (priorActions?.length) {
@@ -178,9 +178,9 @@ async function planPhase(K, { desires, samskaras, circumstances, priorActions, d
 
   if (plan.no_action) return plan;
 
-  // Validate relies_on keys against desire + samskara snapshots
+  // Validate relies_on keys against desire + pattern snapshots
   if (plan.relies_on?.length) {
-    const knownKeys = new Set([...Object.keys(desires), ...Object.keys(samskaras)]);
+    const knownKeys = new Set([...Object.keys(desires), ...Object.keys(patterns)]);
     const unknown = plan.relies_on.filter(k => !knownKeys.has(k));
     if (unknown.length) {
       await K.karmaRecord({ event: "plan_unknown_relies_on", unknown_keys: unknown, stripped: true });
@@ -267,7 +267,7 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
     `eval_method: ${evalResult.eval_method}`,
     `tool_outcomes: ${JSON.stringify(evalResult.tool_outcomes)}`,
     `plan_success_criteria: ${evalResult.plan_success_criteria || "none"}`,
-    `samskaras_relied_on: ${JSON.stringify(evalResult.samskaras_relied_on)}`,
+    `patterns_relied_on: ${JSON.stringify(evalResult.patterns_relied_on)}`,
   ].join("\n");
 
   const systemPrompt = reviewPrompt
@@ -338,7 +338,7 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
 
 // ── Memory writes ───────────────────────────────────────────
 
-async function writeMemory(K, { ledger, evalResult, review, desires, samskaras, inferenceConfig, executionId, sessionNumber, cycle }) {
+async function writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber, cycle }) {
   const now = new Date().toISOString();
   const cap = (s, n = 500) => s && s.length > n ? s.slice(0, n) + '…' : s;
 
@@ -369,12 +369,12 @@ async function writeMemory(K, { ledger, evalResult, review, desires, samskaras, 
     } : null,
   });
 
-  // Samskara strength updates — from eval's per-samskara surprise scores
-  if (evalResult.samskara_scores) {
-    for (const [key, score] of Object.entries(evalResult.samskara_scores)) {
-      const existing = samskaras[key];
+  // Pattern strength updates — from eval's per-pattern surprise scores
+  if (evalResult.pattern_scores) {
+    for (const [key, score] of Object.entries(evalResult.pattern_scores)) {
+      const existing = patterns[key];
       if (!existing) continue;
-      const newStrength = updateSamskaraStrength(existing.strength, score.surprise);
+      const newStrength = updatePatternStrength(existing.strength, score.surprise);
       await K.kvWriteGated({ op: "put", key, value: { ...existing, strength: newStrength } }, "act");
     }
   }
@@ -453,15 +453,15 @@ async function actCycle(K, { crashData, balances, events }) {
     ambiguity_threshold: defaults?.inference?.ambiguity_threshold || 0.6,
   } : null;
 
-  // 2. Snapshot desires and samskaras
+  // 2. Snapshot desires and patterns
   let desires = await loadDesires(K);
-  let samskaras = await loadSamskaras(K);
+  let patterns = await loadPatterns(K);
 
   // 2b. Cache embeddings for Tier 1 relevance filtering
   if (inferenceConfig) {
     const embedModel = defaults?.inference?.embed_model || 'bge-small-en-v1.5';
     await cacheEmbeddings(K, desires, 'description', embedModel, inferenceConfig);
-    await cacheEmbeddings(K, samskaras, 'pattern', embedModel, inferenceConfig);
+    await cacheEmbeddings(K, patterns, 'pattern', embedModel, inferenceConfig);
   }
 
   // 3. Build initial circumstances
@@ -511,13 +511,13 @@ async function actCycle(K, { crashData, balances, events }) {
     }
 
     // 6b. Plan phase
-    const plan = await planPhase(K, { desires, samskaras, circumstances, priorActions, defaults, modelsConfig });
+    const plan = await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig });
     if (!plan) break; // parse failure
     if (plan.no_action) {
       await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
 
       // Still run eval + memory so the experience gets recorded. When
-      // samskaras are empty, eval returns σ=1 (max surprise) — this is
+      // patterns are empty, eval returns σ=1 (max surprise) — this is
       // what bootstraps the agent by making "no desires" a high-salience
       // experience that reflect can act on.
       const noActionLedger = {
@@ -526,13 +526,13 @@ async function actCycle(K, { crashData, balances, events }) {
         tool_calls: [],
         final_text: plan.reason,
       };
-      const evalResult = await evaluateAction(K, noActionLedger, desires, samskaras, inferenceConfig || {});
+      const evalResult = await evaluateAction(K, noActionLedger, desires, patterns, inferenceConfig || {});
       const syntheticReview = {
         assessment: "no_action",
         narrative: `No action taken: ${plan.reason}`,
         salience_estimate: evalResult.salience || 0,
       };
-      await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, samskaras, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+      await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
       break;
     }
@@ -543,13 +543,13 @@ async function actCycle(K, { crashData, balances, events }) {
     });
 
     // 6d. Eval phase
-    const evalResult = await evaluateAction(K, ledger, desires, samskaras, inferenceConfig || {});
+    const evalResult = await evaluateAction(K, ledger, desires, patterns, inferenceConfig || {});
 
     // 6e. Review phase
     const review = await reviewPhase(K, { ledger, evalResult, defaults });
 
     // 6f. Memory writes
-    await writeMemory(K, { ledger, evalResult, review, desires, samskaras, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+    await writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
     cyclesRun++;
 
@@ -602,7 +602,7 @@ async function actCycle(K, { crashData, balances, events }) {
     total_cost: finalCost,
   });
 
-  return { defaults, modelsConfig, desires, cyclesRun };
+  return { defaults, modelsConfig, desires, patterns, cyclesRun };
 }
 
 // ── DR Lifecycle (independent state machine) ──────────────
@@ -740,7 +740,7 @@ async function dispatchDr(K, defaults) {
         type: "cc_analysis",
         prompt,
         context_keys: [
-          "samskara:*", "experience:*", "desire:*", "tactic:*",
+          "pattern:*", "experience:*", "desire:*", "tactic:*",
           "principle:*", "config:defaults", "config:tool_registry",
           "reflect:1:*", "last_reflect",
         ],
@@ -807,7 +807,7 @@ async function applyDrResults(K, state, output) {
   const executionId = await K.getExecutionId();
 
   const ops = (output.kv_operations || []).filter(op =>
-    op.key?.startsWith("samskara:") || op.key?.startsWith("desire:") ||
+    op.key?.startsWith("pattern:") || op.key?.startsWith("desire:") ||
     op.key?.startsWith("tactic:") || op.key?.startsWith("principle:")
   );
 
@@ -847,7 +847,7 @@ async function applyDrResults(K, state, output) {
     contact: (await K.kvGet("patron:contact")) || null,
     reflection: output.reflection || "",
     desires_changed: ops.filter(o => o.key?.startsWith("desire:")).length,
-    samskaras_changed: ops.filter(o => o.key?.startsWith("samskara:")).length,
+    patterns_changed: ops.filter(o => o.key?.startsWith("pattern:")).length,
     tactics_changed: ops.filter(o => o.key?.startsWith("tactic:")).length,
   });
 }
@@ -870,7 +870,7 @@ const BUCKET_MAP = [
   [['session_counter', 'cache:session_ids'], 'sessions'],
   [['action:'], 'sessions'],
   [['karma:'], 'sessions'],
-  [['desire:', 'samskara:', 'experience:', 'tactic:'], 'mind'],
+  [['desire:', 'pattern:', 'experience:', 'tactic:'], 'mind'],
   [['dr:', 'reflect:', 'last_reflect'], 'reflections'],
   [['chat:', 'outbox:', 'conversation_index:'], 'chats'],
   [['contact:', 'contact_platform:'], 'contacts'],

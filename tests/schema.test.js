@@ -16,7 +16,7 @@ function validateDesire(d) {
   return errors;
 }
 
-function validateSamskara(s) {
+function validatePattern(s) {
   const errors = [];
   if (typeof s.pattern !== "string" || !s.pattern) errors.push("pattern must be a non-empty string");
   if (typeof s.strength !== "number" || s.strength < 0 || s.strength > 1) errors.push("strength must be a number between 0 and 1");
@@ -88,30 +88,30 @@ describe("Cognitive architecture schemas", () => {
     });
   });
 
-  describe("Samskara", () => {
-    it("validates a well-formed samskara", () => {
-      const samskara = {
+  describe("Pattern", () => {
+    it("validates a well-formed pattern", () => {
+      const pattern = {
         pattern: "Slack fails silently — success responses don't guarantee delivery",
         strength: 0.85,
       };
-      expect(validateSamskara(samskara)).toEqual([]);
+      expect(validatePattern(pattern)).toEqual([]);
     });
 
     it("rejects missing pattern", () => {
-      const samskara = { strength: 0.5 };
-      const errors = validateSamskara(samskara);
+      const pattern = { strength: 0.5 };
+      const errors = validatePattern(pattern);
       expect(errors.length).toBeGreaterThan(0);
       expect(errors[0]).toMatch(/pattern/);
     });
 
     it("rejects strength out of range", () => {
-      expect(validateSamskara({ pattern: "test", strength: 1.5 }).length).toBeGreaterThan(0);
-      expect(validateSamskara({ pattern: "test", strength: -0.1 }).length).toBeGreaterThan(0);
+      expect(validatePattern({ pattern: "test", strength: 1.5 }).length).toBeGreaterThan(0);
+      expect(validatePattern({ pattern: "test", strength: -0.1 }).length).toBeGreaterThan(0);
     });
 
     it("accepts strength at boundaries", () => {
-      expect(validateSamskara({ pattern: "test", strength: 0 })).toEqual([]);
-      expect(validateSamskara({ pattern: "test", strength: 1 })).toEqual([]);
+      expect(validatePattern({ pattern: "test", strength: 0 })).toEqual([]);
+      expect(validatePattern({ pattern: "test", strength: 1 })).toEqual([]);
     });
   });
 

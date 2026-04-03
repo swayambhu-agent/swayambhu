@@ -1,0 +1,181 @@
+<h2>Deep Reflect Tab — Pipeline Debugger</h2>
+<p class="subtitle">Each stage of the cognitive pipeline, top to bottom. Green = healthy, amber = degraded, red = stuck. Click any stage to expand details.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Deep Reflect — Pipeline View</div>
+  <div class="mockup-body" style="padding:0; background:#0a0a0f;">
+
+    <!-- DR selector bar -->
+    <div style="padding:10px 16px; background:rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.06); display:flex; align-items:center; gap:12px; font-size:12px;">
+      <span style="color:#a78bfa; font-weight:600;">Deep Reflect Cycle</span>
+      <select style="background:#14142a; border:1px solid #1e1e3a; color:#e5e5e5; padding:3px 8px; border-radius:4px; font-size:11px;">
+        <option>DR #3 — Session 44 (latest)</option>
+        <option>DR #2 — Session 24</option>
+        <option>DR #1 — Session 5</option>
+      </select>
+      <span style="color:#666; margin-left:auto;">Sessions 25–47 → DR #3</span>
+    </div>
+
+    <!-- Pipeline stages -->
+    <div style="padding:16px; display:flex; flex-direction:column; gap:2px;">
+
+      <!-- Stage 1: Act Sessions -->
+      <div style="border-radius:8px; overflow:hidden;">
+        <div style="padding:10px 14px; background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:8px; display:flex; align-items:center; gap:10px;">
+          <span style="width:8px; height:8px; border-radius:50%; background:#22c55e; flex-shrink:0;"></span>
+          <div style="flex:1;">
+            <div style="font-size:12px; color:#e5e5e5; font-weight:600;">Stage 1: Act Sessions</div>
+            <div style="font-size:11px; color:#999; margin-top:2px;">23 sessions ran · 18 actions · 5 no_action · $0.34 total cost</div>
+          </div>
+          <span style="color:#22c55e; font-size:11px; font-weight:600;">HEALTHY</span>
+          <span style="color:#666; font-size:14px; cursor:pointer;">▸</span>
+        </div>
+      </div>
+
+      <!-- Arrow -->
+      <div style="text-align:center; color:#444; font-size:10px; padding:2px 0;">▼</div>
+
+      <!-- Stage 2: Eval Pipeline -->
+      <div style="border-radius:8px; overflow:hidden;">
+        <div style="padding:10px 14px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); border-radius:8px; display:flex; align-items:center; gap:10px;">
+          <span style="width:8px; height:8px; border-radius:50%; background:#f59e0b; flex-shrink:0;"></span>
+          <div style="flex:1;">
+            <div style="font-size:12px; color:#e5e5e5; font-weight:600;">Stage 2: Eval Pipeline</div>
+            <div style="font-size:11px; color:#999; margin-top:2px;">σ computed 23x · Tier 1+2: 19x · Tier 3 fallback: 4x · Inference down: 0x</div>
+          </div>
+          <span style="color:#f59e0b; font-size:11px; font-weight:600;">DEGRADED</span>
+          <span style="color:#666; font-size:14px; cursor:pointer;">▾</span>
+        </div>
+        <!-- Expanded detail -->
+        <div style="padding:10px 14px 12px 32px; background:rgba(245,158,11,0.04); border:1px solid rgba(245,158,11,0.1); border-top:none; border-radius:0 0 8px 8px;">
+          <div style="font-size:11px; color:#d4d4d4; margin-bottom:6px;">4 sessions fell back to LLM Tier 3 — NLI confidence was below threshold.</div>
+          <div style="font-size:10px; color:#888;">
+            <div style="display:flex; gap:16px; margin-bottom:3px;">
+              <span>Session 28: <span style="color:#f59e0b;">Tier 3</span> — samskara:comms ambiguous (0.42)</span>
+            </div>
+            <div style="display:flex; gap:16px; margin-bottom:3px;">
+              <span>Session 31: <span style="color:#f59e0b;">Tier 3</span> — samskara:slack ambiguous (0.38)</span>
+            </div>
+            <div style="display:flex; gap:16px; margin-bottom:3px;">
+              <span>Session 33: <span style="color:#f59e0b;">Tier 3</span> — samskara:comms ambiguous (0.51)</span>
+            </div>
+            <div style="display:flex; gap:16px;">
+              <span>Session 41: <span style="color:#f59e0b;">Tier 3</span> — samskara:docs ambiguous (0.44)</span>
+            </div>
+          </div>
+          <div style="font-size:10px; color:#f59e0b; margin-top:6px;">⚠ Consider rewording ambiguous samskaras for cleaner NLI classification</div>
+        </div>
+      </div>
+
+      <!-- Arrow -->
+      <div style="text-align:center; color:#444; font-size:10px; padding:2px 0;">▼</div>
+
+      <!-- Stage 3: Experience Recording -->
+      <div style="border-radius:8px; overflow:hidden;">
+        <div style="padding:10px 14px; background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:8px; display:flex; align-items:center; gap:10px;">
+          <span style="width:8px; height:8px; border-radius:50%; background:#22c55e; flex-shrink:0;"></span>
+          <div style="flex:1;">
+            <div style="font-size:12px; color:#e5e5e5; font-weight:600;">Stage 3: Experience Recording</div>
+            <div style="font-size:11px; color:#999; margin-top:2px;">7 experiences recorded (of 23 sessions) · avg salience: 0.72 · threshold: 0.5</div>
+          </div>
+          <span style="color:#22c55e; font-size:11px; font-weight:600;">HEALTHY</span>
+          <span style="color:#666; font-size:14px; cursor:pointer;">▸</span>
+        </div>
+      </div>
+
+      <!-- Arrow -->
+      <div style="text-align:center; color:#444; font-size:10px; padding:2px 0;">▼</div>
+
+      <!-- Stage 4: DR Trigger -->
+      <div style="border-radius:8px; overflow:hidden;">
+        <div style="padding:10px 14px; background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:8px; display:flex; align-items:center; gap:10px;">
+          <span style="width:8px; height:8px; border-radius:50%; background:#22c55e; flex-shrink:0;"></span>
+          <div style="flex:1;">
+            <div style="font-size:12px; color:#e5e5e5; font-weight:600;">Stage 4: DR Trigger</div>
+            <div style="font-size:11px; color:#999; margin-top:2px;">Triggered at session 44 · 20 sessions since last DR (threshold: 20) · 7 new experiences</div>
+          </div>
+          <span style="color:#22c55e; font-size:11px; font-weight:600;">FIRED</span>
+          <span style="color:#666; font-size:14px; cursor:pointer;">▸</span>
+        </div>
+      </div>
+
+      <!-- Arrow -->
+      <div style="text-align:center; color:#444; font-size:10px; padding:2px 0;">▼</div>
+
+      <!-- Stage 5: DR Execution -->
+      <div style="border-radius:8px; overflow:hidden;">
+        <div style="padding:10px 14px; background:rgba(167,139,250,0.08); border:1px solid rgba(167,139,250,0.2); border-radius:8px; display:flex; align-items:center; gap:10px;">
+          <span style="width:8px; height:8px; border-radius:50%; background:#a78bfa; flex-shrink:0;"></span>
+          <div style="flex:1;">
+            <div style="font-size:12px; color:#e5e5e5; font-weight:600;">Stage 5: S/D Execution</div>
+            <div style="font-size:11px; color:#999; margin-top:2px;">5 experiences selected · 3 LLM calls · $0.12 cost · 45s duration</div>
+          </div>
+          <span style="color:#a78bfa; font-size:11px; font-weight:600;">COMPLETED</span>
+          <span style="color:#666; font-size:14px; cursor:pointer;">▾</span>
+        </div>
+        <!-- Expanded -->
+        <div style="padding:10px 14px 12px 32px; background:rgba(167,139,250,0.04); border:1px solid rgba(167,139,250,0.1); border-top:none; border-radius:0 0 8px 8px;">
+          <!-- Reflection text -->
+          <div style="font-size:11px; color:#999; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Reflection</div>
+          <div style="font-size:12px; color:#d4d4d4; line-height:1.5; margin-bottom:10px; padding:8px; background:rgba(255,255,255,0.03); border-radius:4px;">
+            "Slack delivery continues to be unreliable. Three silent failures in the last 20 sessions. The pattern is clear — success responses do not guarantee delivery. Creating a samskara to encode this. Also noticing the agent tends to over-research when a simpler response would serve..."
+          </div>
+          <!-- S operator output -->
+          <div style="font-size:11px; color:#22c55e; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">S Operator</div>
+          <div style="font-size:11px; margin-bottom:8px;">
+            <div style="color:#d4d4d4; padding:4px 8px; background:rgba(34,197,94,0.06); border-radius:4px; margin-bottom:3px;">
+              <span style="color:#22c55e;">+ created</span> samskara:slack:silent-failures — "Slack fails silently" (strength: 0.3)
+            </div>
+            <div style="color:#d4d4d4; padding:4px 8px; background:rgba(34,197,94,0.06); border-radius:4px; margin-bottom:3px;">
+              <span style="color:#f59e0b;">↑ deepened</span> samskara:comms:defaults — strength 0.7 → 0.85
+            </div>
+          </div>
+          <!-- D operator output -->
+          <div style="font-size:11px; color:#a78bfa; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">D Operator</div>
+          <div style="font-size:11px; margin-bottom:8px;">
+            <div style="color:#d4d4d4; padding:4px 8px; background:rgba(167,139,250,0.06); border-radius:4px; margin-bottom:3px;">
+              <span style="color:#a78bfa;">evolved</span> desire:serve — "Serve what is asked" (approach, from p2, p9)
+            </div>
+          </div>
+          <!-- Experiences input -->
+          <div style="font-size:11px; color:#06b6d4; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Experiences Fed In</div>
+          <div style="font-size:10px; color:#888;">
+            <div style="padding:3px 8px; margin-bottom:2px;">s31: σ=0.8 — Slack silent fail #2</div>
+            <div style="padding:3px 8px; margin-bottom:2px;">s35: σ=0.7 — 200 tokens on unasked research</div>
+            <div style="padding:3px 8px; margin-bottom:2px;">s38: σ=0.3 — Research doc delivered successfully</div>
+            <div style="padding:3px 8px; margin-bottom:2px;">s42: σ=0.8 — Slack silent fail #3</div>
+            <div style="padding:3px 8px;">s45: σ=0.3 — Patron acknowledged receipt</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Arrow -->
+      <div style="text-align:center; color:#444; font-size:10px; padding:2px 0;">▼</div>
+
+      <!-- Stage 6: Effect (diff) -->
+      <div style="border-radius:8px; overflow:hidden;">
+        <div style="padding:10px 14px; background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:8px; display:flex; align-items:center; gap:10px;">
+          <span style="width:8px; height:8px; border-radius:50%; background:#22c55e; flex-shrink:0;"></span>
+          <div style="flex:1;">
+            <div style="font-size:12px; color:#e5e5e5; font-weight:600;">Stage 6: KV Effect</div>
+            <div style="font-size:11px; color:#999; margin-top:2px;">3 KV writes · 1 samskara created · 1 deepened · 1 desire evolved</div>
+          </div>
+          <span style="color:#22c55e; font-size:11px; font-weight:600;">APPLIED</span>
+          <span style="color:#666; font-size:14px; cursor:pointer;">▸</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Bottom: next DR prediction -->
+    <div style="padding:10px 16px; border-top:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.02); font-size:11px; color:#666; display:flex; justify-content:space-between;">
+      <span>Next DR: ~session 64 (20 sessions from now)</span>
+      <span>4 experiences accumulated since DR #3</span>
+    </div>
+
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:12px;">
+  Vertical pipeline: scan top to bottom to see where the system is healthy and where it's stuck. Click any stage to expand details. Amber = degraded (working but suboptimal). Red = stuck (data not flowing).
+</p>

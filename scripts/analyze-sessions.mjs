@@ -42,12 +42,12 @@ async function get(key) {
 
 // Gather all data
 const [
-  karmaKeys, desires, samskaras, experiences, actions,
+  karmaKeys, desires, patterns, experiences, actions,
   drState, defaults, lastReflect, reflections, jobs,
 ] = await Promise.all([
   listAll('karma:'),
   getAll('desire:'),
-  getAll('samskara:'),
+  getAll('pattern:'),
   getAll('experience:'),
   getAll('action:'),
   get('dr:state:1'),
@@ -92,7 +92,7 @@ const output = {
     },
   },
   desires,
-  samskaras,
+  patterns,
   experiences,
   actions,
   reflections,
