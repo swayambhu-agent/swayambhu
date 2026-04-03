@@ -71,7 +71,11 @@
     const LOCALE = CFG.locale || undefined;
     const TRUNCATE_JSON = CFG.truncate?.jsonString || 800;
     const TRUNCATE_TEXT = CFG.truncate?.textBlock || 800;
-    const WATCH_INTERVAL = CFG.watchIntervalMs || 2000;
+    const HB = CFG.heartbeat || {};
+    const HB_NORMAL = HB.normalMs || 5000;
+    const HB_ACTIVE = HB.activeMs || 2000;
+    const HB_HIDDEN = HB.hiddenMs || 15000;
+    const HB_SAFETY = HB.safetyMs || 60000;
 
     // Configure marked to use highlight.js for code blocks
     try {
@@ -407,13 +411,12 @@
     }
 
     // ── Timeline Tab ──────────────────────────────────────────
-    function TimelineTab({ patronKey, onSelectEntry }) {
+    function TimelineTab({ patronKey, onSelectEntry, sessionsRev }) {
       const [sessions, setSessions] = useState([]);       // [{id, type, ts}]
       const [selectedSession, setSelectedSession] = useState(null);
       const [karma, setKarma] = useState([]);
       const [loading, setLoading] = useState(false);
       const [watching, setWatching] = useState(false);
-      const watchRef = useRef(null);
       const karmaRef = useRef([]);
       const autoStartedRef = useRef(false);
 
@@ -443,13 +446,7 @@
 
       useEffect(() => {
         refreshSessions();
-        // Poll for sessions until we find some
-        const poll = setInterval(async () => {
-          const ids = await refreshSessions();
-          if (ids.length > 0) clearInterval(poll);
-        }, 5000);
-        return () => clearInterval(poll);
-      }, [refreshSessions]);
+      }, [refreshSessions, sessionsRev]);
 
       const loadKarma = useCallback(async (sid) => {
         if (!sid) return;
@@ -479,39 +476,19 @@
 
       useEffect(() => {
         if (selectedSession) loadKarma(selectedSession);
-        return () => { if (watchRef.current) clearInterval(watchRef.current); };
       }, [selectedSession, loadKarma]);
+
+      // Reload karma when pulse detects session changes (while watching)
+      useEffect(() => {
+        if (watching && selectedSession && sessionsRev > 0) loadKarma(selectedSession);
+      }, [sessionsRev]);
 
       const toggleWatch = () => {
         if (watching) {
-          clearInterval(watchRef.current);
-          watchRef.current = null;
           setWatching(false);
         } else {
           setWatching(true);
           loadKarma(selectedSession);
-          watchRef.current = setInterval(async () => {
-            try {
-              const d = await api(`/kv/karma:${selectedSession}`, patronKey);
-              if (d.error) {
-                const fresh = await refreshSessions();
-                if (fresh.length > 0) setSelectedSession(fresh[fresh.length - 1].id);
-                clearInterval(watchRef.current);
-                watchRef.current = null;
-                setWatching(false);
-                return;
-              }
-              const entries = (d.value || []).map(e => ({
-                ...e,
-                type: e.type || e.event,
-                ts: e.ts || (e.t ? new Date(e.t).toISOString() : null),
-              }));
-              if (entries.length > karmaRef.current.length) {
-                setKarma(entries);
-                karmaRef.current = entries;
-              }
-            } catch {}
-          }, WATCH_INTERVAL);
         }
       };
 
@@ -519,7 +496,7 @@
       useEffect(() => {
         if (selectedSession && !autoStartedRef.current) {
           autoStartedRef.current = true;
-          toggleWatch();
+          setWatching(true);
         }
       }, [selectedSession]);
 
@@ -913,7 +890,7 @@
     }
 
     // ── Reflections Tab ───────────────────────────────────────
-    function ReflectionsTab({ patronKey }) {
+    function ReflectionsTab({ patronKey, reflectionsRev }) {
       const [drSessions, setDrSessions] = useState([]);
       const [selectedDr, setSelectedDr] = useState(null);
       const [drData, setDrData] = useState(null);
@@ -924,10 +901,10 @@
         api('/sessions', patronKey).then(d => {
           const drs = (d.sessions || []).filter(s => s.type === 'deep_reflect').reverse();
           setDrSessions(drs);
-          if (drs.length > 0) setSelectedDr(drs[0].id);
+          if (drs.length > 0) setSelectedDr(prev => prev || drs[0].id);
           setLoading(false);
         }).catch(() => setLoading(false));
-      }, [patronKey]);
+      }, [patronKey, reflectionsRev]);
 
       useEffect(() => {
         if (!selectedDr) return;
@@ -1378,7 +1355,7 @@
     }
 
     // ── Chat Tab ──────────────────────────────────────────────
-    function ChatTab({ patronKey }) {
+    function ChatTab({ patronKey, chatsRev }) {
       const [chats, setChats] = useState([]);
       const [selectedChat, setSelectedChat] = useState(null);
       const [chatData, setChatData] = useState(null);
@@ -1394,9 +1371,9 @@
 
       useEffect(() => {
         refreshChats();
-        const iv = setInterval(refreshChats, 10000);
+        const iv = setInterval(refreshChats, HB_SAFETY);
         return () => clearInterval(iv);
-      }, [refreshChats]);
+      }, [refreshChats, chatsRev]);
 
       const loadChat = useCallback(async (platform, channelId) => {
         setLoading(true);
@@ -1420,7 +1397,7 @@
         if (!selectedChat) return;
         const c = chats.find(ch => ch.key === selectedChat);
         if (!c) return;
-        const iv = setInterval(() => loadChat(c.platform, c.channel_id), 5000);
+        const iv = setInterval(() => loadChat(c.platform, c.channel_id), HB_SAFETY);
         return () => clearInterval(iv);
       }, [selectedChat, chats, loadChat]);
 
@@ -1607,9 +1584,9 @@
       }, [patronKey]);
 
       useEffect(() => { refresh(); }, [refresh]);
-      // Poll every 10s to detect when the agent consumes the message
+      // Safety-net poll to detect when the agent consumes the message
       useEffect(() => {
-        const iv = setInterval(refresh, 10000);
+        const iv = setInterval(refresh, HB_SAFETY);
         return () => clearInterval(iv);
       }, [refresh]);
 
@@ -2141,12 +2118,60 @@
         } catch {}
       }, [patronKey]);
 
+      // ── Heartbeat: single poll loop replaces all per-tab intervals ──
+      const lastPulseN = useRef(-1);
+      const inflightRef = useRef({});
+      const [sessionsRev, setSessionsRev] = useState(0);
+      const [chatsRev, setChatsRev] = useState(0);
+      const [reflectionsRev, setReflectionsRev] = useState(0);
+
       useEffect(() => {
+        if (!patronKey) return;
+
+        // Load initial data on mount
         loadHealth();
         loadMindCounts();
-        const iv = setInterval(() => { loadHealth(); loadMindCounts(); }, 10000);
-        return () => clearInterval(iv);
-      }, [loadHealth, loadMindCounts]);
+
+        function getInterval() {
+          if (document.hidden) return HB_HIDDEN;
+          return HB_NORMAL;
+        }
+
+        const guard = (key, fn) => {
+          if (inflightRef.current[key]) return;
+          inflightRef.current[key] = true;
+          fn().finally(() => { inflightRef.current[key] = false; });
+        };
+
+        async function heartbeat() {
+          try {
+            const pulse = await api("/pulse", patronKey);
+            if (!pulse || pulse.n === lastPulseN.current) return;
+            lastPulseN.current = pulse.n;
+
+            const changed = new Set(pulse.changed || []);
+
+            if (changed.has("sessions"))     setSessionsRev(r => r + 1);
+            if (changed.has("health"))       guard("health", loadHealth);
+            if (changed.has("mind"))         guard("mind", loadMindCounts);
+            if (changed.has("reflections"))  setReflectionsRev(r => r + 1);
+            if (changed.has("chats"))        setChatsRev(r => r + 1);
+          } catch {}
+        }
+
+        let intervalId = setInterval(heartbeat, getInterval());
+
+        const onVisChange = () => {
+          clearInterval(intervalId);
+          intervalId = setInterval(heartbeat, getInterval());
+        };
+        document.addEventListener("visibilitychange", onVisChange);
+
+        return () => {
+          clearInterval(intervalId);
+          document.removeEventListener("visibilitychange", onVisChange);
+        };
+      }, [patronKey, loadHealth, loadMindCounts]);
 
       // Countdown timer for next session
       useEffect(() => {
@@ -2277,7 +2302,7 @@
           <div ref={containerRef} className="flex-1 flex overflow-hidden">
             <div style={{ display: activeTab === 'timeline' ? 'flex' : 'none', width: '100%', height: '100%' }}>
               <div style={{ width: `${leftPct}%` }} className="flex-shrink-0 p-4 overflow-hidden flex flex-col">
-                <TimelineTab patronKey={patronKey} onSelectEntry={setSelectedEntry} />
+                <TimelineTab patronKey={patronKey} onSelectEntry={setSelectedEntry} sessionsRev={sessionsRev} />
               </div>
               <DraggableDivider onDrag={handleDividerDrag} />
               <div style={{ width: `${100 - leftPct}%` }} className="flex-shrink-0 overflow-hidden bg-bg-panel flex flex-col">
@@ -2285,7 +2310,7 @@
               </div>
             </div>
             <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', width: '100%', height: '100%' }}>
-              <ChatTab patronKey={patronKey} />
+              <ChatTab patronKey={patronKey} chatsRev={chatsRev} />
             </div>
             <div style={{ display: activeTab === 'contacts' ? 'flex' : 'none', width: '100%', height: '100%' }}>
               <ContactsTab patronKey={patronKey} />
@@ -2294,7 +2319,7 @@
               <KVExplorerTab patronKey={patronKey} />
             </div>
             <div style={{ display: activeTab === 'reflections' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
-              <ReflectionsTab patronKey={patronKey} />
+              <ReflectionsTab patronKey={patronKey} reflectionsRev={reflectionsRev} />
             </div>
             <div style={{ display: activeTab === 'mutations' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
               <MutationsTab patronKey={patronKey} />
