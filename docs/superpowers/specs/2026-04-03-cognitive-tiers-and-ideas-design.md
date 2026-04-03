@@ -64,29 +64,33 @@ Tactics differ from principles:
 - Both are injected into every LLM call, but in separate blocks
   (`[PRINCIPLES]` and `[TACTICS]`).
 
-### 2. Desire expansion property
+### 2. Desire properties
 
-The D operator's formal equation gains a constraint:
+Two formal properties of the D operator:
 
+**Expansion** — desire always grows:
 ```
 D_p(ε, d_t) = d_{t+1}    where |d_{t+1}| > |d_t|
 ```
 
-Desire always expands. The set of desires only grows — fulfillment
-reveals more than it closes. Retirement isn't deletion, it's
-transformation: a fulfilled desire becomes the foundation for its
-successor.
+Fulfillment reveals larger gaps, not empty sets. Retirement is
+replaced by expansion. The empty-desire passivity state becomes
+impossible after the first DR cycle.
 
-This makes the empty-desire passivity state mathematically impossible
-after the first DR cycle. The agent can never run out of desires as
-long as it has experiences.
+**Always-positive** — D transforms everything into approach:
+```
+D_p(ε_{-}) = d_{+}     negative experience → approach desire toward the inversion
+D_p(ε_{+}) = d_{++}    positive experience → amplified approach desire
+```
+
+D never produces avoidance desires. Negative experience reveals what
+would have been better; positive experience amplifies toward more.
+The `direction` field in the desire schema becomes always `"approach"`.
 
 The DR prompt's D operator section changes:
 - Remove: "Retire when the gap closes"
-- Add: "Desire expands: closing a gap reveals what's beyond it. When
-  a desire is fulfilled, examine what the fulfillment made visible.
-  A fulfilled desire is an input to magnification, not a deletion.
-  The desire set always grows."
+- Remove: `direction: "approach|avoidance"` — always `"approach"`
+- Add expansion and always-positive properties with examples
 
 The three D operator actions become:
 - **Create** when experience reveals a gap that principles care about
