@@ -34,3 +34,8 @@ screenshots/
 tmp/
 test-results/
 .worktrees/
+
+# Dashboard build output
+site/patron/app.js
+site/patron/app.js.map
+site/patron/app.css
