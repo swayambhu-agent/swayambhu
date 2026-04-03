@@ -118,8 +118,10 @@ describe("runTurn", () => {
 
   it("sorts internal turns before inbound turns", async () => {
     let capturedMessages;
+    let capturedSystemPrompt;
     K.callLLM = vi.fn(async (opts) => {
       capturedMessages = opts.messages;
+      capturedSystemPrompt = opts.systemPrompt;
       return makeLLMResponse(null, [
         { id: "tc_1", function: { name: "send", arguments: '{"message":"ok"}' } },
       ]);
@@ -135,6 +137,8 @@ describe("runTurn", () => {
     const userMsgs = capturedMessages.filter(m => m.role === "user");
     expect(userMsgs.length).toBe(1);
     expect(userMsgs[0].content).toBe("Hello");
+    expect(capturedSystemPrompt).toContain("[AGENT UPDATES]");
+    expect(capturedSystemPrompt).toContain("agent update");
   });
 
   it("persists conversation state after turn", async () => {
@@ -148,6 +152,7 @@ describe("runTurn", () => {
     expect(conv).toBeDefined();
     expect(conv.messages.length).toBeGreaterThan(0);
     expect(conv.turn_count).toBe(1);
+    expect(conv.reply_target).toEqual({ platform: "slack", channel: "U084ASKBXB7", thread_ts: null });
   });
 
   it("suppresses trigger_session for internal-only batches", async () => {
