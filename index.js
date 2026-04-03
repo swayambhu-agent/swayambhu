@@ -62,15 +62,12 @@ const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
 
 const HOOKS = {
   tick: session,
-  postTick: {
-    async run(K, { events }) {
-      // Process comms events — runs inside execution lock
-      if (EVENT_HANDLERS._pendingComms?.length) {
-        const pending = EVENT_HANDLERS._pendingComms.splice(0);
-
+  deferred: {
+    comms: {
+      async run(K, events) {
         // Group by conversation
         const byConv = {};
-        for (const ev of pending) {
+        for (const ev of events) {
           let turn;
           if (ev.type === "inbound_message") {
             turn = ev; // Already a CommTurn shape from fetch
@@ -123,60 +120,53 @@ const HOOKS = {
             }
           }
         }
-        EVENT_HANDLERS._pendingComms = [];
-      }
 
-      // Check outbox for due items
-      const dueItems = await checkOutbox(K);
-      for (const item of dueItems) {
-        try {
-          const turn = {
-            conversation_id: item.conversation_id,
-            reply_target: null,
-            source: "internal",
-            content: item.content,
-            intent: "share",
-            idempotency_key: item.key || null,
-            metadata: { outbox_id: item.id },
-          };
+        // Check outbox for due items
+        const dueItems = await checkOutbox(K);
+        for (const item of dueItems) {
+          try {
+            const turn = {
+              conversation_id: item.conversation_id,
+              reply_target: null,
+              source: "internal",
+              content: item.content,
+              intent: "share",
+              idempotency_key: item.key || null,
+              metadata: { outbox_id: item.id },
+            };
 
-          // Load reply_target from conversation state
-          const conv = await K.kvGet(item.conversation_id);
-          if (conv?.reply_target) {
-            turn.reply_target = conv.reply_target;
-          } else {
-            const parts = item.conversation_id.replace("chat:", "").split(":");
-            turn.reply_target = { platform: parts[0], channel: parts.slice(1).join(":"), thread_ts: null };
-          }
-
-          const result = await runTurn(K, item.conversation_id, [turn]);
-          if (result.action === "sent" || result.action === "discarded") {
-            await K.kvDeleteSafe(item.key);
-          } else {
-            // Still held or error — increment attempts
-            item.attempts = (item.attempts || 0) + 1;
-            if (item.attempts >= 3) {
-              await K.kvDeleteSafe(item.key);
-              await K.karmaRecord({ event: "outbox_dead_lettered", id: item.id });
+            // Load reply_target from conversation state
+            const conv = await K.kvGet(item.conversation_id);
+            if (conv?.reply_target) {
+              turn.reply_target = conv.reply_target;
             } else {
-              await K.kvWriteSafe(item.key, item);
+              const parts = item.conversation_id.replace("chat:", "").split(":");
+              turn.reply_target = { platform: parts[0], channel: parts.slice(1).join(":"), thread_ts: null };
             }
+
+            const result = await runTurn(K, item.conversation_id, [turn]);
+            if (result.action === "sent" || result.action === "discarded") {
+              await K.kvDeleteSafe(item.key);
+            } else {
+              // Still held or error — increment attempts
+              item.attempts = (item.attempts || 0) + 1;
+              if (item.attempts >= 3) {
+                await K.kvDeleteSafe(item.key);
+                await K.karmaRecord({ event: "outbox_dead_lettered", id: item.id });
+              } else {
+                await K.kvWriteSafe(item.key, item);
+              }
+            }
+          } catch (err) {
+            await K.karmaRecord({ event: "outbox_error", id: item.id, error: err.message });
           }
-        } catch (err) {
-          await K.karmaRecord({ event: "outbox_error", id: item.id, error: err.message });
         }
-      }
+      },
     },
   },
 };
 
 const EVENT_HANDLERS = {
-  communicationDelivery: async (K, event) => {
-    // Just collect — processing happens in postTick hook, inside lock
-    if (!EVENT_HANDLERS._pendingComms) EVENT_HANDLERS._pendingComms = [];
-    event._deferDelete = true; // Keep event in KV for claim lifecycle
-    EVENT_HANDLERS._pendingComms.push(event);
-  },
   sessionTrigger: async (K, event) => {
     try {
       const schedule = await K.kvGet("session_schedule");

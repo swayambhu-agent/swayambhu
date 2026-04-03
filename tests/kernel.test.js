@@ -2845,7 +2845,7 @@ describe("drainEvents", () => {
   it("returns empty arrays when no event:* keys exist", async () => {
     const { kernel } = makeKernel();
     const result = await kernel.drainEvents({});
-    expect(result).toEqual({ processed: [], actContext: [] });
+    expect(result).toEqual({ processed: [], actContext: [], deferred: {} });
   });
 
   it("routes event to configured handler and deletes event on success", async () => {
@@ -2965,6 +2965,78 @@ describe("drainEvents", () => {
     const { processed } = await kernel.drainEvents({ onChat });
     expect(processed).toHaveLength(2);
     expect(processed.every(e => e.type === 'chat_message')).toBe(true);
+  });
+
+  it("returns deferred events grouped by processor with new config format", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: { job_complete: ['sessionTrigger'] },
+        deferred: { inbound_message: ['comms'], job_complete: ['comms'] },
+      }),
+      'event:0001:inbound_message': JSON.stringify({ type: 'inbound_message', text: 'hi' }),
+      'event:0002:job_complete': JSON.stringify({ type: 'job_complete', job_id: 'j1' }),
+    });
+    const sessionTrigger = vi.fn(async () => {});
+    const { deferred, processed } = await kernel.drainEvents({ sessionTrigger });
+
+    // Both events should be in deferred.comms
+    expect(deferred.comms).toHaveLength(2);
+    expect(deferred.comms.map(e => e.type)).toContain('inbound_message');
+    expect(deferred.comms.map(e => e.type)).toContain('job_complete');
+
+    // Events with deferred processors should NOT be deleted from KV
+    expect(await env.KV.get('event:0001:inbound_message')).not.toBeNull();
+    expect(await env.KV.get('event:0002:job_complete')).not.toBeNull();
+
+    // Immediate handler should still have been called for job_complete
+    expect(sessionTrigger).toHaveBeenCalledTimes(1);
+
+    // Both should be in processed
+    expect(processed).toHaveLength(2);
+  });
+
+  it("backward compat: old flat config format still works as handlers-only", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['onChat'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hello' }),
+    });
+    const onChat = vi.fn(async () => {});
+    const { processed, deferred } = await kernel.drainEvents({ onChat });
+
+    // Should work like before — handler called, event deleted, no deferred
+    expect(onChat).toHaveBeenCalledTimes(1);
+    expect(await env.KV.get('event:0001:chat_message')).toBeNull();
+    expect(processed).toHaveLength(1);
+    expect(deferred).toEqual({});
+  });
+
+  it("immediate handler failure does not block deferred processing", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: { job_complete: ['failHandler'] },
+        deferred: { job_complete: ['comms'] },
+      }),
+      'event:0001:job_complete': JSON.stringify({ type: 'job_complete', job_id: 'j1' }),
+    });
+    const failHandler = vi.fn(async () => { throw new Error('boom'); });
+    const { deferred } = await kernel.drainEvents({ failHandler });
+
+    // Event should still be in deferred despite handler failure
+    expect(deferred.comms).toHaveLength(1);
+    expect(deferred.comms[0].type).toBe('job_complete');
+  });
+
+  it("events with only handlers (no deferred) are deleted on success", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: { session_request: ['sessionTrigger'] },
+        deferred: {},
+      }),
+      'event:0001:session_request': JSON.stringify({ type: 'session_request' }),
+    });
+    const sessionTrigger = vi.fn(async () => {});
+    await kernel.drainEvents({ sessionTrigger });
+    expect(await env.KV.get('event:0001:session_request')).toBeNull();
   });
 });
 

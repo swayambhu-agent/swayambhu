@@ -76,16 +76,20 @@ await put("kernel:key_tiers", {
 
 // Event handlers
 await put("config:event_handlers", {
-  inbound_message: ["communicationDelivery"],
-  comms_request: ["communicationDelivery"],
-  session_complete: ["communicationDelivery"],
-  dr_complete: ["communicationDelivery"],
-  session_request: ["sessionTrigger"],
-  session_response: ["communicationDelivery"],
-  job_complete: ["communicationDelivery", "sessionTrigger"],
-  patron_direct: ["sessionTrigger"],
-  error: [],
-}, "json", "Event bus handler routing — maps event types to handler names");
+  handlers: {
+    session_request: ["sessionTrigger"],
+    job_complete: ["sessionTrigger"],
+    patron_direct: ["sessionTrigger"],
+  },
+  deferred: {
+    inbound_message: ["comms"],
+    comms_request: ["comms"],
+    session_complete: ["comms"],
+    dr_complete: ["comms"],
+    session_response: ["comms"],
+    job_complete: ["comms"],
+  },
+}, "json", "Event bus routing — immediate handlers + deferred processors");
 
 // ── Providers (from providers/*.js) ───────────────────────────
 
