@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { makeMockK } from "./helpers/mock-kernel.js";
 
 // ── Tool modules ─────────────────────────────────────────────
 
@@ -19,7 +20,7 @@ import * as collect_jobs from "../tools/collect_jobs.js";
 import * as send_whatsapp from "../tools/send_whatsapp.js";
 import * as google_docs from "../tools/google_docs.js";
 import * as gnanetra from "../tools/gnanetra.js";
-
+import * as request_message from "../tools/request_message.js";
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
@@ -115,7 +116,7 @@ function mockKV(initial = {}) {
 const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
-  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra,
+  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra, request_message,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail, compute };
@@ -1835,4 +1836,36 @@ describe("collect_jobs", () => {
   });
 });
 
+// ── request_message ───────────────────────────────────────────
 
+describe("request_message", () => {
+  it("emits comms_request event with validated contact", async () => {
+    const K = makeMockK({
+      "contact:swami_kevala": { name: "Swami Kevala" },
+    });
+    const result = await request_message.execute({
+      contact: "swami_kevala",
+      intent: "ask",
+      content: "What should I work on?",
+      K,
+    });
+    expect(result.ok).toBe(true);
+    expect(K.emitEvent).toHaveBeenCalledWith("comms_request", {
+      contact: "swami_kevala",
+      intent: "ask",
+      content: "What should I work on?",
+    });
+  });
+
+  it("rejects unknown contact slugs", async () => {
+    const K = makeMockK({});
+    const result = await request_message.execute({
+      contact: "nonexistent",
+      intent: "share",
+      content: "hello",
+      K,
+    });
+    expect(result.error).toMatch(/unknown contact/i);
+    expect(K.emitEvent).not.toHaveBeenCalled();
+  });
+});

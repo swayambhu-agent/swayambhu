@@ -88,6 +88,20 @@
       }
     },
     {
+      "name": "request_message",
+      "description": "Request that a message be sent to a contact. The communication agent decides whether and how to deliver.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "contact": { "type": "string", "description": "Contact slug (e.g. swami_kevala)" },
+          "intent": { "type": "string", "enum": ["share", "ask", "report"], "description": "Communication intent" },
+          "content": { "type": "string", "description": "What you want to communicate" }
+        },
+        "required": ["contact", "intent", "content"]
+      },
+      "grants": { "kv_read": ["contact:*"] }
+    },
+    {
       "name": "google_docs",
       "description": "Create or update a Google Doc. Uses existing Gmail OAuth credentials (drive.file scope). Returns a shareable doc URL.",
       "input": {
