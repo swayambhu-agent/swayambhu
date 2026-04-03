@@ -28,6 +28,36 @@ function DraggableDivider({ onDrag }) {
 }
 
 // ── Context Panel ─────────────────────────────────────────
+function PromptViewer({ patronKey, requestKey }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const load = async () => {
+    if (data) { setOpen(!open); return; }
+    setLoading(true);
+    try {
+      const d = await api(`/kv/${encodeURIComponent(requestKey)}`, patronKey);
+      setData(d?.value || d || null);
+    } catch { setData({ error: "prompt data expired or unavailable" }); }
+    setLoading(false);
+    setOpen(true);
+  };
+
+  return (
+    <div className="mx-4 mt-2">
+      <button onClick={load} className="text-xs text-accent hover:underline">
+        {loading ? "Loading..." : open ? "Hide prompt" : "Show prompt"}
+      </button>
+      {open && data && (
+        <div className="mt-2 border border-border rounded p-2 bg-bg">
+          <JsonTree data={data} defaultOpen={true} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ContextPanel({ patronKey, selectedEntry }) {
   if (!selectedEntry) {
     return (
@@ -63,6 +93,9 @@ function ContextPanel({ patronKey, selectedEntry }) {
           <div className="mt-1 ml-4 text-blue-300 text-xs">{entry.model}</div>
         )}
       </div>
+
+      {/* Prompt viewer for LLM calls */}
+      {entry.request_key && <PromptViewer patronKey={patronKey} requestKey={entry.request_key} />}
 
       {/* Collapsible JSON tree */}
       <div className="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs font-mono">

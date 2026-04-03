@@ -1389,6 +1389,15 @@ class Kernel {
       ...(tools?.length ? { tools } : {}),
     };
 
+    // Store exact request for debugging (7-day TTL, loaded on demand by dashboard).
+    // Sidecar key keeps karma lean while preserving the full prompt.
+    const requestKey = `llm_request:${this.executionId}:${this.sessionLLMCalls}`;
+    try {
+      await this.kv.put(requestKey, JSON.stringify({
+        step, model, system_prompt: fullSystemPrompt, messages, tools: tools || [],
+      }), { expirationTtl: 604800 });
+    } catch {} // best-effort — don't fail the LLM call if request logging fails
+
     // Try cascade: dynamic adapter → last working → hardcoded fallback
     const result = await this.callWithCascade(request, step);
     const durationMs = Date.now() - startMs;
@@ -1401,6 +1410,7 @@ class Kernel {
         error: result.error,
         duration_ms: durationMs,
         provider_tier: result.tier,
+        request_key: requestKey,
       });
 
       // Model fallback (separate from provider fallback)
@@ -1440,6 +1450,7 @@ class Kernel {
       response: result.content || null,
       tool_calls: result.toolCalls || [],
       tools_available: tools?.map(t => ({ name: t.function?.name, description: t.function?.description })) || [],
+      request_key: requestKey,
     });
 
     this.sessionCost += cost;
