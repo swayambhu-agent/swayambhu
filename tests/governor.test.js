@@ -15,7 +15,7 @@ describe("generateIndexJS", () => {
 
     // Imports
     expect(code).toContain("import { Kernel } from './kernel.js'");
-    expect(code).toContain("import { handleChat, handleDelivery } from './hook-communication.js'");
+    expect(code).toContain("import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox } from './hook-communication.js'");
     expect(code).toContain("import * as session from './userspace.js'");
     expect(code).toContain("import * as kv_query from './tools/kv_query.js'");
     expect(code).toContain("import * as web_fetch from './tools/web_fetch.js'");
@@ -30,14 +30,15 @@ describe("generateIndexJS", () => {
     expect(code).toContain("'provider:llm': llm,");
     expect(code).toContain("'provider:llm_balance': llm_balance,");
     expect(code).toContain("slack: slackAdapter,");
-    expect(code).toContain("const HOOKS = { session }");
+    expect(code).toContain("const HOOKS = { tick: session }");
 
     // Entry points
     expect(code).toContain("async scheduled(event, env, ctx)");
-    expect(code).toContain("new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS })");
+    expect(code).toContain("new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS })");
     expect(code).toContain("await kernel.runScheduled()");
     expect(code).toContain("async fetch(request, env, ctx)");
-    expect(code).toContain("handleChat(K, channel, inbound, adapter)");
+    expect(code).toContain("handleCommand(K, channel, inbound)");
+    expect(code).toContain("ingestInbound(channel, inbound)");
   });
 
   it("handles empty module lists", () => {
