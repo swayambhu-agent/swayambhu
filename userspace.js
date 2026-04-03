@@ -738,8 +738,8 @@ async function dispatchDr(K, defaults) {
         type: "cc_analysis",
         prompt,
         context_keys: [
-          "samskara:*", "experience:*", "desire:*",
-          "principle:*", "config:defaults",
+          "samskara:*", "experience:*", "desire:*", "tactic:*",
+          "principle:*", "config:defaults", "config:tool_registry",
           "reflect:1:*", "last_reflect",
         ],
       }),
@@ -805,15 +805,18 @@ async function applyDrResults(K, state, output) {
   const executionId = await K.getExecutionId();
 
   const ops = (output.kv_operations || []).filter(op =>
-    op.key?.startsWith("samskara:") || op.key?.startsWith("desire:")
+    op.key?.startsWith("samskara:") || op.key?.startsWith("desire:") ||
+    op.key?.startsWith("tactic:") || op.key?.startsWith("principle:")
   );
 
   const blocked = [];
   for (const op of ops) {
-    // DR output uses { key, value } for writes, { key, op: "delete" } for deletes
+    // Preserve the full op shape — DR may use patch + deliberation for principles
     const gatedOp = op.op === "delete"
       ? { key: op.key, op: "delete" }
-      : { key: op.key, op: "put", value: op.value };
+      : op.op === "patch"
+      ? { key: op.key, op: "patch", old_string: op.old_string, new_string: op.new_string, deliberation: op.deliberation }
+      : { key: op.key, op: "put", value: op.value, ...(op.deliberation ? { deliberation: op.deliberation } : {}) };
     const result = await K.kvWriteGated(gatedOp, "deep-reflect");
     if (!result.ok) blocked.push({ key: op.key, error: result.error });
   }
@@ -843,6 +846,7 @@ async function applyDrResults(K, state, output) {
     reflection: output.reflection || "",
     desires_changed: ops.filter(o => o.key?.startsWith("desire:")).length,
     samskaras_changed: ops.filter(o => o.key?.startsWith("samskara:")).length,
+    tactics_changed: ops.filter(o => o.key?.startsWith("tactic:")).length,
   });
 }
 
