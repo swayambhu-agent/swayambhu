@@ -3395,4 +3395,64 @@ describe("tactics", () => {
 
     expect(capturedMessages[0].content).not.toContain("[TACTICS]");
   });
+
+  it("full flow: tactic written via kvWriteGated, loaded at boot, injected into plan call", async () => {
+    const { kernel, env } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+
+    // Write a tactic via kvWriteGated (simulating DR)
+    const result = await kernel.kvWriteGated(
+      { key: "tactic:test-tactic", op: "put", value: { slug: "test-tactic", description: "Always explore before giving up." } },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+
+    // Reload to pick up the new tactic
+    await kernel.loadTactics();
+    expect(kernel.tactics["tactic:test-tactic"]).toBeDefined();
+
+    // Verify it appears in a plan-step LLM call
+    let capturedSystem;
+    kernel.PROVIDERS = { 'provider:llm': {
+      meta: { secrets: [] },
+      call: async (req) => {
+        capturedSystem = req.messages[0]?.content;
+        return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
+      },
+    }};
+
+    await kernel.callLLM({
+      model: "test", systemPrompt: "plan context",
+      messages: [{ role: "user", content: "test" }],
+      step: "plan",
+    });
+
+    expect(capturedSystem).toContain("[TACTICS]");
+    expect(capturedSystem).toContain("test-tactic");
+    expect(capturedSystem).toContain("Always explore before giving up");
+  });
+
+  it("tactic NOT injected into review call", async () => {
+    const { kernel, env } = makeKernel();
+    await env.KV.put("tactic:test", JSON.stringify({ slug: "test", description: "test tactic" }));
+    await kernel.loadEagerConfig();
+
+    let capturedSystem;
+    kernel.PROVIDERS = { 'provider:llm': {
+      meta: { secrets: [] },
+      call: async (req) => {
+        capturedSystem = req.messages[0]?.content;
+        return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
+      },
+    }};
+
+    await kernel.callLLM({
+      model: "test", systemPrompt: "review context",
+      messages: [{ role: "user", content: "test" }],
+      step: "review",
+    });
+
+    expect(capturedSystem).not.toContain("[TACTICS]");
+  });
 });

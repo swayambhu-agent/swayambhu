@@ -105,7 +105,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
-        'principle:', 'contact:', 'contact_platform:', 'sealed:',
+        'principle:', 'tactic:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -116,7 +116,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
-        'principle:', 'contact:', 'contact_platform:', 'sealed:',
+        'principle:', 'tactic:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
@@ -152,7 +152,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
-    'principle:', 'contact:', 'contact_platform:', 'sealed:',
+    'principle:', 'tactic:', 'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -172,7 +172,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   mock.kvWriteGated = vi.fn(async (op, context) => {
     const key = op.key;
 
-    if (key === "dharma" || key.startsWith("principle:") || key === "patron:public_key") {
+    if (key === "dharma" || key === "patron:public_key") {
       return { ok: false, error: `Cannot write "${key}" — immutable` };
     }
     if (_isKernelOnly(key)) {
