@@ -427,7 +427,8 @@ class Kernel {
       // Event bus
       emitEvent: async (type, payload) => {
         const ts = Date.now().toString().padStart(15, '0');
-        const key = `event:${ts}:${type}`;
+        const nonce = Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+        const key = `event:${ts}:${type}:${nonce}`;
         const event = {
           type,
           ...payload,
