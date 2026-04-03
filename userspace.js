@@ -143,6 +143,7 @@ async function planPhase(K, { desires, samskaras, circumstances, priorActions, d
 
   const response = await K.callLLM({
     model,
+    step: "plan",
     effort: defaults?.act?.effort || "low",
     maxTokens: defaults?.act?.max_output_tokens || 2000,
     systemPrompt,
@@ -156,6 +157,7 @@ async function planPhase(K, { desires, samskaras, circumstances, priorActions, d
     // One retry on parse failure
     const retry = await K.callLLM({
       model,
+      step: "plan_retry",
       effort: defaults?.act?.effort || "low",
       maxTokens: defaults?.act?.max_output_tokens || 2000,
       systemPrompt,
@@ -868,7 +870,7 @@ const BUCKET_MAP = [
   [['session_counter', 'cache:session_ids'], 'sessions'],
   [['action:'], 'sessions'],
   [['karma:'], 'sessions'],
-  [['desire:', 'samskara:', 'experience:'], 'mind'],
+  [['desire:', 'samskara:', 'experience:', 'tactic:'], 'mind'],
   [['dr:', 'reflect:', 'last_reflect'], 'reflections'],
   [['chat:', 'outbox:', 'conversation_index:'], 'chats'],
   [['contact:', 'contact_platform:'], 'contacts'],

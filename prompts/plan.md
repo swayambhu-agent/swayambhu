@@ -38,3 +38,9 @@ Or: `{ "no_action": true, "reason": "..." }`
 4. If genuinely no desire gap is closable with available tools,
    no_action is correct. But "I don't know what to do" is different
    from "nothing can be done" — explore before concluding.
+
+## Tactics
+
+Your [TACTICS] block contains behavioral rules you've learned from
+experience. These are injected into this prompt automatically. Follow
+them — they represent patterns you've identified as effective.
