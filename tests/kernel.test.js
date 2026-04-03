@@ -3244,3 +3244,33 @@ describe("kernel:pulse", () => {
     // Should not throw — pulse write is best-effort
   });
 });
+
+// ── pulse integration ─────────────────────────────────────────
+
+describe("pulse integration", () => {
+  it("full flow: userspace writes → classify → pulse reflects changes", async () => {
+    const { classify } = await import('../userspace.js');
+    const { kernel } = makeKernel();
+
+    kernel.HOOKS = {
+      tick: { run: async (K) => {
+        await K.kvWriteSafe("experience:integration_test", { test: true });
+        await K.kvWriteGated(
+          { op: "put", key: "desire:test-desire", value: { slug: "test", direction: "approach" } },
+          "deep-reflect"
+        );
+      }},
+      pulse: { classify },
+    };
+
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+
+    const pulse = JSON.parse(await kernel.kv.get("kernel:pulse"));
+    expect(pulse.v).toBe(1);
+    expect(pulse.outcome).toBe("clean");
+    expect(pulse.changed).toContain("mind");
+    expect(pulse.changed).toContain("health");
+    expect(pulse.n).toBe(0);
+  });
+});
