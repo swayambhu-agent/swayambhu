@@ -277,8 +277,10 @@ class Kernel {
         }
       }
 
-      if (allHandlersSucceeded) {
+      if (allHandlersSucceeded && !event._deferDelete) {
         await this.kv.delete(event.key);
+        processed.push(event);
+      } else if (allHandlersSucceeded && event._deferDelete) {
         processed.push(event);
       } else {
         const failKey = `event_fail_count:${event.key}`;
@@ -828,6 +830,12 @@ class Kernel {
       const { tick } = this.HOOKS;
       if (!tick?.run) throw new Error("No HOOKS.tick.run");
       await tick.run(K, { crashData, balances, events });
+
+      // Post-tick hook — runs inside execution lock (e.g. comms processing)
+      const { postTick } = this.HOOKS;
+      if (postTick?.run) {
+        await postTick.run(K, { events });
+      }
 
     } catch (err) {
       outcome = "crash";
