@@ -151,8 +151,8 @@ function ReflectionsTab({ patronKey, reflectionsRev }) {
                 {drData.execution.d_output.map((d, i) => {
                   const isRetire = d.action === 'retired';
                   const col = isRetire ? '#ef4444' : '#a78bfa';
-                  const arrow = d.direction === 'avoidance' ? '\u2193' : '\u2191';
-                  const arrowCol = d.direction === 'avoidance' ? '#ef4444' : '#22c55e';
+                  const arrow = '\u2191';
+                  const arrowCol = '#22c55e';
                   return (
                     <div key={i} className="mb-2 rounded-md" style={{ padding: '8px 10px', background: `${col}0a`, border: `1px solid ${col}25` }}>
                       <div className="flex items-center gap-1.5">

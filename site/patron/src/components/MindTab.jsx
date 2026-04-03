@@ -121,8 +121,8 @@ function MindGraphExplorer({ data, selected, onSelect }) {
         {type === 'principle' && trunc(typeof entity.text === 'string' ? entity.text : entity.key, 28)}
         {type === 'desire' && (
           <span>
-            <span style={{ color: entity.direction === 'avoidance' ? '#ef4444' : '#22c55e' }}>
-              {entity.direction === 'avoidance' ? '\u2193' : '\u2191'}
+            <span style={{ color: '#22c55e' }}>
+              {'\u2191'}
             </span>{' '}{trunc(entity.description || entity.slug, 24)}
           </span>
         )}
@@ -155,8 +155,8 @@ function MindGraphExplorer({ data, selected, onSelect }) {
         {type === 'principle' && <div style={{ fontSize: 12, color: '#e5e5e5', lineHeight: 1.4 }}>{trunc(typeof entity.text === 'string' ? entity.text : '', 50)}</div>}
         {type === 'desire' && (
           <div style={{ fontSize: 12, color: '#e5e5e5' }}>
-            <span style={{ color: entity.direction === 'avoidance' ? '#ef4444' : '#22c55e' }}>
-              {entity.direction === 'avoidance' ? '\u2193' : '\u2191'}
+            <span style={{ color: '#22c55e' }}>
+              {'\u2191'}
             </span>{' '}{trunc(entity.description || entity.slug, 35)}
           </div>
         )}
@@ -190,8 +190,8 @@ function MindGraphExplorer({ data, selected, onSelect }) {
         {selected.type === 'desire' && (
           <>
             <div style={{ fontSize: 14, color: '#e5e5e5', lineHeight: 1.5 }}>
-              <span style={{ color: centerEntity.direction === 'avoidance' ? '#ef4444' : '#22c55e', fontSize: 18 }}>
-                {centerEntity.direction === 'avoidance' ? '\u2193' : '\u2191'}
+              <span style={{ color: '#22c55e', fontSize: 18 }}>
+                {'\u2191'}
               </span>{' '}
               {centerEntity.description || centerEntity.slug}
             </div>

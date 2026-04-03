@@ -14,7 +14,7 @@ All architectural decisions serve this dharma. Resource discipline, memory econo
 
 ## 2. Core Principles (p)
 
-Immutable. Never written by any process. Read by the Desire operator during deep-reflect.
+High-friction. Changed only by deep-reflect with deliberation. Read by the Desire operator during deep-reflect.
 
 1. I accept that this moment is already settled. I own it and then focus all my attention on creating the next one.
 2. I continually align with my dharma.
@@ -39,12 +39,13 @@ Immutable. Never written by any process. Read by the Desire operator during deep
 
 | Symbol | Name | Description | Mutability |
 |--------|------|-------------|------------|
-| p | Principles | Immutable foundational truths | Never changes |
-| d_t | Desires | Directional vectors — positive affinity (approach) or negative affinity (avoidance) | Evolves in deep-reflect only |
+| p | Principles | Foundational truths | High-friction changes via DR with deliberation |
+| d_t | Desires | Approach vectors — always positive, always expanding | Evolves in deep-reflect only |
 | s_t | Samskaras | Impressions left by experience — shallow ones fade, deep ones shape everything | Strength updated mechanically every session; created/refined/eroded by S in deep-reflect |
 | ε | Experiences | Append-only log of salient experiences | Appended conditionally in review phase |
 | c_t | Circumstances | The observable state of the world at time t | Changes every tick via World operator |
 | ξ_t | Exogenous events | External changes not caused by the agent | External, uncontrolled |
+| τ_t | Tactics | Concrete next steps scoped to a desire — short-lived, replaced each DR | Created by T operator in deep-reflect |
 | a_t | Action | The agent's concrete intervention at time t | Generated in plan phase |
 | σ_t | Surprise | Scalar — degree of contradiction between samskaras and actual outcome | Computed in review phase |
 | α_t | Affinity | Vector — degree of alignment or opposition between desires and actual outcome | Computed in review phase |
@@ -57,8 +58,9 @@ Immutable. Never written by any process. Read by the Desire operator during deep
 | W | World | Act | External process — transforms circumstances given the agent's action and exogenous events |
 | S | Samskara | Deep-reflect | Creates, deepens, refines, and erodes samskaras from experience patterns |
 | D | Desire | Deep-reflect | Magnifies experience into desires through principles |
+| T | Tactic | Deep-reflect | Generates concrete next steps scoped to each desire |
 
-Three agent operators (A, S, D). One external (W). Review-phase computation (σ, α, strength updates, experience recording) is mechanical — formulas, not operators.
+Four agent operators (A, S, D, T). One external (W). Review-phase computation (σ, α, strength updates, experience recording) is mechanical — formulas, not operators.
 
 ---
 
@@ -116,9 +118,16 @@ Samskaras are impressions (Sanskrit: संस्कार) — not assumptions 
 
 **Desire magnification from experience memory through principles:**
 ```
-D_p(ε, d_t) = d_{t+1}
+D_p(ε, d_t) = d_{t+1}    where |d_{t+1}| > |d_t|
 ```
-The Desire operator is a magnification force, not a reasoning process. It takes experience and amplifies: "I did X" → "do more X." This magnification is bidirectional — approach (toward what felt aligned with desires) and avoidance (away from what felt misaligned). Principles do not generate the desire — they shape the direction of magnification. "Research more" → "research more *that serves the patron*." The force comes from experience, the shape from principles.
+The Desire operator is a magnification force, not a reasoning process. It takes experience and amplifies — negative experience becomes an approach desire toward the inversion, positive experience becomes an amplified approach desire:
+
+```
+D_p(ε_{-}) = d_{+}     negative experience → approach desire toward the inversion
+D_p(ε_{+}) = d_{++}    positive experience → amplified approach desire
+```
+
+Desire is always positive, always expanding. There is no avoidance — the agent doesn't move away from things, it moves toward better things. Principles do not generate the desire — they shape the direction of magnification. "Research more" → "research more *that serves the patron*." The force comes from experience, the shape from principles.
 
 Samskaras do not feed into desire creation. Samskaras inform action (A), not desire (D). Desire is force. Samskaras are intelligence. They are parallel outputs of deep-reflect, both reading ε, serving fundamentally different roles.
 
@@ -416,7 +425,7 @@ The two phases share data stores but never compete for the same writes.
 
 | Entity | Read By | Written By | Storage Type |
 |--------|---------|------------|-------------|
-| Principles (p) | Deep-reflect | None (immutable) | Static config |
+| Principles (p) | Deep-reflect | Deep-reflect (high-friction, with deliberation) | KV store (protected) |
 | Circumstances (c) | Plan | World operator | Ephemeral (observed) |
 | Exogenous (ξ) | World operator | External | Event queue / webhook |
 | Samskaras (s) | Plan, Review | Strength: Review (mechanical). Create/refine/delete: Deep-reflect (S) | KV store |
@@ -475,9 +484,9 @@ knowledge lives in userspace:
 | `getMaxSteps`, `getReflectModel` | Userspace | Cognitive policy |
 | Context building (load keys, pending requests, DM handling) | Userspace | Cognitive context is userspace's responsibility |
 | `loadYamasNiyamas()` | Replaced | Generic `loadPrinciples()` loading `principle:*` |
-| `isYamaCapable`, `isNiyamaCapable` | Removed | Principles are immutable — no capability gates needed |
+| `isYamaCapable`, `isNiyamaCapable` | Removed | Principles are protected — no capability gates needed |
 | `getYamas`, `getNiyamas` on K interface | Replaced | `getPrinciples()` |
-| `_gateSystem()` yama/niyama deliberation | Simplified | Reject `principle:*` writes. Other system keys use config-driven tiers |
+| `_gateSystem()` yama/niyama deliberation | Simplified | `principle:*` writes gated as protected. Other system keys use config-driven tiers |
 | Yama/niyama injection in `callLLM` | Genericized | `[PRINCIPLES]` block from `principle:*` keys |
 | Role detection from step names in `runAgentLoop` | Removed | Caller passes budget config directly |
 | `SYSTEM_KEY_PREFIXES` cognitive entries | Config-driven | `kernel:key_tiers` (kernel-only key) |
@@ -489,11 +498,11 @@ the kernel reads write-protection tiers from a kernel-only config key:
 
 ```json
 kernel:key_tiers → {
-  "immutable": ["dharma", "principle:*"],
+  "immutable": ["dharma"],
   "kernel_only": ["karma:*", "sealed:*", "event:*", "kernel:*"],
-  "protected": ["config:*", "prompt:*", "tool:*", "provider:*",
+  "protected": ["principle:*", "config:*", "prompt:*", "tool:*", "provider:*",
                  "channel:*", "hook:*", "contact:*", "code_staging:*",
-                 "desire:*", "samskara:*"]
+                 "desire:*", "samskara:*", "tactic:*"]
 }
 ```
 

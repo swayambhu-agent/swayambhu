@@ -8,7 +8,7 @@ import { describe, it, expect } from "vitest";
 function validateDesire(d) {
   const errors = [];
   if (typeof d.slug !== "string" || !d.slug) errors.push("slug must be a non-empty string");
-  if (d.direction !== "approach" && d.direction !== "avoidance") errors.push("direction must be 'approach' or 'avoidance'");
+  if (d.direction !== "approach") errors.push("direction must be 'approach'");
   if (typeof d.description !== "string" || !d.description) errors.push("description must be a non-empty string");
   if (!Array.isArray(d.source_principles) || d.source_principles.length === 0) errors.push("source_principles must be a non-empty array");
   if (typeof d.created_at !== "string") errors.push("created_at must be an ISO 8601 string");
