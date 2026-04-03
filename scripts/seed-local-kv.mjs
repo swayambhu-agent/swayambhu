@@ -68,7 +68,7 @@ await put("kernel:key_tiers", {
   protected: [
     "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-    "secret:*", "doc:*", "skill:*", "task:*",
+    "secret:*", "skill:*", "task:*",
     "providers", "wallets", "patron:contact", "patron:identity_snapshot",
     "desire:*", "samskara:*",
   ],
@@ -142,14 +142,8 @@ await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level r
 await put("prompt:communication", read("prompts/communication.md"), "text", "Communication system prompt");
 await put("prompt:deep_reflect", read("prompts/deep_reflect.md"), "text", "Deep-reflect S/D operator prompt — dispatched as CC analysis job on akash");
 
-// ── Documentation (from docs/agent/*.md) ──────────────────────
-
-console.log("--- Documentation ---");
-await put("doc:design_rationale", read("docs/agent/design-rationale.md"), "text", "Design rationale");
-await put("doc:threat_model", read("docs/agent/threat-model.md"), "text", "Threat model");
-// doc:wisdom_guide removed — samskaras are self-explaining via the deep_reflect prompt
-await put("doc:patron", read("docs/agent/patron-relationship.md"), "text", "Patron relationship");
-await put("doc:setup_guide", read("docs/agent/setup-guide.md"), "text", "Setup guide");
+// doc:* keys removed — rationale lives as comments in kernel.js, behavioral
+// guidance lives in prompts. Single source of truth: the code itself.
 
 // ── Dharma ───────────────────────────────────────────────────
 
