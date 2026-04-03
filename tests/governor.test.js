@@ -30,7 +30,8 @@ describe("generateIndexJS", () => {
     expect(code).toContain("'provider:llm': llm,");
     expect(code).toContain("'provider:llm_balance': llm_balance,");
     expect(code).toContain("slack: slackAdapter,");
-    expect(code).toContain("const HOOKS = { tick: session }");
+    expect(code).toContain("tick: session,");
+    expect(code).toContain("postTick: {");
 
     // Entry points
     expect(code).toContain("async scheduled(event, env, ctx)");

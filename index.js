@@ -28,6 +28,7 @@ import * as collect_jobs from './tools/collect_jobs.js';
 import * as send_whatsapp from './tools/send_whatsapp.js';
 import * as google_docs from './tools/google_docs.js';
 import * as gnanetra from './tools/gnanetra.js';
+import * as request_message from './tools/request_message.js';
 
 // Provider adapter modules
 import * as llm from './providers/llm.js';
@@ -42,6 +43,7 @@ const TOOLS = {
   send_slack, web_fetch, kv_manifest, kv_query,
   computer, check_email, send_email, test_model, web_search,
   start_job, collect_jobs, send_whatsapp, google_docs, gnanetra,
+  request_message,
 };
 
 const PROVIDERS = {
@@ -58,12 +60,121 @@ const PROVIDERS = {
 
 const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
 
-const HOOKS = { tick: session };
+const HOOKS = {
+  tick: session,
+  postTick: {
+    async run(K, { events }) {
+      // Process comms events — runs inside execution lock
+      if (EVENT_HANDLERS._pendingComms?.length) {
+        const pending = EVENT_HANDLERS._pendingComms.splice(0);
+
+        // Group by conversation
+        const byConv = {};
+        for (const ev of pending) {
+          let turn;
+          if (ev.type === "inbound_message") {
+            turn = ev; // Already a CommTurn shape from fetch
+          } else {
+            turn = await ingestInternal(K, ev);
+          }
+          if (!turn) continue;
+          const cid = turn.conversation_id;
+          if (!byConv[cid]) byConv[cid] = [];
+          byConv[cid].push(turn);
+        }
+
+        // Run each conversation
+        for (const [convId, turns] of Object.entries(byConv)) {
+          try {
+            // Claim all events for this batch
+            const claimed = [];
+            for (const t of turns) {
+              if (t.idempotency_key) {
+                const ok = await K.claimEvent(t.idempotency_key, await K.getExecutionId());
+                if (ok) claimed.push(t);
+              } else {
+                claimed.push(t);
+              }
+            }
+            if (claimed.length === 0) continue;
+
+            const result = await runTurn(K, convId, claimed);
+
+            // Event lifecycle based on outcome
+            for (const t of claimed) {
+              if (!t.idempotency_key) continue;
+              if (result.action === "sent" || result.action === "discarded") {
+                await K.kvDeleteSafe(t.idempotency_key);
+              } else if (result.action === "held") {
+                await createOutboxItem(K, convId, t.content, result.reason, result.release_after, [t.idempotency_key]);
+                await K.kvDeleteSafe(t.idempotency_key);
+              } else {
+                // error — release claim for retry
+                await K.releaseEvent(t.idempotency_key);
+              }
+            }
+          } catch (err) {
+            await K.karmaRecord({ event: "comms_error", conversation: convId, error: err.message });
+            // Release claims on error
+            for (const t of turns) {
+              if (t.idempotency_key) {
+                try { await K.releaseEvent(t.idempotency_key); } catch {}
+              }
+            }
+          }
+        }
+        EVENT_HANDLERS._pendingComms = [];
+      }
+
+      // Check outbox for due items
+      const dueItems = await checkOutbox(K);
+      for (const item of dueItems) {
+        try {
+          const turn = {
+            conversation_id: item.conversation_id,
+            reply_target: null,
+            source: "internal",
+            content: item.content,
+            intent: "share",
+            idempotency_key: item.key || null,
+            metadata: { outbox_id: item.id },
+          };
+
+          // Load reply_target from conversation state
+          const conv = await K.kvGet(item.conversation_id);
+          if (conv?.reply_target) {
+            turn.reply_target = conv.reply_target;
+          } else {
+            const parts = item.conversation_id.replace("chat:", "").split(":");
+            turn.reply_target = { platform: parts[0], channel: parts.slice(1).join(":"), thread_ts: null };
+          }
+
+          const result = await runTurn(K, item.conversation_id, [turn]);
+          if (result.action === "sent" || result.action === "discarded") {
+            await K.kvDeleteSafe(item.key);
+          } else {
+            // Still held or error — increment attempts
+            item.attempts = (item.attempts || 0) + 1;
+            if (item.attempts >= 3) {
+              await K.kvDeleteSafe(item.key);
+              await K.karmaRecord({ event: "outbox_dead_lettered", id: item.id });
+            } else {
+              await K.kvWriteSafe(item.key, item);
+            }
+          }
+        } catch (err) {
+          await K.karmaRecord({ event: "outbox_error", id: item.id, error: err.message });
+        }
+      }
+    },
+  },
+};
 
 const EVENT_HANDLERS = {
   communicationDelivery: async (K, event) => {
-    // Just collect — processing happens after drainEvents, inside lock
+    // Just collect — processing happens in postTick hook, inside lock
     if (!EVENT_HANDLERS._pendingComms) EVENT_HANDLERS._pendingComms = [];
+    event._deferDelete = true; // Keep event in KV for claim lifecycle
     EVENT_HANDLERS._pendingComms.push(event);
   },
   sessionTrigger: async (K, event) => {
@@ -90,112 +201,6 @@ export default {
   async scheduled(event, env, ctx) {
     const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
     await kernel.runScheduled();
-
-    // Process comms events inside the lock (before lock release)
-    if (EVENT_HANDLERS._pendingComms?.length) {
-      const pending = EVENT_HANDLERS._pendingComms.splice(0);
-      const K = kernel.buildKernelInterface();
-
-      // Group by conversation
-      const byConv = {};
-      for (const ev of pending) {
-        let turn;
-        if (ev.type === "inbound_message") {
-          turn = ev; // Already a CommTurn shape from fetch
-        } else {
-          turn = await ingestInternal(K, ev);
-        }
-        if (!turn) continue;
-        const cid = turn.conversation_id;
-        if (!byConv[cid]) byConv[cid] = [];
-        byConv[cid].push(turn);
-      }
-
-      // Run each conversation
-      for (const [convId, turns] of Object.entries(byConv)) {
-        try {
-          const executionId = kernel.executionId;
-          // Claim all events for this batch
-          const claimed = [];
-          for (const t of turns) {
-            if (t.idempotency_key) {
-              const ok = await K.claimEvent(t.idempotency_key, executionId);
-              if (ok) claimed.push(t);
-            } else {
-              claimed.push(t);
-            }
-          }
-          if (claimed.length === 0) continue;
-
-          const result = await runTurn(K, convId, claimed);
-
-          // Event lifecycle based on outcome
-          for (const t of claimed) {
-            if (!t.idempotency_key) continue;
-            if (result.action === "sent" || result.action === "discarded") {
-              await env.KV.delete(t.idempotency_key);
-            } else if (result.action === "held") {
-              await createOutboxItem(K, convId, t.content, result.reason, result.release_after, [t.idempotency_key]);
-              await env.KV.delete(t.idempotency_key);
-            } else {
-              // error — release claim for retry
-              await K.releaseEvent(t.idempotency_key);
-            }
-          }
-        } catch (err) {
-          await kernel.karmaRecord({ event: "comms_error", conversation: convId, error: err.message });
-          // Release claims on error
-          for (const t of turns) {
-            if (t.idempotency_key) {
-              try { await K.releaseEvent(t.idempotency_key); } catch {}
-            }
-          }
-        }
-      }
-      EVENT_HANDLERS._pendingComms = [];
-    }
-
-    // Check outbox for due items
-    const K2 = kernel.buildKernelInterface();
-    const dueItems = await checkOutbox(K2);
-    for (const item of dueItems) {
-      try {
-        const turn = {
-          conversation_id: item.conversation_id,
-          reply_target: null,
-          source: "internal",
-          content: item.content,
-          intent: "share",
-          idempotency_key: item.key || null,
-          metadata: { outbox_id: item.id },
-        };
-
-        // Load reply_target from conversation state
-        const conv = await K2.kvGet(item.conversation_id);
-        if (conv?.reply_target) {
-          turn.reply_target = conv.reply_target;
-        } else {
-          const parts = item.conversation_id.replace("chat:", "").split(":");
-          turn.reply_target = { platform: parts[0], channel: parts.slice(1).join(":"), thread_ts: null };
-        }
-
-        const result = await runTurn(K2, item.conversation_id, [turn]);
-        if (result.action === "sent" || result.action === "discarded") {
-          await K2.kvDeleteSafe(item.key);
-        } else {
-          // Still held or error — increment attempts
-          item.attempts = (item.attempts || 0) + 1;
-          if (item.attempts >= 3) {
-            await K2.kvDeleteSafe(item.key);
-            await kernel.karmaRecord({ event: "outbox_dead_lettered", id: item.id });
-          } else {
-            await K2.kvWriteSafe(item.key, item);
-          }
-        }
-      } catch (err) {
-        await kernel.karmaRecord({ event: "outbox_error", id: item.id, error: err.message });
-      }
-    }
   },
 
   async fetch(request, env, ctx) {
