@@ -41,6 +41,12 @@ export default {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
+    // GET /pulse — lightweight change indicator, no auth (no sensitive data)
+    if (path === "/pulse") {
+      const pulse = await env.KV.get("kernel:pulse", "json");
+      return json(pulse || { v: 1, n: 0, changed: [] });
+    }
+
     // GET /reflections — public, no auth required
     if (path === "/reflections") {
       const allKeys = await kvListAll(env.KV, { prefix: "reflect:1:" });
