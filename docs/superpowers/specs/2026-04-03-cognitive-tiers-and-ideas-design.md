@@ -24,7 +24,7 @@ Two gaps in the current architecture:
 |------|------|----------|------------|------------|
 | Dharma | Purpose, identity | "Serve Isha's vision of inner wellbeing" | Patron | Immutable |
 | Principles | Operational ethics | Truthfulness, care, security, proportionality | Patron seeds; agent can modify via DR with deliberation | High friction (kvWriteGated, 200-char deliberation) |
-| Doctrines | Learned policies | "Explore before concluding nothing can be done", "check email periodically" | Agent via DR | Agent-managed (same as desires) |
+| Tactics | Learned policies | "Explore before concluding nothing can be done", "check email periodically" | Agent via DR | Agent-managed (same as desires) |
 
 **Dharma** stays exactly as-is. Immutable, kernel-injected.
 
@@ -34,13 +34,13 @@ deliberation requirement) — the change is in the DR prompt, which
 currently treats them as read-only context. DR should be told it can
 propose principle refinements when experience warrants it.
 
-**Doctrines** are a new `doctrine:*` KV prefix. They're behavioral
+**Tactics** are a new `tactic:*` KV prefix. They're behavioral
 policies the agent creates from experience — the proper home for
 things currently smuggled as desires ("break-passivity-loop",
 "self-directed-inquiry"). Managed by DR's D operator alongside
 desires. Injected into LLM calls by the kernel alongside principles.
 
-Doctrine schema:
+Tactic schema:
 ```json
 {
   "slug": "explore-before-concluding",
@@ -51,13 +51,13 @@ Doctrine schema:
 }
 ```
 
-Doctrines differ from principles:
-- Principles are operational ethics (how to be). Doctrines are
+Tactics differ from principles:
+- Principles are operational ethics (how to be). Tactics are
   tactical heuristics (what to do in specific situations).
-- Principles change slowly with high friction. Doctrines change
+- Principles change slowly with high friction. Tactics change
   freely as the agent learns.
 - Both are injected into every LLM call, but in separate blocks
-  (`[PRINCIPLES]` and `[DOCTRINES]`).
+  (`[PRINCIPLES]` and `[TACTICS]`).
 
 ### 2. DR ideas
 
@@ -108,23 +108,23 @@ Treat as starting points when no desire gap is otherwise clearly closable.
 
 The deep_reflect prompt gains:
 
-**Doctrine operator** (alongside S and D operators):
+**Tactic operator** (alongside S and D operators):
 ```
-## P operator: Doctrine Management
+## T operator: Tactic Management
 
-Doctrines are tactical policies learned from experience — behavioral
+Tactics are practical approaches learned from experience — behavioral
 rules that guide action selection. Unlike principles (operational
-ethics, slow-changing), doctrines are situation-specific heuristics
-the agent develops through practice.
+ethics, slow-changing), tactics are situation-specific moves the
+agent develops through practice.
 
 **Create** when a pattern in experiences suggests a behavioral rule
 that would improve future sessions.
 **Refine** when new experience sharpens the rule.
-**Retire** when the doctrine is no longer useful or has been
+**Retire** when the tactic is no longer useful or has been
 superseded.
 
 Format:
-{ "key": "doctrine:{slug}", "value": {
+{ "key": "tactic:{slug}", "value": {
     "slug": "...",
     "description": "behavioral rule — when X, do Y",
     "source_principles": ["..."],
@@ -164,33 +164,33 @@ if (lastReflect?.ideas?.length) {
 }
 ```
 
-### 5. Kernel doctrine injection
+### 5. Kernel tactic injection
 
 The kernel already injects `[PRINCIPLES]` in `callLLM`. Add a
-`[DOCTRINES]` block using the same pattern — load `doctrine:*` keys
+`[TACTICS]` block using the same pattern — load `tactic:*` keys
 at boot, inject after principles.
 
-Doctrines are a protected tier (agent writes via `kvWriteGated` in
-DR context, same as desires). Add `doctrine:*` to the protected
+Tactics are a protected tier (agent writes via `kvWriteGated` in
+DR context, same as desires). Add `tactic:*` to the protected
 tier in `DEFAULT_KEY_TIERS`.
 
 ## Implementation scope
 
 | File | Change |
 |------|--------|
-| kernel.js | Load doctrines at boot, inject `[DOCTRINES]` in callLLM, add `doctrine:*` to protected tier |
-| userspace.js | planPhase loads last_reflect.ideas, applyDrResults preserves ideas + handles doctrine ops |
-| prompts/deep_reflect.md | Add P operator (doctrines), add ideas to output schema |
+| kernel.js | Load tactics at boot, inject `[TACTICS]` in callLLM, add `tactic:*` to protected tier |
+| userspace.js | planPhase loads last_reflect.ideas, applyDrResults preserves ideas + handles tactic ops |
+| prompts/deep_reflect.md | Add T operator (tactics), add ideas to output schema |
 | prompts/plan.md | Document [DR IDEAS] section |
-| scripts/seed-local-kv.mjs | No doctrine seeding (agent earns them) |
-| tests/kernel.test.js | Test doctrine injection |
+| scripts/seed-local-kv.mjs | No tactic seeding (agent earns them) |
+| tests/kernel.test.js | Test tactic injection |
 | tests/userspace.test.js | Test idea injection into planner context |
 
 ## Design decisions
 
-**Why not merge doctrines into principles?** Different mutability,
-different semantics. Principles are "how to be" (ethics). Doctrines
-are "what to do when" (tactics). Collapsing them loses the
+**Why not merge tactics into principles?** Different mutability,
+different semantics. Principles are "how to be" (ethics). Tactics
+are "what to do when" (practical moves). Collapsing them loses the
 distinction between constitution and learned behavior.
 
 **Why not give ideas lifecycle?** DR runs every 5 sessions. If an
@@ -202,8 +202,8 @@ useless as abstract desires. The cheap planner needs specific tool
 references to act. DR runs on Opus and knows the tool manifest —
 it can produce concrete candidates.
 
-**Why inject doctrines into every LLM call?** Same reason as
-principles — they shape all behavior, not just planning. A doctrine
+**Why inject tactics into every LLM call?** Same reason as
+principles — they shape all behavior, not just planning. A tactic
 like "be concise in reviews" should influence the review model too.
 
 **Why not let DR write principles directly?** It already can
