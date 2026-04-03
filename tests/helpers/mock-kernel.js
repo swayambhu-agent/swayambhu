@@ -37,6 +37,29 @@ export function makeMockK(kvInit = {}, opts = {}) {
     // kvWritePrivileged removed — functionality moved to kvWriteGated with context
 
     // Event bus
+    claimEvent: vi.fn(async (key, executionId) => {
+      const raw = kv._store.get(key) ?? null;
+      if (!raw) return false;
+      const event = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const now = Date.now();
+      if (event.claimed_by && event.lease_expires && event.lease_expires > now) {
+        return false;
+      }
+      event.claimed_by = executionId;
+      event.claimed_at = now;
+      event.lease_expires = now + 60000;
+      kv._store.set(key, JSON.stringify(event));
+      return true;
+    }),
+    releaseEvent: vi.fn(async (key) => {
+      const raw = kv._store.get(key) ?? null;
+      if (!raw) return;
+      const event = typeof raw === "string" ? JSON.parse(raw) : raw;
+      delete event.claimed_by;
+      delete event.claimed_at;
+      delete event.lease_expires;
+      kv._store.set(key, JSON.stringify(event));
+    }),
     emitEvent: vi.fn(async (type, payload) => {
       const ts = Date.now().toString().padStart(15, '0');
       const nonce = Math.random().toString(36).slice(2, 6).padEnd(4, '0');

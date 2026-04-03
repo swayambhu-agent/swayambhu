@@ -2748,6 +2748,97 @@ describe("emitEvent", () => {
   });
 });
 
+// ── claimEvent / releaseEvent ────────────────────────────────
+
+describe("claimEvent", () => {
+  it("marks event with lease fields and returns true", async () => {
+    const { kernel, env } = makeKernel({
+      'event:0001:test_event:abcd': JSON.stringify({ type: 'test_event', text: 'hello' }),
+    });
+    const K = kernel.buildKernelInterface();
+    const result = await K.claimEvent('event:0001:test_event:abcd', 'exec_123');
+
+    expect(result).toBe(true);
+    const stored = JSON.parse(await env.KV.get('event:0001:test_event:abcd'));
+    expect(stored.claimed_by).toBe('exec_123');
+    expect(stored.claimed_at).toBeTypeOf('number');
+    expect(stored.lease_expires).toBeTypeOf('number');
+    expect(stored.lease_expires).toBeGreaterThan(stored.claimed_at);
+  });
+
+  it("returns false if event is already claimed with active lease", async () => {
+    const future = Date.now() + 30000;
+    const { kernel } = makeKernel({
+      'event:0002:test_event:abcd': JSON.stringify({
+        type: 'test_event',
+        claimed_by: 'exec_111',
+        claimed_at: Date.now() - 5000,
+        lease_expires: future,
+      }),
+    });
+    const K = kernel.buildKernelInterface();
+    const result = await K.claimEvent('event:0002:test_event:abcd', 'exec_222');
+
+    expect(result).toBe(false);
+  });
+
+  it("succeeds if previous lease has expired", async () => {
+    const past = Date.now() - 5000;
+    const { kernel, env } = makeKernel({
+      'event:0003:test_event:abcd': JSON.stringify({
+        type: 'test_event',
+        claimed_by: 'exec_old',
+        claimed_at: past - 60000,
+        lease_expires: past,
+      }),
+    });
+    const K = kernel.buildKernelInterface();
+    const result = await K.claimEvent('event:0003:test_event:abcd', 'exec_new');
+
+    expect(result).toBe(true);
+    const stored = JSON.parse(await env.KV.get('event:0003:test_event:abcd'));
+    expect(stored.claimed_by).toBe('exec_new');
+  });
+
+  it("returns false if event does not exist", async () => {
+    const { kernel } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const result = await K.claimEvent('event:9999:missing:abcd', 'exec_123');
+
+    expect(result).toBe(false);
+  });
+});
+
+describe("releaseEvent", () => {
+  it("removes claim fields from the event", async () => {
+    const { kernel, env } = makeKernel({
+      'event:0001:test_event:abcd': JSON.stringify({
+        type: 'test_event',
+        text: 'hello',
+        claimed_by: 'exec_123',
+        claimed_at: Date.now() - 1000,
+        lease_expires: Date.now() + 59000,
+      }),
+    });
+    const K = kernel.buildKernelInterface();
+    await K.releaseEvent('event:0001:test_event:abcd');
+
+    const stored = JSON.parse(await env.KV.get('event:0001:test_event:abcd'));
+    expect(stored.claimed_by).toBeUndefined();
+    expect(stored.claimed_at).toBeUndefined();
+    expect(stored.lease_expires).toBeUndefined();
+    expect(stored.type).toBe('test_event');
+    expect(stored.text).toBe('hello');
+  });
+
+  it("is a no-op if event does not exist", async () => {
+    const { kernel } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    // Should not throw
+    await expect(K.releaseEvent('event:9999:missing:abcd')).resolves.toBeUndefined();
+  });
+});
+
 // ── drainEvents ─────────────────────────────────────────────
 
 describe("drainEvents", () => {
