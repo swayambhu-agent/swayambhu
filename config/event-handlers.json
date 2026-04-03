@@ -1,0 +1,11 @@
+{
+  "inbound_message": ["communicationDelivery"],
+  "comms_request": ["communicationDelivery"],
+  "session_complete": ["communicationDelivery"],
+  "dr_complete": ["communicationDelivery"],
+  "session_request": ["sessionTrigger"],
+  "session_response": ["communicationDelivery"],
+  "job_complete": ["communicationDelivery", "sessionTrigger"],
+  "patron_direct": ["sessionTrigger"],
+  "error": []
+}
