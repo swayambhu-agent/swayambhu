@@ -121,6 +121,43 @@ Write findings to `analysis.json` in the run directory:
 }
 ```
 
+### Stage 3b: INVESTIGATE (when root cause is unknown)
+
+When a finding needs investigation rather than a fix — e.g. a crash
+with unknown cause, a silent failure, or behavior that doesn't match
+the code — investigate before proposing.
+
+**Steps:**
+
+1. **Read the code path** — trace the exact execution path from the
+   evidence. If karma stops at event X, read the code that runs after X.
+
+2. **Check logs** — look for wrangler stderr output. The kernel worker
+   writes to stderr with tagged output (`[KARMA]`, `[TOOL]`, `[LLM]`,
+   `[HOOK]`). Check for uncaught exceptions, timeouts, OOM.
+   ```bash
+   # Check recent kernel stderr (if workers are running in background)
+   # Or trigger a session and watch stderr live:
+   curl -s http://localhost:8787/__scheduled 2>&1
+   ```
+
+3. **Reproduce** — trigger another session and watch what happens at
+   the exact failure point. Add temporary logging if needed.
+
+4. **Narrow down** — is it a code exception? A process timeout? An
+   OOM? A race condition? Each has different evidence:
+   - Code exception: kernel catch records `fatal_error` karma + execution_health
+   - Process timeout: no execution_health, karma stops mid-pipeline, worker restarts
+   - OOM: similar to timeout but may have system-level evidence
+   - Race condition: intermittent, different failure points across sessions
+
+5. **Write investigation findings** to `investigation-{seq}.md` in the
+   run directory with: hypothesis, evidence for/against, confirmed root
+   cause, and THEN propose a fix grounded in the actual failure.
+
+Only propose a fix after investigation confirms the root cause. Never
+guess — the adversarial challenge will catch you.
+
 ### Stage 4: EXPERIMENT (probe + adversarial challenge)
 
 **For probe_recommended findings (self_repairability > 0.3):**
