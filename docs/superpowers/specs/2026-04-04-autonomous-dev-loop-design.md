@@ -36,18 +36,41 @@ OBSERVE → CLASSIFY → EXPERIMENT → DECIDE → VERIFY
 
 Trigger a session and collect evidence.
 
+**Session strategy** — the orchestrator decides how to trigger based on
+current state and what's being tested:
+
+| Strategy | When | Command |
+|----------|------|---------|
+| Accumulate | Default. Testing self-correction, learning, pattern evolution. Needs state continuity across sessions. | `curl localhost:8787/__scheduled` |
+| Cold start | Testing bootstrap (empty patterns/desires → first experience → DR). After schema-breaking code changes. After state corruption. | `bash scripts/start.sh --reset-all-state --trigger` |
+| Partial reset | Clearing specific state (e.g. wipe experiences but keep config, clear schedule to force immediate session). | `node scripts/delete-kv.mjs <key>` then trigger |
+| Config override | Testing with different models/effort/budget. | `bash scripts/start.sh --reset-all-state --set act.model=deepseek --trigger` |
+
+The orchestrator tracks which strategy was used in `observation.json` so
+analysis can account for it. Cold start sessions are expected to have
+empty patterns and maximum surprise — that's correct behavior, not a bug.
+
+**Data collection:**
 - Start services if not running (`scripts/start.sh`)
-- Trigger `/__scheduled`, wait for session completion
+- Trigger session using chosen strategy, wait for completion
 - Run `scripts/analyze-sessions.mjs --last 1` for karma data
 - Screenshot dashboard UI via headless browser (all tabs)
 - Collect: karma records, session summary, reflections, desires,
   patterns, experiences, cost, LLM call count, tool results
 
+**Session completion detection:**
+- Poll `karma:*` keys via `scripts/read-kv.mjs` — a new karma key
+  appearing after trigger means the session completed
+- Timeout after 5 minutes (sessions typically complete in 30-120s)
+- Check `execution_health:*` for the new session ID
+
 Output: `runs/{timestamp}/observation.json` + UI screenshots.
 
 ### Stage 2: CLASSIFY
 
-Score each issue found and deduplicate against known issues.
+Score each issue found and deduplicate against known issues. This is
+where the cognitive architecture audit runs — evaluating entity health,
+operator output, feedback loops, and architectural boundaries.
 
 **Issue taxonomy (single model, no two-track split):**
 
@@ -68,6 +91,16 @@ Score each issue found and deduplicate against known issues.
   "root_cause_chain": []
 }
 ```
+
+**Evidence quality scoring:**
+- **Strong**: directly observed in karma/KV data, reproducible,
+  root cause identified. Example: parse error in karma log with
+  stack trace.
+- **Moderate**: observed but not fully explained, or observed once
+  without reproduction attempt. Example: desire worded as avoidance
+  in a single session.
+- **Weak**: inferred from indirect signals, not directly observed.
+  Example: "patterns seem stale" without comparing across sessions.
 
 Fingerprinting: SHA-256 of `locus + ':' + normalized_summary` (lowered,
 trimmed, stopwords removed). On classify, check all existing
@@ -98,7 +131,11 @@ Propose a direct fix. Score against quality lenses.
 
 **All proposals go through adversarial challenge (Claude vs Codex):**
 
-Challenge rules:
+Challenge protocol:
+- Claude writes proposal as a structured prompt describing: the issue,
+  proposed fix, affected files, quality lens assessment
+- Codex receives via:
+  `codex exec --full-auto -m gpt-5.4 "Challenge this proposal: {proposal}"`
 - Max 2 rounds per proposal
 - Each round must introduce a new falsifiable objection
 - Terminate when objections are resolved, downgraded, or escalated
@@ -123,8 +160,35 @@ For escalated items: send proposal + reasoning + quality lens scores +
 challenge transcript to Swami. Continue working on other issues while
 waiting. Pick up replies asynchronously in next cycle.
 
+**Approval protocol:**
+
+Each pending approval gets a unique ID (e.g. `devloop-{timestamp}-{seq}`).
+The message to Swami includes this ID prominently:
+
+```
+[DEVLOOP] Approval request: devloop-1712234567-01
+
+Issue: {summary}
+Proposal: {description}
+Blast radius: system
+Evidence: {evidence summary}
+Challenge result: {converged/escalated}
+
+Reply with: APPROVE devloop-1712234567-01
+            REJECT devloop-1712234567-01 {reason}
+```
+
 Comms prefixed with `[DEVLOOP]` for approval requests. Can also use
 Swami's Slack/email for testing comms issues (prefix `[TESTING]`).
+
+**Reply parsing:**
+- Check Slack messages and email for replies containing the approval ID
+- `APPROVE {id}` → move `queue/pending/{id}.json` to `queue/approved/`
+- `REJECT {id} {reason}` → move to `queue/rejected/` with reason
+- Free-form replies with the ID → treat as conversation, re-prompt
+  with clarification
+- No match → ignore (not a dev loop reply)
+- Dedup: once an ID is approved/rejected, further replies are ignored
 
 Output: applied changes committed to git, pending items in
 `queue/pending/`.
@@ -187,11 +251,14 @@ Track qualitative evidence over time of the agent becoming:
 
 ## Cognitive Architecture Audit
 
-The most important function of the ANALYZE stage. Every cycle, the dev
-loop evaluates whether the cognitive architecture is working as designed
-— not just whether sessions run without errors, but whether the
-cognitive entities are well-formed, the operators are producing
-meaningful output, and the feedback loops are closing.
+The most important function of the OBSERVE and CLASSIFY stages. Every
+cycle, the dev loop evaluates whether the cognitive architecture is
+working as designed — not just whether sessions run without errors, but
+whether the cognitive entities are well-formed, the operators are
+producing meaningful output, and the feedback loops are closing.
+
+Data collection happens in OBSERVE. Scoring and issue creation happens
+in CLASSIFY.
 
 ### Entity Health Checks
 
@@ -241,7 +308,7 @@ meaningful output, and the feedback loops are closing.
 - Success criteria are specific and observable
 
 **S operator (deep-reflect)** — Are patterns evolving?
-- Creates 1-3 new patterns per DR run (not zero, not dozens)
+- Creates new patterns when experiences reveal recurring observations
 - Refines pattern text when understanding improves
 - Deletes patterns that are mostly violated
 - Consolidates near-duplicate patterns
@@ -259,14 +326,37 @@ meaningful output, and the feedback loops are closing.
 - Retired when superseded or stale
 - Actually influence plan phase behavior
 
+### Session Reflect Health
+
+- Produces meaningful session_summary (not generic/vague)
+- note_to_future_self carries genuine continuity (not boilerplate)
+- next_act_context.load_keys are relevant (not loading everything)
+- Task carry-forward works (tasks from last_reflect persist and
+  get updated across sessions)
+- kv_operations are appropriate (not writing to protected keys,
+  not making destructive changes)
+- Schedule adjustments are sensible (not scheduling too aggressively
+  or too passively)
+
+### Deep Reflect Lifecycle Health
+
+- **Dispatch**: DR triggers on schedule (after N sessions or M days)
+- **Execution**: Job runs on Akash, produces structured output
+- **Application**: Results applied to pattern:* and desire:* keys
+- **State machine**: `dr:state:1` transitions correctly
+  (idle → dispatched → completed → applied → idle)
+- **Stale job recovery**: if a job is stuck in dispatched state
+  for too long, it gets cleaned up
+- **Cost**: DR jobs use Anthropic subscription (zero OpenRouter cost)
+
 ### Feedback Loop Health
 
 **Eval pipeline** — Is the measurement system working?
-- Tier 1 (embeddings) filters to ~30% of patterns
-- Tier 2 (NLI) resolves ~70% of remaining
-- Tier 3 (LLM) handles <5% (if higher, patterns poorly worded
-  or NLI model inadequate)
-- Degraded fallback rare (<1%)
+- Tier 1 (embeddings) filters to a reasonable subset of patterns
+- Tier 2 (NLI) resolves most remaining pairs
+- Tier 3 (LLM) handles edge cases only (if called too often,
+  patterns may be poorly worded or NLI model inadequate)
+- Degraded fallback is rare
 - Surprise scores correlate with actual surprisingness
 - Affinity vectors non-empty when desires exist
 
@@ -289,10 +379,20 @@ meaningful output, and the feedback loops are closing.
 - DR triggered → initial patterns and desires created
 - Second session plans from newly created desires
 
+### Event and Communication Health
+
+- Events drain correctly each tick (not accumulating)
+- Dead-lettered events are investigated (not silently dropped)
+- Communication events route to correct channels
+- Delivery confirmations received (not fire-and-forget)
+- Chat system handles inbound messages correctly
+
 ### Architectural Boundary Checks
 
-- **Kernel purity** — kernel.js contains zero cognitive concepts
-  (no desires, patterns, actions, reflections, sessions)
+- **Kernel as infrastructure** — kernel.js is cognitive-architecture-
+  agnostic. It provides primitives (KV, LLM, tools, events) without
+  knowing about desires, patterns, or the act/reflect cycle. If
+  cognitive concepts appear in kernel.js, that's a boundary violation.
 - **Communication boundary** — act/plan never references send_slack,
   send_whatsapp, send_email. Communication flows through events.
 - **KV tier discipline** — agent writes stay in agent tier,
@@ -313,16 +413,16 @@ Each finding from the cognitive audit is classified:
 | Broken feedback | Strength never updates | Root constraint: eval pipeline, embedding, or config |
 | Boundary violation | Cognitive logic in kernel | Direct fix (architectural, may need approval) |
 | Prompt drift | "Goals" instead of "gaps" in output | Prompt fix (medium significance) |
+| Stale lifecycle | DR stuck in dispatched state | Investigate: Akash job status, state machine bug |
 | Healthy operation | Desires expanding, patterns confirming | Record as positive evidence |
 
 ## State Model
 
 ```
 .swayambhu/dev-loop/              (gitignored — operational state)
-  state.json                      orchestrator: current cycle, budget
-                                  spent today, phase, heartbeat
-  rubric.json                     quality lenses + design principles
-                                  (loaded by all stages)
+  state.json                      orchestrator: current cycle, cash budget
+                                  spent today, phase, heartbeat,
+                                  stage failure counters
 
   probes/
     {issue-id}.json               issue being tracked: taxonomy fields,
@@ -330,7 +430,8 @@ Each finding from the cognitive audit is classified:
                                   chain, status
 
   queue/
-    pending/{id}.json             awaiting Swami's approval
+    pending/{id}.json             awaiting Swami's approval (includes
+                                  approval ID for reply correlation)
     approved/{id}.json            approved, ready to apply
     rejected/{id}.json            rejected with reason
 
@@ -380,19 +481,100 @@ A single coordinator script (`scripts/dev-loop.sh` or
 - Heartbeat written to `state.json` every cycle
 - Stuck-run detection: if heartbeat age > 2x expected cycle time, alert
 - Stale approval cleanup: if pending item age > 48h, re-notify or close
-- Loop error handling: if a stage crashes, log it, skip to next cycle
+- Per-stage failure tracking: each stage has a consecutive failure
+  counter in `state.json`. If a stage fails 3 times in a row, it is
+  disabled and an alert is sent to Swami. The loop continues with
+  remaining stages. Disabled stages can be re-enabled by resetting
+  the counter in `state.json`.
 
 ## Budget
 
+**Cash budget** — tracks actual money spent via OpenRouter API calls.
+Subscription-backed work (Claude Code, Codex, Akash DR) is uncapped
+since it uses existing subscriptions at no marginal cost.
+
 Cost sources:
 - Session models (mimo/minimax): cheap, ~$0.01-0.05 per session
-- Deep reflect on Akash: zero cost (Anthropic subscription)
-- Claude Code analysis: zero cost (subscription)
-- Codex challenge: zero cost (ChatGPT Pro subscription)
-- Slack/email notifications: zero cost
+- Deep reflect on Akash: zero cash cost (Anthropic subscription)
+- Claude Code analysis: zero cash cost (subscription)
+- Codex challenge: zero cash cost (ChatGPT Pro subscription)
+- Slack/email notifications: zero cash cost
 
-Daily cap: $5 (tracked in `state.json`, resets at midnight UTC).
+Daily cash cap: $5 (tracked in `state.json`, resets at midnight UTC).
 Primarily constrains number of probe sessions per day.
+
+## Interfaces
+
+Concrete commands and mechanisms for each external dependency.
+
+### Session triggering
+
+```bash
+# Accumulate (existing state)
+curl -s http://localhost:8787/__scheduled
+
+# Cold start
+bash scripts/start.sh --reset-all-state --trigger
+
+# Config override
+bash scripts/start.sh --reset-all-state --set act.model=deepseek --trigger
+
+# Partial reset (clear specific keys, then trigger)
+node scripts/delete-kv.mjs session_schedule
+curl -s http://localhost:8787/__scheduled
+```
+
+### Session completion detection
+
+Poll for new karma key:
+```bash
+# Before trigger: capture current session count
+BEFORE=$(node scripts/read-kv.mjs session_counter)
+
+# After trigger: poll until counter increments or timeout
+while [ "$(node scripts/read-kv.mjs session_counter)" = "$BEFORE" ]; do
+  sleep 5
+done
+```
+
+### Dashboard screenshots
+
+Via the `/browse` skill or headless browser:
+```bash
+# Using browse skill (from Claude Code)
+# Navigate to localhost:8080, screenshot each tab
+
+# Or via puppeteer/playwright script for automation
+node scripts/screenshot-dashboard.mjs --output runs/{timestamp}/
+```
+
+### Adversarial challenge
+
+```bash
+codex exec --full-auto -m gpt-5.4 \
+  "Challenge this proposal. Find flaws. You have max 2 rounds.
+   Each objection must be new and falsifiable.
+   Evaluate against: elegance, generality, robustness, simplicity, modularity.
+   
+   PROPOSAL:
+   {proposal_json}"
+```
+
+### Approval messaging
+
+```bash
+# Slack (via agent's existing send_slack tool or direct API)
+# Email (via agent's existing send_email tool or direct API)
+# Both include the approval ID and reply format
+```
+
+### Reply checking
+
+```bash
+# Check Slack channel history for replies containing devloop- prefix
+# Check email inbox for replies to devloop threads
+# Parse: APPROVE {id} or REJECT {id} {reason}
+```
 
 ## Implementation Notes
 

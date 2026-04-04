@@ -294,7 +294,7 @@ three entity types stored in KV:
 
 | Prefix | Entity | Tier | Written by | Read by |
 |--------|--------|------|------------|---------|
-| `desire:*` | Desires (d) — approach/avoidance vectors | Protected | Deep-reflect (D operator) | Act (plan phase) |
+| `desire:*` | Desires (d) — approach vectors (always approach, never avoidance) | Protected | Deep-reflect (D operator) | Act (plan phase) |
 | `pattern:*` | Patterns (s) — impressions with EMA strength | Protected | Strength: review (mechanical). Create/refine/delete: deep-reflect (S operator) | Act (plan phase) |
 | `experience:*` | Experiences (ε) — salient experiences | Agent | Review phase (conditional) | Deep-reflect |
 
@@ -337,6 +337,15 @@ mislead future sessions and accumulate confusion.
 changes accumulate — commit as soon as a coherent unit of work is complete
 (a bug fix, a feature, a refactor). This protects against lost work and
 keeps the git history useful.
+
+**When describing the cognitive architecture, read the prompts first.**
+Before writing any public-facing description of how Swayambhu works (homepage,
+docs, explanations), read the actual prompts (`prompts/*.md`) and the code
+that builds context (`act.js`, `userspace.js`, `reflect.js`). The prompts
+use specific framing — "impressions" not "encodings", "gaps" not "goals",
+"magnification through principles" not "evolution" — and that framing is
+load-bearing. Write from the system's own voice, not from an abstract
+summary of the data model.
 
 **When working on prompt fine-tuning, role-play the prompt internally.**
 Imagine yourself as the model receiving the prompt. Before recommending
