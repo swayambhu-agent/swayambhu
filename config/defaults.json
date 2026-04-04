@@ -78,6 +78,9 @@
     "max_concurrent_jobs": 2,
     "callback_advance_seconds": 30
   },
+  "email": {
+    "relay_url": "https://akash.swayambhu.dev"
+  },
   "inference": {
     "url": "http://localhost:8090",
     "relevance_threshold": 0.3,
