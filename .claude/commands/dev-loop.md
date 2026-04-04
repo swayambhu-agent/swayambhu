@@ -39,16 +39,22 @@ This contains the full session data: karma, desires, patterns, experiences,
 tactics, config, prompts, last_reflect, DR state, rubric, and mechanical
 issues from classify.
 
-**CRITICAL: Verify before proposing.** The context.json contains the
-agent's own self-diagnosis (patterns, experiences). The agent's
-impressions may be WRONG. Before proposing any fix:
-1. Read the actual source files (eval.js, kernel.js, act.js, etc.)
-2. Verify the agent's description matches the code
-3. If the agent says "X is missing" — check if X actually exists
-4. If the agent says "Y uses format Z" — read Y and confirm
+**CRITICAL: context.json is the TEST SUBJECT, not the source of truth.**
+Everything in it — desires, patterns, experiences, tactics, karma,
+reflections — is the agent's output. It is what you are evaluating.
+Using it as ground truth defeats the entire purpose of the test.
 
-Never propose a fix based solely on pattern descriptions. Ground
-every diagnosis in the actual source code.
+Your two sources of truth are:
+1. **The code** — read the actual source files (eval.js, kernel.js,
+   act.js, userspace.js, reflect.js, prompts/*.md, config/*.json)
+   to understand what the system SHOULD be doing
+2. **The evaluation criteria** — the quality lenses, design principles,
+   and cognitive audit rubric define what GOOD looks like
+
+Then compare: does the agent's output (context.json) match what the
+code and criteria say should be happening? Where it diverges, that's
+a finding. The diagnosis comes from the code, not from the agent's
+self-description.
 
 Analyze against the cognitive architecture audit rubric:
 
