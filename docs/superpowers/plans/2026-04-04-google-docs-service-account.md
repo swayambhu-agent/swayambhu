@@ -91,7 +91,7 @@ async function getServiceAccountToken(secrets, fetchFn) {
   return (await resp.json()).access_token;
 }
 
-export async function execute({ action, doc_id, title, content, secrets, fetch }) {
+export async function execute({ action, doc_id, title, content, email, role, share_with, share_role, secrets, fetch }) {
   const token = await getServiceAccountToken(secrets, fetch);
   const headers = {
     "Content-Type": "application/json",
@@ -129,9 +129,30 @@ export async function execute({ action, doc_id, title, content, secrets, fetch }
       }
     }
 
+    // Share with specified emails if provided
+    const sharedWith = [];
+    if (share_with?.length) {
+      for (const addr of share_with) {
+        const shareResp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${newDocId}/permissions`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              role: share_role || "reader",
+              type: "user",
+              emailAddress: addr,
+            }),
+          },
+        );
+        if (shareResp.ok) sharedWith.push(addr);
+      }
+    }
+
     return {
       doc_id: newDocId,
       url: `https://docs.google.com/document/d/${newDocId}`,
+      ...(sharedWith.length ? { shared_with: sharedWith } : {}),
     };
   }
 
@@ -176,7 +197,60 @@ export async function execute({ action, doc_id, title, content, secrets, fetch }
     };
   }
 
-  return { error: `Unknown action: ${action}. Use "create" or "update".` };
+  if (action === "share") {
+    if (!doc_id) return { error: "doc_id required for share" };
+    if (!email) return { error: "email required for share" };
+
+    const shareResp = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${doc_id}/permissions`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          role: role || "reader",
+          type: "user",
+          emailAddress: email,
+        }),
+      },
+    );
+    if (!shareResp.ok) {
+      const err = await shareResp.text();
+      return { error: `Failed to share doc (${shareResp.status}): ${err}` };
+    }
+
+    return { shared: true, doc_id, email, role: role || "reader" };
+  }
+
+  if (action === "unshare") {
+    if (!doc_id) return { error: "doc_id required for unshare" };
+    if (!email) return { error: "email required for unshare" };
+
+    // List permissions to find the ID for this email
+    const listResp = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${doc_id}/permissions?fields=permissions(id,emailAddress)`,
+      { headers },
+    );
+    if (!listResp.ok) {
+      const err = await listResp.text();
+      return { error: `Failed to list permissions (${listResp.status}): ${err}` };
+    }
+    const perms = (await listResp.json()).permissions || [];
+    const perm = perms.find((p) => p.emailAddress === email);
+    if (!perm) return { error: `No permission found for ${email}` };
+
+    const delResp = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${doc_id}/permissions/${perm.id}`,
+      { method: "DELETE", headers },
+    );
+    if (!delResp.ok) {
+      const err = await delResp.text();
+      return { error: `Failed to unshare (${delResp.status}): ${err}` };
+    }
+
+    return { unshared: true, doc_id, email };
+  }
+
+  return { error: `Unknown action: ${action}. Use "create", "update", "share", or "unshare".` };
 }
 ```
 

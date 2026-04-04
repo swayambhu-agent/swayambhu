@@ -119,6 +119,30 @@ async function getServiceAccountToken(secrets, fetchFn) {
 }
 ```
 
+### Sharing (via Google Drive API)
+
+The tool supports four actions: `create`, `update`, `share`, `unshare`.
+
+**`share`** — grant access to a doc:
+- Input: `{ action: "share", doc_id, email, role }`
+- `role`: `"reader"` | `"commenter"` | `"writer"` (default: `"reader"`)
+- Uses Drive API: `POST /drive/v3/files/{doc_id}/permissions`
+- Returns: `{ shared: true, doc_id, email, role }`
+
+**`unshare`** — revoke access:
+- Input: `{ action: "unshare", doc_id, email }`
+- Lists permissions to find the permission ID for the email, then
+  deletes it via `DELETE /drive/v3/files/{doc_id}/permissions/{id}`
+- Returns: `{ unshared: true, doc_id, email }`
+
+**`create` with `share_with`** — optional convenience:
+- Input: `{ action: "create", title, content, share_with: ["a@x.com"], share_role: "writer" }`
+- After creating the doc, shares with each email
+- Returns: `{ doc_id, url, shared_with: [...] }`
+
+**Scope:** `drive.file` (already included) covers permission
+management for files the service account owns.
+
 ### Secrets
 
 Worker secrets (via `wrangler secret put`):
