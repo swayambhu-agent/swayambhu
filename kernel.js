@@ -897,12 +897,10 @@ class Kernel {
       const balances = await this.checkBalance({});
       const { actContext: events, deferred } = await this.drainEvents(this._eventHandlers);
 
-      // Hand to userspace — one call, userspace decides everything
-      const { tick } = this.HOOKS;
-      if (!tick?.run) throw new Error("No HOOKS.tick.run");
-      await tick.run(K, { crashData, balances, events });
-
-      // Process deferred events inside lock
+      // Process deferred events FIRST (comms replies before act session).
+      // Why: inbound messages should get fast replies (~2-5s) without
+      // waiting for the act session (30-300s). Still inside the execution
+      // lock so overlapping ticks can't double-process.
       if (this.HOOKS.deferred) {
         for (const [processor, processorEvents] of Object.entries(deferred)) {
           const hook = this.HOOKS.deferred[processor];
@@ -914,6 +912,11 @@ class Kernel {
           }
         }
       }
+
+      // Hand to userspace — act session runs after comms
+      const { tick } = this.HOOKS;
+      if (!tick?.run) throw new Error("No HOOKS.tick.run");
+      await tick.run(K, { crashData, balances, events });
 
     } catch (err) {
       outcome = "crash";
