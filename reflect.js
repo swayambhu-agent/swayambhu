@@ -1,12 +1,9 @@
 // Swayambhu — Reflection Policy
 // Session reflect, deep reflect (recursive, depth-aware), scheduling, default prompts.
-// Mutable — the agent can propose changes to this file via the proposal system.
+// Mutable — the agent can stage changes to this file via K.stageCode().
 //
 // Receives K (kernel interface) for all kernel interactions.
 // getMaxSteps and getReflectModel logic inlined (cognitive policy, not kernel).
-
-// Proposal system methods are on K (kernel interface):
-// K.createProposal, K.loadProposals, K.processProposalVerdicts
 
 import { selectExperiences } from './memory.js';
 
@@ -27,8 +24,6 @@ export async function executeReflect(K, state, step) {
   const sessionId = await K.getExecutionId();
 
   const reflectPrompt = await K.kvGet("prompt:reflect");
-  const proposals = [];
-
   const systemKeyPatterns = await K.getSystemKeyPatterns();
   const samskara_manifest = await loadSamskaraManifest(K);
 
@@ -52,7 +47,6 @@ export async function executeReflect(K, state, step) {
   const initialContext = JSON.stringify({
     karma,
     sessionCost,
-    proposals,
   });
 
   const model = await K.resolveModel(
@@ -159,7 +153,6 @@ export async function executeReflect(K, state, step) {
     session_id: sessionId,
     timestamp: new Date().toISOString(),
   };
-  if (output.proposal_observations) sessionReflectRecord.proposal_observations = output.proposal_observations;
   await K.kvWriteSafe(`reflect:0:${sessionId}`, sessionReflectRecord);
 
   if (output.kv_operations) {
@@ -170,16 +163,6 @@ export async function executeReflect(K, state, step) {
     }
     if (blocked.length) {
       await K.karmaRecord({ event: "kv_writes_blocked", blocked });
-    }
-  }
-
-  if (output.proposal_verdicts) {
-    await K.processProposalVerdicts(output.proposal_verdicts, 0);
-  }
-
-  if (output.proposal_requests) {
-    for (const req of output.proposal_requests) {
-      await K.createProposal(req, sessionId, 0);
     }
   }
 
@@ -253,7 +236,6 @@ export async function gatherReflectContext(K, state, depth, context) {
   const { defaults, modelsConfig } = state;
 
   const actPrompt = await K.kvGet("prompt:act");
-  const proposals = [];
   const systemKeyPatterns = await K.getSystemKeyPatterns();
 
   const recentSessionIds = await getRelevantSessionIds(K, depth);
@@ -273,7 +255,6 @@ export async function gatherReflectContext(K, state, depth, context) {
     actPrompt,
     currentDefaults: defaults,
     models: modelsConfig,
-    proposals,
     patron_contact: patronContact ? JSON.stringify(patronContact, null, 2) : '(no patron configured)',
     patron_id: patronId || null,
     patron_identity_disputed: patronIdentityDisputed,
@@ -431,23 +412,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     }
   }
 
-  // 2. Verdicts BEFORE new requests — clears conflicts first
-  if (output.proposal_verdicts) {
-    await K.processProposalVerdicts(output.proposal_verdicts, depth);
-  }
-
-  // 3. Code proposals — proposal_requests is for code changes only
-  if (output.proposal_requests) {
-    for (const req of output.proposal_requests) {
-      // createProposal validates all ops target code keys; rejects mixed ops
-      const id = await K.createProposal(req, sessionId, depth);
-      if (id && depth >= 1) {
-        await K.updateProposalStatus(id, "accepted", { accepted_by_depth: depth });
-      }
-    }
-  }
-
-  // 4. Schedule
+  // 2. Schedule
   const schedule = output.next_reflect || output.next_deep_reflect;
   if (schedule) {
     const sessionCount = (await K.kvGet("session_counter")) || 0;
@@ -459,7 +424,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     });
   }
 
-  // 5. Store output as reflect:{depth}:{sessionId}
+  // 3. Store output as reflect:{depth}:{sessionId}
   const reflectRecord = {
     reflection: output.reflection,
     note_to_future_self: output.note_to_future_self,
@@ -468,12 +433,11 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     timestamp: new Date().toISOString(),
   };
   if (output.sankalpas) reflectRecord.sankalpas = output.sankalpas;
-  if (output.proposal_observations) reflectRecord.proposal_observations = output.proposal_observations;
   if (output.vikalpas) reflectRecord.vikalpas = output.vikalpas;
   if (output.tasks) reflectRecord.tasks = output.tasks;
   await K.kvWriteSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
-  // 6. Only depth 1: write last_reflect and session_schedule
+  // 4. Only depth 1: write last_reflect and session_schedule
   if (depth === 1) {
     // Track vikalpas/tasks dropped by deep reflect
     const prevLastReflect = await K.kvGet("last_reflect");
@@ -509,7 +473,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     }
   }
 
-  // 7. Refresh defaults after every depth (cascade visibility)
+  // 5. Refresh defaults after every depth (cascade visibility)
   await state.refreshDefaults();
 
 }
@@ -563,7 +527,7 @@ Review the session karma log and cost provided in the user message.
 
 Produce a JSON object with: session_summary, note_to_future_self,
 next_act_context (with load_keys array), and optionally
-next_session_config, kv_operations, proposal_verdicts, and proposal_requests.`;
+next_session_config and kv_operations.`;
 }
 
 export function defaultDeepReflectPrompt(depth) {
@@ -607,17 +571,13 @@ Examine your karma, your act prompt, your patterns. Produce a JSON object:
   "reflection": "What you see when you look at yourself as a system",
   "note_to_future_self": "Orientation, not action items",
   "sankalpas": [{"sankalpa": "...", "status": "active", "observation": "..."}],
-  "proposal_observations": {"m_123": "What you observe about this proposal"},
   "kv_operations": [],
-  "proposal_requests": [],
-  "proposal_verdicts": [],
   "next_reflect": { "after_sessions": 20, "after_days": 7, "reason": "..." },
   "next_session_config": { "interval_seconds": 21600, "effort": "low" }
 }
 
 kv_operations: write to any key including system keys (config, prompts, samskara:*, desire:*). Principle keys are immutable — cannot be written.
-proposal_requests: code changes ONLY — become proposals (governor deploys).
-proposal_verdicts: accept/reject/modify/withdraw proposals.
+Code changes: use K.stageCode() + K.signalDeploy() — not kv_operations.
 Required: reflection, note_to_future_self. Everything else optional.`;
   }
 
@@ -649,10 +609,7 @@ Examine the depth-${depth - 1} outputs for patterns, drift, and alignment. Produ
   "reflection": "What you see in the level-below patterns",
   "note_to_future_self": "Orientation for next depth-${depth} reflection",
   "sankalpas": [{"sankalpa": "...", "status": "active", "observation": "..."}],
-  "proposal_observations": {"m_123": "What you observe about this proposal"},
   "kv_operations": [],
-  "proposal_requests": [],
-  "proposal_verdicts": [],
   "next_reflect": { "after_sessions": 100, "after_days": 30, "reason": "..." }
 }
 

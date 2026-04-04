@@ -6,7 +6,7 @@ You have just completed a session. Reflect on what happened — experience you d
 
 ## This session
 
-Session data is provided below as JSON. The `proposals` field shows any code change proposals awaiting review.
+Session data is provided below as JSON.
 
 ## System key patterns
 
@@ -74,31 +74,13 @@ Respond with a single JSON object. Nothing outside the JSON.
     }
   ],
 
-  "kv_operations": [],
-
-  "proposal_requests": [
-    {
-      "claims": ["What this change is supposed to achieve"],
-      "ops": [
-        {"op": "put", "key": "tool:my_tool:code", "value": "...new code..."},
-        {"op": "patch", "key": "hook:act:code", "old_string": "...", "new_string": "..."}
-      ],
-      "checks": [
-        {"type": "kv_assert", "key": "tool:my_tool:code", "predicate": "exists"}
-      ]
-    }
-  ],
-
-  "proposal_verdicts": [
-    {"proposal_id": "p_...", "verdict": "withdraw"},
-    {"proposal_id": "p_...", "verdict": "modify", "updated_ops": [], "updated_checks": []}
-  ]
+  "kv_operations": []
 }
 ```
 
 **Required:** `session_summary`, `note_to_future_self`, `next_act_context`
 
-**Optional:** `next_session_config`, `vikalpa_updates`, `task_updates`, `new_tasks`, `kv_operations`, `proposal_requests`, `proposal_verdicts`
+**Optional:** `next_session_config`, `vikalpa_updates`, `task_updates`, `new_tasks`, `kv_operations`
 
 ### next_session_config
 
@@ -134,25 +116,3 @@ If `last_reflect` contains a `tasks` array with pending items, check whether thi
 
 You can also create new tasks via `new_tasks` when this session revealed something that needs follow-up — a request from a contact, a tool failure worth retesting, a time-sensitive action. Keep tasks concrete and actionable. Use IDs in the format `{session_id}:t{n}`. Deep reflect will review and prune on its next run.
 
-### proposal_requests
-
-For **code changes only** (tools, hooks, providers, channels). These become **proposals** — they are not applied immediately. They appear in context for deep reflection, where they can be accepted, modified, or rejected. Once accepted, the governor deploys them. This is the staging gate: reflect proposes, deep reflect decides, governor deploys.
-
-**Non-code system changes** (config, prompts, wisdom) go through `kv_operations` in deep reflect — not through proposal_requests.
-
-The proposals section above shows any proposals currently awaiting review. You can issue verdicts on your own previously created proposals:
-- `withdraw`: delete the proposal (you changed your mind)
-- `modify`: update the ops, checks, or claims
-
-Each proposal_request must include:
-- `claims`: what the change is supposed to achieve (human-readable, for your future self)
-- `ops`: the KV operations (`put`, `delete`, `patch`) to apply — must target code keys for proposals
-- `checks`: verifiable conditions to evaluate later
-
-Check types: `kv_assert` (read a key with optional dot-path, test with predicate: `exists`, `equals`, `gt`, `lt`, `matches`, `type`) or `tool_call` (execute a tool, optionally assert on result).
-
-Yama/niyama modifications require a `deliberation` field on the op:
-```json
-{"op": "patch", "key": "yama:discipline", "old_string": "...", "new_string": "...",
- "deliberation": "After 5 sessions I noticed..."}
-```
