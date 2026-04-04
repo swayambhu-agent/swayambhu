@@ -79,7 +79,7 @@
     "callback_advance_seconds": 30
   },
   "inference": {
-    "url": null,
+    "url": "http://localhost:8090",
     "relevance_threshold": 0.3,
     "ambiguity_threshold": 0.6,
     "embed_model": "bge-small-en-v1.5"
