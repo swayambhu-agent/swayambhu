@@ -463,23 +463,29 @@ describe("kv_query", () => {
 // ── 6. check_email tests ──────────────────────────────────────
 
 describe("check_email", () => {
+  const EMAIL_SECRETS = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "csec", EMAIL_RELAY_SECRET: "rsec" };
+
+  function mockRelayProvider(checkResult) {
+    return {
+      checkEmail: vi.fn(async () => checkResult),
+    };
+  }
+
   it("returns empty list when no unread emails", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },        // token refresh
-      { json: { messages: [] } },                // list unread
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
+    const provider = mockRelayProvider({ emails: [], count: 0 });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
     expect(result).toEqual({ emails: [], count: 0 });
   });
 
   it("fetches unread emails with from, subject, body", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }, { id: "msg_2" }] } },
-      { json: gmailMessage({ id: "msg_1", from: "alice@test.com", subject: "Hi", body: "Hello" }) },
-      { json: gmailMessage({ id: "msg_2", from: "bob@test.com", subject: "Re: Hi", body: "Hey there" }) },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
+    const provider = mockRelayProvider({
+      emails: [
+        { id: "msg_1", from: "alice@test.com", subject: "Hi", date: "2026-03-10", body: "Hello" },
+        { id: "msg_2", from: "bob@test.com", subject: "Re: Hi", date: "2026-03-10", body: "Hey there" },
+      ],
+      count: 2,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
     expect(result.count).toBe(2);
     expect(result.emails[0].from).toBe("alice@test.com");
     expect(result.emails[0].subject).toBe("Hi");
@@ -489,385 +495,282 @@ describe("check_email", () => {
 
   it("returns full body without truncation", async () => {
     const longBody = "x".repeat(600);
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: gmailMessage({ id: "msg_1", body: longBody }) },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_1", from: "a@b.com", subject: "S", date: "2026-03-10", body: longBody }],
+      count: 1,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
     expect(result.emails[0].body).toBe(longBody);
   });
 
   it("respects max_results param", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: gmailMessage({ id: "msg_1" }) },
-    ]);
-    await check_email.execute({ max_results: 5, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    // Second call is listUnread — check the URL contains maxResults=5
-    const listUrl = f.mock.calls[1][0];
-    expect(listUrl).toContain("maxResults=5");
+    const provider = mockRelayProvider({ emails: [], count: 0 });
+    await check_email.execute({ max_results: 5, secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(provider.checkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ maxResults: 5 })
+    );
   });
 
   it("caps max_results at 20", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [] } },
-    ]);
-    await check_email.execute({ max_results: 100, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    const listUrl = f.mock.calls[1][0];
-    expect(listUrl).toContain("maxResults=20");
+    const provider = mockRelayProvider({ emails: [], count: 0 });
+    await check_email.execute({ max_results: 100, secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(provider.checkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ maxResults: 20 })
+    );
   });
 
-  it("calls markAsRead when mark_read is true", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: gmailMessage({ id: "msg_1" }) },
-      { json: {} },  // markAsRead response
-    ]);
-    await check_email.execute({ mark_read: true, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    expect(f).toHaveBeenCalledTimes(4);
-    const markUrl = f.mock.calls[3][0];
-    expect(markUrl).toContain("msg_1/modify");
+  it("passes markRead true to provider when mark_read is true", async () => {
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_1", from: "a@b.com", subject: "S", date: "2026-03-10", body: "hi" }],
+      count: 1,
+    });
+    await check_email.execute({ mark_read: true, secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(provider.checkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ markRead: true })
+    );
   });
 
-  it("does not call markAsRead when mark_read is false", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: gmailMessage({ id: "msg_1" }) },
-    ]);
-    await check_email.execute({ mark_read: false, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    expect(f).toHaveBeenCalledTimes(3);
+  it("passes markRead false to provider when mark_read is false", async () => {
+    const provider = mockRelayProvider({ emails: [], count: 0 });
+    await check_email.execute({ mark_read: false, secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(provider.checkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ markRead: false })
+    );
   });
 
-  it("throws on token refresh failure", async () => {
-    const f = mockFetchSequence([
-      { ok: false, status: 401, json: {}, text: "Unauthorized" },
-    ]);
-    await expect(
-      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
-    ).rejects.toThrow("Gmail token refresh failed");
-  });
-
-  it("throws on list failure", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { ok: false, status: 500, json: {}, text: "Internal error" },
-    ]);
-    await expect(
-      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
-    ).rejects.toThrow("Gmail list failed");
-  });
-
-  it("extracts body from multipart text/plain", async () => {
-    const msg = {
-      id: "msg_1", threadId: "t_1",
-      payload: {
-        mimeType: "multipart/alternative",
-        headers: [
-          { name: "From", value: "test@test.com" },
-          { name: "Subject", value: "Multi" },
-          { name: "Date", value: "Mon, 10 Mar 2026" },
-          { name: "Message-ID", value: "<m1@test>" },
-        ],
-        parts: [
-          { mimeType: "text/plain", body: { data: base64url("Plain text body") } },
-          { mimeType: "text/html", body: { data: base64url("<p>HTML body</p>") } },
-        ],
-      },
+  it("throws on gateway failure", async () => {
+    const provider = {
+      checkEmail: vi.fn(async () => { throw new Error("Email gateway /check-email failed (500): Internal error"); }),
     };
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: msg },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    expect(result.emails[0].body).toBe("Plain text body");
+    await expect(
+      check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider })
+    ).rejects.toThrow("Email gateway");
   });
 
-  it("falls back to stripped HTML when no text/plain", async () => {
-    const msg = {
-      id: "msg_1", threadId: "t_1",
-      payload: {
-        mimeType: "multipart/alternative",
-        headers: [
-          { name: "From", value: "test@test.com" },
-          { name: "Subject", value: "HTML only" },
-          { name: "Date", value: "Mon, 10 Mar 2026" },
-          { name: "Message-ID", value: "<m1@test>" },
-        ],
-        parts: [
-          { mimeType: "text/html", body: { data: base64url("<p>Hello</p><br/>World") } },
-        ],
-      },
-    };
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: msg },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    expect(result.emails[0].body).toContain("Hello");
-    expect(result.emails[0].body).toContain("World");
-    expect(result.emails[0].body).not.toContain("<p>");
+  it("extracts sender_email from 'Name <addr>' format", async () => {
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_1", from: "Alice <alice@test.com>", subject: "Hi", date: "2026-03-10", body: "Hello" }],
+      count: 1,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(result.emails[0].sender_email).toBe("alice@test.com");
   });
 
-  it("returns id and threadId for each email", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_42" }] } },
-      { json: gmailMessage({ id: "msg_42", threadId: "thread_7" }) },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
+  it("uses from as sender_email when no angle brackets", async () => {
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_1", from: "plain@test.com", subject: "Hi", date: "2026-03-10", body: "Hello" }],
+      count: 1,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(result.emails[0].sender_email).toBe("plain@test.com");
+  });
+
+  it("returns id for each email", async () => {
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_42", from: "a@b.com", subject: "S", date: "2026-03-10", body: "hi" }],
+      count: 1,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
     expect(result.emails[0].id).toBe("msg_42");
-    expect(result.emails[0].threadId).toBe("thread_7");
   });
 });
 
 // ── 7. send_email tests ───────────────────────────────────────
 
 describe("send_email", () => {
-  it("sends a new email and returns messageId + threadId", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { id: "sent_1", threadId: "new_thread" } },
-    ]);
+  const EMAIL_SECRETS = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "csec", EMAIL_RELAY_SECRET: "rsec" };
+
+  function mockSendProvider({ getMessageResult, sendResult } = {}) {
+    return {
+      getMessage: vi.fn(async () => getMessageResult || { id: "orig_1", from: "a@b.com", to: "c@d.com", subject: "Test", date: "2026-03-10", body: "hi", messageId: "<orig@test.com>" }),
+      sendMessage: vi.fn(async () => sendResult || { messageId: "<sent_1@relay>" }),
+    };
+  }
+
+  it("sends a new email and returns messageId", async () => {
+    const provider = mockSendProvider({ sendResult: { messageId: "<sent_1@relay>" } });
     const result = await send_email.execute({
       to: "bob@test.com",
       subject: "Hello",
       body: "Hi Bob",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    expect(result).toEqual({ sent: true, messageId: "sent_1", threadId: "new_thread" });
+    expect(result).toEqual({ sent: true, messageId: "<sent_1@relay>" });
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "bob@test.com", subject: "Hello", body: "Hi Bob", inReplyTo: null })
+    );
   });
 
-  it("sends correct RFC 2822 headers", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { id: "sent_1", threadId: "t_1" } },
-    ]);
+  it("passes correct params to provider.sendMessage", async () => {
+    const provider = mockSendProvider();
     await send_email.execute({
       to: "bob@test.com",
       subject: "Test",
       body: "Body",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[1];
-    const payload = JSON.parse(sendCall[1].body);
-    // Decode raw to check headers
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("To: bob@test.com");
-    expect(decoded).toContain("Subject: Test");
-    expect(decoded).toContain("MIME-Version: 1.0");
-    expect(decoded).toContain("Content-Type: text/plain; charset=UTF-8");
-    expect(decoded).toContain("Body");
+    const call = provider.sendMessage.mock.calls[0][0];
+    expect(call.to).toBe("bob@test.com");
+    expect(call.subject).toBe("Test");
+    expect(call.body).toBe("Body");
+    expect(call.secrets).toBe(EMAIL_SECRETS);
   });
 
   it("returns error for missing 'to'", async () => {
+    const provider = mockSendProvider();
     const result = await send_email.execute({
       subject: "Hi",
       body: "test",
-      secrets: GMAIL_SECRETS,
-      fetch: mockFetch({}),
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
     expect(result.error).toContain("to");
   });
 
   it("returns error for missing 'subject' when not replying", async () => {
+    const provider = mockSendProvider();
     const result = await send_email.execute({
       to: "bob@test.com",
       body: "test",
-      secrets: GMAIL_SECRETS,
-      fetch: mockFetch({}),
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
     expect(result.error).toContain("subject");
   });
 
   it("returns error for missing 'body'", async () => {
+    const provider = mockSendProvider();
     const result = await send_email.execute({
       to: "bob@test.com",
       subject: "Hi",
-      secrets: GMAIL_SECRETS,
-      fetch: mockFetch({}),
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
     expect(result.error).toContain("body");
   });
 
   it("allows missing subject when reply_to_id is provided", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      // getMessage for reply_to_id
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Original Subject" },
-            { name: "Message-ID", value: "<orig@test.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_reply", threadId: "thread_1" } },
-    ]);
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Original Subject", messageId: "<orig@test.com>" },
+      sendResult: { messageId: "<sent_reply@relay>" },
+    });
     const result = await send_email.execute({
       to: "bob@test.com",
       body: "Reply body",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
     expect(result.sent).toBe(true);
-    expect(result.threadId).toBe("thread_1");
+    expect(result.messageId).toBe("<sent_reply@relay>");
   });
 
   it("prepends Re: to subject when replying", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Hello" },
-            { name: "Message-ID", value: "<orig@test.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_1", threadId: "thread_1" } },
-    ]);
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Hello", messageId: "<orig@test.com>" },
+    });
     await send_email.execute({
       to: "bob@test.com",
       body: "Reply",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[2];
-    const payload = JSON.parse(sendCall[1].body);
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("Subject: Re: Hello");
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "Re: Hello" })
+    );
   });
 
   it("does not double-prepend Re: if already present", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Re: Hello" },
-            { name: "Message-ID", value: "<orig@test.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_1", threadId: "thread_1" } },
-    ]);
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Re: Hello", messageId: "<orig@test.com>" },
+    });
     await send_email.execute({
       to: "bob@test.com",
       body: "Reply",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[2];
-    const payload = JSON.parse(sendCall[1].body);
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("Subject: Re: Hello");
-    expect(decoded).not.toContain("Subject: Re: Re:");
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "Re: Hello" })
+    );
   });
 
-  it("includes In-Reply-To and References headers when replying", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Test" },
-            { name: "Message-ID", value: "<unique@example.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_1", threadId: "thread_1" } },
-    ]);
+  it("passes inReplyTo from original message when replying", async () => {
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Test", messageId: "<unique@example.com>" },
+    });
     await send_email.execute({
       to: "bob@test.com",
       body: "Reply",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[2];
-    const payload = JSON.parse(sendCall[1].body);
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("In-Reply-To: <unique@example.com>");
-    expect(decoded).toContain("References: <unique@example.com>");
-    expect(payload.threadId).toBe("thread_1");
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ inReplyTo: "<unique@example.com>" })
+    );
   });
 
   it("uses explicit subject over original when replying", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Old Subject" },
-            { name: "Message-ID", value: "<orig@test.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_1", threadId: "thread_1" } },
-    ]);
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Old Subject", messageId: "<orig@test.com>" },
+    });
     await send_email.execute({
       to: "bob@test.com",
       subject: "New Subject",
       body: "Reply",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[2];
-    const payload = JSON.parse(sendCall[1].body);
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("Subject: New Subject");
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "New Subject" })
+    );
   });
 
-  it("throws on token refresh failure", async () => {
-    const f = mockFetchSequence([
-      { ok: false, status: 401, json: {}, text: "Unauthorized" },
-    ]);
-    await expect(
-      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
-    ).rejects.toThrow("Gmail token refresh failed");
+  it("sends without threading when getMessage fails", async () => {
+    const provider = {
+      getMessage: vi.fn(async () => { throw new Error("gateway down"); }),
+      sendMessage: vi.fn(async () => ({ messageId: "<sent@relay>" })),
+    };
+    const result = await send_email.execute({
+      to: "a@b.com",
+      subject: "Hi",
+      body: "test",
+      reply_to_id: "orig_1",
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
+    });
+    expect(result.sent).toBe(true);
+    // Should send with null inReplyTo (no threading) and the provided subject
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ inReplyTo: null, subject: "Hi" })
+    );
   });
 
-  it("throws on send failure", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { ok: false, status: 400, json: {}, text: "Bad request" },
-    ]);
+  it("throws on gateway send failure", async () => {
+    const provider = {
+      getMessage: vi.fn(),
+      sendMessage: vi.fn(async () => { throw new Error("Email gateway /send-email failed (500): Internal error"); }),
+    };
     await expect(
-      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
-    ).rejects.toThrow("Gmail send failed");
+      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: EMAIL_SECRETS, fetch: vi.fn(), provider })
+    ).rejects.toThrow("Email gateway");
   });
 });
 
