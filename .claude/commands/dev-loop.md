@@ -39,6 +39,17 @@ This contains the full session data: karma, desires, patterns, experiences,
 tactics, config, prompts, last_reflect, DR state, rubric, and mechanical
 issues from classify.
 
+**CRITICAL: Verify before proposing.** The context.json contains the
+agent's own self-diagnosis (patterns, experiences). The agent's
+impressions may be WRONG. Before proposing any fix:
+1. Read the actual source files (eval.js, kernel.js, act.js, etc.)
+2. Verify the agent's description matches the code
+3. If the agent says "X is missing" — check if X actually exists
+4. If the agent says "Y uses format Z" — read Y and confirm
+
+Never propose a fix based solely on pattern descriptions. Ground
+every diagnosis in the actual source code.
+
 Analyze against the cognitive architecture audit rubric:
 
 **Entity Health:**
