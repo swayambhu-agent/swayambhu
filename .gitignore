@@ -39,3 +39,7 @@ test-results/
 site/patron/app.js
 site/patron/app.js.map
 site/patron/app.css
+.gstack/
+
+# Dev loop operational state
+.swayambhu/
