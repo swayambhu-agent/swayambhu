@@ -26,10 +26,36 @@ requests, works on projects autonomously, and uses spare time to improve
 its own capabilities. These are observation targets tracked over time,
 not automated metrics (yet).
 
-## Pipeline: 5 Decision Stages
+## Execution Model
+
+The dev loop is a **Claude Code skill** (`/dev-loop`) that uses scripts
+for plumbing and CC/Codex for intelligence. It is NOT a standalone
+Node.js daemon. It runs inside a Claude Code session on the developer's
+machine, using paid CC and Codex subscriptions (zero marginal cost).
 
 ```
-OBSERVE → CLASSIFY → EXPERIMENT → DECIDE → VERIFY
+loop.mjs:    OBSERVE → CLASSIFY (mechanical)
+CC skill:    ANALYZE (deep, CC reads context.json) → propose fixes
+Codex CLI:   CHALLENGE (adversarial, max 3 rounds)
+loop.mjs:    DECIDE → VERIFY
+```
+
+**Why not a standalone script:** The deep analysis and adversarial
+review need LLM reasoning. Claude Code IS Claude — it can reason
+about session data natively. Codex CLI is available for adversarial
+challenge. Both are subscription-based, zero cost per call. Making
+the loop a CC skill gives it access to both without OpenRouter spend.
+
+**Context handoff:** After CLASSIFY, the loop writes `context.json`
+to `runs/{timestamp}/` containing all session data (karma, desires,
+patterns, experiences, config, prompts, health). CC reads this file
+directly and reasons about it against the cognitive audit rubric.
+
+## Pipeline: 6 Stages
+
+```
+OBSERVE → CLASSIFY → ANALYZE → EXPERIMENT → DECIDE → VERIFY
+  (script)  (script)   (CC)      (Codex)     (script)  (script)
 ```
 
 ### Stage 1: OBSERVE
@@ -59,19 +85,19 @@ empty patterns and maximum surprise — that's correct behavior, not a bug.
   patterns, experiences, cost, LLM call count, tool results
 
 **Session completion detection:**
-Poll `session_counter` via `scripts/read-kv.mjs` — when it increments
-from the pre-trigger value, the tick completed. Timeout after 5 minutes
-(sessions typically complete in 30-120s). Note: a tick that skips act
-(schedule-gated) still increments the counter — check karma for the
-new session ID to confirm an act session actually ran.
+Poll `cache:session_ids` via the dashboard API (`/kv/multi` endpoint)
+— when a new session ID appears that wasn't in the pre-trigger list,
+the act session completed. Timeout after 10 minutes (sessions typically
+complete in 1-5 minutes). Uses the dashboard API (not Miniflare) to
+avoid SQLite lock conflicts with the running wrangler worker.
 
 Output: `runs/{timestamp}/observation.json` + UI screenshots.
 
-### Stage 2: CLASSIFY
+### Stage 2: CLASSIFY (script — mechanical)
 
-Score each issue found and deduplicate against known issues. This is
-where the cognitive architecture audit runs — evaluating entity health,
-operator output, feedback loops, and architectural boundaries.
+Cheap deterministic checks on the raw data. Catches obvious structural
+problems without LLM calls. Fingerprints and deduplicates against
+known issues.
 
 **Issue taxonomy (single model, no two-track split):**
 
@@ -110,13 +136,74 @@ trimmed, stopwords removed). On classify, check all existing
 
 Output: new/updated issues in `probes/{issue-id}.json`.
 
-### Stage 3: EXPERIMENT
+### Stage 3: ANALYZE (Claude Code — deep reasoning)
 
-What happens depends on classification:
+Claude Code reads `context.json` and performs the deep cognitive
+architecture audit. This is where the real intelligence lives — CC
+reasons about session quality, entity health, operator output, feedback
+loops, and architectural boundaries using the full rubric.
 
-**Agent-domain issues (self_repairability > 0.3):**
-Run bounded trials — trigger more sessions and observe whether the agent
-self-corrects.
+**Context package** (`runs/{timestamp}/context.json`):
+```json
+{
+  "session_id": "x_...",
+  "karma": [...],
+  "desires": { "desire:slug": {...} },
+  "patterns": { "pattern:slug": {...} },
+  "experiences": { "experience:ts": {...} },
+  "tactics": { "tactic:slug": {...} },
+  "config": { "defaults": {...}, "models": {...} },
+  "prompts": { "act": "...", "reflect": "...", "plan": "..." },
+  "last_reflect": {...},
+  "dr_state": {...},
+  "session_health": {...},
+  "rubric": {...},
+  "mechanical_issues": [...]
+}
+```
+
+**What CC analyzes** (the cognitive audit rubric — see full section below):
+- Entity health: desires, patterns, experiences, tactics
+- Operator health: A (plan), S (patterns), D (desires), T (tactics)
+- Feedback loop health: eval pipeline, EMA, experience→DR→desire cycle
+- Session reflect quality, DR lifecycle, comms health
+- Architectural boundaries
+- Capability dimensions (proactivity, contextual awareness, etc.)
+
+**Output:** CC writes findings to `runs/{timestamp}/analysis.json`:
+```json
+{
+  "summary": "High-level assessment",
+  "findings": [
+    {
+      "type": "malformed_entity | silent_operator | broken_feedback | ...",
+      "summary": "...",
+      "evidence": "...",
+      "locus": "userspace | kernel | ...",
+      "severity": "low | medium | high | critical",
+      "self_repairability": 0.0-1.0,
+      "blast_radius": "local | module | system",
+      "proposed_fix": "..." | null,
+      "probe_recommended": true | false
+    }
+  ],
+  "capability_observations": {...},
+  "healthy_signals": [...]
+}
+```
+
+For each finding with a proposed fix, CC writes a proposal file:
+`runs/{timestamp}/proposal-{seq}.md` containing the issue, proposed
+fix, affected files, quality lens assessment.
+
+### Stage 4: EXPERIMENT (Codex — adversarial challenge)
+
+Each proposal from ANALYZE goes through adversarial challenge with
+Codex. CC proposes, Codex challenges.
+
+**For agent-domain issues (self_repairability > 0.3):**
+Before proposing a fix, run bounded trials — trigger more sessions
+and observe whether the agent self-corrects.
 
 - Deterministic bug: 1 repro confirms the issue
 - Intermittent: up to N sessions (default 3), quarantine if unresolved
@@ -127,20 +214,25 @@ If the agent self-corrects: close the issue, record as evidence of
 working self-improvement. If not: diagnose *why* — what constraint
 prevents self-correction? Add to `root_cause_chain`.
 
-**UI / patron-facing / accumulated bugs:**
-Propose a direct fix. Score against quality lenses.
+**Adversarial challenge protocol:**
 
-**All proposals go through adversarial challenge (Claude vs Codex):**
+File-backed exchange between CC and Codex:
 
-Challenge protocol:
-- Claude writes proposal as a structured prompt describing: the issue,
-  proposed fix, affected files, quality lens assessment
-- Codex receives via:
-  `codex exec --full-auto -m gpt-5.4 "Challenge this proposal: {proposal}"`
-- Max 2 rounds per proposal
-- Each round must introduce a new falsifiable objection
-- Terminate when objections are resolved, downgraded, or escalated
-- Both sides argue from the quality lenses and design principles
+1. CC writes `proposal-{seq}.md` with issue + fix + quality lens scores
+2. Codex reads proposal via:
+   `codex exec --full-auto "Read {path}/proposal-{seq}.md and challenge
+   it. Find flaws. Evaluate against the quality lenses. Each objection
+   must be new and falsifiable."`
+3. Codex writes objections to `challenge-{seq}-round-{n}.json`
+4. CC reads objections, responds with defense or revision
+5. Max 3 rounds per proposal
+6. Each round must introduce a new falsifiable objection
+7. Terminate when objections are resolved, downgraded, or escalated
+8. Both sides argue from the quality lenses and design principles
+
+**Convergence:** a proposal converges when Codex has no remaining
+unresolved objections, or when both sides agree the fix scores well
+on all applicable quality lenses.
 
 Output: `runs/{timestamp}/experiment.json` with challenge transcript.
 
@@ -252,14 +344,15 @@ Track qualitative evidence over time of the agent becoming:
 
 ## Cognitive Architecture Audit
 
-The most important function of the OBSERVE and CLASSIFY stages. Every
-cycle, the dev loop evaluates whether the cognitive architecture is
-working as designed — not just whether sessions run without errors, but
-whether the cognitive entities are well-formed, the operators are
-producing meaningful output, and the feedback loops are closing.
+The most important function of the ANALYZE stage (Claude Code reasoning).
+Every cycle, CC evaluates whether the cognitive architecture is working
+as designed — not just whether sessions run without errors, but whether
+the cognitive entities are well-formed, the operators are producing
+meaningful output, and the feedback loops are closing.
 
-Data collection happens in OBSERVE. Scoring and issue creation happens
-in CLASSIFY.
+Data collection happens in OBSERVE. Mechanical checks happen in CLASSIFY.
+Deep reasoning against this rubric happens in ANALYZE (CC reads
+`context.json` and applies these checks with judgment).
 
 ### Entity Health Checks
 
@@ -439,10 +532,14 @@ Each finding from the cognitive audit is classified:
   runs/
     {timestamp}/
       observation.json            stage 1 output
-      classification.json         stage 2 output
-      experiment.json             stage 3 output (incl challenge transcript)
-      applied.json                stage 4 output
-      verification.json           stage 5 output
+      context.json                full session data for CC analysis
+      classification.json         stage 2 output (mechanical)
+      analysis.json               stage 3 output (CC deep analysis)
+      proposal-{seq}.md           fix proposals from CC
+      challenge-{seq}-round-{n}.json  Codex objections per round
+      experiment.json             stage 4 output (challenge transcript)
+      applied.json                stage 5 output
+      verification.json           stage 6 output
       report.md                   human-readable cycle summary
 
   metrics/
@@ -461,16 +558,22 @@ git; operational artifacts stay on disk.
 
 ## Orchestrator
 
-A single coordinator script (`scripts/dev-loop.sh` or
-`scripts/dev-loop.mjs`) that:
+A **Claude Code skill** (`/dev-loop`) that coordinates scripts and
+LLM reasoning. The CC session IS the orchestrator — it calls loop.mjs
+for plumbing and reasons about results directly.
 
-1. Loads state (budget spent, pending probes, approval queue)
-2. Checks for approval responses (Slack/email replies from Swami)
+**Per-cycle flow:**
+
+1. CC loads state (probes, approval queue)
+2. CC checks for approval responses (Slack/email)
 3. If approved items exist: apply them → verify
-4. Runs one cycle: observe → classify → experiment → decide → verify
-5. Writes report, updates metrics
-6. Checks stop conditions
-7. Loops (or stops)
+4. CC calls `node scripts/dev-loop/loop.mjs --once` for OBSERVE + CLASSIFY
+5. CC reads `context.json` → ANALYZE (deep cognitive audit)
+6. For findings with proposed fixes: CC writes proposals → Codex challenges (EXPERIMENT)
+7. CC runs DECIDE logic → auto-apply / note / escalate
+8. CC calls verify.mjs for VERIFY
+9. CC writes report, updates metrics
+10. CC checks stop conditions, loops or stops
 
 **Stop conditions:**
 - Clean observation + no probes pending + no fixes pending
@@ -527,20 +630,12 @@ curl -s http://localhost:8787/__scheduled
 
 ### Session completion detection
 
-Poll `session_counter` — canonical completion signal:
+Poll `cache:session_ids` via dashboard API (avoids Miniflare lock
+conflicts with the running wrangler worker):
 ```bash
-# Before trigger: capture current session count
-BEFORE=$(node scripts/read-kv.mjs session_counter)
-
-# After trigger: poll until counter increments or timeout (5 min)
-TIMEOUT=300; ELAPSED=0
-while [ "$(node scripts/read-kv.mjs session_counter)" = "$BEFORE" ]; do
-  sleep 5; ELAPSED=$((ELAPSED + 5))
-  [ $ELAPSED -ge $TIMEOUT ] && echo "TIMEOUT" && break
-done
-
-# Confirm an act session ran (not just a schedule-skipped tick)
-node scripts/read-kv.mjs cache:session_ids  # check for new session ID
+# observe.mjs handles this automatically via:
+# GET http://localhost:8790/kv/multi?keys=cache:session_ids
+# Polls every 10s, timeout 10 min
 ```
 
 ### Dashboard screenshots
@@ -557,14 +652,20 @@ node scripts/screenshot-dashboard.mjs --port 3001 --output runs/{timestamp}/
 
 ### Adversarial challenge
 
+File-backed exchange. CC writes proposal, Codex reads and challenges:
 ```bash
+# CC writes proposal to:
+#   .swayambhu/dev-loop/runs/{timestamp}/proposal-01.md
+
+# CC invokes Codex:
 codex exec --full-auto -m gpt-5.4 \
-  "Challenge this proposal. Find flaws. You have max 2 rounds.
-   Each objection must be new and falsifiable.
-   Evaluate against: elegance, generality, robustness, simplicity, modularity.
-   
-   PROPOSAL:
-   {proposal_json}"
+  "Read the proposal at {path}/proposal-01.md.
+   Challenge it. Find flaws. Max 3 rounds, each objection must be
+   new and falsifiable. Evaluate against: elegance, generality,
+   robustness, simplicity, modularity. Write objections to
+   {path}/challenge-01-round-1.json"
+
+# CC reads objections, responds, up to 3 rounds
 ```
 
 ### Approval messaging and reply checking
@@ -608,16 +709,19 @@ cross-module consistency).
 
 | Existing tool | How dev loop uses it |
 |--------------|---------------------|
-| `scripts/start.sh` | Stage 1: trigger sessions |
-| `scripts/analyze-sessions.mjs` | Stage 1: gather karma data |
-| `scripts/rollback-session.mjs` | Stage 5: rollback on regression |
-| `/browse` skill | Stage 1: UI screenshots |
-| `/codex challenge` | Stage 3: adversarial review |
-| `npm test` | Stage 4+5: gate for auto-apply |
-| Slack/email channels | Stage 4: approval requests + comms testing |
+| `scripts/dev-loop/loop.mjs` | Plumbing: OBSERVE + CLASSIFY |
+| `scripts/analyze-sessions.mjs` | Data collection (--source dashboard) |
+| `scripts/rollback-session.mjs` | Stage 6: rollback on regression |
+| Dashboard API (port 8790) | KV reads via /kv/multi, /health |
+| `/browse` skill | UI screenshots |
+| `codex exec` | Stage 4: adversarial challenge |
+| `npm test` | Stage 5+6: gate for auto-apply |
+| `scripts/dev-loop/comms.mjs` | Approval requests via Slack/email |
 
 ### Execution environment
 
-Runs on Swami's dev machine. Claude Code orchestrates analysis/proposals.
-Codex CLI handles adversarial challenge. Sessions run via local wrangler
-dev. Dashboard screenshots via headless browser.
+Runs inside a Claude Code session on Swami's dev machine. CC IS the
+orchestrator — it reasons about session data natively and shells out
+to Codex for adversarial challenge. Both are subscription-based tools
+with zero marginal cost. Sessions run via local wrangler dev. Dashboard
+API provides KV access without Miniflare lock conflicts.

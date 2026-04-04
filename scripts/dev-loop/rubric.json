@@ -52,7 +52,7 @@
     "module": "strong",
     "system": "strong_plus_challenge"
   },
-  "max_challenge_rounds": 2,
+  "max_challenge_rounds": 3,
   "max_probe_sessions": 3,
   "stage_failure_limit": 3,
   "daily_cash_budget": 5.00
