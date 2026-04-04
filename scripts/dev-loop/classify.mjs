@@ -264,11 +264,14 @@ export function dedup(newIssues, existingProbes) {
 export async function runClassify({ baseDir, observation, timestamp }) {
   const analysis = observation?.analysis || {};
 
-  // Run all audits against available data
+  // Convert KV objects to arrays — analyze-sessions outputs { "desire:slug": {...} }
+  const toArray = (obj) => Array.isArray(obj) ? obj
+    : Object.entries(obj || {}).map(([key, val]) => ({ key, ...val }));
+
   const allIssues = [
-    ...auditDesires(analysis.desires || []),
-    ...auditPatterns(analysis.patterns || []),
-    ...auditExperiences(analysis.experiences || []),
+    ...auditDesires(toArray(analysis.desires)),
+    ...auditPatterns(toArray(analysis.patterns)),
+    ...auditExperiences(toArray(analysis.experiences)),
     ...auditKarma(analysis.karma || {}),
   ];
 
