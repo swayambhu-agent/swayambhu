@@ -1261,6 +1261,19 @@ class Kernel {
     if (meta.kv_access && meta.kv_access !== "none") {
       ctx.kv = this._buildScopedKV(toolName, meta.kv_access, meta.kv_write_prefixes);
     }
+    // emitEvent is infrastructure (like kv.put or fetch) — tools use it
+    // to create events that userspace processors handle. The kernel
+    // provides the transport, userspace provides the meaning.
+    const kernel = this;
+    ctx.emitEvent = async (type, payload) => {
+      const nonce = Math.random().toString(36).slice(2, 6);
+      const ts = Date.now().toString().padStart(15, '0');
+      const key = `event:${ts}:${type}:${nonce}`;
+      const event = { type, ...payload, timestamp: payload.timestamp || new Date().toISOString() };
+      await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+      await kernel.karmaRecord({ event: "event_emitted", type, key });
+      return { key };
+    };
     // Provider binding comes from grants (kernel-controlled), not meta
     const grant = this.toolGrants?.[toolName];
     if (grant?.provider) {

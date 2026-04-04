@@ -1840,17 +1840,22 @@ describe("collect_jobs", () => {
 
 describe("request_message", () => {
   it("emits comms_request event with validated contact", async () => {
-    const K = makeMockK({
-      "contact:swami_kevala": { name: "Swami Kevala" },
-    });
+    const kv = {
+      async get(key) {
+        if (key === "contact:swami_kevala") return { name: "Swami Kevala" };
+        return null;
+      },
+    };
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
     const result = await request_message.execute({
       contact: "swami_kevala",
       intent: "ask",
       content: "What should I work on?",
-      K,
+      kv,
+      emitEvent,
     });
     expect(result.ok).toBe(true);
-    expect(K.emitEvent).toHaveBeenCalledWith("comms_request", {
+    expect(emitEvent).toHaveBeenCalledWith("comms_request", {
       contact: "swami_kevala",
       intent: "ask",
       content: "What should I work on?",
@@ -1858,14 +1863,16 @@ describe("request_message", () => {
   });
 
   it("rejects unknown contact slugs", async () => {
-    const K = makeMockK({});
+    const kv = { async get() { return null; } };
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
     const result = await request_message.execute({
       contact: "nonexistent",
       intent: "share",
       content: "hello",
-      K,
+      kv,
+      emitEvent,
     });
     expect(result.error).toMatch(/unknown contact/i);
-    expect(K.emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).not.toHaveBeenCalled();
   });
 });
