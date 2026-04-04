@@ -40,7 +40,8 @@ describe("chooseStrategy", () => {
       codeChanged: false,
     });
     expect(result.type).toBe("cold_start");
-    expect(result.setup).toContain("seed-local-kv");
+    expect(result.setup.some(s => s.includes("seed-local-kv"))).toBe(true);
+    expect(result.setup.some(s => s.includes("clear-schedule"))).toBe(true);
     expect(result.trigger).toContain("curl");
   });
 
@@ -51,6 +52,6 @@ describe("chooseStrategy", () => {
       codeChanged: true,
     });
     expect(result.type).toBe("cold_start");
-    expect(result.setup).toContain("seed-local-kv");
+    expect(result.setup.some(s => s.includes("seed-local-kv"))).toBe(true);
   });
 });

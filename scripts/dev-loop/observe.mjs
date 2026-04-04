@@ -19,10 +19,13 @@ export function chooseStrategy({ probes, cycle, codeChanged }) {
     return {
       type: "cold_start",
       // Don't use start.sh — it ends with `wait` and blocks forever.
-      // Instead: seed KV directly, then trigger. Assumes services are
-      // already running (user starts them separately).
-      setup: `node ${join(ROOT, "scripts/seed-local-kv.mjs")}`,
-      trigger: "curl -sf -X POST http://localhost:8787/__clear-schedule && curl -s http://localhost:8787/__scheduled",
+      // Instead: seed KV directly, clear schedule (force immediate run),
+      // then trigger. Assumes services are already running.
+      setup: [
+        `node ${join(ROOT, "scripts/seed-local-kv.mjs")}`,
+        `node ${join(ROOT, "scripts/clear-schedule.mjs")}`,
+      ],
+      trigger: "curl -s http://localhost:8787/__scheduled",
     };
   }
   return {
@@ -50,9 +53,16 @@ function readSessionCounter() {
 function pollUntilIncrement(beforeCount, timeoutMs = 300_000) {
   const deadline = Date.now() + timeoutMs;
   const interval = 5_000;
+  let polls = 0;
   while (Date.now() < deadline) {
     const current = readSessionCounter();
-    if (detectCompletion(beforeCount, current)) return current;
+    if (detectCompletion(beforeCount, current)) {
+      console.log(`\n[OBSERVE] Session complete (counter: ${current})`);
+      return current;
+    }
+    polls++;
+    const elapsed = Math.round((Date.now() + timeoutMs - deadline) / 1000);
+    process.stdout.write(`\r[OBSERVE] Waiting for session... ${elapsed}s (counter: ${current})`);
     execSync(`sleep ${interval / 1000}`);
   }
   throw new Error(
@@ -84,15 +94,19 @@ export async function runObserve({
   try {
     const strategy = chooseStrategy({ probes, cycle, codeChanged });
 
-    // Setup step (cold_start only): seed KV + start services
-    if (strategy.setup) {
+    // Setup step (cold_start only): seed KV + clear schedule
+    const setupCmds = Array.isArray(strategy.setup) ? strategy.setup
+      : strategy.setup ? [strategy.setup] : [];
+    if (setupCmds.length) {
       console.log(`[OBSERVE] Running setup: ${strategy.type}`);
-      execSync(strategy.setup, {
-        encoding: "utf8",
-        timeout: 300_000,
-        cwd: ROOT,
-        stdio: "inherit",
-      });
+      for (const cmd of setupCmds) {
+        execSync(cmd, {
+          encoding: "utf8",
+          timeout: 300_000,
+          cwd: ROOT,
+          stdio: "inherit",
+        });
+      }
     }
 
     const counterBefore = readSessionCounter();
