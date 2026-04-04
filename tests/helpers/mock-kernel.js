@@ -138,12 +138,6 @@ export function makeMockK(kvInit = {}, opts = {}) {
     resolveContact: vi.fn(async (platform, userId) => null),
     elapsed: vi.fn(async () => 0),
 
-    // Proposal system
-    createProposal: vi.fn(async () => "p_test_123"),
-    loadProposals: vi.fn(async () => ({})),
-    updateProposalStatus: vi.fn(async () => {}),
-    processProposalVerdicts: vi.fn(async () => {}),
-
     // Internal — expose KV store for assertions
     _kv: kv,
   };
@@ -179,7 +173,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       return { ok: false, error: `Cannot write kernel key "${key}"` };
     }
     if (_isCodeKey(key)) {
-      return { ok: false, error: `Code key "${key}" requires proposal_requests` };
+      return { ok: false, error: `Code key "${key}" requires K.stageCode()` };
     }
 
     // Contact keys — allowed in all contexts
