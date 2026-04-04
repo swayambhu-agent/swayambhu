@@ -223,11 +223,29 @@ After applying any change:
 2. If fail: `git revert HEAD --no-edit`
 3. If pass: trigger one more session to verify the fix works in practice
 
+## End of Cycle: Slack Summary
+
+After each cycle, send a Slack summary to Swami:
+
+```bash
+node scripts/dev-loop/comms.mjs send --channel slack --id devloop-cycle-{N} --body "{summary}"
+```
+
+The summary should include:
+- Cycle number and timestamp
+- Session ID and duration
+- Number of findings (by severity)
+- Actions taken (fixes applied, proposals escalated, probes started)
+- Healthy signals observed
+- Next action (continuing / stopping / waiting for approval)
+
+Keep it concise — 5-10 lines max. Swami will read these on his phone.
+
 ## Looping
 
-After completing a cycle, check:
+After sending the summary, check:
 - More issues to probe or fix? → Run another cycle (go to Stages 1-2)
-- All clean? → Stop
+- All clean for 3 consecutive cycles? → Stop
 - All blocked on approvals? → Stop
 - Budget exhausted? → Stop
 
