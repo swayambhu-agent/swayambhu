@@ -1716,7 +1716,6 @@ describe("_writeExecutionHealth", () => {
       { event: "tool_complete", tool: "computer", ok: false },
       { event: "tool_complete", tool: "computer", ok: false },
       { event: "reflect_parse_error", depth: 0 },
-      { event: "vikalpa_updates_missed", missed: [] },
     ];
 
     await kernel._writeExecutionHealth("clean");
@@ -1726,7 +1725,7 @@ describe("_writeExecutionHealth", () => {
     expect(health.truncations).toEqual(["reflect_turn_0"]);
     expect(health.tool_failures).toBe(2);
     expect(health.parse_errors).toBe(1);
-    expect(health.updates_missed).toBe(1);
+    expect(health.updates_missed).toBeUndefined();
     expect(health.reflect_ran).toBe(true);
   });
 

@@ -55,11 +55,6 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "next_session_config": {},
 
-  "vikalpa_updates": [
-    { "id": "s_...:v1", "status": "confirmed", "revisit_by_session": 35 },
-    { "id": "s_...:v2", "status": "resolved", "evidence": "what you saw this session" }
-  ],
-
   "task_updates": [
     { "id": "s_...:t1", "status": "done", "result": "what happened" },
     { "id": "s_...:t2", "status": "dropped", "reason": "why" }
@@ -80,7 +75,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Required:** `session_summary`, `note_to_future_self`, `next_act_context`
 
-**Optional:** `next_session_config`, `vikalpa_updates`, `task_updates`, `new_tasks`, `kv_operations`
+**Optional:** `next_session_config`, `task_updates`, `new_tasks`, `kv_operations`
 
 ### next_session_config
 
@@ -97,16 +92,6 @@ This is how you write to your own memory. Common uses: update a project state, s
 ### note_to_future_self
 
 This is the thread of continuity between sessions. This session is ending. Your next session will not have direct memory of this one — only what you write here and in `last_reflect`. Make it count. If you were mid-thought, finish it or point at it. If something is nagging you, say it. This is not a status report. It is one mind speaking to its next instantiation.
-
-### Checking vikalpas
-
-If `last_reflect` contains a `vikalpas` array, check each vikalpa's `revisit_by_session` against the current session counter ({{session_counter}}). If any have expired (revisit_by_session <= current session), include a probe instruction in `note_to_future_self` for the next act session — e.g. "Vikalpa 'Slack delivery fails' expired. Revisit by trying send_slack."
-
-If this session's karma shows evidence about an existing vikalpa, update it via `vikalpa_updates` using the vikalpa's `id` field (not its text):
-- `confirmed` — still holds, set a new `revisit_by_session`
-- `resolved` — evidence suggests it no longer holds. Include `evidence` explaining what you saw. The vikalpa is marked but not removed — deep reflect evaluates your evidence and makes the final call.
-
-Only reference vikalpas that exist in the `last_reflect.vikalpas` array. Updates referencing a non-existent ID are silently dropped.
 
 ### Checking tasks
 

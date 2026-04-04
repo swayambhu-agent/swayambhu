@@ -86,29 +86,9 @@ export async function executeReflect(K, state, step) {
     return;
   }
 
-  // Carry forward vikalpas from previous deep reflect, apply any updates
+  // Strip stale fields the LLM might still emit
+  const { vikalpa_updates, vikalpas: _v, ...cleanOutput } = output;
   const prevLastReflect = await K.kvGet("last_reflect");
-  let vikalpas = prevLastReflect?.vikalpas || [];
-  if (output.vikalpa_updates) {
-    const missed = [];
-    for (const update of output.vikalpa_updates) {
-      const existing = vikalpas.find(a => a.id === update.id);
-      if (!existing) {
-        missed.push(update);
-        continue;
-      }
-      if (update.status === "resolved") {
-        existing.status = "resolved";
-        if (update.evidence) existing.evidence = update.evidence;
-        existing.resolved_session = sessionId;
-      } else if (update.status === "confirmed") {
-        existing.revisit_by_session = update.revisit_by_session;
-      }
-    }
-    if (missed.length) {
-      await K.karmaRecord({ event: "vikalpa_updates_missed", missed });
-    }
-  }
 
   // Carry forward tasks, apply updates, append new tasks
   let tasks = prevLastReflect?.tasks || [];
@@ -140,8 +120,7 @@ export async function executeReflect(K, state, step) {
   }
 
   await K.kvWriteSafe("last_reflect", {
-    ...output,
-    vikalpas,
+    ...cleanOutput,
     tasks,
     session_id: sessionId,
   });
@@ -433,30 +412,22 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     timestamp: new Date().toISOString(),
   };
   if (output.sankalpas) reflectRecord.sankalpas = output.sankalpas;
-  if (output.vikalpas) reflectRecord.vikalpas = output.vikalpas;
   if (output.tasks) reflectRecord.tasks = output.tasks;
   await K.kvWriteSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 4. Only depth 1: write last_reflect and session_schedule
   if (depth === 1) {
-    // Track vikalpas/tasks dropped by deep reflect
+    // Track tasks dropped by deep reflect
     const prevLastReflect = await K.kvGet("last_reflect");
-    const prevVikalpas = prevLastReflect?.vikalpas || [];
     const prevTasks = prevLastReflect?.tasks || [];
-    const newVikalpaIds = new Set((output.vikalpas || []).map(v => v.id));
     const newTaskIds = new Set((output.tasks || []).map(t => t.id));
-    const droppedVikalpas = prevVikalpas.filter(v => v.id && !newVikalpaIds.has(v.id));
     const droppedTasks = prevTasks.filter(t => t.id && !newTaskIds.has(t.id));
-    if (droppedVikalpas.length) {
-      await K.karmaRecord({ event: "vikalpas_dropped", dropped: droppedVikalpas.map(v => ({ id: v.id, vikalpa: v.vikalpa })) });
-    }
     if (droppedTasks.length) {
       await K.karmaRecord({ event: "tasks_dropped", dropped: droppedTasks.map(t => ({ id: t.id, task: t.task, status: t.status })) });
     }
 
     await K.kvWriteSafe("last_reflect", {
       session_summary: output.reflection,
-      vikalpas: output.vikalpas || [],
       tasks: output.tasks || [],
       was_deep_reflect: true,
       depth,
