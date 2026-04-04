@@ -231,12 +231,6 @@ meaningful output, and the feedback loops are closing.
 - source_principles populated
 - Not stale — retired when superseded
 
-**Vikalpas** — Are assumptions being tested?
-- Pending vikalpas have revisit_by_session set
-- Expired vikalpas get revisited (not ignored)
-- Resolved vikalpas have evidence recorded
-- Not accumulating endlessly without resolution
-
 ### Operator Health Checks
 
 **A operator (act)** — Is planning working?
