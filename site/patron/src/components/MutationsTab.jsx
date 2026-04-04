@@ -1,109 +1,100 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../lib/api.js';
-import { JsonView } from './ui/JsonView.jsx';
+import { JsonTree } from './ui/JsonView.jsx';
 import { LoadError } from './ui/LoadError.jsx';
 
 export default function MutationsTab({ patronKey }) {
   const [staged, setStaged] = useState([]);
-  const [inflight, setInflight] = useState([]);
+  const [deploys, setDeploys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [detail, setDetail] = useState(null);
-  const [filter, setFilter] = useState('all');
 
-  const loadMutations = useCallback(() => {
+  const load = useCallback(() => {
     setLoading(true); setError(null);
     Promise.all([
-      api('/kv?prefix=mutation_staged:', patronKey),
-      api('/kv?prefix=mutation_rollback:', patronKey),
-    ]).then(([s, c]) => {
-      setStaged((s.keys || []).map(k => ({ ...k, status: 'staged' })));
-      setInflight((c.keys || []).map(k => ({ ...k, status: 'inflight' })));
+      api('/kv?prefix=code_staging:', patronKey),
+      api('/kv?prefix=deploy:version:', patronKey),
+    ]).then(([s, d]) => {
+      setStaged((s.keys || []).sort((a, b) => b.key.localeCompare(a.key)));
+      setDeploys((d.keys || []).sort((a, b) => b.key.localeCompare(a.key)));
       setLoading(false);
     }).catch(e => { setError(e.message); setLoading(false); });
   }, [patronKey]);
 
-  useEffect(() => { loadMutations(); }, [loadMutations]);
-
-  const all = useMemo(() => {
-    return [...staged, ...inflight].sort((a, b) => {
-      // Extract mutation ID for sorting
-      return b.key.localeCompare(a.key);
-    });
-  }, [staged, inflight]);
-
-  const filtered = filter === 'all' ? all : all.filter(m => m.status === filter);
+  useEffect(() => { load(); }, [load]);
 
   const loadDetail = async (key) => {
     if (expandedId === key) { setExpandedId(null); return; }
     setExpandedId(key);
     try {
       const d = await api(`/kv/${encodeURIComponent(key)}`, patronKey);
-      setDetail(d.value);
+      setDetail(d.value || d);
     } catch { setDetail('(error)'); }
   };
 
-  const STATUS_COLORS = {
-    staged: { bar: 'bg-yellow-500', text: 'text-yellow-400', label: 'Staged' },
-    inflight: { bar: 'bg-blue-500', text: 'text-blue-400', label: 'Inflight' },
-    promoted: { bar: 'bg-green-500', text: 'text-green-400', label: 'Promoted' },
-    rolled_back: { bar: 'bg-red-500', text: 'text-red-400', label: 'Rolled Back' },
-  };
-
-  if (loading) return <p className="text-gray-500 text-sm">Loading proposals...</p>;
-  if (error) return <LoadError error={error} onRetry={loadMutations} />;
+  if (loading) return <p className="text-gray-500 text-sm p-4">Loading code staging...</p>;
+  if (error) return <LoadError error={error} onRetry={load} />;
 
   return (
-    <div className="h-full overflow-y-auto scrollbar-thin">
-      <div className="flex gap-2 mb-4">
-        {['all', 'staged', 'inflight'].map(f => (
+    <div className="h-full overflow-y-auto scrollbar-thin p-4">
+      {/* Staged code changes */}
+      <h3 className="text-xs font-bold text-yellow-400 mb-2">
+        Staged ({staged.length})
+      </h3>
+      {staged.length === 0 && <p className="text-gray-600 text-xs mb-4">No pending code changes</p>}
+      {staged.map(s => (
+        <div key={s.key} className="mb-2">
           <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-3 py-1 rounded text-xs border transition ${
-              filter === f
-                ? 'border-accent text-accent bg-accent/10'
-                : 'border-border text-gray-500 hover:text-gray-300'
+            onClick={() => loadDetail(s.key)}
+            className={`w-full text-left px-3 py-2 rounded border text-xs transition ${
+              expandedId === s.key
+                ? 'bg-yellow-900/20 border-yellow-700 text-yellow-300'
+                : 'bg-bg-card border-border text-gray-400 hover:border-yellow-700'
             }`}
           >
-            {f.charAt(0).toUpperCase() + f.slice(1)}
-            <span className="ml-1 text-gray-600">
-              ({f === 'all' ? all.length : f === 'staged' ? staged.length : inflight.length})
-            </span>
+            <span className="inline-block w-2 h-2 rounded-full bg-yellow-500 mr-2"></span>
+            {s.key.replace('code_staging:', '')}
           </button>
-        ))}
-      </div>
-
-      <div className="space-y-2">
-        {filtered.length === 0 && <p className="text-gray-500 text-xs">No proposals found</p>}
-        {filtered.map(m => {
-          const sc = STATUS_COLORS[m.status] || STATUS_COLORS.staged;
-          return (
-            <div key={m.key}>
-              <button
-                onClick={() => loadDetail(m.key)}
-                className={`w-full text-left px-3 py-2 rounded border transition ${
-                  expandedId === m.key
-                    ? 'border-accent bg-accent/5'
-                    : 'border-border hover:border-gray-600 bg-bg-card'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <div className={`w-1.5 h-6 rounded-full ${sc.bar}`}></div>
-                  <span className="text-xs text-gray-300 flex-1 truncate">{m.key}</span>
-                  <span className={`text-xs ${sc.text}`}>{sc.label}</span>
-                </div>
-              </button>
-              {expandedId === m.key && detail && (
-                <div className="ml-6 mt-1 mb-2 bg-bg rounded p-3 text-xs max-h-80 overflow-y-auto scrollbar-thin fade-in">
-                  <JsonView data={detail} />
-                </div>
-              )}
+          {expandedId === s.key && detail && (
+            <div className="mt-1 ml-4 p-2 border border-border rounded bg-bg text-xs">
+              <JsonTree data={detail} defaultOpen={true} />
             </div>
-          );
-        })}
-      </div>
+          )}
+        </div>
+      ))}
+
+      {/* Deploy history */}
+      <h3 className="text-xs font-bold text-green-400 mt-6 mb-2">
+        Deploy History ({deploys.length})
+      </h3>
+      {deploys.length === 0 && <p className="text-gray-600 text-xs">No deployments yet</p>}
+      {deploys.map(d => (
+        <div key={d.key} className="mb-2">
+          <button
+            onClick={() => loadDetail(d.key)}
+            className={`w-full text-left px-3 py-2 rounded border text-xs transition ${
+              expandedId === d.key
+                ? 'bg-green-900/20 border-green-700 text-green-300'
+                : 'bg-bg-card border-border text-gray-400 hover:border-green-700'
+            }`}
+          >
+            <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-2"></span>
+            {d.key.replace('deploy:version:', '')}
+            {d.metadata?.deployed_at && (
+              <span className="text-gray-500 ml-2">
+                {new Date(d.metadata.deployed_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+          </button>
+          {expandedId === d.key && detail && (
+            <div className="mt-1 ml-4 p-2 border border-border rounded bg-bg text-xs">
+              <JsonTree data={detail} defaultOpen={false} />
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
