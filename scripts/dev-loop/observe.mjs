@@ -38,30 +38,31 @@ export function chooseStrategy({ probes, cycle, codeChanged }) {
 
 // ── Helpers ─────────────────────────────────────────────────
 
-async function readSessionCounter(kv) {
+async function getSessionIds(kv) {
   try {
-    const val = await kv.get("session_counter", "json");
-    return typeof val === "number" ? val : 0;
+    return (await kv.get("cache:session_ids", "json")) || [];
   } catch {
-    return 0;
+    return [];
   }
 }
 
-async function pollUntilIncrement(kv, beforeCount, timeoutMs = 600_000) {
+async function pollForNewSession(kv, beforeIds, timeoutMs = 600_000) {
   const deadline = Date.now() + timeoutMs;
   const interval = 10_000;
+  const beforeSet = new Set(beforeIds);
   while (Date.now() < deadline) {
-    const current = await readSessionCounter(kv);
-    if (detectCompletion(beforeCount, current)) {
-      console.log(`\n[OBSERVE] Session complete (counter: ${current})`);
-      return current;
+    const currentIds = await getSessionIds(kv);
+    const newId = currentIds.find(id => !beforeSet.has(id));
+    if (newId) {
+      console.log(`\n[OBSERVE] Session complete: ${newId}`);
+      return newId;
     }
     const elapsed = Math.round((Date.now() + timeoutMs - deadline) / 1000);
-    process.stdout.write(`\r[OBSERVE] Waiting for session... ${elapsed}s (counter: ${current})`);
+    process.stdout.write(`\r[OBSERVE] Waiting for act session... ${elapsed}s (${currentIds.length} sessions)`);
     await new Promise(r => setTimeout(r, interval));
   }
   throw new Error(
-    `Session did not complete within ${timeoutMs / 1000}s (counter stuck at ${beforeCount})`,
+    `No new act session within ${timeoutMs / 1000}s`,
   );
 }
 
@@ -104,12 +105,12 @@ export async function runObserve({
       }
     }
 
-    // Read counter via shared Miniflare KV (one instance, no child processes)
+    // Read session IDs via shared Miniflare KV (one instance, no lock conflicts)
     const kv = await getKV();
-    const counterBefore = await readSessionCounter(kv);
+    const beforeIds = await getSessionIds(kv);
 
     // Trigger the session — curl returns immediately, we poll for completion
-    console.log(`[OBSERVE] Triggering session (counter before: ${counterBefore})`);
+    console.log(`[OBSERVE] Triggering session (${beforeIds.length} sessions before)`);
     execSync(strategy.trigger, {
       encoding: "utf8",
       timeout: 30_000,
@@ -117,25 +118,18 @@ export async function runObserve({
       stdio: "pipe",
     });
 
-    // Poll until session_counter increments (10 min timeout)
-    const counterAfter = await pollUntilIncrement(kv, counterBefore);
+    // Poll until a new session ID appears in cache:session_ids (10 min timeout)
+    // This only fires for real act sessions, not schedule-skipped ticks
+    const newSessionId = await pollForNewSession(kv, beforeIds);
     await dispose();
 
     // Collect analysis data
     const analysis = runAnalysis();
 
-    // Derive latest session id from analysis if available
-    const latestSessionId =
-      analysis?.sessions?.[0]?.id ||
-      analysis?.sessions?.[0]?.session_id ||
-      null;
-
     const observation = {
       timestamp,
       strategy: strategy.type,
-      session_counter_before: counterBefore,
-      session_counter_after: counterAfter,
-      latest_session_id: latestSessionId,
+      latest_session_id: newSessionId,
       analysis,
     };
 
