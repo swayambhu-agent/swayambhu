@@ -16,7 +16,7 @@ work for both SMTP and IMAP.
 
 ## Solution
 
-A stateless HTTP service on Akash with two endpoints:
+A stateless HTTP service on Akash with three endpoints + health check:
 
 ```
 Worker (CF)                           Akash
@@ -174,18 +174,23 @@ export const meta = {
   timeout_ms: 60000,
 };
 
-export async function sendMessage({ to, subject, body, inReplyTo, secrets, fetch, config }) {
-  // POST to {relay_url}/send-email with CF Access + bearer auth
-}
+// All methods use object-style signatures with { secrets, fetch, config }
 
-export async function checkEmail({ maxResults, markRead, secrets, fetch, config }) {
+export async function sendMessage({ to, subject, body, inReplyTo, secrets, fetch, config })
+  // POST to {relay_url}/send-email
+  // Returns: { messageId }
+
+export async function checkEmail({ maxResults, markRead, secrets, fetch, config })
   // POST to {relay_url}/check-email
-}
+  // Returns: { emails: [...], count }
 
-export async function getMessage({ id, secrets, fetch, config }) {
+export async function getMessage({ id, secrets, fetch, config })
   // POST to {relay_url}/get-message
-}
+  // Returns: { id, from, to, subject, date, body, messageId }
 ```
+
+All three follow the same pattern: object arg with `secrets`, `fetch`,
+`config` injected by the kernel. No positional args, no token param.
 
 All three follow the `providers/compute.js` pattern: CF Access
 headers + bearer token, injected `secrets` object, `config` from
@@ -203,8 +208,11 @@ defaults.
 **`tools/check_email.js`:**
 - Change `meta.provider` from `"gmail"` to `"email-relay"`
 - Change `meta.secrets` — remove Gmail OAuth creds
-- In `execute()`: call `provider.checkEmail()` instead of
-  `provider.listUnread()` + `provider.getMessage()`
+- In `execute()`: call `provider.checkEmail({ maxResults, markRead,
+  secrets, fetch, config })` which returns `{ emails, count }`.
+  This replaces the current `listUnread()` → `getMessage()` →
+  `markAsRead()` three-step flow with a single bulk call. The
+  gateway handles mark-read atomically after successful fetch.
 
 ### Config
 
