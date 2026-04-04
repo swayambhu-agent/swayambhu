@@ -786,6 +786,7 @@ async function dispatchDr(K, defaults) {
         prompt,
         context_keys: [
           "pattern:*", "experience:*", "desire:*", "tactic:*",
+          "action:*",
           "principle:*", "config:defaults", "config:tool_registry",
           "kernel:source_map",
           "reflect:1:*", "last_reflect",
