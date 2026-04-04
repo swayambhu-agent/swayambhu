@@ -185,6 +185,142 @@ Track qualitative evidence over time of the agent becoming:
 | Autonomy | Takes a project and runs with it independently |
 | Self-improvement | Uses downtime to improve its own capabilities |
 
+## Cognitive Architecture Audit
+
+The most important function of the ANALYZE stage. Every cycle, the dev
+loop evaluates whether the cognitive architecture is working as designed
+— not just whether sessions run without errors, but whether the
+cognitive entities are well-formed, the operators are producing
+meaningful output, and the feedback loops are closing.
+
+### Entity Health Checks
+
+**Desires** — Are they actually desires?
+- Direction is approach-only (never avoidance: "avoid X", "stop Y")
+- First-person target state ("I have X", "my work advances Y")
+- NLI-evaluable against outcomes (not vague: "be better")
+- Actionable through own effort (not external: "patron notices me")
+- Grounded in at least one principle (source_principles populated)
+- Not redundant with an existing principle
+- Evolving over time — fulfilled desires should spawn broader ones,
+  not just sit there unchanged
+
+**Patterns** — Are they actually impressions?
+- Describe recurring behavior, not temporal state ("Slack is down
+  right now" is a circumstance, not a pattern)
+- Strength 0-1 reflects confirmation rate (not stuck at 0 or 1)
+- Strength trajectory makes sense (confirmed patterns rise, violated
+  ones decay via EMA)
+- Text is causal, not correlational ("APIs timeout under load" not
+  "API was slow today")
+- Low-strength patterns actually get deleted (threshold 0.05 working)
+- No duplicate patterns saying the same thing differently
+
+**Experiences** — Are they salient and well-formed?
+- Rich narrative explaining what happened and why it mattered
+  (not "things went okay")
+- Surprise and salience scores present and justified
+- Outcome matches actual tool results (eval pipeline not hallucinating)
+- Embedding present (inference service working)
+- Not recording low-signal noise (salience threshold effective)
+- Not missing high-signal events (threshold not too aggressive)
+
+**Tactics** — Are they situation-specific rules?
+- Contextual ("when X, do Y"), not universal (that's a principle)
+- Grounded in patterns from actual experiences
+- source_principles populated
+- Not stale — retired when superseded
+
+**Vikalpas** — Are assumptions being tested?
+- Pending vikalpas have revisit_by_session set
+- Expired vikalpas get revisited (not ignored)
+- Resolved vikalpas have evidence recorded
+- Not accumulating endlessly without resolution
+
+### Operator Health Checks
+
+**A operator (act)** — Is planning working?
+- Plans are grounded in active desires (not random actions)
+- Plans reference relevant patterns (pattern-informed decisions)
+- Plans are completable within session budget
+- `no_action` returned when genuinely nothing to do (not as escape)
+- Success criteria are specific and observable
+
+**S operator (deep-reflect)** — Are patterns evolving?
+- Creates 1-3 new patterns per DR run (not zero, not dozens)
+- Refines pattern text when understanding improves
+- Deletes patterns that are mostly violated
+- Consolidates near-duplicate patterns
+- Doesn't create temporal state as patterns
+
+**D operator (deep-reflect)** — Are desires magnifying?
+- Creates new desires when old ones are fulfilled (expansion)
+- Doesn't terminate fulfilled desires (magnification, not completion)
+- New desires are broader/deeper than predecessors
+- Negative experiences produce approach inversions, not avoidance
+- Principles shape direction (care → "for others' benefit")
+
+**T operator (deep-reflect)** — Are tactics useful?
+- Created from repeated patterns in experiences
+- Retired when superseded or stale
+- Actually influence plan phase behavior
+
+### Feedback Loop Health
+
+**Eval pipeline** — Is the measurement system working?
+- Tier 1 (embeddings) filters to ~30% of patterns
+- Tier 2 (NLI) resolves ~70% of remaining
+- Tier 3 (LLM) handles <5% (if higher, patterns poorly worded
+  or NLI model inadequate)
+- Degraded fallback rare (<1%)
+- Surprise scores correlate with actual surprisingness
+- Affinity vectors non-empty when desires exist
+
+**EMA strength updates** — Is learning happening?
+- Pattern strengths move in expected direction after
+  confirmation/violation
+- α_ema parameter (0.3) producing reasonable adaptation speed
+- Not oscillating wildly (pattern text too vague?)
+- Not frozen (patterns never tested? embedding relevance issue?)
+
+**Experience → DR → Desire/Pattern loop** — Is the cycle closing?
+- Experiences actually get read by deep-reflect
+- DR output actually changes patterns and desires
+- Changed patterns actually influence next session's planning
+- Changed desires actually precipitate different actions
+
+**Cold start** — Does bootstrapping work?
+- Empty patterns → σ=1 (maximum surprise)
+- High salience → experience recorded
+- DR triggered → initial patterns and desires created
+- Second session plans from newly created desires
+
+### Architectural Boundary Checks
+
+- **Kernel purity** — kernel.js contains zero cognitive concepts
+  (no desires, patterns, actions, reflections, sessions)
+- **Communication boundary** — act/plan never references send_slack,
+  send_whatsapp, send_email. Communication flows through events.
+- **KV tier discipline** — agent writes stay in agent tier,
+  protected writes use kvWriteGated with privilege context,
+  immutable keys never written
+- **Prompt voice** — prompts use the system's own framing:
+  "impressions" not "encodings", "gaps" not "goals",
+  "magnification through principles" not "evolution"
+
+### What to Do With Findings
+
+Each finding from the cognitive audit is classified:
+
+| Finding type | Example | Action |
+|-------------|---------|--------|
+| Malformed entity | Avoidance desire, temporal pattern | Probe: can DR fix this? If not, why? |
+| Silent operator | S creates 0 patterns despite rich experiences | Root constraint: prompt issue? Context too small? |
+| Broken feedback | Strength never updates | Root constraint: eval pipeline, embedding, or config |
+| Boundary violation | Cognitive logic in kernel | Direct fix (architectural, may need approval) |
+| Prompt drift | "Goals" instead of "gaps" in output | Prompt fix (medium significance) |
+| Healthy operation | Desires expanding, patterns confirming | Record as positive evidence |
+
 ## State Model
 
 ```
