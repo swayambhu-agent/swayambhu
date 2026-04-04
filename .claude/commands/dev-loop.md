@@ -223,6 +223,41 @@ After applying any change:
 2. If fail: `git revert HEAD --no-edit`
 3. If pass: trigger one more session to verify the fix works in practice
 
+## Overnight Log
+
+Maintain a running log at `.swayambhu/dev-loop/overnight-log.md` that
+accumulates across cycles. Append to it after each cycle — never
+overwrite. This is what Swami reads in the morning.
+
+Format:
+```markdown
+# Dev Loop Overnight Log
+
+## Cycle N — {timestamp}
+**Session:** {id} | **Duration:** {Xs} | **Cost:** ${X}
+
+### Findings
+- [severity] locus: summary
+- ...
+
+### Actions Taken
+- Applied: {description} (commit {sha})
+- Escalated: {description} (awaiting approval)
+- Probing: {description} (N sessions observed)
+
+### Healthy Signals
+- ...
+
+---
+```
+
+If no findings in a cycle, just log:
+```markdown
+## Cycle N — {timestamp}
+Clean session. No issues found.
+---
+```
+
 ## End of Cycle: Slack Summary
 
 After each cycle, send a Slack summary to Swami:
