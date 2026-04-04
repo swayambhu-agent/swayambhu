@@ -322,6 +322,16 @@ carefully reflect and think through proposals from first principles. Push
 back if you genuinely think a different approach is better, and explain why.
 Agreeing without thinking leads to worse outcomes than honest disagreement.
 
+**Adversarial review with Codex is mandatory for substantial work.** Any
+spec, plan, or implementation that touches architecture, kernel, prompts,
+cognitive entities, or multi-file changes MUST go through adversarial
+review with Codex (`/codex challenge` or `codex exec`) before being
+finalized or applied. Codex reads the actual source code and catches
+wrong assumptions, broken contracts, and misdiagnoses that reasoning
+alone misses. This has caught critical errors in every dev loop cycle
+so far. Do not skip this step — if you think the work is too obvious
+to need review, that's exactly when you need it most.
+
 **Comment the "why", not the "what".** Use comments to document high-level
 motivation where it isn't obvious from the code itself — why a design
 choice was made, what would go wrong without it, what constraint it
