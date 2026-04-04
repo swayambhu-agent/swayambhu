@@ -1,0 +1,59 @@
+{
+  "quality_lenses": [
+    {
+      "name": "elegance",
+      "question": "Is the solution clean and natural, or forced/hacky?"
+    },
+    {
+      "name": "generality",
+      "question": "Does it solve the class of problem, not just this instance?"
+    },
+    {
+      "name": "robustness",
+      "question": "Does it handle edge cases and degrade gracefully?"
+    },
+    {
+      "name": "simplicity",
+      "question": "Is it the simplest thing that could work?"
+    },
+    {
+      "name": "modularity",
+      "question": "Are concerns properly separated?"
+    }
+  ],
+  "design_principles": [
+    {
+      "name": "kernel_userspace_boundary",
+      "question": "Is cognitive policy leaking into infrastructure, or vice versa?"
+    },
+    {
+      "name": "self_improving_agent",
+      "question": "Could the agent have caught and fixed this itself? What's preventing it?"
+    },
+    {
+      "name": "communication_boundary",
+      "question": "Does act/plan stay away from comms tools? Communication flows through events."
+    },
+    {
+      "name": "kv_tier_discipline",
+      "question": "Are write permissions correct per tier?"
+    },
+    {
+      "name": "prompt_framing_voice",
+      "question": "Does it use the system's own voice — impressions, gaps, magnification?"
+    },
+    {
+      "name": "life_process_quality",
+      "question": "Do the rules allow complex behavior to emerge from simple foundations? Generative, not prescriptive?"
+    }
+  ],
+  "evidence_thresholds": {
+    "local": "moderate",
+    "module": "strong",
+    "system": "strong_plus_challenge"
+  },
+  "max_challenge_rounds": 2,
+  "max_probe_sessions": 3,
+  "stage_failure_limit": 3,
+  "daily_cash_budget": 5.00
+}
