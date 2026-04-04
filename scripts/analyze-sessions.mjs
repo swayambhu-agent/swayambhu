@@ -110,6 +110,7 @@ if (source !== 'dashboard') {
 const [
   karmaKeys, desires, patterns, experiences, actions,
   drState, defaults, lastReflect, reflections, jobs,
+  tactics, promptAct, promptReflect, promptPlan, promptDeepReflect,
 ] = await Promise.all([
   listAll('karma:'),
   getAll('desire:'),
@@ -121,6 +122,11 @@ const [
   get('last_reflect'),
   getAll('reflect:1:'),
   getAll('job:'),
+  getAll('tactic:'),
+  get('prompt:act'),
+  get('prompt:reflect'),
+  get('prompt:plan'),
+  get('prompt:deep_reflect'),
 ]);
 
 // Load karma records (last N)
@@ -159,11 +165,18 @@ const output = {
   },
   desires,
   patterns,
+  tactics,
   experiences,
   actions,
   reflections,
   jobs,
   last_reflect: lastReflect,
+  prompts: {
+    act: promptAct,
+    reflect: promptReflect,
+    plan: promptPlan,
+    deep_reflect: promptDeepReflect,
+  },
   karma,
 };
 
