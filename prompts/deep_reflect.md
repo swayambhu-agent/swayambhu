@@ -64,6 +64,11 @@ Respond with ONLY a JSON object:
   "kv_operations": [
     // samskara and desire changes only
   ],
+  "code_stage_requests": [
+    // Optional: code changes for tools, hooks, providers, channels
+    // { "target": "tool:foo:code", "code": "export function execute..." }
+  ],
+  "deploy": false,
   "reflection": "what changed and why",
   "note_to_future_self": "what to watch in the next deep-reflect",
   "next_reflect": {
