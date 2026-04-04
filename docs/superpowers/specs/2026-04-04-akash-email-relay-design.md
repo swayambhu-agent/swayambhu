@@ -212,7 +212,9 @@ defaults.
   secrets, fetch, config })` which returns `{ emails, count }`.
   This replaces the current `listUnread()` → `getMessage()` →
   `markAsRead()` three-step flow with a single bulk call. The
-  gateway handles mark-read atomically after successful fetch.
+  gateway marks each message read after successfully parsing and
+  including it in the response. On partial failure, already-parsed
+  messages are still returned and marked; unparsed ones stay unread.
 
 ### Config
 
