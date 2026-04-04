@@ -2,12 +2,16 @@
 // Pure functions (detectCompletion, chooseStrategy) are unit-testable.
 // runObserve orchestrates shell commands and is integration-tested only.
 
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 import { join } from "path";
 import { saveRun } from "./state.mjs";
-import { getKV, dispose } from "../shared.mjs";
 
 const ROOT = join(import.meta.dirname, "../..");
+const KERNEL_URL = process.env.SWAYAMBHU_KERNEL_URL || "http://localhost:8787";
+const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || "http://localhost:8790";
+const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test";
+const OBSERVE_TIMEOUT_MS = 600_000;
+const POLL_INTERVAL_MS = 10_000;
 
 // ── Pure functions ──────────────────────────────────────────
 
@@ -16,8 +20,8 @@ export function detectCompletion(beforeCount, afterCount) {
 }
 
 export function chooseStrategy({ probes, cycle, codeChanged }) {
-  const clearScheduleCmd = "curl -sf -X POST http://localhost:8787/__clear-schedule";
-  const triggerCmd = "curl -sf http://localhost:8787/__scheduled";
+  const clearScheduleCmd = `curl -sf -X POST ${KERNEL_URL}/__clear-schedule`;
+  const triggerUrl = `${KERNEL_URL}/__scheduled`;
 
   if (cycle === 0 || codeChanged) {
     return {
@@ -29,7 +33,7 @@ export function chooseStrategy({ probes, cycle, codeChanged }) {
         `node ${join(ROOT, "scripts/seed-local-kv.mjs")}`,
         clearScheduleCmd,
       ],
-      trigger: triggerCmd,
+      trigger: triggerUrl,
     };
   }
   return {
@@ -37,50 +41,111 @@ export function chooseStrategy({ probes, cycle, codeChanged }) {
     // Accumulate keeps existing state, but still needs to bypass the live
     // schedule gate so the dev loop can force a session on demand.
     setup: [clearScheduleCmd],
-    trigger: triggerCmd,
+    trigger: triggerUrl,
   };
 }
 
 // ── Helpers ─────────────────────────────────────────────────
 
-async function getSessionIds(kv) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJson(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs || 30_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return (await kv.get("cache:session_ids", "json")) || [];
-  } catch {
-    return [];
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        "X-Patron-Key": DASHBOARD_KEY,
+        ...(options.headers || {}),
+      },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} from ${url}: ${body || res.statusText}`);
+    }
+
+    return res.json();
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-async function pollForNewSession(kv, beforeIds, timeoutMs = 600_000) {
+async function readSessionIds() {
+  const keys = encodeURIComponent("cache:session_ids");
+  const data = await fetchJson(`${DASHBOARD_URL}/kv/multi?keys=${keys}`);
+  return Array.isArray(data["cache:session_ids"]) ? data["cache:session_ids"] : [];
+}
+
+async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
-  const interval = 10_000;
   const beforeSet = new Set(beforeIds);
+
   while (Date.now() < deadline) {
-    const currentIds = await getSessionIds(kv);
+    const currentIds = await readSessionIds();
     const newId = currentIds.find(id => !beforeSet.has(id));
     if (newId) {
-      console.log(`\n[OBSERVE] Session complete: ${newId}`);
+      process.stdout.write("\n");
+      console.log(`[OBSERVE] Session complete: ${newId}`);
       return newId;
     }
-    const elapsed = Math.round((Date.now() + timeoutMs - deadline) / 1000);
-    process.stdout.write(`\r[OBSERVE] Waiting for act session... ${elapsed}s (${currentIds.length} sessions)`);
-    await new Promise(r => setTimeout(r, interval));
+    const elapsedSec = Math.round((timeoutMs - (deadline - Date.now())) / 1000);
+    const remainingSec = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+    const latest = currentIds.at(-1) || "none";
+    process.stdout.write(
+      `\r[OBSERVE] Waiting for act session... ${elapsedSec}s elapsed, ${remainingSec}s left, ` +
+      `${currentIds.length} sessions, latest=${latest}`,
+    );
+    await sleep(POLL_INTERVAL_MS);
   }
+
+  process.stdout.write("\n");
   throw new Error(
-    `No new act session within ${timeoutMs / 1000}s`,
+    `No new act session within ${timeoutMs / 1000}s while polling dashboard KV`,
   );
 }
 
 function runAnalysis() {
   const out = execSync(
-    `node ${join(ROOT, "scripts/analyze-sessions.mjs")} --last 1`,
-    { encoding: "utf8", timeout: 60_000 },
+    `node ${join(ROOT, "scripts/analyze-sessions.mjs")} --last 1 --source dashboard`,
+    {
+      encoding: "utf8",
+      timeout: 60_000,
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        SWAYAMBHU_DASHBOARD_URL: DASHBOARD_URL,
+        SWAYAMBHU_PATRON_KEY: DASHBOARD_KEY,
+      },
+    },
   ).trim();
   try {
     return JSON.parse(out);
   } catch {
     return { raw: out };
   }
+}
+
+async function assertDashboardAvailable() {
+  await fetchJson(`${DASHBOARD_URL}/health`, { timeoutMs: 10_000 });
+}
+
+function triggerScheduled(url) {
+  const child = spawn(process.execPath, [
+    "--input-type=module",
+    "-e",
+    `await fetch(${JSON.stringify(url)});`,
+  ], {
+    cwd: ROOT,
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -110,26 +175,17 @@ export async function runObserve({
       }
     }
 
-    // Read session IDs via shared Miniflare KV (one instance, no lock conflicts)
-    const kv = await getKV();
-    const beforeIds = await getSessionIds(kv);
+    await assertDashboardAvailable();
+    const beforeIds = await readSessionIds();
 
-    // Trigger the session in the background — /__scheduled is synchronous
-    // and blocks until the full tick completes (minutes). Fire and forget,
-    // then poll cache:session_ids for the new entry.
+    // /__scheduled is synchronous and may run for several minutes.
+    // Fire it in a detached child so observe can poll independently.
     console.log(`[OBSERVE] Triggering session (${beforeIds.length} sessions before)`);
-    const { spawn } = await import("child_process");
-    const triggerProc = spawn("sh", ["-c", strategy.trigger], {
-      cwd: ROOT,
-      stdio: "ignore",
-      detached: true,
-    });
-    triggerProc.unref();
+    triggerScheduled(strategy.trigger);
 
-    // Poll until a new session ID appears in cache:session_ids (10 min timeout)
-    // This only fires for real act sessions, not schedule-skipped ticks
-    const newSessionId = await pollForNewSession(kv, beforeIds);
-    await dispose();
+    // Poll until a new session ID appears in cache:session_ids (10 min timeout).
+    // This only moves when the act lifecycle actually starts.
+    const newSessionId = await pollForNewSession(beforeIds);
 
     // Collect analysis data
     const analysis = runAnalysis();

@@ -32,8 +32,7 @@ describe("chooseStrategy", () => {
     expect(result.setup).toEqual([
       "curl -sf -X POST http://localhost:8787/__clear-schedule",
     ]);
-    expect(result.trigger).toContain("curl");
-    expect(result.trigger).toContain("__scheduled");
+    expect(result.trigger).toBe("http://localhost:8787/__scheduled");
   });
 
   it("chooses cold_start on cycle 0", () => {
@@ -47,7 +46,7 @@ describe("chooseStrategy", () => {
     expect(result.setup).toContain(
       "curl -sf -X POST http://localhost:8787/__clear-schedule",
     );
-    expect(result.trigger).toContain("curl");
+    expect(result.trigger).toBe("http://localhost:8787/__scheduled");
   });
 
   it("chooses cold_start when codeChanged", () => {

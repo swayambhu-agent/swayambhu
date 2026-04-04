@@ -4,14 +4,57 @@
 // Outputs structured JSON to stdout.
 
 import { getKV, dispose } from './shared.mjs';
-
 const lastN = process.argv.includes('--last')
   ? parseInt(process.argv[process.argv.indexOf('--last') + 1], 10) || 5
   : 999;
+const source = process.argv.includes('--source')
+  ? process.argv[process.argv.indexOf('--source') + 1]
+  : 'kv';
+const dashboardUrl = process.env.SWAYAMBHU_DASHBOARD_URL || 'http://localhost:8790';
+const dashboardKey = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || 'test';
 
-const kv = await getKV();
+let kv = null;
+
+function chunk(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
+async function fetchJson(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs || 30_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        'X-Patron-Key': dashboardKey,
+        ...(options.headers || {}),
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status} from ${url}: ${body || res.statusText}`);
+    }
+    return res.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function listAll(prefix) {
+  if (source === 'dashboard') {
+    const data = await fetchJson(
+      `${dashboardUrl}/kv?prefix=${encodeURIComponent(prefix)}`,
+    );
+    return (data.keys || []).map((entry) => ({
+      name: entry.key,
+      metadata: entry.metadata,
+    }));
+  }
+
   const keys = [];
   let cursor;
   do {
@@ -25,6 +68,18 @@ async function listAll(prefix) {
 async function getAll(prefix) {
   const keys = await listAll(prefix);
   const results = {};
+  if (keys.length === 0) return results;
+
+  if (source === 'dashboard') {
+    for (const batch of chunk(keys.map((k) => k.name), 50)) {
+      const data = await fetchJson(
+        `${dashboardUrl}/kv/multi?keys=${batch.map(encodeURIComponent).join(',')}`,
+      );
+      Object.assign(results, data);
+    }
+    return results;
+  }
+
   for (const k of keys) {
     try {
       results[k.name] = await kv.get(k.name, 'json');
@@ -36,8 +91,19 @@ async function getAll(prefix) {
 }
 
 async function get(key) {
+  if (source === 'dashboard') {
+    const data = await fetchJson(
+      `${dashboardUrl}/kv/multi?keys=${encodeURIComponent(key)}`,
+    );
+    return data[key];
+  }
+
   try { return await kv.get(key, 'json'); }
   catch { return await kv.get(key, 'text'); }
+}
+
+if (source !== 'dashboard') {
+  kv = await getKV();
 }
 
 // Gather all data
@@ -64,7 +130,7 @@ const sortedKarmaKeys = karmaKeys
 
 const karma = {};
 for (const k of sortedKarmaKeys) {
-  karma[k.name] = await kv.get(k.name, 'json');
+  karma[k.name] = await get(k.name);
 }
 
 // Session schedule
@@ -102,4 +168,6 @@ const output = {
 };
 
 console.log(JSON.stringify(output, null, 2));
-await dispose();
+if (kv) {
+  await dispose();
+}
