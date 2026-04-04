@@ -141,7 +141,7 @@ async function runCycle(state) {
   // ── BUILD CONTEXT ──
   // Assemble full context package for CC deep analysis
   if (observation && classification) {
-    const context = buildContextFromAnalysis({
+    const context = await buildContextFromAnalysis({
       analysis: observation.analysis,
       sessionId: observation.latest_session_id,
       cycle: state.cycle,
