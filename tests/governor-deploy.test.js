@@ -390,3 +390,81 @@ describe("snapshotCanonicalCode", () => {
     expect(snapshot["tool:new:code"]).toBeNull();
   });
 });
+
+// ── 7. Full DR → stage → deploy flow ──────────────────────────
+
+describe("full DR → stage → deploy flow", () => {
+  it("staged code matching execution_id gets applied to canonical keys", async () => {
+    const kv = makeKVStore({
+      "tool:kv_query:code": "// original",
+      "tool:kv_query:meta": JSON.stringify({ description: "Read KV" }),
+      "code_staging:tool:kv_query:code": JSON.stringify({
+        code: "// updated by DR",
+        staged_at: new Date().toISOString(),
+        execution_id: "x_test",
+      }),
+    });
+
+    const applied = await applyStagedCode(kv, "x_test");
+    expect(applied).toEqual(["tool:kv_query:code"]);
+    expect(kv._store.get("tool:kv_query:code")).toBe("// updated by DR");
+    expect(kv._store.has("code_staging:tool:kv_query:code")).toBe(false);
+  });
+
+  it("snapshot preserves canonical code before apply", async () => {
+    const kv = makeKVStore({
+      "tool:kv_query:code": "// original code to preserve",
+    });
+
+    await snapshotCanonicalCode(kv, ["tool:kv_query:code"], "v_test");
+    const snapshot = JSON.parse(kv._store.get("deploy:snapshot:v_test"));
+    expect(snapshot["tool:kv_query:code"]).toBe("// original code to preserve");
+  });
+
+  it("end-to-end: snapshot → apply → canonical updated, staging cleaned", async () => {
+    // Simulates what performDeploy does: snapshot first, then apply
+    const kv = makeKVStore({
+      "tool:kv_query:code": "// v1 original",
+      "tool:web_fetch:code": "// v1 fetch",
+      "code_staging:tool:kv_query:code": JSON.stringify({
+        code: "// v2 from deep reflect",
+        staged_at: new Date().toISOString(),
+        execution_id: "dr_session_42",
+      }),
+      "code_staging:tool:web_fetch:code": JSON.stringify({
+        code: "// v2 fetch from deep reflect",
+        staged_at: new Date().toISOString(),
+        execution_id: "dr_session_42",
+      }),
+    });
+
+    // Step 1: snapshot canonical state before applying
+    const targetKeys = ["tool:kv_query:code", "tool:web_fetch:code"];
+    await snapshotCanonicalCode(kv, targetKeys, "v_deploy_1");
+
+    // Verify snapshot captured original code
+    const snapshot = JSON.parse(kv._store.get("deploy:snapshot:v_deploy_1"));
+    expect(snapshot["tool:kv_query:code"]).toBe("// v1 original");
+    expect(snapshot["tool:web_fetch:code"]).toBe("// v1 fetch");
+
+    // Step 2: apply staged code
+    const changed = await applyStagedCode(kv, "dr_session_42");
+
+    // All staged keys applied
+    expect(changed).toHaveLength(2);
+    expect(changed).toContain("tool:kv_query:code");
+    expect(changed).toContain("tool:web_fetch:code");
+
+    // Canonical keys updated
+    expect(kv._store.get("tool:kv_query:code")).toBe("// v2 from deep reflect");
+    expect(kv._store.get("tool:web_fetch:code")).toBe("// v2 fetch from deep reflect");
+
+    // Staging keys cleaned up
+    expect(kv._store.has("code_staging:tool:kv_query:code")).toBe(false);
+    expect(kv._store.has("code_staging:tool:web_fetch:code")).toBe(false);
+
+    // Snapshot still intact for rollback
+    const postSnapshot = JSON.parse(kv._store.get("deploy:snapshot:v_deploy_1"));
+    expect(postSnapshot["tool:kv_query:code"]).toBe("// v1 original");
+  });
+});
