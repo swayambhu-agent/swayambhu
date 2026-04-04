@@ -8,13 +8,17 @@ export const meta = {
   timeout_ms: 60000,
 };
 
-function buildHeaders(secrets) {
-  return {
+function buildHeaders(secrets, baseUrl) {
+  const headers = {
     "Content-Type": "application/json",
-    "CF-Access-Client-Id": secrets.CF_ACCESS_CLIENT_ID,
-    "CF-Access-Client-Secret": secrets.CF_ACCESS_CLIENT_SECRET,
     "Authorization": `Bearer ${secrets.EMAIL_RELAY_SECRET}`,
   };
+  // CF Access headers only needed when going through the tunnel (production)
+  if (baseUrl && !baseUrl.includes("localhost")) {
+    headers["CF-Access-Client-Id"] = secrets.CF_ACCESS_CLIENT_ID;
+    headers["CF-Access-Client-Secret"] = secrets.CF_ACCESS_CLIENT_SECRET;
+  }
+  return headers;
 }
 
 async function relayCall(endpoint, body, { secrets, fetch, config }) {
@@ -22,7 +26,7 @@ async function relayCall(endpoint, body, { secrets, fetch, config }) {
 
   const resp = await fetch(`${baseUrl}${endpoint}`, {
     method: "POST",
-    headers: buildHeaders(secrets),
+    headers: buildHeaders(secrets, baseUrl),
     body: JSON.stringify(body),
   });
 
