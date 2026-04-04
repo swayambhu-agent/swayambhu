@@ -29,8 +29,8 @@ describe("chooseStrategy", () => {
       codeChanged: false,
     });
     expect(result.type).toBe("accumulate");
-    expect(result.cmd).toContain("curl");
-    expect(result.cmd).toContain("/__scheduled");
+    expect(result.setup).toBeNull();
+    expect(result.trigger).toContain("curl");
   });
 
   it("chooses cold_start on cycle 0", () => {
@@ -40,9 +40,10 @@ describe("chooseStrategy", () => {
       codeChanged: false,
     });
     expect(result.type).toBe("cold_start");
-    expect(result.cmd).toContain("start.sh");
-    expect(result.cmd).toContain("--reset-all-state");
-    expect(result.cmd).toContain("--trigger");
+    expect(result.setup).toContain("start.sh");
+    expect(result.setup).toContain("--reset-all-state");
+    expect(result.setup).not.toContain("--trigger");
+    expect(result.trigger).toContain("curl");
   });
 
   it("chooses cold_start when codeChanged", () => {
@@ -52,6 +53,6 @@ describe("chooseStrategy", () => {
       codeChanged: true,
     });
     expect(result.type).toBe("cold_start");
-    expect(result.cmd).toContain("start.sh");
+    expect(result.setup).toContain("start.sh");
   });
 });

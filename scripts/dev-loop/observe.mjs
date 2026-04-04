@@ -18,12 +18,16 @@ export function chooseStrategy({ probes, cycle, codeChanged }) {
   if (cycle === 0 || codeChanged) {
     return {
       type: "cold_start",
-      cmd: `bash ${join(ROOT, "scripts/start.sh")} --reset-all-state --trigger --yes`,
+      // Start services WITHOUT --trigger. We trigger separately via curl
+      // so we can poll session_counter instead of blocking.
+      setup: `bash ${join(ROOT, "scripts/start.sh")} --reset-all-state --yes`,
+      trigger: "curl -s http://localhost:8787/__scheduled",
     };
   }
   return {
     type: "accumulate",
-    cmd: "curl -s http://localhost:8787/__scheduled",
+    setup: null,
+    trigger: "curl -s http://localhost:8787/__scheduled",
   };
 }
 
@@ -78,12 +82,24 @@ export async function runObserve({
 }) {
   try {
     const strategy = chooseStrategy({ probes, cycle, codeChanged });
+
+    // Setup step (cold_start only): seed KV + start services
+    if (strategy.setup) {
+      console.log(`[OBSERVE] Running setup: ${strategy.type}`);
+      execSync(strategy.setup, {
+        encoding: "utf8",
+        timeout: 300_000,
+        cwd: ROOT,
+        stdio: "inherit",
+      });
+    }
+
     const counterBefore = readSessionCounter();
 
-    // Trigger the session
-    execSync(strategy.cmd, {
+    // Trigger the session — curl returns immediately, we poll for completion
+    execSync(strategy.trigger, {
       encoding: "utf8",
-      timeout: 180_000,
+      timeout: 30_000,
       cwd: ROOT,
       stdio: "pipe",
     });

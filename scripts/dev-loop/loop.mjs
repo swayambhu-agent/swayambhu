@@ -11,7 +11,7 @@ import { initState, loadState, saveState, listProbes, loadQueue, saveRun } from 
 import { runObserve } from './observe.mjs';
 import { runClassify } from './classify.mjs';
 import { runVerify } from './verify.mjs';
-import { checkSlackReplies, checkEmailReplies, moveQueue } from './comms.mjs';
+import { checkSlackReplies, checkEmailReplies } from './comms.mjs';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -96,7 +96,7 @@ async function runCycle(state) {
         baseDir: STATE_DIR,
         cycle: state.cycle,
         probes,
-        codeChanged: COLD_START && state.cycle === 1,
+        codeChanged: COLD_START && state.cycle <= 1,
         timestamp,
       });
       if (!result.success) {
@@ -201,6 +201,14 @@ async function runCycle(state) {
 async function main() {
   await initState(STATE_DIR);
   let state = await loadState(STATE_DIR);
+
+  // --cold-start resets cycle and failure counters
+  if (COLD_START) {
+    state.cycle = 0;
+    state.stage_failures = {};
+    state.disabled_stages = [];
+    await saveState(STATE_DIR, state);
+  }
 
   console.log('[LOOP] Autonomous Dev Loop started');
   console.log(`[LOOP] Budget: $${rubric.daily_cash_budget}/day`);
