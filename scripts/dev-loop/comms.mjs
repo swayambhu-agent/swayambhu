@@ -121,7 +121,7 @@ export async function sendEmail(text, subject) {
 
   const lines = [
     `To: ${to}`,
-    `Subject: ${subject || "[DEVLOOP] Approval Request"}`,
+    `Subject: ${subject || "[SWAYAMBHU-DEV] Dev Loop Report"}`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "",
@@ -154,7 +154,7 @@ export async function checkEmailReplies(since) {
   // Gmail search uses YYYY/MM/DD for after: filter
   const sinceDate = new Date(since);
   const dateStr = `${sinceDate.getFullYear()}/${String(sinceDate.getMonth() + 1).padStart(2, "0")}/${String(sinceDate.getDate()).padStart(2, "0")}`;
-  const q = encodeURIComponent(`subject:DEVLOOP after:${dateStr}`);
+  const q = encodeURIComponent(`subject:(DEVLOOP OR SWAYAMBHU-DEV) after:${dateStr}`);
 
   const listResp = await fetch(
     `${GMAIL_API}/messages?q=${q}&maxResults=50`,
@@ -229,7 +229,7 @@ async function main() {
         await sendSlack(text);
         console.log("Sent to Slack");
       } else if (ch === "email") {
-        await sendEmail(text, `[DEVLOOP] ${args.id || "Approval"}`);
+        await sendEmail(text, `[SWAYAMBHU-DEV] ${args.id || "Report"}`);
         console.log("Sent to Email");
       } else {
         console.error(`Unknown channel: ${ch}`);
