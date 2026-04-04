@@ -129,29 +129,39 @@ export async function sendEmail(text, subject) {
     text,
   ].join("\r\n");
 
+  const net = await import("net");
   return new Promise((resolve, reject) => {
-    const socket = tls.connect(465, "smtp.gmail.com", { rejectUnauthorized: true }, async () => {
+    // Use port 587 with STARTTLS (port 465 direct TLS is often blocked)
+    const plainSocket = net.createConnection(587, "smtp.gmail.com", async () => {
       try {
-        await smtpCommand(socket); // greeting
-        await smtpCommand(socket, `EHLO devloop`);
-        await smtpCommand(socket, `AUTH LOGIN`);
-        await smtpCommand(socket, Buffer.from(user).toString("base64"));
-        await smtpCommand(socket, Buffer.from(pass).toString("base64"));
-        await smtpCommand(socket, `MAIL FROM:<${user}>`);
-        await smtpCommand(socket, `RCPT TO:<${to}>`);
-        await smtpCommand(socket, `DATA`);
-        // Send message body, end with \r\n.\r\n
-        await smtpCommand(socket, message + "\r\n.");
-        await smtpCommand(socket, `QUIT`);
-        socket.destroy();
+        await smtpCommand(plainSocket); // greeting
+        await smtpCommand(plainSocket, "EHLO devloop");
+        // Upgrade to TLS
+        plainSocket.write("STARTTLS\r\n");
+        await smtpCommand(plainSocket);
+        const tlsSocket = tls.connect({ socket: plainSocket, servername: "smtp.gmail.com" });
+        await new Promise((res, rej) => {
+          tlsSocket.on("secureConnect", res);
+          tlsSocket.on("error", rej);
+        });
+        await smtpCommand(tlsSocket, "EHLO devloop");
+        await smtpCommand(tlsSocket, "AUTH LOGIN");
+        await smtpCommand(tlsSocket, Buffer.from(user).toString("base64"));
+        await smtpCommand(tlsSocket, Buffer.from(pass).toString("base64"));
+        await smtpCommand(tlsSocket, `MAIL FROM:<${user}>`);
+        await smtpCommand(tlsSocket, `RCPT TO:<${to}>`);
+        await smtpCommand(tlsSocket, "DATA");
+        await smtpCommand(tlsSocket, message + "\r\n.");
+        await smtpCommand(tlsSocket, "QUIT");
+        tlsSocket.destroy();
         resolve({ sent: true, to, subject: subj });
       } catch (err) {
-        socket.destroy();
+        plainSocket.destroy();
         reject(err);
       }
     });
-    socket.on("error", reject);
-    setTimeout(() => { socket.destroy(); reject(new Error("SMTP timeout")); }, 30000);
+    plainSocket.on("error", reject);
+    setTimeout(() => { plainSocket.destroy(); reject(new Error("SMTP timeout")); }, 30000);
   });
 }
 
