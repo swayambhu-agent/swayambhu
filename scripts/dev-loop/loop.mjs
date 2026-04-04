@@ -10,6 +10,7 @@
 import { initState, loadState, saveState, listProbes, loadQueue, saveRun } from './state.mjs';
 import { runObserve } from './observe.mjs';
 import { runClassify } from './classify.mjs';
+import { buildContextFromAnalysis } from './context.mjs';
 import { runVerify } from './verify.mjs';
 import { checkSlackReplies, checkEmailReplies } from './comms.mjs';
 import { readFileSync } from 'fs';
@@ -137,9 +138,23 @@ async function runCycle(state) {
     }
   }
 
-  // ── EXPERIMENT + DECIDE + VERIFY ──
-  // These stages are driven by Claude Code's analysis of the classify
-  // output. The loop provides the data; CC reasons about what to do.
+  // ── BUILD CONTEXT ──
+  // Assemble full context package for CC deep analysis
+  if (observation && classification) {
+    const context = buildContextFromAnalysis({
+      analysis: observation.analysis,
+      sessionId: observation.latest_session_id,
+      cycle: state.cycle,
+      strategy: observation.strategy,
+      mechanicalIssues: classification.issues || [],
+    });
+    await saveRun(STATE_DIR, timestamp, 'context.json', context);
+    console.log(`[LOOP] Context written to runs/${timestamp}/context.json`);
+  }
+
+  // ── ANALYZE + EXPERIMENT + DECIDE + VERIFY ──
+  // These stages are driven by Claude Code's analysis of context.json.
+  // The loop provides the data; CC reasons about what to do.
   // When running standalone (not under CC), we output the classification
   // and probes for manual review.
 
