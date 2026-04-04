@@ -56,6 +56,21 @@ code and criteria say should be happening? Where it diverges, that's
 a finding. The diagnosis comes from the code, not from the agent's
 self-description.
 
+**ALSO CHECK: is the dev loop itself producing reliable data?**
+Before analyzing the agent, sanity-check the observation:
+- Does the karma record look complete? (Should have act_start, plan,
+  act steps, eval, review, reflect — not just act_start)
+- If karma looks truncated, the bug may be in observe.mjs or
+  analyze-sessions.mjs, not the agent. Verify by reading the karma
+  key directly via dashboard API.
+- Are the desire/pattern/experience counts plausible given the session
+  count and DR history?
+- Is context.json populated? (Not empty `{}` — check file size)
+
+The dev loop's own code (scripts/dev-loop/*.mjs) can have bugs that
+produce misleading analysis. If something looks wrong, check whether
+the observation itself is trustworthy before blaming the agent.
+
 Analyze against the cognitive architecture audit rubric:
 
 **Entity Health:**
