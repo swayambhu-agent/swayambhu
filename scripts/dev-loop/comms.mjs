@@ -83,132 +83,78 @@ export async function checkSlackReplies(since) {
   return replies;
 }
 
-// ── Gmail ────────────────────────────────────────────────────
+// ── Email via SMTP (Gmail App Password) ─────────────────────
+// Uses raw SMTP over TLS to smtp.gmail.com:465.
+// Requires: GMAIL_USER (email address) + GMAIL_APP_PASSWORD (app password).
+// No OAuth, no token expiry.
 
-const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
+import * as tls from "tls";
 
-async function gmailAccessToken() {
-  const clientId = process.env.GMAIL_CLIENT_ID;
-  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
-  const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
-  if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error("Missing GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, or GMAIL_REFRESH_TOKEN");
-  }
-
-  const resp = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }).toString(),
+function smtpCommand(socket, cmd) {
+  return new Promise((resolve, reject) => {
+    let response = "";
+    const onData = (data) => {
+      response += data.toString();
+      // SMTP responses end with \r\n and start with a 3-digit code
+      if (/^\d{3} /m.test(response) || /^\d{3}-/m.test(response) && /^\d{3} /m.test(response)) {
+        socket.removeListener("data", onData);
+        const code = parseInt(response.slice(0, 3), 10);
+        if (code >= 400) reject(new Error(`SMTP ${code}: ${response.trim()}`));
+        else resolve(response.trim());
+      }
+    };
+    socket.on("data", onData);
+    if (cmd) socket.write(cmd + "\r\n");
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Gmail token refresh failed (${resp.status}): ${text}`);
-  }
-  const data = await resp.json();
-  return data.access_token;
 }
 
 export async function sendEmail(text, subject) {
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
   const to = process.env.DEVLOOP_EMAIL_TO;
+  if (!user || !pass) throw new Error("Missing GMAIL_USER or GMAIL_APP_PASSWORD");
   if (!to) throw new Error("Missing DEVLOOP_EMAIL_TO");
 
-  const token = await gmailAccessToken();
-
-  const lines = [
+  const subj = subject || "[SWAYAMBHU-DEV] Dev Loop Report";
+  const message = [
+    `From: ${user}`,
     `To: ${to}`,
-    `Subject: ${subject || "[SWAYAMBHU-DEV] Dev Loop Report"}`,
+    `Subject: ${subj}`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "",
     text,
-  ];
+  ].join("\r\n");
 
-  const raw = btoa(unescape(encodeURIComponent(lines.join("\r\n"))))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-  const resp = await fetch(`${GMAIL_API}/messages/send`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ raw }),
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect(465, "smtp.gmail.com", { rejectUnauthorized: true }, async () => {
+      try {
+        await smtpCommand(socket); // greeting
+        await smtpCommand(socket, `EHLO devloop`);
+        await smtpCommand(socket, `AUTH LOGIN`);
+        await smtpCommand(socket, Buffer.from(user).toString("base64"));
+        await smtpCommand(socket, Buffer.from(pass).toString("base64"));
+        await smtpCommand(socket, `MAIL FROM:<${user}>`);
+        await smtpCommand(socket, `RCPT TO:<${to}>`);
+        await smtpCommand(socket, `DATA`);
+        // Send message body, end with \r\n.\r\n
+        await smtpCommand(socket, message + "\r\n.");
+        await smtpCommand(socket, `QUIT`);
+        socket.destroy();
+        resolve({ sent: true, to, subject: subj });
+      } catch (err) {
+        socket.destroy();
+        reject(err);
+      }
+    });
+    socket.on("error", reject);
+    setTimeout(() => { socket.destroy(); reject(new Error("SMTP timeout")); }, 30000);
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Gmail send failed (${resp.status}): ${text}`);
-  }
-  return resp.json();
 }
 
-export async function checkEmailReplies(since) {
-  const token = await gmailAccessToken();
-
-  // Gmail search uses YYYY/MM/DD for after: filter
-  const sinceDate = new Date(since);
-  const dateStr = `${sinceDate.getFullYear()}/${String(sinceDate.getMonth() + 1).padStart(2, "0")}/${String(sinceDate.getDate()).padStart(2, "0")}`;
-  const q = encodeURIComponent(`subject:(DEVLOOP OR SWAYAMBHU-DEV) after:${dateStr}`);
-
-  const listResp = await fetch(
-    `${GMAIL_API}/messages?q=${q}&maxResults=50`,
-    { headers: { Authorization: `Bearer ${token}` } },
-  );
-  if (!listResp.ok) {
-    const text = await listResp.text();
-    throw new Error(`Gmail list failed (${listResp.status}): ${text}`);
-  }
-  const listData = await listResp.json();
-
-  const replies = [];
-  for (const entry of listData.messages || []) {
-    const msgResp = await fetch(
-      `${GMAIL_API}/messages/${entry.id}?format=full`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!msgResp.ok) continue;
-    const msg = await msgResp.json();
-
-    const body = extractBody(msg.payload);
-    const parsed = parseReply(body);
-    if (parsed) {
-      replies.push({ ...parsed, source: "email", messageId: entry.id });
-    }
-  }
-  return replies;
-}
-
-// Reused from providers/gmail.js — extract text/plain from Gmail message payload
-function extractBody(payload, depth = 0) {
-  if (!payload || depth > 10) return "";
-  if (payload.mimeType === "text/plain" && payload.body?.data) {
-    return decodeBase64Url(payload.body.data);
-  }
-  if (payload.parts) {
-    for (const part of payload.parts) {
-      if (part.mimeType === "text/plain" && part.body?.data) {
-        return decodeBase64Url(part.body.data);
-      }
-    }
-    for (const part of payload.parts) {
-      if (part.parts) {
-        const nested = extractBody(part, depth + 1);
-        if (nested) return nested;
-      }
-    }
-  }
-  return "";
-}
-
-function decodeBase64Url(data) {
-  const padded = data.replace(/-/g, "+").replace(/_/g, "/");
-  return decodeURIComponent(escape(atob(padded)));
+// Email is send-only for the dev loop. Approval replies come via Slack.
+export async function checkEmailReplies(_since) {
+  return [];
 }
 
 // ── CLI entry point ──────────────────────────────────────────
