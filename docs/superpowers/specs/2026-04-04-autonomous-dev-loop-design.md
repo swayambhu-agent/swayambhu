@@ -146,6 +146,12 @@ loops, and architectural boundaries using the full rubric.
 **Context package** (`runs/{timestamp}/context.json`):
 ```json
 {
+  "meta": {
+    "generated_at": "ISO timestamp",
+    "cycle": 5,
+    "strategy": "accumulate",
+    "scope": "current_snapshot"
+  },
   "session_id": "x_...",
   "karma": [...],
   "desires": { "desire:slug": {...} },
@@ -196,14 +202,15 @@ For each finding with a proposed fix, CC writes a proposal file:
 `runs/{timestamp}/proposal-{seq}.md` containing the issue, proposed
 fix, affected files, quality lens assessment.
 
-### Stage 4: EXPERIMENT (Codex — adversarial challenge)
+### Stage 4: EXPERIMENT (CC orchestrates probes + Codex challenges)
 
-Each proposal from ANALYZE goes through adversarial challenge with
-Codex. CC proposes, Codex challenges.
+**Owner:** CC skill. CC decides whether to probe or propose, then
+invokes Codex for adversarial challenge on proposals.
 
-**For agent-domain issues (self_repairability > 0.3):**
-Before proposing a fix, run bounded trials — trigger more sessions
-and observe whether the agent self-corrects.
+**Probing (CC orchestrates via loop.mjs):**
+For agent-domain issues (self_repairability > 0.3), CC triggers more
+sessions via `loop.mjs --once` and observes whether the agent
+self-corrects.
 
 - Deterministic bug: 1 repro confirms the issue
 - Intermittent: up to N sessions (default 3), quarantine if unresolved
@@ -219,24 +226,27 @@ prevents self-correction? Add to `root_cause_chain`.
 File-backed exchange between CC and Codex:
 
 1. CC writes `proposal-{seq}.md` with issue + fix + quality lens scores
-2. Codex reads proposal via:
+2. Codex reads and challenges:
    `codex exec --full-auto "Read {path}/proposal-{seq}.md and challenge
    it. Find flaws. Evaluate against the quality lenses. Each objection
-   must be new and falsifiable."`
-3. Codex writes objections to `challenge-{seq}-round-{n}.json`
-4. CC reads objections, responds with defense or revision
+   must be new and falsifiable. Write to {path}/challenge-{seq}-round-1.json"`
+3. CC reads `challenge-{seq}-round-{n}.json`, writes defense/revision
+   to `response-{seq}-round-{n}.md`
+4. Codex reads response, raises new objections or concedes
 5. Max 3 rounds per proposal
 6. Each round must introduce a new falsifiable objection
 7. Terminate when objections are resolved, downgraded, or escalated
 8. Both sides argue from the quality lenses and design principles
 
-**Convergence:** a proposal converges when Codex has no remaining
-unresolved objections, or when both sides agree the fix scores well
-on all applicable quality lenses.
+**Convergence:** a proposal converges when:
+- Codex has no remaining unresolved objections, OR
+- All remaining objections are low-severity and explicitly accepted
+- Final verdict written to `verdict-{seq}.json` with: converged/escalated,
+  unresolved objections (if any), applied quality lens scores
 
-Output: `runs/{timestamp}/experiment.json` with challenge transcript.
+Output: `runs/{timestamp}/experiment.json` with full challenge transcript.
 
-### Stage 4: DECIDE
+### Stage 5: DECIDE (CC)
 
 Route based on evidence threshold relative to blast radius:
 
@@ -286,7 +296,7 @@ Swami's Slack/email for testing comms issues (prefix `[TESTING]`).
 Output: applied changes committed to git, pending items in
 `queue/pending/`.
 
-### Stage 5: VERIFY
+### Stage 6: VERIFY
 
 After every applied change:
 
