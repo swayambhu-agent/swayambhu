@@ -6,7 +6,12 @@ Read the context files in this directory:
 - pattern/ — current patterns (impressions from experience, strength 0-1)
 - principle/ — immutable principles
 - config/defaults.json — current configuration
+- kernel/source_map.json — pointers to infrastructure source code
 - reflect/schedule/ — when each depth last ran
+
+When experiences show infrastructure or tool failures, consult
+kernel:source_map to locate the relevant code, then load it via
+kv_query to trace the execution path and propose a precise fix.
 
 Run two operators:
 

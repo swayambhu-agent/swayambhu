@@ -74,6 +74,18 @@ await put("kernel:key_tiers", {
   ],
 }, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
 
+// Source map — tells the agent where its own infrastructure code lives.
+// kernel:* tier so the agent can read but not modify the pointers.
+await put("kernel:source_map", {
+  kernel: "kernel:source:kernel.js",
+  comms: "kernel:source:hook-communication.js",
+  act_library: "hook:act:code",
+  reflection: "hook:reflect:code",
+  tools: "tool:*:code",
+  providers: "provider:*:code",
+  channels: "channel:*:code",
+}, "json", "Pointers to infrastructure source code — agent reads these to debug execution path issues");
+
 // Event handlers
 await put("config:event_handlers", {
   handlers: {
