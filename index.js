@@ -72,6 +72,9 @@ const HOOKS = {
           let turn;
           if (ev.type === "inbound_message") {
             turn = ev; // Already a CommTurn shape from fetch
+            // Ensure idempotency_key is set — fallback to ev.key if missing
+            // (prevents re-drain if the event was created without one)
+            if (!turn.idempotency_key) turn.idempotency_key = ev.key;
           } else {
             turn = await ingestInternal(K, ev);
           }
@@ -284,6 +287,7 @@ export default {
     await env.KV.put(eventKey, JSON.stringify({
       type: "inbound_message",
       ...commTurn,
+      idempotency_key: eventKey,  // enables claim/delete in deferred comms processor
       timestamp: new Date().toISOString(),
     }), { expirationTtl: 86400 });
 

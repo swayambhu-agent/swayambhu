@@ -167,7 +167,7 @@ export function generateIndexJS(metadata) {
   lines.push("        const byConv = {};");
   lines.push("        for (const ev of events) {");
   lines.push('          let turn;');
-  lines.push('          if (ev.type === "inbound_message") { turn = ev; }');
+  lines.push('          if (ev.type === "inbound_message") { turn = ev; if (!turn.idempotency_key) turn.idempotency_key = ev.key; }');
   lines.push('          else { turn = await ingestInternal(K, ev); }');
   lines.push('          if (!turn) {');
   lines.push('            if (ev.key) await K.deleteEvent(ev.key);');
@@ -299,6 +299,7 @@ export function generateIndexJS(metadata) {
   lines.push("    await env.KV.put(eventKey, JSON.stringify({");
   lines.push('      type: "inbound_message",');
   lines.push("      ...commTurn,");
+  lines.push("      idempotency_key: eventKey,");
   lines.push("      timestamp: new Date().toISOString(),");
   lines.push("    }), { expirationTtl: 86400 });");
   lines.push("");
