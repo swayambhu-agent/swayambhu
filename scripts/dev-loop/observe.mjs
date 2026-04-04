@@ -5,6 +5,7 @@
 import { execSync } from "child_process";
 import { join } from "path";
 import { saveRun } from "./state.mjs";
+import { getKV, dispose } from "../shared.mjs";
 
 const ROOT = join(import.meta.dirname, "../..");
 
@@ -37,33 +38,27 @@ export function chooseStrategy({ probes, cycle, codeChanged }) {
 
 // ── Helpers ─────────────────────────────────────────────────
 
-function readSessionCounter() {
+async function readSessionCounter(kv) {
   try {
-    const out = execSync(
-      `node ${join(ROOT, "scripts/read-kv.mjs")} --json session_counter`,
-      { encoding: "utf8", timeout: 15_000 },
-    ).trim();
-    const n = parseInt(out, 10);
-    return Number.isNaN(n) ? 0 : n;
+    const val = await kv.get("session_counter", "json");
+    return typeof val === "number" ? val : 0;
   } catch {
     return 0;
   }
 }
 
-function pollUntilIncrement(beforeCount, timeoutMs = 300_000) {
+async function pollUntilIncrement(kv, beforeCount, timeoutMs = 600_000) {
   const deadline = Date.now() + timeoutMs;
-  const interval = 5_000;
-  let polls = 0;
+  const interval = 10_000;
   while (Date.now() < deadline) {
-    const current = readSessionCounter();
+    const current = await readSessionCounter(kv);
     if (detectCompletion(beforeCount, current)) {
       console.log(`\n[OBSERVE] Session complete (counter: ${current})`);
       return current;
     }
-    polls++;
     const elapsed = Math.round((Date.now() + timeoutMs - deadline) / 1000);
     process.stdout.write(`\r[OBSERVE] Waiting for session... ${elapsed}s (counter: ${current})`);
-    execSync(`sleep ${interval / 1000}`);
+    await new Promise(r => setTimeout(r, interval));
   }
   throw new Error(
     `Session did not complete within ${timeoutMs / 1000}s (counter stuck at ${beforeCount})`,
@@ -109,9 +104,12 @@ export async function runObserve({
       }
     }
 
-    const counterBefore = readSessionCounter();
+    // Read counter via shared Miniflare KV (one instance, no child processes)
+    const kv = await getKV();
+    const counterBefore = await readSessionCounter(kv);
 
     // Trigger the session — curl returns immediately, we poll for completion
+    console.log(`[OBSERVE] Triggering session (counter before: ${counterBefore})`);
     execSync(strategy.trigger, {
       encoding: "utf8",
       timeout: 30_000,
@@ -119,8 +117,9 @@ export async function runObserve({
       stdio: "pipe",
     });
 
-    // Poll until session_counter increments
-    const counterAfter = pollUntilIncrement(counterBefore);
+    // Poll until session_counter increments (10 min timeout)
+    const counterAfter = await pollUntilIncrement(kv, counterBefore);
+    await dispose();
 
     // Collect analysis data
     const analysis = runAnalysis();
