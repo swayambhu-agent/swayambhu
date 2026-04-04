@@ -18,10 +18,11 @@ export function chooseStrategy({ probes, cycle, codeChanged }) {
   if (cycle === 0 || codeChanged) {
     return {
       type: "cold_start",
-      // Start services WITHOUT --trigger. We trigger separately via curl
-      // so we can poll session_counter instead of blocking.
-      setup: `bash ${join(ROOT, "scripts/start.sh")} --reset-all-state --yes`,
-      trigger: "curl -s http://localhost:8787/__scheduled",
+      // Don't use start.sh — it ends with `wait` and blocks forever.
+      // Instead: seed KV directly, then trigger. Assumes services are
+      // already running (user starts them separately).
+      setup: `node ${join(ROOT, "scripts/seed-local-kv.mjs")}`,
+      trigger: "curl -sf -X POST http://localhost:8787/__clear-schedule && curl -s http://localhost:8787/__scheduled",
     };
   }
   return {

@@ -40,9 +40,7 @@ describe("chooseStrategy", () => {
       codeChanged: false,
     });
     expect(result.type).toBe("cold_start");
-    expect(result.setup).toContain("start.sh");
-    expect(result.setup).toContain("--reset-all-state");
-    expect(result.setup).not.toContain("--trigger");
+    expect(result.setup).toContain("seed-local-kv");
     expect(result.trigger).toContain("curl");
   });
 
@@ -53,6 +51,6 @@ describe("chooseStrategy", () => {
       codeChanged: true,
     });
     expect(result.type).toBe("cold_start");
-    expect(result.setup).toContain("start.sh");
+    expect(result.setup).toContain("seed-local-kv");
   });
 });
