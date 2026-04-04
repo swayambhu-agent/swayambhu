@@ -16,23 +16,28 @@ export function detectCompletion(beforeCount, afterCount) {
 }
 
 export function chooseStrategy({ probes, cycle, codeChanged }) {
+  const clearScheduleCmd = "curl -sf -X POST http://localhost:8787/__clear-schedule";
+  const triggerCmd = "curl -sf http://localhost:8787/__scheduled";
+
   if (cycle === 0 || codeChanged) {
     return {
       type: "cold_start",
       // Don't use start.sh — it ends with `wait` and blocks forever.
-      // Instead: seed KV directly, clear schedule (force immediate run),
-      // then trigger. Assumes services are already running.
+      // Instead: seed KV directly, then force the running worker's schedule
+      // into the past before triggering. Assumes services are already running.
       setup: [
         `node ${join(ROOT, "scripts/seed-local-kv.mjs")}`,
-        `node ${join(ROOT, "scripts/clear-schedule.mjs")}`,
+        clearScheduleCmd,
       ],
-      trigger: "curl -s http://localhost:8787/__scheduled",
+      trigger: triggerCmd,
     };
   }
   return {
     type: "accumulate",
-    setup: null,
-    trigger: "curl -s http://localhost:8787/__scheduled",
+    // Accumulate keeps existing state, but still needs to bypass the live
+    // schedule gate so the dev loop can force a session on demand.
+    setup: [clearScheduleCmd],
+    trigger: triggerCmd,
   };
 }
 
@@ -90,7 +95,7 @@ export async function runObserve({
   try {
     const strategy = chooseStrategy({ probes, cycle, codeChanged });
 
-    // Setup step (cold_start only): seed KV + clear schedule
+    // Setup step: cold_start seeds KV, all strategies clear the schedule first.
     const setupCmds = Array.isArray(strategy.setup) ? strategy.setup
       : strategy.setup ? [strategy.setup] : [];
     if (setupCmds.length) {
