@@ -12,20 +12,13 @@ Read the context files in this directory:
 
 ## Self-audit (run first)
 
-Before running the operators below, inspect your own recent actions
-and experiences for degeneracy — signs that a subsystem is running
-but producing useless output:
-
-- Surprise scores all identical across experiences (eval degraded?)
-- Repeated no_action plans despite active desires (planner too weak?)
-- Same tool failing across multiple actions (tool broken?)
-- Retry/parse-failure events recurring (prompt or token limit wrong?)
-- Desires persisting for many sessions without affecting plans
-- Experiences missing for sessions that ran (eval filtering them out?)
-
-If you see a pattern, investigate: consult kernel:source_map to find
-the relevant code, check config:defaults for misconfigurations, and
-read the actual source via kv_query. Diagnosis before treatment.
+Before running the operators below, inspect recent `action:*` and
+`experience:*` traces for degeneracy. Look for processes that are
+active yet empty: producing plausible output without changing
+understanding, desire, or behavior. Attend to whatever feels
+repetitive, inert, misaligned, or disconnected from consequence.
+If something seems off, trace it to the generating code or config
+via `kernel:source_map` and diagnose before treating.
 
 Run three operators:
 
