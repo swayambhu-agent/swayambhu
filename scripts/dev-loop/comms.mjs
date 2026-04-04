@@ -111,11 +111,14 @@ function smtpCommand(socket, cmd) {
 export async function sendEmail(text, subject) {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
-  const to = process.env.DEVLOOP_EMAIL_TO;
+  const rubric = JSON.parse((await import("fs")).readFileSync(
+    new URL("rubric.json", import.meta.url), "utf8"));
+  const to = process.env.DEVLOOP_EMAIL_TO || rubric.notifications?.email_to;
+  const subjectPrefix = rubric.notifications?.email_subject_prefix || "[SWAYAMBHU-DEV]";
   if (!user || !pass) throw new Error("Missing GMAIL_USER or GMAIL_APP_PASSWORD");
-  if (!to) throw new Error("Missing DEVLOOP_EMAIL_TO");
+  if (!to) throw new Error("Missing DEVLOOP_EMAIL_TO or notifications.email_to in rubric.json");
 
-  const subj = subject || "[SWAYAMBHU-DEV] Dev Loop Report";
+  const subj = subject || `${subjectPrefix} Dev Loop Report`;
   const message = [
     `From: ${user}`,
     `To: ${to}`,
@@ -175,7 +178,7 @@ async function main() {
         await sendSlack(text);
         console.log("Sent to Slack");
       } else if (ch === "email") {
-        await sendEmail(text, `[SWAYAMBHU-DEV] ${args.id || "Report"}`);
+        await sendEmail(text, args.id ? `[SWAYAMBHU-DEV] ${args.id}` : undefined);
         console.log("Sent to Email");
       } else {
         console.error(`Unknown channel: ${ch}`);
