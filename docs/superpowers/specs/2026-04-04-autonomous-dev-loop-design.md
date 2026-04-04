@@ -59,10 +59,11 @@ empty patterns and maximum surprise — that's correct behavior, not a bug.
   patterns, experiences, cost, LLM call count, tool results
 
 **Session completion detection:**
-- Poll `karma:*` keys via `scripts/read-kv.mjs` — a new karma key
-  appearing after trigger means the session completed
-- Timeout after 5 minutes (sessions typically complete in 30-120s)
-- Check `execution_health:*` for the new session ID
+Poll `session_counter` via `scripts/read-kv.mjs` — when it increments
+from the pre-trigger value, the tick completed. Timeout after 5 minutes
+(sessions typically complete in 30-120s). Note: a tick that skips act
+(schedule-gated) still increments the counter — check karma for the
+new session ID to confirm an act session actually ran.
 
 Output: `runs/{timestamp}/observation.json` + UI screenshots.
 
@@ -526,26 +527,32 @@ curl -s http://localhost:8787/__scheduled
 
 ### Session completion detection
 
-Poll for new karma key:
+Poll `session_counter` — canonical completion signal:
 ```bash
 # Before trigger: capture current session count
 BEFORE=$(node scripts/read-kv.mjs session_counter)
 
-# After trigger: poll until counter increments or timeout
+# After trigger: poll until counter increments or timeout (5 min)
+TIMEOUT=300; ELAPSED=0
 while [ "$(node scripts/read-kv.mjs session_counter)" = "$BEFORE" ]; do
-  sleep 5
+  sleep 5; ELAPSED=$((ELAPSED + 5))
+  [ $ELAPSED -ge $TIMEOUT ] && echo "TIMEOUT" && break
 done
+
+# Confirm an act session ran (not just a schedule-skipped tick)
+node scripts/read-kv.mjs cache:session_ids  # check for new session ID
 ```
 
 ### Dashboard screenshots
 
-Via the `/browse` skill or headless browser:
+Via the `/browse` skill (Claude Code) or a puppeteer script. Dashboard
+SPA runs on port 3001 locally (tunneled to 8080 for remote access):
 ```bash
 # Using browse skill (from Claude Code)
-# Navigate to localhost:8080, screenshot each tab
+# Navigate to localhost:3001, screenshot each tab
 
 # Or via puppeteer/playwright script for automation
-node scripts/screenshot-dashboard.mjs --output runs/{timestamp}/
+node scripts/screenshot-dashboard.mjs --port 3001 --output runs/{timestamp}/
 ```
 
 ### Adversarial challenge
@@ -560,20 +567,31 @@ codex exec --full-auto -m gpt-5.4 \
    {proposal_json}"
 ```
 
-### Approval messaging
+### Approval messaging and reply checking
+
+The dev loop uses its own lightweight adapter for Slack/email — not
+the agent's comms tools (those are agent-internal, routed through
+events). The adapter is a small Node.js module
+(`scripts/dev-loop/comms.mjs`) that:
+
+- **Sends** via Slack Web API (`chat.postMessage`) and Gmail API
+  (using the existing OAuth refresh token from `scripts/gmail-auth.mjs`)
+- **Checks replies** via Slack `conversations.history` and Gmail
+  `messages.list` with query filters
+- **Parses** `APPROVE {id}` / `REJECT {id} {reason}` from reply text
+- **Deduplicates** by tracking processed message IDs in `state.json`
 
 ```bash
-# Slack (via agent's existing send_slack tool or direct API)
-# Email (via agent's existing send_email tool or direct API)
-# Both include the approval ID and reply format
-```
+# Send approval request
+node scripts/dev-loop/comms.mjs send \
+  --channel slack,email \
+  --id devloop-1712234567-01 \
+  --body "proposal summary..."
 
-### Reply checking
-
-```bash
-# Check Slack channel history for replies containing devloop- prefix
-# Check email inbox for replies to devloop threads
-# Parse: APPROVE {id} or REJECT {id} {reason}
+# Check for replies
+node scripts/dev-loop/comms.mjs check \
+  --since "2026-04-04T12:00:00Z"
+# Returns JSON: [{ id: "devloop-...", action: "approve|reject", reason: "..." }]
 ```
 
 ## Implementation Notes
