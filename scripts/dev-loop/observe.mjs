@@ -114,14 +114,17 @@ export async function runObserve({
     const kv = await getKV();
     const beforeIds = await getSessionIds(kv);
 
-    // Trigger the session — curl returns immediately, we poll for completion
+    // Trigger the session in the background — /__scheduled is synchronous
+    // and blocks until the full tick completes (minutes). Fire and forget,
+    // then poll cache:session_ids for the new entry.
     console.log(`[OBSERVE] Triggering session (${beforeIds.length} sessions before)`);
-    execSync(strategy.trigger, {
-      encoding: "utf8",
-      timeout: 30_000,
+    const { spawn } = await import("child_process");
+    const triggerProc = spawn("sh", ["-c", strategy.trigger], {
       cwd: ROOT,
-      stdio: "pipe",
+      stdio: "ignore",
+      detached: true,
     });
+    triggerProc.unref();
 
     // Poll until a new session ID appears in cache:session_ids (10 min timeout)
     // This only fires for real act sessions, not schedule-skipped ticks
