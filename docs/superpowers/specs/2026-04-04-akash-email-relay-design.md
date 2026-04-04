@@ -1,38 +1,42 @@
-# Akash Email Relay
+# Akash Email Gateway
 
 ## Purpose
 
-Replace Gmail OAuth send path with a lightweight HTTPS-to-SMTP relay
-on Akash, giving the agent reliable email sending without token expiry.
+Eliminate Gmail OAuth entirely. Replace with a lightweight HTTPS
+gateway on Akash that handles both sending (SMTP) and reading (IMAP)
+using a Gmail App Password. No OAuth tokens, no expiry, no Google
+verification.
 
 ## Problem
 
-Gmail OAuth refresh tokens expire every 7 days when the Google Cloud
-app is in "Testing" mode. Publishing requires Google verification.
-The agent's email silently breaks every week with no self-repair path.
+Gmail OAuth refresh tokens expire every 7 days in "Testing" mode.
+Google verification takes weeks. The agent's email breaks silently
+every week. OAuth adds complexity for zero benefit when App Passwords
+work for both SMTP and IMAP.
 
 ## Solution
 
-A tiny stateless HTTP service on Akash that accepts `POST /send-email`
-and sends via SMTP. The Worker calls it over HTTPS — same pattern as
-the existing compute provider. No OAuth, no token expiry.
+A stateless HTTP service on Akash with two endpoints:
 
 ```
 Worker (CF)                           Akash
-┌──────────────────┐  HTTPS POST      ┌──────────────┐  SMTP 587
-│ providers/       │  + CF Access     │ email-relay  │ ──────────→ Gmail
+┌──────────────────┐  HTTPS           ┌──────────────┐
+│ providers/       │  + CF Access     │ email-gateway│
 │ email-relay.js   │ ───────────────→ │ (port 3500)  │
-│                  │ ← JSON response │              │
-└──────────────────┘                  └──────────────┘
+│                  │ ← JSON          │              │
+└──────────────────┘                  │  SMTP 587 ───→ Gmail (send)
+                                      │  IMAP 993 ───→ Gmail (read)
+                                      └──────────────┘
 ```
 
-## Akash Relay Service
+**No OAuth anywhere.** Worker secrets reduced: only CF Access creds +
+relay secret. Gmail creds live only on Akash.
 
-A single Node.js file (`email-relay.mjs`) on the Akash server. ~80
-lines. Listens on localhost:3500, accepts POST requests, sends via
-SMTP STARTTLS on port 587.
+## Endpoints
 
-**Endpoint:** `POST /send-email`
+### POST /send-email
+
+Send a message via SMTP STARTTLS on port 587.
 
 **Request:**
 ```json
@@ -40,97 +44,171 @@ SMTP STARTTLS on port 587.
   "to": "recipient@example.com",
   "subject": "Hello",
   "body": "Message text",
-  "in_reply_to": "optional — Message-ID for In-Reply-To header",
-  "thread_id": "optional — for thread continuity"
+  "in_reply_to": "optional — Message-ID for threading"
 }
 ```
-
-Max request size: 100KB. Plain text only.
 
 **Response:**
 ```json
-{ "ok": true, "message_id": "<generated-id@gmail.com>" }
+{ "ok": true, "message_id": "<id@gmail.com>" }
 ```
-or
+
+### POST /check-email
+
+Fetch unread messages via IMAP TLS on port 993.
+
+**Request:**
 ```json
-{ "ok": false, "error": "SMTP 535: Authentication failed" }
-```
-
-**Health check:** `GET /health` → `{ "ok": true }`
-
-**Auth:** Bearer token in Authorization header (`EMAIL_RELAY_SECRET`).
-The relay also sits behind Cloudflare Access (same tunnel as compute),
-so Workers must send CF Access headers too.
-
-**Error codes:**
-- 400: invalid request (missing to/subject/body, body too large)
-- 401: missing or wrong bearer token
-- 502: SMTP connection or send failure
-- 504: SMTP timeout (30s)
-
-**SMTP requirements:**
-- STARTTLS on port 587 (port 465 blocked on Hetzner)
-- AUTH LOGIN with base64-encoded user/password
-- DATA termination: `\r\n.\r\n` (proper CRLF dot CRLF)
-- Dot-stuffing: lines in body starting with `.` must be escaped as `..`
-- Socket timeout: 30s per command, kill on timeout
-- `GMAIL_USER` and `GMAIL_APP_PASSWORD` from env
-
-**Logging:** log `to` and `subject` on success. On failure, log error
-message but redact any echoed body content from SMTP errors.
-
-## Worker-Side Changes
-
-**New provider:** `providers/email-relay.js` — a clean, focused
-provider that handles only email sending through the relay. Does NOT
-modify `providers/gmail.js` — that stays as-is for read operations.
-
-```js
-// providers/email-relay.js
-export const meta = {
-  secrets: ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "EMAIL_RELAY_SECRET"],
-  timeout_ms: 30000,
-};
-
-export async function sendMessage({ to, subject, body, inReplyTo, secrets, fetch, config }) {
-  const baseUrl = config?.email_relay_url || "https://akash.swayambhu.dev";
-
-  const resp = await fetch(`${baseUrl}/send-email`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "CF-Access-Client-Id": secrets.CF_ACCESS_CLIENT_ID,
-      "CF-Access-Client-Secret": secrets.CF_ACCESS_CLIENT_SECRET,
-      "Authorization": `Bearer ${secrets.EMAIL_RELAY_SECRET}`,
-    },
-    body: JSON.stringify({ to, subject, body, in_reply_to: inReplyTo || null }),
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Email relay failed (${resp.status}): ${text}`);
-  }
-  const data = await resp.json();
-  if (!data.ok) throw new Error(`Email relay: ${data.error}`);
-  return { messageId: data.message_id };
+{
+  "max_results": 10,
+  "mark_read": true
 }
 ```
 
-**What changes in tools/send_email.js:**
-- Switch provider from `gmail` to `email-relay` for sending
-- Keep `gmail` provider for `getMessage()` (reply threading still
-  needs Gmail API to fetch the original message)
-- If OAuth is expired, reply threading degrades gracefully (send
-  without In-Reply-To header) rather than failing entirely
+**Response:**
+```json
+{
+  "ok": true,
+  "emails": [
+    {
+      "id": "imap-uid",
+      "from": "sender@example.com",
+      "subject": "Re: Hello",
+      "date": "2026-04-04T12:00:00Z",
+      "body": "Reply text",
+      "message_id": "<original-id@gmail.com>"
+    }
+  ],
+  "count": 1
+}
+```
 
-**What doesn't change:**
-- `providers/gmail.js` — untouched, still handles reads
-- `tools/check_email.js` — still uses gmail provider
-- `hook-communication.js` — routes through same adapter
-- Communication pipeline — event-driven, unchanged
+### POST /get-message
 
-**Config:** `email_relay_url` in `config/defaults.json` under a new
-`email` section:
+Fetch a single message by ID (for reply threading).
+
+**Request:**
+```json
+{ "id": "imap-uid" }
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "id": "imap-uid",
+  "from": "sender@example.com",
+  "to": "recipient@example.com",
+  "subject": "Hello",
+  "date": "2026-04-04T12:00:00Z",
+  "body": "Message text",
+  "message_id": "<id@gmail.com>",
+  "thread_id": null
+}
+```
+
+### GET /health
+
+```json
+{ "ok": true }
+```
+
+## Common
+
+**Auth:** `Authorization: Bearer {EMAIL_RELAY_SECRET}` + CF Access
+headers. Dedicated secret, not shared.
+
+**Max request size:** 100KB.
+
+**Error codes:** 400 (bad request), 401 (unauthorized), 502 (SMTP/IMAP
+failure), 504 (timeout).
+
+**Timeouts:** 30s per SMTP/IMAP command. HTTP request timeout 60s.
+
+**SMTP requirements:**
+- STARTTLS on port 587
+- AUTH LOGIN with base64 user/password
+- Proper DATA termination (`\r\n.\r\n`)
+- Dot-stuffing for body lines starting with `.`
+
+**IMAP implementation:**
+Use `imapflow` library on Akash (handles IMAP protocol, MIME parsing,
+UIDs, multipart extraction). Not raw IMAP — the protocol and MIME
+parsing are too complex for a hand-rolled implementation. The library
+runs on Akash only, not in the Worker.
+
+```bash
+# On Akash:
+npm install imapflow mailparser
+```
+
+`imapflow` handles: TLS on 993, LOGIN, UID-based FETCH, flag
+management, connection pooling. `mailparser` handles MIME decoding
+(multipart, base64, quoted-printable, folded headers).
+
+Message IDs are IMAP UIDs (stable across sessions, not sequence
+numbers).
+
+**Logging:** to/subject on send success. Count on check success.
+Body content never logged. SMTP/IMAP errors redacted.
+
+**Credentials:** `GMAIL_USER` + `GMAIL_APP_PASSWORD` in
+`EnvironmentFile` on Akash (chmod 600). Not on the Worker.
+
+## Worker-Side Changes
+
+### Delete
+
+- Remove `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`,
+  `GMAIL_REFRESH_TOKEN` from Worker secrets
+- Remove OAuth token refresh from `providers/gmail.js`
+
+### New provider: `providers/email-relay.js`
+
+Replaces gmail.js entirely. Three functions matching the gateway
+endpoints:
+
+```js
+export const meta = {
+  secrets: ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "EMAIL_RELAY_SECRET"],
+  timeout_ms: 60000,
+};
+
+export async function sendMessage({ to, subject, body, inReplyTo, secrets, fetch, config }) {
+  // POST to {relay_url}/send-email with CF Access + bearer auth
+}
+
+export async function checkEmail({ maxResults, markRead, secrets, fetch, config }) {
+  // POST to {relay_url}/check-email
+}
+
+export async function getMessage({ id, secrets, fetch, config }) {
+  // POST to {relay_url}/get-message
+}
+```
+
+All three follow the `providers/compute.js` pattern: CF Access
+headers + bearer token, injected `secrets` object, `config` from
+defaults.
+
+### Update tools
+
+**`tools/send_email.js`:**
+- Change `meta.provider` from `"gmail"` to `"email-relay"`
+- Change `meta.secrets` — remove Gmail OAuth creds
+- In `execute()`: call `provider.getMessage()` for reply threading
+  (now goes through relay/IMAP instead of Gmail API/OAuth)
+- Call `provider.sendMessage()` for send (relay/SMTP)
+
+**`tools/check_email.js`:**
+- Change `meta.provider` from `"gmail"` to `"email-relay"`
+- Change `meta.secrets` — remove Gmail OAuth creds
+- In `execute()`: call `provider.checkEmail()` instead of
+  `provider.listUnread()` + `provider.getMessage()`
+
+### Config
+
+In `config/defaults.json`:
 ```json
 {
   "email": {
@@ -139,68 +217,41 @@ export async function sendMessage({ to, subject, body, inReplyTo, secrets, fetch
 }
 ```
 
-## Reply Threading
+## What Gets Deleted
 
-The relay supports `in_reply_to` field which sets SMTP `In-Reply-To`
-and `References` headers. Gmail automatically threads messages with
-matching headers.
+- `providers/gmail.js` — replaced entirely by `email-relay.js`
+- Gmail OAuth secrets from Worker env (`GMAIL_CLIENT_ID`,
+  `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`)
+- `scripts/gmail-auth.mjs` — no longer needed (no OAuth flow)
+- OAuth refresh logic in any tool/provider
 
-Current flow in `tools/send_email.js`:
-1. If `reply_to_id` is provided, call `gmail.getMessage()` to get
-   original message's `messageId` header
-2. Pass as `inReplyTo` to `sendMessage()`
-
-**Degradation when OAuth expires:** If `getMessage()` fails (OAuth
-expired), the tool should catch the error and send without threading
-rather than failing entirely. The message still gets sent — it just
-won't be threaded. This is a graceful degradation, not a silent
-failure.
-
-## What About Inbound Email?
-
-Out of scope. `check_email.js` still uses Gmail OAuth. Read failures
-are visible (empty inbox) not silent (lost message). Can be addressed
-later with an IMAP relay or webhook.
-
-## Security
-
-- Behind Cloudflare Access tunnel (same as compute endpoint)
-- CF Access headers required (double auth with bearer token)
-- Dedicated `EMAIL_RELAY_SECRET` — not shared with other services
-- Request size limit: 100KB enforced by relay
-- Plain text only — no HTML, no attachments, no raw MIME
-- Stateless — no email content stored
-- Logs redacted — to/subject only, body never logged
-- Credentials in `EnvironmentFile` with 600 permissions, not in
-  systemd unit file
+**Known dependency:** `tools/google_docs.js` also uses gmail.js for
+Google OAuth. That tool needs separate migration (different scope,
+different API). Not blocking this change — will be fixed separately.
 
 ## Deployment
 
-```
-# /etc/systemd/system/email-relay.service
-[Unit]
-Description=Swayambhu Email Relay
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/node /home/swayambhu/email-relay.mjs
-EnvironmentFile=/home/swayambhu/.email-relay.env
-Restart=always
-User=swayambhu
-
-[Install]
-WantedBy=multi-user.target
-```
+Same as before — systemd service on Akash behind CF tunnel.
 
 ```
-# /home/swayambhu/.email-relay.env (chmod 600)
+# /home/swayambhu/.email-gateway.env (chmod 600)
 GMAIL_USER=swayambhu.agent@gmail.com
 GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
-EMAIL_RELAY_SECRET=generated-secret-here
+EMAIL_RELAY_SECRET=<openssl rand -hex 32>
 PORT=3500
 ```
 
-Cloudflare tunnel: route `/send-email` and `/health` on
-`akash.swayambhu.dev` to `localhost:3500`. If path-based routing
-isn't supported by the current tunnel config, use a separate
-subdomain (e.g. `email.swayambhu.dev`).
+Tunnel: route `/send-email`, `/check-email`, `/get-message`, `/health`
+on `akash.swayambhu.dev` to localhost:3500. If path routing isn't
+available, use `email.swayambhu.dev`.
+
+## Quality Lens Assessment
+
+- **Elegance:** One gateway, one auth mechanism, zero OAuth. Clean.
+- **Generality:** Works with any SMTP/IMAP provider, not just Gmail.
+- **Robustness:** App passwords don't expire. SMTP/IMAP are stable.
+- **Simplicity:** Gateway uses `imapflow` + `mailparser` for IMAP
+  (proven libraries, not hand-rolled protocol parsing). SMTP is raw
+  (simple enough). One provider file on Worker side. No OAuth.
+- **Modularity:** Gateway owns all email transport. Worker only does
+  HTTPS. Clean boundary.
