@@ -870,6 +870,21 @@ async function applyDrResults(K, state, output) {
     if (!result.ok) blocked.push({ key: op.key, error: result.error });
   }
 
+  // Code staging — DR can stage code changes for governor deployment
+  if (output.code_stage_requests?.length) {
+    for (const req of output.code_stage_requests) {
+      try {
+        await K.stageCode(req.target, req.code);
+      } catch (err) {
+        blocked.push({ key: req.target, error: err.message });
+      }
+    }
+    if (output.deploy) {
+      await K.signalDeploy();
+      await K.karmaRecord({ event: "deploy_requested_by_dr", staged: output.code_stage_requests.length });
+    }
+  }
+
   if (blocked.length > 0) {
     await K.karmaRecord({ event: "dr_apply_blocked", blocked, applied: ops.length - blocked.length });
   }
