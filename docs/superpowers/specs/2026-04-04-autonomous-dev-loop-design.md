@@ -34,10 +34,11 @@ Node.js daemon. It runs inside a Claude Code session on the developer's
 machine, using paid CC and Codex subscriptions (zero marginal cost).
 
 ```
-loop.mjs:    OBSERVE → CLASSIFY (mechanical)
+loop.mjs:    OBSERVE → CLASSIFY (mechanical) → write context.json
 CC skill:    ANALYZE (deep, CC reads context.json) → propose fixes
 Codex CLI:   CHALLENGE (adversarial, max 3 rounds)
-loop.mjs:    DECIDE → VERIFY
+CC skill:    DECIDE (route by evidence/blast-radius)
+CC skill:    VERIFY (invokes verify.mjs for tests + rollback)
 ```
 
 **Why not a standalone script:** The deep analysis and adversarial
@@ -296,7 +297,7 @@ Swami's Slack/email for testing comms issues (prefix `[TESTING]`).
 Output: applied changes committed to git, pending items in
 `queue/pending/`.
 
-### Stage 6: VERIFY
+### Stage 6: VERIFY (CC invokes verify.mjs)
 
 After every applied change:
 
@@ -547,7 +548,9 @@ Each finding from the cognitive audit is classified:
       analysis.json               stage 3 output (CC deep analysis)
       proposal-{seq}.md           fix proposals from CC
       challenge-{seq}-round-{n}.json  Codex objections per round
-      experiment.json             stage 4 output (challenge transcript)
+      response-{seq}-round-{n}.md CC rebuttals/revisions
+      verdict-{seq}.json          convergence record per proposal
+      experiment.json             stage 4 summary (challenge transcript)
       applied.json                stage 5 output
       verification.json           stage 6 output
       report.md                   human-readable cycle summary
