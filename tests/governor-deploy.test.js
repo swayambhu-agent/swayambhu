@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readCodeFromKV, generateIndexJS, keyToFilePath } from "../governor/builder.js";
-import { deploy, recordDeployment, hashCode, rollback } from "../governor/deployer.js";
+import { deploy, recordDeployment, hashCode } from "../governor/deployer.js";
+import { applyStagedCode, snapshotCanonicalCode } from "../governor/worker.js";
 import { makeKVStore } from "./helpers/mock-kv.js";
 
 // ── 1. readCodeFromKV ─────────────────────────────────────────
@@ -102,17 +103,14 @@ describe("recordDeployment", () => {
   });
 
   it("writes version manifest, current pointer, and history", async () => {
-    const proposals = [
-      { id: "p_1", claims: ["fix bug"] },
-      { id: "p_2", claims: ["add feature"] },
-    ];
+    const changedKeys = ["tool:foo:code", "tool:bar:code"];
     const hashes = { "kernel.js": "abc", "tools/kv_query.js": "def" };
 
-    const manifest = await recordDeployment(kv, "v_test_1", proposals, hashes);
+    const manifest = await recordDeployment(kv, "v_test_1", changedKeys, hashes);
 
     // Version manifest
     expect(manifest.version_id).toBe("v_test_1");
-    expect(manifest.proposals).toEqual(["p_1", "p_2"]);
+    expect(manifest.changed_keys).toEqual(changedKeys);
     expect(manifest.code_hashes).toEqual(hashes);
 
     // KV: version key
@@ -127,12 +125,12 @@ describe("recordDeployment", () => {
     const history = JSON.parse(kv._store.get("deploy:history"));
     expect(history).toHaveLength(1);
     expect(history[0].version_id).toBe("v_test_1");
-    expect(history[0].proposal_count).toBe(2);
+    expect(history[0].changed_count).toBe(2);
   });
 
   it("prepends to history (newest first)", async () => {
-    await recordDeployment(kv, "v_old", [{ id: "p_1" }], {});
-    await recordDeployment(kv, "v_new", [{ id: "p_2" }], {});
+    await recordDeployment(kv, "v_old", ["tool:a:code"], {});
+    await recordDeployment(kv, "v_new", ["tool:b:code"], {});
 
     const history = JSON.parse(kv._store.get("deploy:history"));
     expect(history[0].version_id).toBe("v_new");
@@ -141,7 +139,7 @@ describe("recordDeployment", () => {
 
   it("caps history at 10 entries", async () => {
     for (let i = 0; i < 12; i++) {
-      await recordDeployment(kv, `v_${i}`, [{ id: `p_${i}` }], {});
+      await recordDeployment(kv, `v_${i}`, [`tool:t${i}:code`], {});
     }
 
     const history = JSON.parse(kv._store.get("deploy:history"));
@@ -277,26 +275,118 @@ describe("deploy", () => {
   });
 });
 
-// ── 5. rollback (manifest lookup) ─────────────────────────────
+// ── 5. applyStagedCode ──────────────────────────────────────
 
-describe("rollback", () => {
-  it("returns manifest for valid version", async () => {
+describe("applyStagedCode", () => {
+  it("applies staged code matching execution_id to canonical keys", async () => {
     const kv = makeKVStore({
-      "deploy:version:v_1": JSON.stringify({
-        version_id: "v_1",
-        proposals: ["p_1"],
-        code_hashes: { "kernel.js": "abc" },
+      "code_staging:tool:foo:code": JSON.stringify({
+        code: "// new foo code",
+        execution_id: "exec_1",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+      "code_staging:tool:bar:code": JSON.stringify({
+        code: "// new bar code",
+        execution_id: "exec_1",
+        staged_at: "2026-01-01T00:00:00Z",
       }),
     });
 
-    const manifest = await rollback(kv, {}, "v_1");
-    expect(manifest.version_id).toBe("v_1");
-    expect(manifest.proposals).toEqual(["p_1"]);
+    const changed = await applyStagedCode(kv, "exec_1");
+
+    expect(changed).toEqual(["tool:foo:code", "tool:bar:code"]);
+    expect(kv._store.get("tool:foo:code")).toBe("// new foo code");
+    expect(kv._store.get("tool:bar:code")).toBe("// new bar code");
   });
 
-  it("throws for nonexistent version", async () => {
+  it("ignores staged code from a different execution_id", async () => {
+    const kv = makeKVStore({
+      "code_staging:tool:foo:code": JSON.stringify({
+        code: "// foo from exec_1",
+        execution_id: "exec_1",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+      "code_staging:tool:bar:code": JSON.stringify({
+        code: "// bar from exec_2",
+        execution_id: "exec_2",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+    });
+
+    const changed = await applyStagedCode(kv, "exec_1");
+
+    // Only foo was applied
+    expect(changed).toEqual(["tool:foo:code"]);
+    expect(kv._store.get("tool:foo:code")).toBe("// foo from exec_1");
+    // bar's staging key remains unconsumed
+    expect(kv._store.has("code_staging:tool:bar:code")).toBe(true);
+    expect(kv._store.has("tool:bar:code")).toBe(false);
+  });
+
+  it("deletes consumed staging keys", async () => {
+    const kv = makeKVStore({
+      "code_staging:tool:foo:code": JSON.stringify({
+        code: "// new code",
+        execution_id: "exec_1",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+    });
+
+    await applyStagedCode(kv, "exec_1");
+
+    expect(kv._store.has("code_staging:tool:foo:code")).toBe(false);
+  });
+
+  it("returns empty array when no code is staged", async () => {
     const kv = makeKVStore({});
-    await expect(rollback(kv, {}, "v_missing"))
-      .rejects.toThrow("No deployment manifest for version v_missing");
+    const changed = await applyStagedCode(kv, "exec_1");
+    expect(changed).toEqual([]);
+  });
+
+  it("applies all staged code when executionId is null (rebuild)", async () => {
+    const kv = makeKVStore({
+      "code_staging:tool:foo:code": JSON.stringify({
+        code: "// foo",
+        execution_id: "exec_1",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+      "code_staging:tool:bar:code": JSON.stringify({
+        code: "// bar",
+        execution_id: "exec_2",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+    });
+
+    const changed = await applyStagedCode(kv, null);
+
+    expect(changed).toHaveLength(2);
+    expect(kv._store.get("tool:foo:code")).toBe("// foo");
+    expect(kv._store.get("tool:bar:code")).toBe("// bar");
+  });
+});
+
+// ── 6. snapshotCanonicalCode ────────────────────────────────
+
+describe("snapshotCanonicalCode", () => {
+  it("snapshots current canonical code before applying changes", async () => {
+    const kv = makeKVStore({
+      "tool:foo:code": "// old foo code",
+      "tool:bar:code": "// old bar code",
+    });
+
+    await snapshotCanonicalCode(kv, ["tool:foo:code", "tool:bar:code"], "v_123");
+
+    const snapshot = JSON.parse(kv._store.get("deploy:snapshot:v_123"));
+    expect(snapshot["tool:foo:code"]).toBe("// old foo code");
+    expect(snapshot["tool:bar:code"]).toBe("// old bar code");
+  });
+
+  it("records null for keys that did not previously exist", async () => {
+    const kv = makeKVStore({});
+
+    await snapshotCanonicalCode(kv, ["tool:new:code"], "v_456");
+
+    const snapshot = JSON.parse(kv._store.get("deploy:snapshot:v_456"));
+    expect(snapshot["tool:new:code"]).toBeNull();
   });
 });

@@ -68,139 +68,140 @@ export default {
 // ── Deploy flow ─────────────────────────────────────────────
 
 async function performDeploy(kv, env) {
-  // 1. Read accepted proposals
-  const proposalKeys = await listKeysWithPrefix(kv, "proposal:");
-  const acceptedProposals = [];
-  for (const key of proposalKeys) {
-    const proposal = await kv.get(key, "json");
-    if (proposal?.status === "accepted") {
-      acceptedProposals.push(proposal);
-    }
+  // 1. Read deploy:pending to get execution_id for batch scoping
+  const pending = await kv.get("deploy:pending", "json");
+  const executionId = pending?.execution_id || null;
+
+  // 2. Determine which keys will change (for snapshotting before apply)
+  const versionId = `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const stagingKeys = await listKeysWithPrefix(kv, "code_staging:");
+  const targetKeys = [];
+  for (const sk of stagingKeys) {
+    const record = await kv.get(sk, "json");
+    if (!record) continue;
+    if (executionId && record.execution_id !== executionId) continue;
+    targetKeys.push(sk.slice("code_staging:".length));
   }
 
-  // 2. Apply proposal changes to KV code keys
-  for (const proposal of acceptedProposals) {
-    await applyProposalToKV(kv, proposal);
-    proposal.status = "deploying";
-    await kv.put(`proposal:${proposal.id}`, JSON.stringify(proposal), {
-      metadata: { type: "proposal", format: "json" },
-    });
+  // 3. Snapshot canonical code before applying changes (for rollback)
+  if (targetKeys.length > 0) {
+    await snapshotCanonicalCode(kv, targetKeys, versionId);
   }
 
-  // 3. Read all code from KV (now includes applied changes)
+  // 4. Apply staged code (scoped to execution_id if present)
+  const changedKeys = await applyStagedCode(kv, executionId);
+
+  // 5. Read all code from KV (now includes applied changes)
   const { files, metadata } = await readCodeFromKV(kv);
 
-  // 4. Generate index.js
+  // 6. Generate index.js
   const indexJS = generateIndexJS(metadata);
   files["index.js"] = indexJS;
 
-  // 5. Compute code hashes for manifest
+  // 7. Compute code hashes for manifest
   const codeHashes = {};
   for (const [path, code] of Object.entries(files)) {
     codeHashes[path] = hashCode(code);
   }
 
-  // 6. Deploy
-  const versionId = `v_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const deployResult = await deploy(env, files);
 
-  // 7. Record deployment
-  await recordDeployment(kv, versionId, acceptedProposals, codeHashes);
-
-  // 8. Mark proposals as deployed
-  for (const proposal of acceptedProposals) {
-    proposal.status = "deployed";
-    proposal.deployed_at = new Date().toISOString();
-    proposal.deploy_version = versionId;
-    await kv.put(`proposal:${proposal.id}`, JSON.stringify(proposal), {
-      metadata: { type: "proposal", format: "json" },
-    });
-  }
+  // 8. Record deployment
+  await recordDeployment(kv, versionId, changedKeys, codeHashes);
 
   // 9. Sync to GitHub (best-effort — failure never blocks deploy)
   let gitSync = null;
   try {
     const changedFiles = {};
-    for (const proposal of acceptedProposals) {
-      for (const [kvKey] of Object.entries(proposal.changes || {})) {
-        const path = keyToFilePath(kvKey);
-        if (path) changedFiles[path] = await kv.get(kvKey, 'text');
-      }
+    for (const kvKey of changedKeys) {
+      const path = keyToFilePath(kvKey);
+      if (path) changedFiles[path] = await kv.get(kvKey, 'text');
     }
     if (Object.keys(changedFiles).length > 0) {
-      const claims = acceptedProposals.flatMap(p => p.claims || []);
-      gitSync = await syncToGitHub(env, changedFiles, `deploy: ${versionId}\n\n${claims.join('\n')}`);
+      gitSync = await syncToGitHub(env, changedFiles, `deploy: ${versionId}\n\nChanged: ${changedKeys.join(', ')}`);
     }
   } catch {}
 
   return {
     version_id: versionId,
-    proposals_deployed: acceptedProposals.length,
+    changed_keys: changedKeys,
     files_count: Object.keys(files).length,
     git_sync: gitSync,
   };
 }
 
-// Apply a proposal's code changes to KV
-async function applyProposalToKV(kv, proposal) {
-  for (const [key, change] of Object.entries(proposal.changes || {})) {
-    if (change.op === "put" || change.op === "replace") {
-      await kv.put(key, change.code, {
-        metadata: { type: "code", format: "text", updated_at: new Date().toISOString() },
-      });
-    } else if (change.op === "patch") {
-      const current = await kv.get(key, "text");
-      if (typeof current === "string" && current.includes(change.old_string)) {
-        const patched = current.replace(change.old_string, change.new_string);
-        await kv.put(key, patched, {
-          metadata: { type: "code", format: "text", updated_at: new Date().toISOString() },
-        });
-      }
-    } else if (change.op === "delete") {
-      await kv.delete(key);
-    }
+// Apply staged code to canonical keys, scoped by execution_id.
+// Returns array of target keys that were applied.
+export async function applyStagedCode(kv, executionId) {
+  const stagingKeys = await listKeysWithPrefix(kv, "code_staging:");
+  const changedKeys = [];
+
+  for (const stagingKey of stagingKeys) {
+    const record = await kv.get(stagingKey, "json");
+    if (!record) continue;
+
+    // Batch scoping: if executionId given, only apply matching records
+    if (executionId && record.execution_id !== executionId) continue;
+
+    // Target key is everything after "code_staging:"
+    const targetKey = stagingKey.slice("code_staging:".length);
+
+    // Apply to canonical key
+    await kv.put(targetKey, record.code, {
+      metadata: { type: "code", format: "text", updated_at: new Date().toISOString() },
+    });
+
+    // Delete consumed staging key
+    await kv.delete(stagingKey);
+    changedKeys.push(targetKey);
   }
+
+  return changedKeys;
+}
+
+// Snapshot current canonical code for rollback.
+// Stores a map of { targetKey: code } at deploy:snapshot:{versionId}.
+export async function snapshotCanonicalCode(kv, targetKeys, versionId) {
+  const snapshot = {};
+  for (const key of targetKeys) {
+    const code = await kv.get(key, "text");
+    // null means the key didn't exist before (new file) — record that
+    snapshot[key] = code;
+  }
+  await kv.put(`deploy:snapshot:${versionId}`, JSON.stringify(snapshot), {
+    metadata: { type: "deployment", format: "json" },
+  });
 }
 
 // ── Rollback flow ───────────────────────────────────────────
 
 async function performRollback(kv, env) {
-  const history = await kv.get("deploy:history", "json") || [];
-  if (history.length < 2) {
-    throw new Error("No previous version to rollback to — need at least 2 deployments in history");
+  const current = await kv.get("deploy:current", "json");
+  if (!current?.version_id) {
+    throw new Error("No current deployment to rollback from");
   }
 
-  // Current is history[0], rollback target is history[1]
-  const target = history[1];
-
-  // Mark any deployed proposals from the current version as failed
-  const current = await kv.get("deploy:current", "json");
-  if (current?.version_id) {
-    const manifest = await kv.get(`deploy:version:${current.version_id}`, "json");
-    if (manifest?.proposals) {
-      for (const proposalId of manifest.proposals) {
-        const proposal = await kv.get(`proposal:${proposalId}`, "json");
-        if (proposal) {
-          proposal.status = "failed";
-          proposal.failed_at = new Date().toISOString();
-          proposal.failed_reason = "rollback";
-          await kv.put(`proposal:${proposalId}`, JSON.stringify(proposal), {
-            metadata: { type: "proposal", format: "json" },
-          });
-        }
+  // Restore canonical code from the snapshot taken before this deploy
+  const snapshot = await kv.get(`deploy:snapshot:${current.version_id}`, "json");
+  if (snapshot) {
+    for (const [key, code] of Object.entries(snapshot)) {
+      if (code === null) {
+        // Key didn't exist before this deploy — remove it
+        await kv.delete(key);
+      } else {
+        await kv.put(key, code, {
+          metadata: { type: "code", format: "text", updated_at: new Date().toISOString() },
+        });
       }
     }
   }
 
-  // Redeploy from current KV state (which should be the pre-proposal state
-  // since proposals were applied to KV before deploy — for full rollback we'd
-  // need to restore KV code keys from the target version's snapshot).
-  // For now, trigger a fresh build from current KV state.
+  // Trigger a fresh deploy from restored state (no staged code to apply)
   const result = await performDeploy(kv, env);
 
   return {
-    rolled_back_from: current?.version_id,
-    rolled_back_to: target.version_id,
+    rolled_back_from: current.version_id,
+    restored_keys: snapshot ? Object.keys(snapshot) : [],
     ...result,
   };
 }
