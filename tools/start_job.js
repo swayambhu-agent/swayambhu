@@ -80,6 +80,8 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     return { ok: false, error: `tarball failed: ${e.message}` };
   }
 
+  const tarBytes = Uint8Array.from(Buffer.from(base64Tar, 'base64'));
+
   // Shell single-quote escaping: a'b → a'\''b
   const esc = s => s.replace(/'/g, "'\\''");
 
@@ -102,6 +104,23 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   // Build the workdir path
   const workdir = `${baseDir}/${jobId}`;
 
+  const uploadFilename = `${jobId}.tar.gz`;
+  const uploadResult = await provider.upload({
+    filename: uploadFilename,
+    bytes: tarBytes,
+    baseUrl,
+    secrets,
+    fetch,
+  });
+
+  if (!uploadResult.ok) {
+    return {
+      ok: false,
+      error: `Failed to upload job tarball: ${uploadResult.error}`,
+      detail: uploadResult.detail,
+    };
+  }
+
   // Build inner script (plain shell text — will be base64-encoded)
   const innerLines = [
     pathDirs.length ? `export PATH=${pathDirs.join(':')}` + '${PATH:+:$PATH}' : null,
@@ -117,7 +136,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   // Build outer script (setup + nohup with base64-encoded inner script)
   const shellScript = [
     `mkdir -p '${esc(workdir)}'`,
-    `printf '%s' '${base64Tar}' | base64 -d | tar xz -C '${esc(workdir)}'`,
+    `tar xz -f '${esc(uploadResult.path)}' -C '${esc(workdir)}'`,
     `nohup sh -c "printf '%s' '${innerB64}' | base64 -d | sh" > /dev/null 2>&1 & echo $!`,
   ].join(' && \\\n');
 

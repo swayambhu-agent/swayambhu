@@ -136,7 +136,12 @@ describe("module structure", () => {
     it(`providers/${name}.js exports meta and call/check`, () => {
       expect(mod.meta).toBeDefined();
       expect(typeof mod.meta.timeout_ms).toBe("number");
-      expect(mod.call || mod.check).toBeDefined();
+      if (name === "compute") {
+        expect(typeof mod.call).toBe("function");
+        expect(typeof mod.upload).toBe("function");
+      } else {
+        expect(mod.call || mod.check).toBeDefined();
+      }
     });
   }
 });
@@ -246,6 +251,72 @@ describe("computer", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("500");
     expect(result.detail).toBe("server error detail");
+  });
+
+  it("provider.upload posts raw bytes to /upload with filename query param", async () => {
+    const f = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: (name) => name === "content-type" ? "application/json" : null },
+      json: async () => ({ ok: true, path: "/tmp/uploaded/job.tar.gz", bytes_written: 4 }),
+      text: async () => JSON.stringify({ ok: true, path: "/tmp/uploaded/job.tar.gz", bytes_written: 4 }),
+    }));
+
+    const result = await compute.upload({
+      filename: "job.tar.gz",
+      bytes: new Uint8Array([1, 2, 3, 4]),
+      baseUrl: "https://test.dev",
+      secrets,
+      fetch: f,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      path: "/tmp/uploaded/job.tar.gz",
+      bytes_written: 4,
+    });
+
+    expect(f).toHaveBeenCalledOnce();
+    expect(f.mock.calls[0][0]).toBe("https://test.dev/upload?filename=job.tar.gz");
+    const opts = f.mock.calls[0][1];
+    expect(opts.method).toBe("POST");
+    expect(opts.headers["Content-Type"]).toBe("application/octet-stream");
+    expect(opts.headers["CF-Access-Client-Id"]).toBe("cid");
+    expect(opts.headers["Authorization"]).toBe("Bearer key");
+    expect(opts.body).toBeInstanceOf(Uint8Array);
+  });
+
+  it("provider.upload returns validation error when filename is missing", async () => {
+    const result = await compute.upload({
+      bytes: new Uint8Array([1]),
+      baseUrl: "https://test.dev",
+      secrets,
+      fetch: vi.fn(),
+    });
+
+    expect(result).toEqual({ ok: false, error: "filename is required" });
+  });
+
+  it("provider.upload handles non-ok upload responses", async () => {
+    const f = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+      text: async () => "upload failed",
+    }));
+
+    const result = await compute.upload({
+      filename: "job.tar.gz",
+      bytes: new Uint8Array([1, 2]),
+      baseUrl: "https://test.dev",
+      secrets,
+      fetch: f,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("500");
+    expect(result.detail).toBe("upload failed");
   });
 });
 
@@ -1438,8 +1509,11 @@ describe("start_job", () => {
   const secrets = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "s", COMPUTER_API_KEY: "k" };
   const config = { jobs: { base_url: "https://test.dev", base_dir: "/tmp/jobs", max_concurrent_jobs: 2, default_ttl_minutes: 60 } };
 
-  it("dispatches a custom job and writes job record", async () => {
-    const provider = { call: vi.fn(async () => ({ ok: true, output: [{ data: "12345\r\n" }] })) };
+  it("uploads tarball before execute and writes job record", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      call: vi.fn(async () => ({ ok: true, output: [{ data: "12345\r\n" }] })),
+    };
     const kv = mockKV();
 
     const result = await start_job.execute({
@@ -1453,7 +1527,18 @@ describe("start_job", () => {
     expect(result.ok).toBe(true);
     expect(result.job_id).toMatch(/^j_/);
     expect(result.pid).toBe(12345);
+    expect(provider.upload).toHaveBeenCalledOnce();
     expect(provider.call).toHaveBeenCalledOnce();
+    expect(provider.upload.mock.invocationCallOrder[0]).toBeLessThan(provider.call.mock.invocationCallOrder[0]);
+
+    const uploadArgs = provider.upload.mock.calls[0][0];
+    expect(uploadArgs.baseUrl).toBe("https://test.dev");
+    expect(uploadArgs.filename).toMatch(/^j_.*\.tar\.gz$/);
+    expect(uploadArgs.bytes).toBeInstanceOf(Uint8Array);
+
+    const executeArgs = provider.call.mock.calls[0][0];
+    expect(executeArgs.command).toContain("tar xz -f '/tmp/uploads/job.tar.gz'");
+    expect(executeArgs.command).not.toContain("base64 -d | tar xz");
 
     // Verify job record was written
     const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
@@ -1462,6 +1547,28 @@ describe("start_job", () => {
     expect(record.status).toBe("running");
     expect(record.type).toBe("custom");
     expect(record.callback_secret).toBeUndefined();
+  });
+
+  it("returns upload failure before calling execute", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: false, error: "500 Internal Server Error", detail: "upload failed" })),
+      call: vi.fn(),
+    };
+
+    const result = await start_job.execute({
+      type: "custom",
+      command: "echo hello",
+      prompt: "test prompt",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv: mockKV(), config,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Failed to upload job tarball: 500 Internal Server Error",
+      detail: "upload failed",
+    });
+    expect(provider.call).not.toHaveBeenCalled();
   });
 
   it("returns error when type is missing", async () => {
@@ -1486,7 +1593,10 @@ describe("start_job", () => {
   });
 
   it("packs context keys into tarball", async () => {
-    const provider = { call: vi.fn(async () => ({ ok: true, output: [{ data: "999\r\n" }] })) };
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      call: vi.fn(async () => ({ ok: true, output: [{ data: "999\r\n" }] })),
+    };
     const kv = mockKV({ "config:defaults": JSON.stringify({ act: {} }), "karma:s1": JSON.stringify([]) });
 
     const result = await start_job.execute({
@@ -1501,6 +1611,7 @@ describe("start_job", () => {
 
   it("generates valid inner script for cc_analysis (no && contamination)", async () => {
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
       call: vi.fn(async ({ command }) => {
         expect(command).toContain("base64 -d | sh");
         expect(command).not.toMatch(/sh -c '[^']*&&/);
@@ -1523,6 +1634,7 @@ describe("start_job", () => {
   it("injects path_dirs into inner script", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1538,7 +1650,7 @@ describe("start_job", () => {
       config: { jobs: { ...config.jobs, path_dirs: ["/opt/bin", "/usr/local/custom"] } },
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     expect(b64Match).toBeTruthy();
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("export PATH=/opt/bin:/usr/local/custom${PATH:+:$PATH}");
@@ -1547,6 +1659,7 @@ describe("start_job", () => {
   it("escapes cc_model with quotes in inner script", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1562,7 +1675,7 @@ describe("start_job", () => {
       config: { jobs: { ...config.jobs, cc_model: "model'injection" } },
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("--model 'model'\\''injection'");
     expect(innerScript).not.toContain("--model model'injection");
@@ -1571,6 +1684,7 @@ describe("start_job", () => {
   it("filters invalid path_dirs entries", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1586,7 +1700,7 @@ describe("start_job", () => {
       config: { jobs: { ...config.jobs, path_dirs: ["/valid/path", "not-absolute", "/inject;rm -rf /", 42, "/ok"] } },
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("export PATH=/valid/path:/ok${PATH:+:$PATH}");
     expect(innerScript).not.toContain("not-absolute");
@@ -1596,6 +1710,7 @@ describe("start_job", () => {
   it("wraps custom command in subshell with absolute exit_code path", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1610,7 +1725,7 @@ describe("start_job", () => {
       provider, secrets, fetch: vi.fn(), kv, config,
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("(python3 analyze.py)");
     expect(innerScript).toMatch(/echo \$\? > '\/tmp\/jobs\/[^']+\/exit_code'/);
@@ -1619,6 +1734,7 @@ describe("start_job", () => {
   it("handles non-array path_dirs gracefully", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1634,7 +1750,7 @@ describe("start_job", () => {
       config: { jobs: { ...config.jobs, path_dirs: "/not/an/array" } },
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).not.toContain("export PATH");
   });

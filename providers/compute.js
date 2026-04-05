@@ -7,15 +7,19 @@ export const meta = {
   timeout_ms: 300000,
 };
 
-export async function call({ command, baseUrl, timeout, secrets, fetch }) {
-  if (!command) return { ok: false, error: "command is required" };
-
-  const headers = {
-    "Content-Type": "application/json",
+function buildHeaders(secrets, contentType) {
+  return {
+    ...(contentType ? { "Content-Type": contentType } : {}),
     "CF-Access-Client-Id": secrets.CF_ACCESS_CLIENT_ID,
     "CF-Access-Client-Secret": secrets.CF_ACCESS_CLIENT_SECRET,
     "Authorization": `Bearer ${secrets.COMPUTER_API_KEY}`,
   };
+}
+
+export async function call({ command, baseUrl, timeout, secrets, fetch }) {
+  if (!command) return { ok: false, error: "command is required" };
+
+  const headers = buildHeaders(secrets, "application/json");
 
   const wait = timeout || 60;
 
@@ -56,5 +60,36 @@ export async function call({ command, baseUrl, timeout, secrets, fetch }) {
     exit_code: data.exit_code,
     output: data.output,
     process_id: data.id,
+  };
+}
+
+export async function upload({ filename, bytes, baseUrl, secrets, fetch }) {
+  if (!filename) return { ok: false, error: "filename is required" };
+  if (!(bytes instanceof Uint8Array)) return { ok: false, error: "bytes must be a Uint8Array" };
+
+  const headers = buildHeaders(secrets, "application/octet-stream");
+
+  let resp;
+  try {
+    const encodedFilename = encodeURIComponent(filename);
+    resp = await fetch(`${baseUrl}/upload?filename=${encodedFilename}`, {
+      method: "POST",
+      headers,
+      body: bytes,
+    });
+  } catch (e) {
+    return { ok: false, error: `fetch failed: ${e.message || String(e)}` };
+  }
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    return { ok: false, error: `${resp.status} ${resp.statusText}`, detail: body.slice(0, 500) };
+  }
+
+  const data = await resp.json();
+  return {
+    ok: true,
+    path: data.path,
+    bytes_written: data.bytes_written,
   };
 }
