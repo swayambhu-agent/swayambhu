@@ -63,19 +63,22 @@ export async function call({ command, baseUrl, timeout, secrets, fetch }) {
   };
 }
 
-export async function upload({ filename, bytes, baseUrl, secrets, fetch }) {
+export async function upload({ filename, directory, bytes, baseUrl, secrets, fetch }) {
   if (!filename) return { ok: false, error: "filename is required" };
+  if (!directory) return { ok: false, error: "directory is required" };
   if (!(bytes instanceof Uint8Array)) return { ok: false, error: "bytes must be a Uint8Array" };
 
-  const headers = buildHeaders(secrets, "application/octet-stream");
+  const headers = buildHeaders(secrets);
+  const formData = new FormData();
+  formData.append("file", new File([bytes], filename, { type: "application/gzip" }));
 
   let resp;
   try {
-    const encodedFilename = encodeURIComponent(filename);
-    resp = await fetch(`${baseUrl}/upload?filename=${encodedFilename}`, {
+    const encodedDirectory = encodeURIComponent(directory);
+    resp = await fetch(`${baseUrl}/files/upload?directory=${encodedDirectory}`, {
       method: "POST",
       headers,
-      body: bytes,
+      body: formData,
     });
   } catch (e) {
     return { ok: false, error: `fetch failed: ${e.message || String(e)}` };
@@ -90,6 +93,6 @@ export async function upload({ filename, bytes, baseUrl, secrets, fetch }) {
   return {
     ok: true,
     path: data.path,
-    bytes_written: data.bytes_written,
+    size: data.size,
   };
 }

@@ -253,18 +253,19 @@ describe("computer", () => {
     expect(result.detail).toBe("server error detail");
   });
 
-  it("provider.upload posts raw bytes to /upload with filename query param", async () => {
+  it("provider.upload posts multipart form data to /files/upload with directory query param", async () => {
     const f = vi.fn(async () => ({
       ok: true,
       status: 200,
       statusText: "OK",
       headers: { get: (name) => name === "content-type" ? "application/json" : null },
-      json: async () => ({ ok: true, path: "/tmp/uploaded/job.tar.gz", bytes_written: 4 }),
-      text: async () => JSON.stringify({ ok: true, path: "/tmp/uploaded/job.tar.gz", bytes_written: 4 }),
+      json: async () => ({ path: "/tmp/uploaded/job.tar.gz", size: 4 }),
+      text: async () => JSON.stringify({ path: "/tmp/uploaded/job.tar.gz", size: 4 }),
     }));
 
     const result = await compute.upload({
       filename: "job.tar.gz",
+      directory: "/tmp/uploaded",
       bytes: new Uint8Array([1, 2, 3, 4]),
       baseUrl: "https://test.dev",
       secrets,
@@ -274,21 +275,26 @@ describe("computer", () => {
     expect(result).toEqual({
       ok: true,
       path: "/tmp/uploaded/job.tar.gz",
-      bytes_written: 4,
+      size: 4,
     });
 
     expect(f).toHaveBeenCalledOnce();
-    expect(f.mock.calls[0][0]).toBe("https://test.dev/upload?filename=job.tar.gz");
+    expect(f.mock.calls[0][0]).toBe("https://test.dev/files/upload?directory=%2Ftmp%2Fuploaded");
     const opts = f.mock.calls[0][1];
     expect(opts.method).toBe("POST");
-    expect(opts.headers["Content-Type"]).toBe("application/octet-stream");
+    expect(opts.headers["Content-Type"]).toBeUndefined();
     expect(opts.headers["CF-Access-Client-Id"]).toBe("cid");
     expect(opts.headers["Authorization"]).toBe("Bearer key");
-    expect(opts.body).toBeInstanceOf(Uint8Array);
+    expect(opts.body).toBeInstanceOf(FormData);
+    const uploadedFile = opts.body.get("file");
+    expect(uploadedFile).toBeInstanceOf(File);
+    expect(uploadedFile.name).toBe("job.tar.gz");
+    expect(uploadedFile.type).toBe("application/gzip");
   });
 
   it("provider.upload returns validation error when filename is missing", async () => {
     const result = await compute.upload({
+      directory: "/tmp/uploaded",
       bytes: new Uint8Array([1]),
       baseUrl: "https://test.dev",
       secrets,
@@ -296,6 +302,18 @@ describe("computer", () => {
     });
 
     expect(result).toEqual({ ok: false, error: "filename is required" });
+  });
+
+  it("provider.upload returns validation error when directory is missing", async () => {
+    const result = await compute.upload({
+      filename: "job.tar.gz",
+      bytes: new Uint8Array([1]),
+      baseUrl: "https://test.dev",
+      secrets,
+      fetch: vi.fn(),
+    });
+
+    expect(result).toEqual({ ok: false, error: "directory is required" });
   });
 
   it("provider.upload handles non-ok upload responses", async () => {
@@ -308,6 +326,7 @@ describe("computer", () => {
 
     const result = await compute.upload({
       filename: "job.tar.gz",
+      directory: "/tmp/uploaded",
       bytes: new Uint8Array([1, 2]),
       baseUrl: "https://test.dev",
       secrets,
@@ -1511,7 +1530,7 @@ describe("start_job", () => {
 
   it("uploads tarball before execute and writes job record", async () => {
     const provider = {
-      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async () => ({ ok: true, output: [{ data: "12345\r\n" }] })),
     };
     const kv = mockKV();
@@ -1533,11 +1552,12 @@ describe("start_job", () => {
 
     const uploadArgs = provider.upload.mock.calls[0][0];
     expect(uploadArgs.baseUrl).toBe("https://test.dev");
+    expect(uploadArgs.directory).toBe("/tmp/jobs");
     expect(uploadArgs.filename).toMatch(/^j_.*\.tar\.gz$/);
     expect(uploadArgs.bytes).toBeInstanceOf(Uint8Array);
 
     const executeArgs = provider.call.mock.calls[0][0];
-    expect(executeArgs.command).toContain("tar xz -f '/tmp/uploads/job.tar.gz'");
+    expect(executeArgs.command).toContain("tar xz -f '/tmp/jobs/job.tar.gz'");
     expect(executeArgs.command).not.toContain("base64 -d | tar xz");
 
     // Verify job record was written
@@ -1594,7 +1614,7 @@ describe("start_job", () => {
 
   it("packs context keys into tarball", async () => {
     const provider = {
-      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async () => ({ ok: true, output: [{ data: "999\r\n" }] })),
     };
     const kv = mockKV({ "config:defaults": JSON.stringify({ act: {} }), "karma:s1": JSON.stringify([]) });
@@ -1611,7 +1631,7 @@ describe("start_job", () => {
 
   it("generates valid inner script for cc_analysis (no && contamination)", async () => {
     const provider = {
-      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         expect(command).toContain("base64 -d | sh");
         expect(command).not.toMatch(/sh -c '[^']*&&/);
@@ -1634,7 +1654,7 @@ describe("start_job", () => {
   it("injects path_dirs into inner script", async () => {
     let capturedCommand;
     const provider = {
-      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1659,7 +1679,7 @@ describe("start_job", () => {
   it("escapes cc_model with quotes in inner script", async () => {
     let capturedCommand;
     const provider = {
-      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1684,7 +1704,7 @@ describe("start_job", () => {
   it("filters invalid path_dirs entries", async () => {
     let capturedCommand;
     const provider = {
-      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1710,7 +1730,7 @@ describe("start_job", () => {
   it("wraps custom command in subshell with absolute exit_code path", async () => {
     let capturedCommand;
     const provider = {
-      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1734,7 +1754,7 @@ describe("start_job", () => {
   it("handles non-array path_dirs gracefully", async () => {
     let capturedCommand;
     const provider = {
-      upload: vi.fn(async () => ({ ok: true, path: "/tmp/uploads/job.tar.gz", bytes_written: 128 })),
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };

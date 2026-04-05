@@ -107,6 +107,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   const uploadFilename = `${jobId}.tar.gz`;
   const uploadResult = await provider.upload({
     filename: uploadFilename,
+    directory: baseDir,
     bytes: tarBytes,
     baseUrl,
     secrets,
