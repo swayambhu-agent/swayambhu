@@ -109,9 +109,11 @@ This is how you control your own memory. Whatever keys you list here will be loa
 
 ### kv_operations
 
-This is how you write to your own memory. Common uses: update a project state, store something you learned. The kernel executes these after your reflection. Supported ops: `put`, `delete`, `patch`. You can create new keys and update keys you own (marked `unprotected`). Contact keys are allowed. System keys (config, prompts, tools, etc.) are blocked during session reflect — note needed changes in `session_summary` for deep reflect to act on.
+This is how you write to your own memory. Common uses: update a project state, store something you learned. The kernel executes these after your reflection. Supported ops: `put`, `delete`, `patch`.
 
-### note_to_future_self
+**Writable from session reflect:** agent-tier keys you own — `experience:*`, `action:*`, `workspace:*`, `job:*`, and any new key you create that isn't otherwise protected.
+
+**Blocked during session reflect:** all system keys — `config:*`, `prompt:*`, `tool:*`, `pattern:*`, `desire:*`, `tactic:*`, `contact:*`, `kernel:*`. If you need to create or update a pattern, desire, or tactic, note it in `note_to_future_self` — the deep-reflect cycle handles those writes.
 
 ### note_to_future_self
 

@@ -79,7 +79,7 @@
     "callback_advance_seconds": 30
   },
   "email": {
-    "relay_url": "https://email.swayambhu.dev"
+    "relay_url": "http://localhost:3500"
   },
   "inference": {
     "url": "http://localhost:8090",

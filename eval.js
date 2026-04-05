@@ -6,18 +6,26 @@ import { callInference, cosineSimilarity, l1Norm } from './memory.js';
 
 // ── Outcome text extraction ────────────────────────────
 
+// Cap per-tool summary and total outcome text to prevent context explosion in eval.
+// Large tool outputs (grep /proc, broad find, big file reads) inflate the eval LLM call
+// without adding classification signal — the relevant evidence is always near the start.
+const MAX_TOOL_SUMMARY = 1000;
+const MAX_OUTCOME_TEXT = 8000;
+
 function extractOutcomeText(ledger) {
   const parts = [];
   if (ledger.plan?.action) parts.push(ledger.plan.action);
   for (const tc of (ledger.tool_calls || [])) {
     const status = tc.ok ? "succeeded" : "failed";
-    const summary = tc.output
+    const raw = tc.output
       ? (typeof tc.output === "string" ? tc.output : JSON.stringify(tc.output))
       : "";
+    const summary = raw.length > MAX_TOOL_SUMMARY ? raw.slice(0, MAX_TOOL_SUMMARY) + " [truncated]" : raw;
     parts.push(`${tc.tool} ${status}: ${summary}`.trim());
   }
   if (ledger.final_text) parts.push(ledger.final_text);
-  return parts.join(". ");
+  const full = parts.join(". ");
+  return full.length > MAX_OUTCOME_TEXT ? full.slice(0, MAX_OUTCOME_TEXT) + " [truncated]" : full;
 }
 
 // ── Metric computation ─────────────────────────────────
