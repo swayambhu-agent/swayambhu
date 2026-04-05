@@ -207,6 +207,8 @@ if $RESET; then
   apply_overrides
 else
   echo "=== Preserving existing state (use --reset-all-state to wipe) ==="
+  echo "=== Syncing tool grants from source ==="
+  node scripts/sync-tool-grants.mjs
   echo "=== Resetting session schedule ==="
   node scripts/reset-schedule.mjs
 fi

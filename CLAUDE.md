@@ -308,14 +308,30 @@ validation logic.
 
 ## Working Style — MANDATORY
 
-**Do NOT make code changes without explicit approval.** When the user asks
-a question or raises an issue, respond with your analysis, thoughts, and
-proposed approach first. Wait for the user to say "yes", "do it", "go ahead",
-or otherwise clearly approve before writing or editing any files. This
-applies to ALL changes — even small ones, even "obvious" fixes, even
-documentation updates. Do NOT implement anything until you receive explicit
-go-ahead. The only exception is when the user gives an explicit instruction
-to implement something (e.g. "Implement the following plan:" or "add X to Y").
+**Do NOT make code changes without explicit approval.** This is the single
+most important rule. It has been violated repeatedly and must stop.
+
+When the user asks a question, raises an issue, or you discover a bug:
+1. Explain the problem and your analysis
+2. Propose a specific fix with the files and changes involved
+3. STOP. Wait for explicit approval ("yes", "do it", "go ahead", etc.)
+4. Only then write or edit files
+
+This applies to ALL changes without exception:
+- "Obvious" one-line fixes — still need approval
+- Test updates that follow from a code change — still need approval
+- Reverting your own mistakes — still need approval
+- Bug fixes you discover while investigating something else — still need approval
+- Changes that "flow naturally" from an approved task — still need approval
+
+The ONLY exceptions where you may proceed without asking:
+- The user gives an explicit implementation instruction ("implement this plan",
+  "add X to Y", "fix this", "apply these changes")
+- You are executing inside a subagent that was dispatched with explicit
+  implementation instructions
+- The user has said "go ahead" or equivalent for the specific change
+
+If you are unsure whether you have approval, you do not have approval. Ask.
 
 **Think independently on design decisions.** Don't just agree with the user —
 carefully reflect and think through proposals from first principles. Push

@@ -106,9 +106,10 @@ describe('dev-loop integration', () => {
     expect(probe.evidence.length).toBeGreaterThan(0);
   });
 
-  it('approval ID generation is deterministic', () => {
+  it('approval ID is 5-char alphanumeric', () => {
     const id = generateApprovalId('2026-04-04T120000Z', 1);
-    expect(id).toBe('devloop-2026-04-04T120000Z-01');
+    expect(id).toHaveLength(5);
+    expect(id).toMatch(/^[a-z2-9]{5}$/);
   });
 
   it('routeProposal handles all blast radius levels', () => {

@@ -5,6 +5,8 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 
 const RUBRIC_PATH = join(import.meta.dirname, "rubric.json");
+const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || "http://localhost:8790";
+const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test";
 
 let _rubricCache = null;
 
@@ -35,6 +37,28 @@ export async function buildContextFromAnalysis({
 }) {
   const rubric = await loadRubric();
 
+  // Ensure we have the act session's karma, not just the most-recent tick's.
+  // analyze-sessions uses a recency heuristic that can be shadowed by post-act ticks.
+  const karma = { ...(analysis.karma || {}) };
+  if (sessionId) {
+    const actKarmaKey = `karma:${sessionId}`;
+    if (!karma[actKarmaKey]) {
+      try {
+        const keys = encodeURIComponent(actKarmaKey);
+        const res = await fetch(`${DASHBOARD_URL}/kv/multi?keys=${keys}`, {
+          headers: { "X-Patron-Key": DASHBOARD_KEY },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data[actKarmaKey]) karma[actKarmaKey] = data[actKarmaKey];
+        }
+      } catch {
+        // Fall back to whatever analysis returned
+      }
+    }
+  }
+
   return {
     meta: {
       generated_at: new Date().toISOString(),
@@ -43,7 +67,7 @@ export async function buildContextFromAnalysis({
       scope: "current_snapshot",
     },
     session_id: sessionId,
-    karma: analysis.karma || {},
+    karma,
     desires: analysis.desires || {},
     patterns: analysis.patterns || {},
     experiences: analysis.experiences || {},

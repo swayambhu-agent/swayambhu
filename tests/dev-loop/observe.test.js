@@ -42,10 +42,7 @@ describe("chooseStrategy", () => {
       codeChanged: false,
     });
     expect(result.type).toBe("cold_start");
-    expect(result.setup.some(s => s.includes("seed-local-kv"))).toBe(true);
-    expect(result.setup).toContain(
-      "curl -sf -X POST http://localhost:8787/__clear-schedule",
-    );
+    expect(result.setup).toBe("cold_start_sequence");
     expect(result.trigger).toBe("http://localhost:8787/__scheduled");
   });
 
@@ -56,9 +53,17 @@ describe("chooseStrategy", () => {
       codeChanged: true,
     });
     expect(result.type).toBe("cold_start");
-    expect(result.setup.some(s => s.includes("seed-local-kv"))).toBe(true);
-    expect(result.setup).toContain(
-      "curl -sf -X POST http://localhost:8787/__clear-schedule",
-    );
+    expect(result.setup).toBe("cold_start_sequence");
+  });
+
+  it("chooses cold_start when coldStart flag is set", () => {
+    const result = chooseStrategy({
+      probes: [],
+      cycle: 5,
+      codeChanged: false,
+      coldStart: true,
+    });
+    expect(result.type).toBe("cold_start");
+    expect(result.setup).toBe("cold_start_sequence");
   });
 });

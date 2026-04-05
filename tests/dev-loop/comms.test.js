@@ -17,13 +17,13 @@ describe("formatApprovalMessage", () => {
     expect(msg).toContain("Refactor kernel safety gates");
   });
 
-  it("includes APPROVE and REJECT instructions", () => {
+  it("includes approve and reject instructions", () => {
     const msg = formatApprovalMessage({
       id: "devloop-xyz",
       summary: "test",
     });
-    expect(msg).toContain("APPROVE devloop-xyz");
-    expect(msg).toContain("REJECT devloop-xyz");
+    expect(msg).toContain("approve devloop-xyz");
+    expect(msg).toContain("reject devloop-xyz");
   });
 
   it("includes optional fields when provided", () => {
@@ -33,10 +33,12 @@ describe("formatApprovalMessage", () => {
       blastRadius: "tools/*.js",
       evidence: "All tests pass",
       challengeResult: "No issues found",
+      why: "Tool output not capped, causing context explosion",
+      whatChanges: "Add 8k char cap in runAgentTurn",
     });
-    expect(msg).toContain("Blast radius: tools/*.js");
-    expect(msg).toContain("Evidence: All tests pass");
-    expect(msg).toContain("Challenge result: No issues found");
+    expect(msg).toContain("Blast radius: tools/*");
+    expect(msg).toContain("*Why:* Tool output not capped");
+    expect(msg).toContain("*Changes:* Add 8k char cap");
   });
 
   it("omits optional fields when not provided", () => {
@@ -71,11 +73,14 @@ describe("parseReply", () => {
     });
   });
 
-  it("returns null for non-devloop messages", () => {
+  it("returns null for non-approval messages", () => {
     expect(parseReply("hello world")).toBeNull();
-    expect(parseReply("APPROVE something-else")).toBeNull();
     expect(parseReply("")).toBeNull();
     expect(parseReply(null)).toBeNull();
+    // APPROVE/REJECT with any ID is valid (short IDs like k7m3p)
+    expect(parseReply("APPROVE k7m3p")).toEqual({
+      id: "k7m3p", action: "APPROVE", reason: null,
+    });
   });
 
   it("handles case-insensitive matching", () => {

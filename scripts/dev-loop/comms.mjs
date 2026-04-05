@@ -4,22 +4,25 @@
 
 // ── Pure functions ──────────────────────────────────────────
 
-export function formatApprovalMessage({ id, summary, blastRadius, evidence, challengeResult }) {
+export function formatApprovalMessage({ id, summary, blastRadius, evidence, challengeResult, why, whatChanges, details }) {
   const lines = [
-    `[DEVLOOP] Approval request: ${id}`,
+    `[DEVLOOP] Approval: ${id}`,
     "",
-    `Summary: ${summary}`,
+    `*What:* ${summary}`,
   ];
-  if (blastRadius) lines.push(`Blast radius: ${blastRadius}`);
-  if (evidence) lines.push(`Evidence: ${evidence}`);
-  if (challengeResult) lines.push(`Challenge result: ${challengeResult}`);
+  if (why) lines.push("", `*Why:* ${why}`);
+  if (whatChanges) lines.push("", `*Changes:* ${whatChanges}`);
+  if (details) lines.push("", `*Details:* ${details}`);
   lines.push("");
-  lines.push(`Reply with: APPROVE ${id}`);
-  lines.push(`        or: REJECT ${id} <reason>`);
+  if (blastRadius) lines.push(`Blast radius: ${blastRadius} | Evidence: ${evidence || '?'} | Codex: ${challengeResult || 'not challenged'}`);
+  lines.push("");
+  lines.push(`Reply: approve ${id}`);
+  lines.push(`   or: reject ${id} <reason>`);
   return lines.join("\n");
 }
 
-const REPLY_RE = /^\s*(APPROVE|REJECT)\s+(devloop-[\w-]+)(?:\s+(.+))?\s*$/i;
+// Match both old format (devloop-...) and new short IDs (5 alphanum chars)
+const REPLY_RE = /^\s*(APPROVE|REJECT)\s+([\w-]+)(?:\s+(.+))?\s*$/i;
 
 export function parseReply(text) {
   if (!text) return null;
@@ -39,9 +42,9 @@ export function parseReply(text) {
 
 // ── Slack ────────────────────────────────────────────────────
 
-export async function sendSlack(text) {
+export async function sendSlack(text, { channel: channelOverride } = {}) {
   const token = process.env.SLACK_BOT_TOKEN;
-  const channel = process.env.SLACK_CHANNEL_ID;
+  const channel = channelOverride || process.env.SLACK_DEVLOOP_DM || process.env.SLACK_CHANNEL_ID;
   if (!token || !channel) throw new Error("Missing SLACK_BOT_TOKEN or SLACK_CHANNEL_ID");
 
   const resp = await fetch("https://slack.com/api/chat.postMessage", {
@@ -57,10 +60,29 @@ export async function sendSlack(text) {
   return data;
 }
 
-export async function checkSlackReplies(since) {
+// Resolve a user ID (U...) to a DM channel ID (D...) via conversations.open
+async function resolveDmChannel(token, userId) {
+  if (!userId?.startsWith('U')) return userId; // already a channel ID
+  const resp = await fetch('https://slack.com/api/conversations.open', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ users: userId }),
+  });
+  const data = await resp.json();
+  if (!data.ok) throw new Error(`conversations.open failed: ${data.error}`);
+  return data.channel.id;
+}
+
+export async function checkSlackReplies(since, { channel: channelOverride } = {}) {
   const token = process.env.SLACK_BOT_TOKEN;
-  const channel = process.env.SLACK_CHANNEL_ID;
+  let channel = channelOverride || process.env.SLACK_DEVLOOP_DM || process.env.SLACK_CHANNEL_ID;
   if (!token || !channel) throw new Error("Missing SLACK_BOT_TOKEN or SLACK_CHANNEL_ID");
+
+  // User IDs (U...) need to be resolved to DM channel IDs (D...)
+  channel = await resolveDmChannel(token, channel);
 
   const oldest = typeof since === "string"
     ? String(new Date(since).getTime() / 1000)

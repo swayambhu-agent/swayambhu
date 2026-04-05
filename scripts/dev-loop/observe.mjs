@@ -10,8 +10,39 @@ const ROOT = join(import.meta.dirname, "../..");
 const KERNEL_URL = process.env.SWAYAMBHU_KERNEL_URL || "http://localhost:8787";
 const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || "http://localhost:8790";
 const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test";
-const OBSERVE_TIMEOUT_MS = 600_000;
+const KERNEL_PORT = process.env.SWAYAMBHU_KERNEL_PORT || 8787;
+const DASHBOARD_PORT = process.env.SWAYAMBHU_DASHBOARD_PORT || 8790;
+const OBSERVE_TIMEOUT_MS = 900_000; // 15 minutes
 const POLL_INTERVAL_MS = 10_000;
+
+async function restartServices() {
+  // Shared logic with loop.mjs ensureServices — spawns both workers
+  // and waits for HTTP readiness. Duplicated here to avoid circular imports.
+  const kernel = spawn('npx', [
+    'wrangler', 'dev', '-c', 'wrangler.dev.toml',
+    '--test-scheduled', '--persist-to', '.wrangler/shared-state',
+  ], { cwd: ROOT, detached: true, stdio: 'ignore' });
+  kernel.unref();
+
+  const dashboard = spawn('npx', [
+    'wrangler', 'dev', '--port', String(DASHBOARD_PORT),
+    '--inspector-port', '9230', '--persist-to', '../.wrangler/shared-state',
+  ], { cwd: join(ROOT, 'dashboard-api'), detached: true, stdio: 'ignore' });
+  dashboard.unref();
+
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    try {
+      const [k, d] = await Promise.all([
+        fetch(`http://localhost:${KERNEL_PORT}/`, { signal: AbortSignal.timeout(3000) }).then(() => true).catch(() => false),
+        fetch(`http://localhost:${DASHBOARD_PORT}/`, { signal: AbortSignal.timeout(3000) }).then(() => true).catch(() => false),
+      ]);
+      if (k && d) return;
+    } catch {}
+    await sleep(2000);
+  }
+  throw new Error('Services failed to restart within 30s');
+}
 
 // ── Pure functions ──────────────────────────────────────────
 
@@ -19,20 +50,15 @@ export function detectCompletion(beforeCount, afterCount) {
   return afterCount > beforeCount;
 }
 
-export function chooseStrategy({ probes, cycle, codeChanged }) {
+export function chooseStrategy({ probes, cycle, codeChanged, coldStart }) {
   const clearScheduleCmd = `curl -sf -X POST ${KERNEL_URL}/__clear-schedule`;
   const triggerUrl = `${KERNEL_URL}/__scheduled`;
 
-  if (cycle === 0 || codeChanged) {
+  if (cycle === 0 || codeChanged || coldStart) {
     return {
       type: "cold_start",
-      // Don't use start.sh — it ends with `wait` and blocks forever.
-      // Instead: seed KV directly, then force the running worker's schedule
-      // into the past before triggering. Assumes services are already running.
-      setup: [
-        `node ${join(ROOT, "scripts/seed-local-kv.mjs")}`,
-        clearScheduleCmd,
-      ],
+      // Full reset handled by runObserve: stop workers, wipe, seed, restart.
+      setup: "cold_start_sequence",
       trigger: triggerUrl,
     };
   }
@@ -185,23 +211,49 @@ export async function runObserve({
   cycle,
   probes,
   codeChanged,
+  coldStart,
   timestamp,
 }) {
   try {
-    const strategy = chooseStrategy({ probes, cycle, codeChanged });
+    const strategy = chooseStrategy({ probes, cycle, codeChanged, coldStart });
 
-    // Setup step: cold_start seeds KV, all strategies clear the schedule first.
-    const setupCmds = Array.isArray(strategy.setup) ? strategy.setup
-      : strategy.setup ? [strategy.setup] : [];
-    if (setupCmds.length) {
+    // Setup
+    if (strategy.setup === "cold_start_sequence") {
+      console.log(`[OBSERVE] Running cold start: stop → wipe → seed → restart`);
+
+      // 1. Kill all wrangler/workerd processes
+      try { execSync('pkill -9 -f workerd', { stdio: 'ignore', timeout: 5000 }); } catch {}
+      try { execSync('pkill -9 -f "wrangler dev"', { stdio: 'ignore', timeout: 5000 }); } catch {}
+
+      // 2. Wait for both workerd and wrangler dev to exit (up to 10s)
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        let alive = false;
+        try { execSync('pgrep -f workerd', { stdio: 'ignore' }); alive = true; } catch {}
+        try { execSync('pgrep -f "wrangler dev"', { stdio: 'ignore' }); alive = true; } catch {}
+        if (!alive) break;
+        await sleep(500);
+      }
+      await sleep(2000); // extra wait for ports to free
+
+      // 3. Wipe state
+      try { execSync(`rm -rf ${join(ROOT, '.wrangler/shared-state')}`, { stdio: 'ignore' }); } catch {}
+
+      // 4. Seed
+      execSync(`node ${join(ROOT, 'scripts/seed-local-kv.mjs')}`, {
+        cwd: ROOT, stdio: 'inherit', timeout: 60_000,
+      });
+
+      // 5. Restart workers
+      console.log('[OBSERVE] Restarting services...');
+      await restartServices();
+
+    } else if (strategy.setup) {
+      // Normal setup (e.g. clear schedule)
+      const setupCmds = Array.isArray(strategy.setup) ? strategy.setup : [strategy.setup];
       console.log(`[OBSERVE] Running setup: ${strategy.type}`);
       for (const cmd of setupCmds) {
-        execSync(cmd, {
-          encoding: "utf8",
-          timeout: 300_000,
-          cwd: ROOT,
-          stdio: "inherit",
-        });
+        execSync(cmd, { encoding: 'utf8', timeout: 300_000, cwd: ROOT, stdio: 'inherit' });
       }
     }
 

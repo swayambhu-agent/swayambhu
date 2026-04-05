@@ -57,6 +57,7 @@
   "stage_failure_limit": 3,
   "daily_cash_budget": 5.00,
   "notifications": {
+    "slack_dm": "U084ASKBXB7",
     "email_to": "swami.kevala@sadhguru.org",
     "email_subject_prefix": "[SWAYAMBHU-DEV]"
   }

@@ -97,20 +97,15 @@ describe("shouldAutoApply", () => {
 // ── generateApprovalId ────────────────────────────────────
 
 describe("generateApprovalId", () => {
-  it("generates deterministic ID", () => {
+  it("generates 5-char alphanumeric ID", () => {
     const id = generateApprovalId("2026-04-04T12:30:00.000Z", 3);
-    expect(id).toBe("devloop-2026-04-04T123000000Z-03");
-    // Same inputs produce same output
-    expect(generateApprovalId("2026-04-04T12:30:00.000Z", 3)).toBe(id);
+    expect(id).toHaveLength(5);
+    expect(id).toMatch(/^[a-z2-9]{5}$/);
   });
 
-  it("pads single-digit seq to 2 digits", () => {
-    const id = generateApprovalId("2026-04-04T00:00:00.000Z", 1);
-    expect(id).toMatch(/-01$/);
-  });
-
-  it("preserves double-digit seq", () => {
-    const id = generateApprovalId("2026-04-04T00:00:00.000Z", 12);
-    expect(id).toMatch(/-12$/);
+  it("generates unique IDs", () => {
+    const ids = new Set();
+    for (let i = 0; i < 100; i++) ids.add(generateApprovalId("ts", i));
+    expect(ids.size).toBe(100);
   });
 });

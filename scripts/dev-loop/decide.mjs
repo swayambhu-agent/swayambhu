@@ -45,9 +45,15 @@ export function routeProposal({ blast_radius, evidence_quality, challenge_conver
   return { action: "auto_apply", reason: `local change with ${evidence_quality} evidence — safe to auto-apply` };
 }
 
-export function generateApprovalId(timestamp, seq) {
-  // Remove colons and dots from timestamp, pad seq to 2 digits
-  const sanitized = String(timestamp).replace(/[:.]/g, "");
-  const padded = String(seq).padStart(2, "0");
-  return `devloop-${sanitized}-${padded}`;
+export function generateApprovalId(_timestamp, _seq, existingIds = []) {
+  // Short 5-char alphanumeric ID — easy to type in Slack replies
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789'; // no ambiguous chars (0/o/1/l/i)
+  const existing = new Set(existingIds);
+  for (let attempt = 0; attempt < 100; attempt++) {
+    let id = '';
+    for (let i = 0; i < 5; i++) id += chars[Math.floor(Math.random() * chars.length)];
+    if (!existing.has(id)) return id;
+  }
+  // Fallback: timestamp-based
+  return `dl${Date.now().toString(36).slice(-5)}`;
 }
