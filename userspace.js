@@ -926,6 +926,9 @@ export async function applyDrResults(K, state, output) {
     await K.karmaRecord({ event: "dr_apply_blocked", blocked, applied: ops.length - blocked.length });
   }
 
+  const prevLastReflect = await K.kvGet("last_reflect");
+  const carry_forward = output.carry_forward || prevLastReflect?.carry_forward || [];
+
   await K.kvWriteSafe(`reflect:1:${executionId}`, {
     reflection: output.reflection,
     note_to_future_self: output.note_to_future_self,
@@ -933,10 +936,13 @@ export async function applyDrResults(K, state, output) {
     session_id: executionId,
     timestamp: new Date().toISOString(),
     from_dr_generation: state.generation,
+    carry_forward,
   });
 
   await K.kvWriteSafe("last_reflect", {
     session_summary: output.reflection,
+    note_to_future_self: output.note_to_future_self || prevLastReflect?.note_to_future_self,
+    carry_forward,
     was_deep_reflect: true,
     depth: 1,
     session_id: executionId,

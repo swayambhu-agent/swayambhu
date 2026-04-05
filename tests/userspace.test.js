@@ -712,4 +712,61 @@ describe("applyDrResults key filter", () => {
     });
     expect(writes).toHaveLength(4);
   });
+
+  it("preserves existing carry_forward when DR output omits it", async () => {
+    const writes = [];
+    const K = makeMockK({
+      last_reflect: {
+        note_to_future_self: "Existing note",
+        carry_forward: [
+          { id: "s_prev:cf1", item: "Keep this", status: "active" },
+        ],
+      },
+    });
+
+    await applyDrResults(K, { generation: 7 }, {
+      reflection: "test",
+      note_to_future_self: "New note",
+      kv_operations: [],
+    });
+
+    const reflectRecord = await K.kvGet("reflect:1:test_execution");
+    const lastReflect = await K.kvGet("last_reflect");
+    expect(reflectRecord.carry_forward).toEqual([
+      { id: "s_prev:cf1", item: "Keep this", status: "active" },
+    ]);
+    expect(lastReflect.carry_forward).toEqual([
+      { id: "s_prev:cf1", item: "Keep this", status: "active" },
+    ]);
+    expect(lastReflect.note_to_future_self).toBe("New note");
+  });
+
+  it("replaces existing carry_forward when DR output provides it", async () => {
+    const K = makeMockK({
+      last_reflect: {
+        note_to_future_self: "Existing note",
+        carry_forward: [
+          { id: "s_prev:cf1", item: "Old item", status: "active" },
+        ],
+      },
+    });
+
+    await applyDrResults(K, { generation: 7 }, {
+      reflection: "test",
+      note_to_future_self: "New note",
+      carry_forward: [
+        { id: "s_new:cf1", item: "New item", status: "active" },
+      ],
+      kv_operations: [],
+    });
+
+    const reflectRecord = await K.kvGet("reflect:1:test_execution");
+    const lastReflect = await K.kvGet("last_reflect");
+    expect(reflectRecord.carry_forward).toEqual([
+      { id: "s_new:cf1", item: "New item", status: "active" },
+    ]);
+    expect(lastReflect.carry_forward).toEqual([
+      { id: "s_new:cf1", item: "New item", status: "active" },
+    ]);
+  });
 });
