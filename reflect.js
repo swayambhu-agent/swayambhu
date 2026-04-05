@@ -444,23 +444,26 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     timestamp: new Date().toISOString(),
   };
   if (output.sankalpas) reflectRecord.sankalpas = output.sankalpas;
-  if (output.tasks) reflectRecord.tasks = output.tasks;
+  if (output.carry_forward) reflectRecord.carry_forward = output.carry_forward;
   await K.kvWriteSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 4. Only depth 1: write last_reflect and session_schedule
   if (depth === 1) {
-    // Track tasks dropped by deep reflect
+    // Track carry-forward items dropped by deep reflect
     const prevLastReflect = await K.kvGet("last_reflect");
-    const prevTasks = prevLastReflect?.tasks || [];
-    const newTaskIds = new Set((output.tasks || []).map(t => t.id));
-    const droppedTasks = prevTasks.filter(t => t.id && !newTaskIds.has(t.id));
-    if (droppedTasks.length) {
-      await K.karmaRecord({ event: "tasks_dropped", dropped: droppedTasks.map(t => ({ id: t.id, task: t.task, status: t.status })) });
+    const prevCarryForward = prevLastReflect?.carry_forward || [];
+    const newCarryForwardIds = new Set((output.carry_forward || []).map(item => item.id));
+    const droppedCarryForward = prevCarryForward.filter(item => item.id && !newCarryForwardIds.has(item.id));
+    if (droppedCarryForward.length) {
+      await K.karmaRecord({
+        event: "carry_forward_dropped",
+        dropped: droppedCarryForward.map(item => ({ id: item.id, item: item.item, status: item.status })),
+      });
     }
 
     await K.kvWriteSafe("last_reflect", {
       session_summary: output.reflection,
-      tasks: output.tasks || [],
+      carry_forward: output.carry_forward || [],
       was_deep_reflect: true,
       depth,
       session_id: sessionId,

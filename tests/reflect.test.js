@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { makeMockK } from "./helpers/mock-kernel.js";
-import { executeReflect } from "../reflect.js";
+import { executeReflect, applyReflectOutput } from "../reflect.js";
 
 describe("reflect prompt contract", () => {
   it("describes carry-forward updates and limits", () => {
@@ -12,6 +12,15 @@ describe("reflect prompt contract", () => {
     expect(prompt).toContain("carry_forward");
     expect(prompt).toContain("7-day TTL");
     expect(prompt).toContain("at most 5 items active");
+  });
+
+  it("describes deep-reflect carry-forward hygiene", () => {
+    const prompt = readFileSync(new URL("../prompts/deep_reflect.md", import.meta.url), "utf8");
+
+    expect(prompt).toContain("carry_forward");
+    expect(prompt).toContain("Merge duplicates");
+    expect(prompt).toContain("expired");
+    expect(prompt).toContain("at most 5 items");
   });
 });
 
@@ -219,5 +228,87 @@ describe("executeReflect carry-forward merge", () => {
     const lastReflect = await K.kvGet("last_reflect");
     expect(lastReflect.carry_forward[0].status).toBe("expired");
     expect(lastReflect.carry_forward[0].updated_at).toBe("2026-04-05T12:00:00.000Z");
+  });
+});
+
+describe("applyReflectOutput deep-reflect carry-forward writeback", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-05T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("stores carry_forward on depth 1 and logs removed items", async () => {
+    const K = makeMockK(
+      {
+        last_reflect: {
+          carry_forward: [
+            {
+              id: "s_prev:cf1",
+              item: "Keep this",
+              status: "active",
+            },
+            {
+              id: "s_prev:cf2",
+              item: "Drop this",
+              status: "active",
+            },
+          ],
+        },
+        session_counter: 4,
+      },
+      {
+        executionId: "s_dr",
+      },
+    );
+
+    const state = {
+      refreshDefaults: vi.fn(async () => {}),
+    };
+
+    const output = {
+      reflection: "Deep reflect summary",
+      note_to_future_self: "Watch this",
+      carry_forward: [
+        {
+          id: "s_prev:cf1",
+          item: "Keep this",
+          why: "Still active",
+          priority: "high",
+          status: "active",
+          created_at: "2026-04-01T00:00:00.000Z",
+          updated_at: "2026-04-05T12:00:00.000Z",
+          expires_at: "2026-04-12T12:00:00.000Z",
+        },
+      ],
+      next_reflect: {
+        after_sessions: 20,
+        after_days: 7,
+      },
+    };
+
+    await applyReflectOutput(K, state, 1, output, {});
+
+    const storedReflect = await K.kvGet("reflect:1:s_dr");
+    expect(storedReflect.carry_forward).toEqual(output.carry_forward);
+
+    const lastReflect = await K.kvGet("last_reflect");
+    expect(lastReflect.carry_forward).toEqual(output.carry_forward);
+    expect(lastReflect.was_deep_reflect).toBe(true);
+
+    expect(K.karmaRecord).toHaveBeenCalledWith({
+      event: "carry_forward_dropped",
+      dropped: [
+        {
+          id: "s_prev:cf2",
+          item: "Drop this",
+          status: "active",
+        },
+      ],
+    });
   });
 });

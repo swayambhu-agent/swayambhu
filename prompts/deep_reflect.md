@@ -167,12 +167,37 @@ Example:
   in userspace.js and the cognitive architecture's stance that inaction
   is a valid choice." }
 
+## Carry-forward hygiene
+
+`last_reflect.carry_forward` is the structured continuity cache for session planning. Review it explicitly on every deep-reflect run.
+
+- Keep only items that are still grounded in current desires, patterns, or live operational reality.
+- Merge duplicates or near-duplicates into a single clearer item.
+- Mark stale items `expired` if their `expires_at` is in the past.
+- Remove items that are already `done`, `dropped`, or no longer worth carrying.
+- Keep at most 5 items with `status: "active"`. Prefer 3 when possible.
+- Refresh `updated_at` and `expires_at` when you intentionally keep an item alive.
+- Include `desire_key` when you can ground the item to a specific `desire:*` key; omit it when that would be fake precision.
+
 ## Output
 
 Respond with ONLY a JSON object:
 {
   "kv_operations": [
     // pattern, desire, tactic, principle, config, and prompt changes
+  ],
+  "carry_forward": [
+    {
+      "id": "{{existing_or_new_id}}",
+      "item": "Concrete next step or continuation",
+      "why": "Why this still matters",
+      "priority": "high|medium|low",
+      "status": "active|done|dropped|expired",
+      "created_at": "ISO8601",
+      "updated_at": "ISO8601",
+      "expires_at": "ISO8601",
+      "desire_key": "desire:optional_link"
+    }
   ],
   "code_stage_requests": [
     // Optional: code changes for tools, hooks, providers, channels
