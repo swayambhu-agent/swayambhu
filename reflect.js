@@ -87,41 +87,73 @@ export async function executeReflect(K, state, step) {
   }
 
   // Strip stale fields the LLM might still emit
-  const { vikalpa_updates, vikalpas: _v, ...cleanOutput } = output;
+  const {
+    vikalpa_updates,
+    vikalpas: _v,
+    task_updates: _taskUpdates,
+    new_tasks: _newTasks,
+    carry_forward_updates: _carryForwardUpdates,
+    new_carry_forward: _newCarryForward,
+    ...cleanOutput
+  } = output;
   const prevLastReflect = await K.kvGet("last_reflect");
 
-  // Carry forward tasks, apply updates, append new tasks
-  let tasks = prevLastReflect?.tasks || [];
-  if (output.task_updates) {
-    const missedTasks = [];
-    for (const update of output.task_updates) {
-      const existing = tasks.find(t => t.id === update.id);
+  const nowIso = new Date().toISOString();
+  const defaultExpiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+
+  let carry_forward = (prevLastReflect?.carry_forward || []).map(item => ({ ...item }));
+  if (output.carry_forward_updates) {
+    const missedCarryForward = [];
+    for (const update of output.carry_forward_updates) {
+      const existing = carry_forward.find(item => item.id === update.id);
       if (!existing) {
-        missedTasks.push(update);
+        missedCarryForward.push(update);
         continue;
       }
-      if (update.status === "done") {
-        existing.status = "done";
-        if (update.result) existing.result = update.result;
-        existing.done_session = sessionId;
-      } else if (update.status === "dropped") {
-        existing.status = "dropped";
-        if (update.reason) existing.reason = update.reason;
-      }
+      Object.assign(existing, {
+        ...("item" in update ? { item: update.item } : {}),
+        ...("why" in update ? { why: update.why } : {}),
+        ...("priority" in update ? { priority: update.priority } : {}),
+        ...("status" in update ? { status: update.status } : {}),
+        ...("updated_at" in update ? { updated_at: update.updated_at } : { updated_at: nowIso }),
+        ...("expires_at" in update ? { expires_at: update.expires_at } : {}),
+        ...("desire_key" in update ? { desire_key: update.desire_key } : {}),
+        ...("result" in update ? { result: update.result } : {}),
+        ...("reason" in update ? { reason: update.reason } : {}),
+      });
+      if (update.status === "done") existing.done_session = sessionId;
     }
-    if (missedTasks.length) {
-      await K.karmaRecord({ event: "task_updates_missed", missed: missedTasks });
+    if (missedCarryForward.length) {
+      await K.karmaRecord({ event: "carry_forward_updates_missed", missed: missedCarryForward });
     }
   }
-  if (output.new_tasks) {
-    for (const task of output.new_tasks) {
-      tasks.push({ ...task, status: "pending" });
+  if (output.new_carry_forward) {
+    for (const item of output.new_carry_forward) {
+      carry_forward.push({
+        ...item,
+        status: item.status || "active",
+        created_at: item.created_at || nowIso,
+        updated_at: item.updated_at || nowIso,
+        expires_at: item.expires_at || defaultExpiresAt,
+      });
     }
+  }
+
+  carry_forward = carry_forward.map(item => {
+    if (item.status === "active" && item.expires_at && new Date(item.expires_at).getTime() < Date.now()) {
+      return { ...item, status: "expired", updated_at: nowIso };
+    }
+    return item;
+  });
+
+  const activeCount = carry_forward.filter(item => item.status === "active").length;
+  if (activeCount > 5) {
+    await K.karmaRecord({ event: "carry_forward_active_cap_exceeded", active: activeCount });
   }
 
   await K.kvWriteSafe("last_reflect", {
     ...cleanOutput,
-    tasks,
+    carry_forward,
     session_id: sessionId,
   });
 

@@ -55,17 +55,39 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "next_session_config": {},
 
-  "task_updates": [
-    { "id": "s_...:t1", "status": "done", "result": "what happened" },
-    { "id": "s_...:t2", "status": "dropped", "reason": "why" }
+  "carry_forward_updates": [
+    {
+      "id": "s_...:cf1",
+      "status": "done",
+      "updated_at": "{{now_iso}}",
+      "result": "what happened"
+    },
+    {
+      "id": "s_...:cf2",
+      "status": "dropped",
+      "updated_at": "{{now_iso}}",
+      "reason": "why"
+    },
+    {
+      "id": "s_...:cf3",
+      "status": "active",
+      "updated_at": "{{now_iso}}",
+      "why": "why this is still worth carrying",
+      "expires_at": "{{now_plus_7d_iso}}"
+    }
   ],
 
-  "new_tasks": [
+  "new_carry_forward": [
     {
-      "id": "{{session_id}}:t1",
-      "task": "Concrete instruction act can follow",
+      "id": "{{session_id}}:cf1",
+      "item": "Concrete next step act can execute",
       "why": "Why this matters",
-      "priority": "high|medium|low"
+      "priority": "high|medium|low",
+      "status": "active",
+      "created_at": "{{now_iso}}",
+      "updated_at": "{{now_iso}}",
+      "expires_at": "{{now_plus_7d_iso}}",
+      "desire_key": "desire:optional_link"
     }
   ],
 
@@ -75,7 +97,7 @@ Respond with a single JSON object. Nothing outside the JSON.
 
 **Required:** `session_summary`, `note_to_future_self`, `next_act_context`
 
-**Optional:** `next_session_config`, `task_updates`, `new_tasks`, `kv_operations`
+**Optional:** `next_session_config`, `carry_forward_updates`, `new_carry_forward`, `kv_operations`
 
 ### next_session_config
 
@@ -91,13 +113,15 @@ This is how you write to your own memory. Common uses: update a project state, s
 
 ### note_to_future_self
 
-This is the thread of continuity between sessions. This session is ending. Your next session will not have direct memory of this one — only what you write here and in `last_reflect`. Make it count. If you were mid-thought, finish it or point at it. If something is nagging you, say it. This is not a status report. It is one mind speaking to its next instantiation.
+### note_to_future_self
 
-### Checking tasks
+This is unstructured orientation between sessions. Use it for tone, caution, or context that does not belong in structured carry-forward items. Do not use it as a substitute for operational follow-up; actionable continuity belongs in `carry_forward`.
 
-If `last_reflect` contains a `tasks` array with pending items, check whether this session's karma shows progress on any of them. Update via `task_updates`:
-- `done` — task was completed this session. Include `result`.
-- `dropped` — task is no longer relevant. Include `reason`.
+### Checking carry-forward
 
-You can also create new tasks via `new_tasks` when this session revealed something that needs follow-up — a request from a contact, a tool failure worth retesting, a time-sensitive action. Keep tasks concrete and actionable. Use IDs in the format `{session_id}:t{n}`. Deep reflect will review and prune on its next run.
+If `last_reflect` contains a `carry_forward` array with active items, check whether this session's karma shows progress on any of them. Update via `carry_forward_updates`:
+- `done` — the item was completed this session. Include `result` and `updated_at`.
+- `dropped` — the item is no longer relevant. Include `reason` and `updated_at`.
+- `active` — the item is still live but should be refreshed. Include any changed `why`, `priority`, `desire_key`, `updated_at`, and `expires_at`.
 
+You can also create new carry-forward items via `new_carry_forward` when this session revealed something that needs follow-up. Each item must use this schema: `id`, `item`, `why`, `priority`, `status`, `created_at`, `updated_at`, `expires_at`, optional `desire_key`. Default to a 7-day TTL by setting `expires_at` to 7 days from now unless you have a reason to use a shorter horizon. Keep at most 5 items active at once; prefer merging or replacing instead of growing a backlog.
