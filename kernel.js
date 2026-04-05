@@ -696,6 +696,12 @@ class Kernel {
       }
     }
 
+    // Prompt changes require deliberation — prompts are read live and shape
+    // all LLM behavior. Deleting prompt:deep_reflect would halt DR entirely.
+    if (key.startsWith("prompt:") && (!op.deliberation || op.deliberation.length < 200)) {
+      return { ok: false, error: `Prompt changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
+    }
+
     // Per-session limit
     if (this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
       return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
@@ -1398,9 +1404,14 @@ class Kernel {
       ? [{ role: "system", content: fullSystemPrompt }, ...messages]
       : [...messages];
 
-    // Resolve model family + check reasoning support
+    // Resolve alias to full model ID so providers receive a canonical ID.
+    // resolveModel() returns the input unchanged if alias is not in the map,
+    // so callers using full IDs are unaffected.
+    const resolvedModel = this.resolveModel(model);
+
+    // Resolve model family + check reasoning support (look up by resolved ID)
     const modelInfo = this.modelsConfig?.models?.find(
-      m => m.id === model || m.alias === model
+      m => m.id === resolvedModel || m.alias === model
     );
     const family = modelInfo?.family || null;
     const resolvedEffort = (effort && effort !== "none" && modelInfo?.supports_reasoning)
@@ -1408,7 +1419,7 @@ class Kernel {
 
     // Standardized request — provider adapter translates this
     const request = {
-      model,
+      model: resolvedModel,
       max_tokens: maxTokens || 1000,
       messages: msgs,
       family,
@@ -1432,7 +1443,7 @@ class Kernel {
     if (!result.ok) {
       await this.karmaRecord({
         event: "llm_call",
-        step, model, effort,
+        step, model: resolvedModel, effort,
         ok: false,
         error: result.error,
         duration_ms: durationMs,
@@ -1440,16 +1451,18 @@ class Kernel {
         request_key: requestKey,
       });
 
-      // Model fallback (separate from provider fallback)
+      // Model fallback (separate from provider fallback). Compare resolved IDs
+      // so an alias and its full ID don't trigger a duplicate retry.
       const fallbackModel = await this.getFallbackModel();
-      if (fallbackModel && model !== fallbackModel) {
+      const resolvedFallback = this.resolveModel(fallbackModel);
+      if (fallbackModel && resolvedModel !== resolvedFallback) {
         return this.callLLM({ model: fallbackModel, effort: "low", maxTokens,
           systemPrompt, messages, tools, step, budgetCap });
       }
       throw new Error(`LLM call failed on all providers: ${result.error}`);
     }
 
-    let cost = this.estimateCost(model, result.usage);
+    let cost = this.estimateCost(resolvedModel, result.usage);
     if (cost === null) {
       const models = this.modelsConfig?.models || [];
       const maxInput = models.length ? Math.max(...models.map(m => m.input_cost_per_mtok)) : 10;
@@ -1458,14 +1471,14 @@ class Kernel {
         + (result.usage.completion_tokens || 0) * maxOutput) / 1_000_000;
       await this.karmaRecord({
         event: "warning",
-        message: `Model "${model}" not in config:models — using pessimistic cost estimate ($${cost.toFixed(6)})`,
+        message: `Model "${resolvedModel}" not in config:models — using pessimistic cost estimate ($${cost.toFixed(6)})`,
         step,
       });
     }
 
     await this.karmaRecord({
       event: "llm_call",
-      step, model, effort,
+      step, model: resolvedModel, effort,
       ok: true,
       duration_ms: durationMs,
       provider_tier: result.tier,
@@ -1738,12 +1751,20 @@ class Kernel {
           .catch(err => ({ error: err.message })))
       );
 
-      // Append one tool result message per call
+      // Append one tool result message per call.
+      // Cap serialized content to prevent context explosion — large outputs (grep /proc,
+      // broad find, big file reads) inflate LLM context 30x without adding signal.
+      // If truncated, wrap in a valid JSON envelope so the message is always well-formed.
+      const MAX_TOOL_RESULT = 8000;
       for (let i = 0; i < response.toolCalls.length; i++) {
+        const serialized = JSON.stringify(toolResults[i]);
+        const content = serialized.length > MAX_TOOL_RESULT
+          ? JSON.stringify({ _truncated: true, preview: serialized.slice(0, MAX_TOOL_RESULT - 60), original_length: serialized.length })
+          : serialized;
         messages.push({
           role: 'tool',
           tool_call_id: response.toolCalls[i].id,
-          content: JSON.stringify(toolResults[i]),
+          content,
         });
       }
 

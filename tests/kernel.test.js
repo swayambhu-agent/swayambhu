@@ -1363,8 +1363,9 @@ describe("kvWriteGated", () => {
       "prompt:test_prompt": JSON.stringify({ text: "hello" }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
+    const deliberation = "This test prompt is no longer used by any subsystem after the refactor in session 42. Retaining it creates confusion about which prompts are active. Deleting it keeps the prompt namespace clean and accurate.";
     await kernel.kvWriteGated(
-      { op: "delete", key: "prompt:test_prompt" }, "deep-reflect"
+      { op: "delete", key: "prompt:test_prompt", deliberation }, "deep-reflect"
     );
     expect(env.KV.delete).toHaveBeenCalledWith("prompt:test_prompt");
     expect(kernel.privilegedWriteCount).toBe(1);
@@ -2160,6 +2161,61 @@ describe("principles (generic)", () => {
     );
     expect(result.ok).toBe(true);
     expect(result.warning).toBeUndefined();
+  });
+
+  it("kvWriteGated rejects prompt: writes without deliberation", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "prompt:plan", value: "new plan prompt" },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("deliberation");
+  });
+
+  it("kvWriteGated allows prompt: writes with deliberation in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const deliberation = "The plan prompt lacks autonomous agent framing, causing the planner to reason as a reactive chatbot when desires are empty. Adding a single paragraph establishing that desires emerge from DR, not user input. This prevents the awaiting user input failure mode.";
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "prompt:plan", value: "updated plan prompt", deliberation },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("kvWriteGated allows config: writes without deliberation in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "config:defaults", value: { session_budget: { max_cost: 0.20 } } },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("kvWriteGated rejects prompt: delete without deliberation", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "delete", key: "prompt:deep_reflect" },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("deliberation");
+  });
+
+  it("kvWriteGated rejects prompt: patch without deliberation", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.kv.put("prompt:plan", "old text here");
+    const result = await kernel.kvWriteGated(
+      { op: "patch", key: "prompt:plan", old_string: "old text", new_string: "new text" },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("deliberation");
   });
 });
 
