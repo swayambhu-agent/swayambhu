@@ -67,7 +67,7 @@ describe('dev-loop integration', () => {
       });
       // Issues with strong evidence + local blast radius → auto_apply
       // Issues with weak evidence → defer
-      expect(['auto_apply', 'apply_and_note', 'defer']).toContain(route.action);
+      expect(['auto_apply', 'defer']).toContain(route.action);
     }
 
     // Classification file should exist
@@ -114,7 +114,7 @@ describe('dev-loop integration', () => {
 
   it('routeProposal handles all blast radius levels', () => {
     expect(routeProposal({ blast_radius: 'local', evidence_quality: 'strong' }).action).toBe('auto_apply');
-    expect(routeProposal({ blast_radius: 'module', evidence_quality: 'strong' }).action).toBe('apply_and_note');
-    expect(routeProposal({ blast_radius: 'system', evidence_quality: 'strong' }).action).toBe('escalate');
+    expect(routeProposal({ blast_radius: 'module', evidence_quality: 'strong' }).action).toBe('defer');
+    expect(routeProposal({ blast_radius: 'system', evidence_quality: 'strong' }).action).toBe('defer');
   });
 });

@@ -8,53 +8,102 @@ import {
 // ── routeProposal ─────────────────────────────────────────
 
 describe("routeProposal", () => {
+  it("returns cold_start when the classifier marks the state as cold-start-only", () => {
+    const result = routeProposal({
+      blast_radius: "local",
+      evidence_quality: "strong",
+      challenge_converged: true,
+      cold_start: true,
+    });
+    expect(result).toEqual({
+      action: "cold_start",
+      reason: "state requires cold start recovery",
+    });
+  });
+
+  it("escalates when the classifier says human judgment is required", () => {
+    const result = routeProposal({
+      blast_radius: "local",
+      evidence_quality: "moderate",
+      challenge_converged: false,
+      requires_human_judgment: true,
+    });
+    expect(result).toEqual({
+      action: "escalate",
+      reason: "change requires human judgment",
+    });
+  });
+
   it("auto-applies local + moderate evidence", () => {
     const result = routeProposal({
       blast_radius: "local",
       evidence_quality: "moderate",
+      challenge_converged: false,
     });
-    expect(result.action).toBe("auto_apply");
-    expect(result.reason).toBeTruthy();
-  });
-
-  it("auto-applies local + strong evidence", () => {
-    const result = routeProposal({
-      blast_radius: "local",
-      evidence_quality: "strong",
+    expect(result).toEqual({
+      action: "auto_apply",
+      reason: "local change with moderate evidence - safe to auto-apply",
     });
-    expect(result.action).toBe("auto_apply");
   });
 
-  it("requires approval for system blast radius", () => {
-    for (const quality of ["weak", "moderate", "strong"]) {
-      const result = routeProposal({
-        blast_radius: "system",
-        evidence_quality: quality,
-      });
-      // System: weak → defer, moderate/strong → escalate
-      if (quality === "weak") {
-        expect(result.action).toBe("defer");
-      } else {
-        expect(result.action).toBe("escalate");
-      }
-    }
-  });
-
-  it("notes module-level changes with strong evidence", () => {
+  it("auto-applies module + strong evidence when challenge converged", () => {
     const result = routeProposal({
       blast_radius: "module",
       evidence_quality: "strong",
+      challenge_converged: true,
     });
-    expect(result.action).toBe("apply_and_note");
-    expect(result.reason).toBeTruthy();
+    expect(result).toEqual({
+      action: "auto_apply",
+      reason: "module-level change with strong evidence and converged challenge - safe to auto-apply",
+    });
   });
 
-  it("defers module-level changes with moderate evidence", () => {
+  it("defers module + strong evidence when challenge did not converge", () => {
+    const result = routeProposal({
+      blast_radius: "module",
+      evidence_quality: "strong",
+      challenge_converged: false,
+    });
+    expect(result).toEqual({
+      action: "defer",
+      reason: "module-level change needs converged challenge before auto-apply",
+    });
+  });
+
+  it("defers module + moderate evidence", () => {
     const result = routeProposal({
       blast_radius: "module",
       evidence_quality: "moderate",
+      challenge_converged: true,
     });
-    expect(result.action).toBe("defer");
+    expect(result).toEqual({
+      action: "defer",
+      reason: "module-level change needs strong evidence (have moderate)",
+    });
+  });
+
+  it("escalates system + strong evidence when challenge converged", () => {
+    const result = routeProposal({
+      blast_radius: "system",
+      evidence_quality: "strong",
+      challenge_converged: true,
+    });
+    expect(result).toEqual({
+      action: "escalate",
+      reason: "system-level change with strong evidence and converged challenge requires human approval",
+    });
+  });
+
+  it("defers system + strong evidence when challenge did not converge", () => {
+    const result = routeProposal({
+      blast_radius: "system",
+      evidence_quality: "strong",
+      challenge_converged: false,
+    });
+    expect(result).toEqual({
+      action: "defer",
+      reason: "system-level change needs converged challenge before escalation",
+    });
   });
 
   it("rejects weak evidence for any blast radius", () => {
@@ -62,9 +111,12 @@ describe("routeProposal", () => {
       const result = routeProposal({
         blast_radius: radius,
         evidence_quality: "weak",
+        challenge_converged: true,
       });
-      expect(result.action).toBe("defer");
-      expect(result.reason).toContain("weak");
+      expect(result).toEqual({
+        action: "defer",
+        reason: "evidence too weak (weak) to act on",
+      });
     }
   });
 });

@@ -13,8 +13,8 @@ import { runObserve } from './observe.mjs';
 import { runClassify } from './classify.mjs';
 import { buildContextFromAnalysis } from './context.mjs';
 import { runVerify } from './verify.mjs';
-import { sendSlack, formatApprovalMessage, checkSlackReplies, checkEmailReplies } from './comms.mjs';
-import { generateApprovalId } from './decide.mjs';
+import { sendSlack, sendEmail, formatApprovalMessage, checkSlackReplies, checkEmailReplies } from './comms.mjs';
+import { generateApprovalId, routeProposal } from './decide.mjs';
 import { readFileSync, writeFileSync, existsSync, unlinkSync, openSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
@@ -42,9 +42,14 @@ if (existsSync(envPath)) {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STATE_DIR = join(__dirname, '../../.swayambhu/dev-loop');
+const STATE_DIR = '/home/swami/swayambhu/dev-loop';
 const rubric = JSON.parse(readFileSync(join(__dirname, 'rubric.json'), 'utf-8'));
 const CC_PROMPT_PATH = join(__dirname, 'cc-analyze.md');
+const CC_APPLY_SYSTEM_PROMPT = [
+  'You are a fresh Claude Code process spawned by the dev loop orchestrator.',
+  'Your only job is to apply one already-decided proposal, run npm test, and write the result JSON requested in the user message.',
+  'Do not perform extra analysis, routing, or documentation updates.',
+].join('\n');
 const CC_TIMEOUT_MS = 3_600_000; // 1 hour
 
 const args = process.argv.slice(2);
@@ -70,7 +75,7 @@ async function runCC(timestamp, state) {
     '--output-format', 'text',
     '--append-system-prompt', systemPrompt,
     '--no-session-persistence',
-    '--model', 'sonnet',
+    '--model', 'opus',
   ];
 
   return new Promise((resolve) => {
@@ -133,6 +138,91 @@ async function runCC(timestamp, state) {
     child.on('error', (err) => {
       clearTimeout(timer);
       resolve({ success: false, analysis: null, decisions: null, error: err.message });
+    });
+  });
+}
+
+async function runAutoApplyDecision(timestamp, decision) {
+  const runDir = join(STATE_DIR, 'runs', timestamp);
+  const proposalPath = join(runDir, `proposal-${decision.seq}.md`);
+  const resultPath = join(runDir, `applied-${decision.seq}.json`);
+
+  const userMessage = [
+    `Apply proposal ${decision.seq}.`,
+    `Run directory: ${runDir}`,
+    `Proposal file: ${proposalPath}`,
+    `Repository root: ${__root}`,
+    'Read the proposal file, apply only that fix, then run npm test from the repository root.',
+    'If npm test fails, revert your changes with git checkout -- .',
+    `Write ${resultPath} with JSON exactly in this shape:`,
+    '{"applied":true,"tests_passed":true,"files_changed":["relative/path.js"],"revert_reason":null}',
+    'If you cannot apply the change, write {"applied":false,"tests_passed":false,"files_changed":[],"revert_reason":"why"}.',
+    'If tests fail after applying, revert and write {"applied":true,"tests_passed":false,"files_changed":[],"revert_reason":"npm test failed"}.',
+  ].join('\n');
+
+  const ccArgs = [
+    '-p', userMessage,
+    '--dangerously-skip-permissions',
+    '--output-format', 'text',
+    '--append-system-prompt', CC_APPLY_SYSTEM_PROMPT,
+    '--no-session-persistence',
+    '--model', 'opus',
+  ];
+
+  return new Promise((resolve) => {
+    let stderr = '';
+
+    const child = spawn('claude', ccArgs, {
+      cwd: __root,
+      env: { ...process.env },
+    });
+
+    const timer = setTimeout(() => {
+      console.log(`[AUTO_APPLY] Timeout for proposal ${decision.seq} - killing process`);
+      child.kill('SIGTERM');
+    }, CC_TIMEOUT_MS);
+
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+    child.on('close', async (code) => {
+      clearTimeout(timer);
+
+      if (code !== 0) {
+        resolve({
+          applied: false,
+          tests_passed: false,
+          files_changed: [],
+          revert_reason: `claude exited with code ${code}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`,
+        });
+        return;
+      }
+
+      try {
+        const result = JSON.parse(await readFile(resultPath, 'utf8'));
+        resolve({
+          applied: Boolean(result.applied),
+          tests_passed: Boolean(result.tests_passed),
+          files_changed: Array.isArray(result.files_changed) ? result.files_changed : [],
+          revert_reason: result.revert_reason || null,
+        });
+      } catch (error) {
+        resolve({
+          applied: false,
+          tests_passed: false,
+          files_changed: [],
+          revert_reason: `missing or invalid ${resultPath}: ${error.message}`,
+        });
+      }
+    });
+
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({
+        applied: false,
+        tests_passed: false,
+        files_changed: [],
+        revert_reason: `failed to spawn claude: ${error.message}`,
+      });
     });
   });
 }
@@ -204,11 +294,13 @@ async function restartWorkersIfNeeded(decisions, label) {
   return true;
 }
 
+const DEVLOOP_REASONING_DIR = '/home/swami/swayambhu/dev-loop/reasoning';
+
 export async function maybeCompileReasoningArtifacts(runDir, decisionsJson) {
   const decisions = decisionsJson?.decisions || [];
   const artifacts = await collectReasoningArtifacts(runDir, decisions);
   if (!artifacts.length) return [];
-  await writeReasoningArtifacts(artifacts);
+  await writeReasoningArtifacts(artifacts, { dir: DEVLOOP_REASONING_DIR });
   return artifacts;
 }
 
@@ -261,7 +353,7 @@ async function processApprovals(state) {
         '--output-format', 'text',
         '--append-system-prompt', systemPrompt,
         '--no-session-persistence',
-        '--model', 'sonnet',
+        '--model', 'opus',
       ];
 
       console.log(`[APPROVAL] Spawning CC to apply ${item.id}...`);
@@ -557,30 +649,45 @@ async function runCycle(state) {
     }
   }
 
-  // ── RESTART WORKERS IF CC APPLIED CODE CHANGES ──
-  if (ccResult?.decisions?.decisions) {
-    await restartWorkersIfNeeded(ccResult.decisions.decisions, 'CC analysis');
-  }
-
-  if (ccResult?.decisions?.decisions) {
-    const runDir = join(STATE_DIR, 'runs', timestamp);
-    await maybeCompileReasoningArtifacts(runDir, ccResult.decisions);
-  }
-
   // ── PROCESS DECISIONS ──
   if (ccResult?.decisions?.decisions) {
     const existingPending = (await loadQueue(STATE_DIR, 'pending')).map(p => p.id);
+    const runDir = join(STATE_DIR, 'runs', timestamp);
+
     for (const decision of ccResult.decisions.decisions) {
-      // CC can recommend cold start for next cycle
+      const routed = routeProposal(decision);
+      decision.classification_reason = decision.reason;
+      decision.action = routed.action;
+      decision.route_reason = routed.reason;
+
       if (decision.action === 'cold_start') {
         state.cold_start_next = true;
         console.log(`[LOOP] CC recommends cold start: ${decision.summary}`);
         continue;
       }
+
+      if (decision.action === 'auto_apply') {
+        console.log(`[LOOP] Auto-applying proposal ${decision.seq}: ${decision.summary}`);
+        const result = await runAutoApplyDecision(timestamp, decision);
+        decision.verified = result.applied && result.tests_passed;
+        decision.files_changed = result.files_changed;
+        if (!decision.verified && result.revert_reason) {
+          decision.revert_reason = result.revert_reason;
+        }
+
+        if (decision.verified) {
+          console.log(`[LOOP] Auto-apply verified for proposal ${decision.seq}`);
+        } else {
+          console.log(`[LOOP] Auto-apply failed for proposal ${decision.seq}: ${decision.revert_reason || 'unknown error'}`);
+        }
+        continue;
+      }
+
       if (decision.action === 'escalate') {
         const approvalId = generateApprovalId(timestamp, decision.seq || 0, existingPending);
+        decision.approval_id = approvalId;
+
         try {
-          // Save to pending queue with full context for later application
           const pendingItem = {
             id: approvalId,
             summary: decision.summary,
@@ -595,19 +702,15 @@ async function runCycle(state) {
           const pendingPath = join(STATE_DIR, 'queue', 'pending', `${approvalId}.json`);
           writeFileSync(pendingPath, JSON.stringify(pendingItem, null, 2));
 
-          // Read the proposal to extract the "why" for the Slack message
           let why = null;
           let whatChanges = decision.escalation_details || null;
           try {
-            const proposalPath = join(STATE_DIR, 'runs', timestamp, `proposal-${decision.seq}.md`);
+            const proposalPath = join(runDir, `proposal-${decision.seq}.md`);
             const proposal = readFileSync(proposalPath, 'utf-8');
-            // Extract Issue section (between ## Issue and the next ##)
             const issueMatch = proposal.match(/## (?:Issue|Problem)\s*\n([\s\S]*?)(?=\n## |\n#[^#]|$)/i);
             if (issueMatch) {
-              // First paragraph of the issue section, trimmed
               why = issueMatch[1].trim().split('\n\n')[0].replace(/\n/g, ' ').slice(0, 300);
             }
-            // Extract Fix section for "what changes"
             if (!whatChanges) {
               const fixMatch = proposal.match(/## (?:Fix|Proposed Fix|Solution)\s*\n([\s\S]*?)(?=\n## |\n#[^#]|$)/i);
               if (fixMatch) {
@@ -621,9 +724,10 @@ async function runCycle(state) {
             summary: decision.summary,
             blastRadius: decision.blast_radius,
             evidence: decision.evidence_quality,
-            challengeResult: decision.challenge_converged ? 'converged' : 'not challenged',
+            challengeResult: decision.challenge_converged ? 'converged' : 'not converged',
             why,
             whatChanges,
+            details: decision.escalation_details || undefined,
           });
           const slackDm = rubric.notifications?.slack_dm;
           await sendSlack(msg, slackDm ? { channel: slackDm } : undefined);
@@ -631,7 +735,21 @@ async function runCycle(state) {
         } catch (e) {
           console.log(`[LOOP] Failed to escalate ${approvalId}: ${e.message}`);
         }
+        continue;
       }
+
+      console.log(`[LOOP] Deferred proposal ${decision.seq}: ${decision.route_reason}`);
+    }
+
+    await writeFile(join(runDir, 'decisions.json'), JSON.stringify(ccResult.decisions, null, 2));
+
+    await restartWorkersIfNeeded(ccResult.decisions.decisions, 'CC analysis');
+
+    try {
+      const compiled = await maybeCompileReasoningArtifacts(runDir, ccResult.decisions);
+      if (compiled.length) console.log(`[LOOP] Compiled ${compiled.length} reasoning artifact(s)`);
+    } catch (e) {
+      console.log(`[LOOP] Reasoning compilation failed (non-fatal): ${e.message}`);
     }
   }
 
@@ -685,7 +803,7 @@ async function runCycle(state) {
   await saveRun(STATE_DIR, timestamp, 'report.md', report);
   console.log(`[LOOP] Report saved to runs/${timestamp}/report.md`);
 
-  // Slack summary
+  // ── NOTIFICATIONS ──
   const sessionId = observation?.latest_session_id || '?';
   const duration = observation?.analysis?.execution_health?.elapsed_ms
     ? Math.round(observation.analysis.execution_health.elapsed_ms / 1000)
@@ -693,20 +811,32 @@ async function runCycle(state) {
   const cost = observation?.analysis?.execution_health?.cost?.toFixed(2) || '?';
   const mechanicalCount = classification?.total_issues_found || 0;
   const ccSummary = ccResult?.analysis?.summary || null;
-  const autoApplied = ccDecisions.filter(d => d.action === 'auto_apply' && d.verified).length;
-  const escalated = ccDecisions.filter(d => d.action === 'escalate').length;
+
+  // Build per-finding action lines for Slack
+  const actionFindings = ccFindings.filter(f => f.type !== 'healthy_operation');
+  const healthyFindings = ccFindings.filter(f => f.type === 'healthy_operation');
+  const findingLines = actionFindings.map((f, i) => {
+    const dec = ccDecisions.find(d => d.seq === (i + 1));
+    let action = '';
+    if (dec?.action === 'auto_apply' && dec.verified) action = `→ APPLIED: ${dec.summary?.slice(0, 80) || 'fix applied'}`;
+    else if (dec?.action === 'escalate') action = `→ ESCALATED: approve ${dec.approval_id || '?'}`;
+    else if (dec?.action === 'defer') action = `→ DEFERRED: ${dec.reason?.slice(0, 60) || 'low priority'}`;
+    else if (dec?.action === 'auto_apply' && !dec.verified) action = `→ APPLY FAILED: ${dec.revert_reason?.slice(0, 60) || 'tests failed'}`;
+    return `• [${f.severity}] ${f.summary?.slice(0, 100)} ${action}`;
+  });
 
   const slackMsg = [
     `Dev Loop Cycle ${state.cycle} — ${displayTime} IST`,
     forceColdStart ? `Cold start: ${coldStartReasons.join(', ')}` : null,
     `Session: ${sessionId} | ${duration}s | $${cost}`,
-    mechanicalCount > 0 ? `Mechanical: ${mechanicalCount} issues` : null,
-    ccSummary ? `Analysis: ${ccSummary}` : null,
-    ccFindings.length > 0 ? `Findings: ${ccFindings.length}` : null,
-    autoApplied > 0 ? `Applied: ${autoApplied} fixes` : null,
-    escalated > 0 ? `Escalated: ${escalated}` : null,
-    !mechanicalCount && !ccFindings.length ? 'Clean' : null,
-  ].filter(Boolean).join('\n');
+    '',
+    ccSummary ? `${ccSummary.slice(0, 200)}` : null,
+    '',
+    findingLines.length ? 'Findings:' : null,
+    ...findingLines,
+    healthyFindings.length ? `\nHealthy: ${healthyFindings.map(f => f.summary?.slice(0, 50)).join(', ')}` : null,
+    !findingLines.length && !healthyFindings.length ? 'Clean — no findings' : null,
+  ].filter(x => x !== null).join('\n');
 
   try {
     const slackDm = rubric.notifications?.slack_dm;
@@ -714,6 +844,55 @@ async function runCycle(state) {
     console.log('[LOOP] Slack summary sent');
   } catch (e) {
     console.log(`[LOOP] Slack send failed: ${e.message}`);
+  }
+
+  // Email: full detailed report
+  try {
+    const emailFindings = ccFindings.map((f, i) => {
+      const dec = ccDecisions.find(d => d.seq === (i + 1));
+      const lines = [
+        `### ${i + 1}. [${f.severity}] ${f.type} — ${f.locus}`,
+        f.summary,
+        '',
+        `**Evidence:** ${f.evidence?.slice(0, 300) || 'see analysis.json'}`,
+      ];
+      if (f.proposed_fix) lines.push('', `**Proposed fix:** ${f.proposed_fix.slice(0, 200)}`);
+      if (dec) {
+        lines.push('', `**Decision:** ${dec.action}${dec.verified ? ' (verified)' : ''}`);
+        if (dec.reason) lines.push(`**Reason:** ${dec.reason}`);
+        if (dec.action === 'auto_apply' && dec.files_changed?.length) {
+          lines.push(`**Files changed:** ${dec.files_changed.join(', ')}`);
+        }
+      }
+      return lines.join('\n');
+    });
+
+    const capObs = ccResult?.analysis?.capability_observations || {};
+    const emailBody = [
+      `# Dev Loop Cycle ${state.cycle} — ${displayTime} IST`,
+      '',
+      `**Session:** ${sessionId}`,
+      `**Duration:** ${duration}s | **Cost:** $${cost}`,
+      forceColdStart ? `**Cold start:** ${coldStartReasons.join(', ')}` : null,
+      mechanicalCount > 0 ? `**Mechanical issues:** ${mechanicalCount}` : null,
+      '',
+      '## Analysis',
+      ccSummary || 'No CC analysis this cycle.',
+      '',
+      '## Findings',
+      ...emailFindings,
+      '',
+      '## Healthy Signals',
+      ...(ccResult?.analysis?.healthy_signals || []).map(s => `- ${s}`),
+      '',
+      '## Capability Observations',
+      ...Object.entries(capObs).map(([k, v]) => `- **${k}:** ${v}`),
+    ].filter(x => x !== null).join('\n');
+
+    await sendEmail(emailBody, `[SWAYAMBHU-DEV] Cycle ${state.cycle} — ${actionFindings.length} findings, ${ccDecisions.filter(d => d.verified).length} applied`);
+    console.log('[LOOP] Email report sent');
+  } catch (e) {
+    console.log(`[LOOP] Email send failed: ${e.message}`);
   }
 
   // Append overnight log entry (if CC wrote one)

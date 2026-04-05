@@ -161,50 +161,49 @@ If Codex is not available, skip challenges and note in verdict.
 
 ## Stage 5: DECIDE
 
-Write `decisions.json` with routing for each proposal:
+Write `decisions.json` with classification for each proposal:
 ```json
 {
   "decisions": [{
     "seq": 1,
     "summary": "what the fix does",
-    "action": "auto_apply|apply_and_note|escalate|defer|cold_start",
-    "reason": "why this routing",
+    "reason": "why this classification is justified",
     "blast_radius": "local|module|system",
     "evidence_quality": "weak|moderate|strong",
     "challenge_converged": true,
-    "files_changed": ["path/to/file.js"],
-    "verified": false
+    "requires_human_judgment": false,
+    "cold_start": false,
+    "escalation_details": null
   }]
 }
 ```
 
-Route each proposal using this table. Do NOT override — follow the table:
+The loop will compute the action deterministically. Do not output `action`.
+Do not apply fixes. Do not run tests. Do not write `files_changed`, `verified`,
+or `revert_reason`.
 
-| Blast radius | Evidence | Codex | Action |
-|---|---|---|---|
-| local | moderate+ | any | auto_apply |
-| module | strong | converged or accepted-as-noted | auto_apply |
-| module | moderate | any | defer |
-| system | strong + converged | — | escalate |
-| any | weak | any | defer |
+Classification definitions:
 
-**escalate is ONLY for system-level blast radius.** Local and module changes
-with sufficient evidence should be auto-applied after Codex challenge, not
-sent to the patron. The patron should only see changes that affect the kernel
-or cross-cutting architecture.
-
-Use `cold_start` when accumulated KV state is stuck or corrupted beyond
-what a code fix can resolve (e.g. degenerate desire loops, broken entity
-schemas, N cycles of identical plans with zero progress). The orchestrator
-will re-seed KV on the next cycle.
-
-For `auto_apply` decisions:
-1. Apply the fix (edit files)
-2. Run `npm test`
-3. If tests fail: `git checkout -- .` to revert, set `verified: false`, add `revert_reason`
-4. If tests pass: set `verified: true`
-
-Do NOT apply `escalate` or `defer` decisions. Just record them.
+- `blast_radius`
+  - `local`: isolated change in one file or one tightly scoped behavior
+  - `module`: change spans multiple files in one subsystem or meaningfully alters module behavior
+  - `system`: cross-cutting, kernel-level, or architecture-affecting change
+- `evidence_quality`
+  - `weak`: mostly intuition, sparse evidence, or unresolved uncertainty
+  - `moderate`: clear evidence from code and context, but not fully locked down
+  - `strong`: direct code evidence with a well-supported causal explanation
+- `challenge_converged`
+  - `true`: Codex challenge rounds converged or objections were resolved well enough to proceed
+  - `false`: objections remain unresolved, challenge was skipped, or confidence did not converge
+- `requires_human_judgment`
+  - `true`: patron design judgment is required even if the change is technically feasible
+  - `false`: no patron judgment needed
+- `cold_start`
+  - `true`: the right action is to re-seed state next cycle rather than patch code this cycle
+  - `false`: normal routing applies
+- `escalation_details`
+  - brief, concrete context for the patron when `requires_human_judgment` is true or a system-level escalation is likely
+  - otherwise `null`
 
 ## Stage 6: OVERNIGHT LOG ENTRY
 

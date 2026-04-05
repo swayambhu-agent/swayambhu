@@ -19,30 +19,60 @@ export function shouldAutoApply(blastRadius, evidenceQuality) {
   return evidenceRank(evidenceQuality) >= EVIDENCE_RANK.moderate;
 }
 
-export function routeProposal({ blast_radius, evidence_quality, challenge_converged }) {
+export function routeProposal({
+  blast_radius,
+  evidence_quality,
+  challenge_converged = false,
+  requires_human_judgment = false,
+  cold_start = false,
+}) {
   const rank = evidenceRank(evidence_quality);
 
-  // Weak evidence — always defer regardless of blast radius
+  if (cold_start) {
+    return { action: "cold_start", reason: "state requires cold start recovery" };
+  }
+
+  if (requires_human_judgment) {
+    return { action: "escalate", reason: "change requires human judgment" };
+  }
+
   if (rank < EVIDENCE_RANK.moderate) {
     return { action: "defer", reason: `evidence too weak (${evidence_quality}) to act on` };
   }
 
-  // System blast radius — always escalate, even with strong evidence
   if (blast_radius === "system") {
-    return { action: "escalate", reason: `system-level change requires human approval` };
-  }
-
-  // Module blast radius
-  if (blast_radius === "module") {
-    if (rank >= EVIDENCE_RANK.strong) {
-      return { action: "apply_and_note", reason: `module-level change with strong evidence — applying with note` };
+    if (rank >= EVIDENCE_RANK.strong && challenge_converged) {
+      return {
+        action: "escalate",
+        reason: "system-level change with strong evidence and converged challenge requires human approval",
+      };
     }
-    // moderate evidence at module level — defer
-    return { action: "defer", reason: `module-level change needs strong evidence (have ${evidence_quality})` };
+    return {
+      action: "defer",
+      reason: "system-level change needs converged challenge before escalation",
+    };
   }
 
-  // Local blast radius with moderate+ evidence — auto-apply
-  return { action: "auto_apply", reason: `local change with ${evidence_quality} evidence — safe to auto-apply` };
+  if (blast_radius === "module") {
+    if (rank >= EVIDENCE_RANK.strong && challenge_converged) {
+      return {
+        action: "auto_apply",
+        reason: "module-level change with strong evidence and converged challenge - safe to auto-apply",
+      };
+    }
+    if (rank >= EVIDENCE_RANK.strong) {
+      return {
+        action: "defer",
+        reason: "module-level change needs converged challenge before auto-apply",
+      };
+    }
+    return {
+      action: "defer",
+      reason: `module-level change needs strong evidence (have ${evidence_quality})`,
+    };
+  }
+
+  return { action: "auto_apply", reason: `local change with ${evidence_quality} evidence - safe to auto-apply` };
 }
 
 export function generateApprovalId(_timestamp, _seq, existingIds = []) {
