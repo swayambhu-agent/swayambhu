@@ -313,6 +313,123 @@ describe("session plan phase", () => {
     expect(planCall.messages[0].content).not.toContain("Already done");
     expect(planCall.messages[0].content).not.toContain("Dropped item");
   });
+
+  it("sorts carry-forward items by priority and recency, omits expired items, and caps at five", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        "last_reflect": {
+          carry_forward: [
+            {
+              id: "s_prev:cf1",
+              item: "High recent",
+              priority: "high",
+              status: "active",
+              updated_at: "2026-04-05T12:00:00.000Z",
+              expires_at: "2026-04-12T12:00:00.000Z",
+            },
+            {
+              id: "s_prev:cf2",
+              item: "High older",
+              priority: "high",
+              status: "active",
+              updated_at: "2026-04-04T12:00:00.000Z",
+              expires_at: "2026-04-12T12:00:00.000Z",
+            },
+            {
+              id: "s_prev:cf3",
+              item: "Medium recent",
+              priority: "medium",
+              status: "active",
+              updated_at: "2026-04-05T11:00:00.000Z",
+              expires_at: "2026-04-12T12:00:00.000Z",
+            },
+            {
+              id: "s_prev:cf4",
+              item: "Low recent",
+              priority: "low",
+              status: "active",
+              updated_at: "2026-04-05T10:00:00.000Z",
+              expires_at: "2026-04-12T12:00:00.000Z",
+            },
+            {
+              id: "s_prev:cf5",
+              item: "Medium older",
+              priority: "medium",
+              status: "active",
+              updated_at: "2026-04-03T12:00:00.000Z",
+              expires_at: "2026-04-12T12:00:00.000Z",
+            },
+            {
+              id: "s_prev:cf6",
+              item: "Low older dropped by cap",
+              priority: "low",
+              status: "active",
+              updated_at: "2026-04-02T12:00:00.000Z",
+              expires_at: "2026-04-12T12:00:00.000Z",
+            },
+            {
+              id: "s_prev:cf7",
+              item: "Expired high",
+              priority: "high",
+              status: "active",
+              updated_at: "2026-04-05T13:00:00.000Z",
+              expires_at: "2026-04-01T12:00:00.000Z",
+            },
+          ],
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-05T12:00:00.000Z"));
+
+    try {
+      await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const planContent = K.callLLM.mock.calls[0][0].messages[0].content;
+    const carryForwardBlock = planContent
+      .split("[CARRY-FORWARD]\n")[1]
+      .split("\n\n[CIRCUMSTANCES]")[0];
+    const lines = carryForwardBlock
+      .split("\n")
+      .filter(line => line.startsWith("- "));
+
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toContain("High recent");
+    expect(lines[1]).toContain("High older");
+    expect(lines[2]).toContain("Medium recent");
+    expect(lines[3]).toContain("Medium older");
+    expect(lines[4]).toContain("Low recent");
+    expect(carryForwardBlock).not.toContain("Expired high");
+    expect(carryForwardBlock).not.toContain("Low older dropped by cap");
+  });
 });
 
 // ── Memory write tests ───────────────────────────────────────

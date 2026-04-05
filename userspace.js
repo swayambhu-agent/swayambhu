@@ -532,7 +532,16 @@ async function actCycle(K, { crashData, balances, events }) {
 
   // 2c. Load carry-forward items from last session's reflect output
   const lastReflect = await K.kvGet("last_reflect");
-  const carryForwardItems = (lastReflect?.carry_forward || []).filter(item => item.status === "active");
+  const priorityRank = { high: 0, medium: 1, low: 2 };
+  const carryForwardItems = (lastReflect?.carry_forward || [])
+    .filter(item => item.status === "active")
+    .filter(item => !item.expires_at || new Date(item.expires_at).getTime() >= Date.now())
+    .sort((a, b) => {
+      const priorityDelta = (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
+      if (priorityDelta !== 0) return priorityDelta;
+      return new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime();
+    })
+    .slice(0, 5);
 
   // 2b. Cache embeddings for Tier 1 relevance filtering
   if (inferenceConfig) {
