@@ -77,9 +77,10 @@ export function selectExperiences(experiences, desireEmbeddings, options = {}) {
 
 // ── Inference client ────────────────────────────────────
 
-export async function callInference(baseUrl, secret, path, body) {
+export async function callInference(baseUrl, secret, path, body, signal = AbortSignal.timeout(20_000)) {
   const resp = await fetch(`${baseUrl}${path}`, {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       ...(secret ? { "Authorization": `Bearer ${secret}` } : {}),

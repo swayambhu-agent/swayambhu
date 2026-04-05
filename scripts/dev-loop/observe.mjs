@@ -114,53 +114,63 @@ async function readLastExecutions() {
   return Array.isArray(data["kernel:last_executions"]) ? data["kernel:last_executions"] : [];
 }
 
-async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_MS) {
+export async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_MS, deps = {}) {
+  const {
+    readSessionIdsFn = readSessionIds,
+    readLastExecutionsFn = readLastExecutions,
+    restartServicesFn = restartServices,
+    sleepFn = sleep,
+    stdout = process.stdout,
+    log = console.log,
+  } = deps;
   const deadline = Date.now() + timeoutMs;
   const beforeSet = new Set(beforeIds);
 
   // Phase 1: poll cache:session_ids for a new session ID (session started)
   let newId = null;
   while (Date.now() < deadline) {
-    const currentIds = await readSessionIds();
+    const currentIds = await readSessionIdsFn();
     newId = currentIds.find(id => !beforeSet.has(id));
     if (newId) {
-      process.stdout.write("\n");
-      console.log(`[OBSERVE] Session started: ${newId}`);
+      stdout.write("\n");
+      log(`[OBSERVE] Session started: ${newId}`);
       break;
     }
     const elapsedSec = Math.round((timeoutMs - (deadline - Date.now())) / 1000);
     const remainingSec = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-    process.stdout.write(
+    stdout.write(
       `\r[OBSERVE] Waiting for session to start... ${elapsedSec}s elapsed, ${remainingSec}s left`,
     );
-    await sleep(POLL_INTERVAL_MS);
+    await sleepFn(POLL_INTERVAL_MS);
   }
 
   if (!newId) {
-    process.stdout.write("\n");
+    stdout.write("\n");
+    await restartServicesFn();
     throw new Error(`No new session started within ${timeoutMs / 1000}s`);
   }
 
   // Phase 2: poll kernel:last_executions for terminal outcome with this ID
   // (session completed — clean, crash, or killed)
   while (Date.now() < deadline) {
-    const executions = await readLastExecutions();
+    const executions = await readLastExecutionsFn();
     const completed = executions.find(e => e.id === newId);
     if (completed) {
-      console.log(`[OBSERVE] Session completed: ${newId} (outcome: ${completed.outcome})`);
+      log(`[OBSERVE] Session completed: ${newId} (outcome: ${completed.outcome})`);
       // Brief delay for KV writes to propagate through dashboard cache
-      await sleep(5000);
+      await sleepFn(5000);
       return newId;
     }
     const elapsedSec = Math.round((timeoutMs - (deadline - Date.now())) / 1000);
     const remainingSec = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-    process.stdout.write(
+    stdout.write(
       `\r[OBSERVE] Session ${newId} running... ${elapsedSec}s elapsed, ${remainingSec}s left`,
     );
-    await sleep(POLL_INTERVAL_MS);
+    await sleepFn(POLL_INTERVAL_MS);
   }
 
-  process.stdout.write("\n");
+  stdout.write("\n");
+  await restartServicesFn();
   throw new Error(
     `Session ${newId} started but did not complete within ${timeoutMs / 1000}s`,
   );

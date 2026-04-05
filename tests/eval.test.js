@@ -98,7 +98,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
     callInference.mockRejectedValue(new Error("Connection refused"));
 
     K.callLLM.mockResolvedValueOnce({
-      text: JSON.stringify([
+      content: JSON.stringify([
         { id: "desire:serve", direction: "entailment", confidence: 0.7 },
         { id: "pattern:google-docs-accessible", direction: "neutral", confidence: 0.5 },
       ]),
@@ -134,7 +134,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
     });
     // Tier 3: LLM for ambiguous pair
     K.callLLM.mockResolvedValueOnce({
-      text: JSON.stringify([
+      content: JSON.stringify([
         { id: "pattern:google-docs-accessible", direction: "entailment", confidence: 0.8 },
       ]),
     });
@@ -180,5 +180,75 @@ describe("evaluateAction (three-tier pipeline)", () => {
     expect(result.eval_method).toBe("pipeline");
     expect(callInference).not.toHaveBeenCalled();
     expect(K.callLLM).not.toHaveBeenCalled();
+  });
+
+  it("parses LLM classifier output from response.content", async () => {
+    callInference.mockRejectedValue(new Error("Connection refused"));
+
+    K.callLLM.mockResolvedValueOnce({
+      content: JSON.stringify([
+        { id: "desire:serve", direction: "entailment", confidence: 0.9 },
+        { id: "pattern:google-docs-accessible", direction: "contradiction", confidence: 0.4 },
+      ]),
+    });
+
+    const result = await evaluateAction(K, ledger, desires, patterns, config);
+
+    expect(result.eval_method).toBe("llm_fallback");
+    expect(result.alpha.serve).toBeCloseTo(0.9);
+    expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("contradiction");
+  });
+
+  it("threads the provided signal through inference tiers and LLM fallback", async () => {
+    const controller = new AbortController();
+
+    callInference
+      .mockResolvedValueOnce({
+        embeddings: [[0.5, 0.3, 0.2]],
+      })
+      .mockResolvedValueOnce({
+        results: [
+          {
+            id: "desire:serve",
+            label: "neutral",
+            scores: { entailment: 0.34, contradiction: 0.33, neutral: 0.33 },
+          },
+          {
+            id: "pattern:google-docs-accessible",
+            label: "neutral",
+            scores: { entailment: 0.35, contradiction: 0.30, neutral: 0.35 },
+          },
+        ],
+      });
+
+    K.callLLM.mockResolvedValueOnce({
+      content: JSON.stringify([
+        { id: "desire:serve", direction: "entailment", confidence: 0.6 },
+        { id: "pattern:google-docs-accessible", direction: "neutral", confidence: 0.2 },
+      ]),
+    });
+
+    await evaluateAction(K, ledger, desires, patterns, config, controller.signal);
+
+    expect(callInference).toHaveBeenNthCalledWith(
+      1,
+      config.url,
+      config.secret,
+      "/embed",
+      expect.any(Object),
+      controller.signal,
+    );
+    expect(callInference).toHaveBeenNthCalledWith(
+      2,
+      config.url,
+      config.secret,
+      "/nli",
+      expect.any(Object),
+      controller.signal,
+    );
+    expect(K.callLLM).toHaveBeenCalledWith(expect.objectContaining({
+      step: "eval_tier3",
+      signal: controller.signal,
+    }));
   });
 });

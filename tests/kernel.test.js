@@ -358,6 +358,25 @@ describe("callLLM", () => {
     const secondCall = kernel.callWithCascade.mock.calls[1][0];
     expect(secondCall.model).toBe("anthropic/claude-haiku-4.5");
   });
+
+  it("passes the provided signal through the kernel interface", async () => {
+    const { kernel } = makeLLMKernel();
+    const controller = new AbortController();
+    const K = kernel.buildKernelInterface();
+
+    await K.callLLM({
+      model: "test-model",
+      messages: [{ role: "user", content: "hello" }],
+      step: "test",
+      signal: controller.signal,
+    });
+
+    expect(kernel.callWithCascade).toHaveBeenCalledWith(
+      expect.any(Object),
+      "test",
+      controller.signal,
+    );
+  });
 });
 
 // ── 3b. callViaKernelFallback ────────────────────────────────
@@ -389,8 +408,113 @@ describe("callWithCascade", () => {
       expect.objectContaining({
         model: "test-model",
         secrets: { OPENROUTER_API_KEY: "test-key" },
+        signal: undefined,
       })
     );
+  });
+
+  it("passes the same signal to the compiled provider", async () => {
+    const mockCall = vi.fn(async ({ signal, fetch }) => {
+      await fetch("https://provider.test");
+      return {
+        content: "provider response",
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      };
+    });
+    const { kernel } = makeKernel({}, {
+      PROVIDERS: {
+        'provider:llm': { call: mockCall, meta: {} },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({}),
+    }));
+
+    try {
+      await kernel.callWithCascade({
+        model: "test-model",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+      }, "test_step", controller.signal);
+
+      expect(mockCall).toHaveBeenCalledWith(
+        expect.objectContaining({ signal: controller.signal }),
+      );
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://provider.test",
+        expect.objectContaining({ signal: controller.signal }),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects with AbortError when the provided signal aborts tier 1", async () => {
+    const abortError = new DOMException("Aborted", "AbortError");
+    const mockCall = vi.fn(async ({ fetch }) => {
+      await fetch("https://provider.test");
+      return {
+        content: "provider response",
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      };
+    });
+    const { kernel } = makeKernel({}, {
+      PROVIDERS: {
+        'provider:llm': { call: mockCall, meta: {} },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    globalThis.fetch = vi.fn((_input, init = {}) => new Promise((_, reject) => {
+      if (init.signal.aborted) {
+        reject(abortError);
+        return;
+      }
+      init.signal.addEventListener("abort", () => reject(abortError), { once: true });
+    }));
+
+    try {
+      const pending = kernel.callLLM({
+        model: "test-model",
+        messages: [{ role: "user", content: "hi" }],
+        maxTokens: 100,
+        step: "test_step",
+        signal: controller.signal,
+      });
+      controller.abort();
+
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("lets the hardcoded fallback abort on the parent signal", async () => {
+    const { kernel } = makeKernel();
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    const abortError = new DOMException("Aborted", "AbortError");
+    globalThis.fetch = vi.fn((_input, init = {}) => new Promise((_, reject) => {
+      init.signal.addEventListener("abort", () => reject(abortError), { once: true });
+    }));
+
+    try {
+      const pending = kernel._hardcodedLLMFallback({
+        model: "test-model",
+        max_tokens: 100,
+        messages: [{ role: "user", content: "hi" }],
+      }, "test_step", controller.signal);
+      controller.abort();
+
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("falls through to hardcoded fallback when provider fails", async () => {
@@ -3238,6 +3362,60 @@ describe("touchedKeys tracking", () => {
 // ── kernel:pulse ─────────────────────────────────────────
 
 describe("kernel:pulse", () => {
+  it("arms the session controller for 720 seconds by default", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const { kernel } = makeKernel();
+    kernel.defaults = {};
+    kernel.HOOKS = {
+      tick: { run: async () => {} },
+    };
+
+    try {
+      await kernel.runTick();
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 720_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("exposes the session abort signal during a tick and clears it afterwards", async () => {
+    const { kernel } = makeKernel();
+    let seenSignal = null;
+    kernel.HOOKS = {
+      tick: { run: async (K) => {
+        seenSignal = K.sessionAbortSignal;
+      } },
+    };
+
+    await kernel.runTick();
+
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(kernel.sessionAbortController).toBeNull();
+  });
+
+  it("records fatal_error and crash outcome when the session signal aborts mid-tick", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.HOOKS = {
+      tick: { run: async (K) => new Promise((_, reject) => {
+        K.sessionAbortSignal.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+        kernel.sessionAbortController.abort();
+      }) },
+    };
+
+    await kernel.runTick();
+
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "fatal_error", error: "Aborted" }),
+    );
+    const history = JSON.parse(await kernel.kv.get("kernel:last_executions"));
+    expect(history[0].outcome).toBe("crash");
+    expect(kernel.sessionAbortController).toBeNull();
+  });
+
   it("writes kernel:pulse at end of runTick", async () => {
     const { kernel } = makeKernel();
     kernel.HOOKS = {

@@ -285,7 +285,7 @@ async function actPhase(K, { plan, systemPrompt, messages, tools, model, effort,
 
 // ── Review phase ────────────────────────────────────────────
 
-async function reviewPhase(K, { ledger, evalResult, defaults }) {
+async function reviewPhase(K, { ledger, evalResult, defaults, signal }) {
   const model = await K.resolveModel(defaults?.reflect?.model || defaults?.act?.model || "sonnet");
   const reviewPrompt = await K.kvGet("prompt:review");
 
@@ -334,6 +334,7 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
     messages: [{ role: "user", content: userContent }],
     tools: [],
     step: "review",
+    signal,
     json: true,
   });
 
@@ -352,6 +353,7 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
       ],
       tools: [],
       step: "review_retry",
+      signal,
       json: true,
     });
     if (retry.parsed) return retry.parsed;
@@ -432,20 +434,12 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
     let embedding = null;
     if (inferenceConfig) {
       try {
-        // 30s timeout prevents cold-start inference latency from exhausting session budget.
-        // Promise.race abandons the await; CF runtime cancels the in-flight request when the worker completes.
-        const embedTimeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("embedding_timeout")), 30000)
-        );
-        const resp = await Promise.race([
-          callInference(inferenceConfig.url, inferenceConfig.secret, '/embed', {
-            texts: [review?.narrative || review?.assessment || ledger.final_text || '']
-          }),
-          embedTimeout,
-        ]);
+        const resp = await callInference(inferenceConfig.url, inferenceConfig.secret, '/embed', {
+          texts: [review?.narrative || review?.assessment || ledger.final_text || '']
+        });
         embedding = resp.embeddings?.[0] || null;
       } catch (err) {
-        const event = err?.message === "embedding_timeout"
+        const event = err?.name === "AbortError"
           ? "experience_embedding_timeout"
           : "experience_embedding_failed";
         await K.karmaRecord({ event });
@@ -614,68 +608,89 @@ async function actCycle(K, { crashData, balances, events }) {
     // 6b. Plan phase
     const plan = await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems });
     if (!plan) break; // parse failure
-    if (plan.no_action) {
-      await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
+    const cycleAbortController = new AbortController();
+    const abortFromSession = () => cycleAbortController.abort(K.sessionAbortSignal?.reason);
+    const cycleTimeout = setTimeout(() => cycleAbortController.abort(), 120_000);
+    if (K.sessionAbortSignal) {
+      if (K.sessionAbortSignal.aborted) cycleAbortController.abort(K.sessionAbortSignal.reason);
+      else K.sessionAbortSignal.addEventListener("abort", abortFromSession, { once: true });
+    }
+    try {
+      if (plan.no_action) {
+        await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
 
-      // Still run eval + memory so the experience gets recorded. When
-      // patterns are empty, eval returns σ=1 (max surprise) — this is
-      // what bootstraps the agent by making "no desires" a high-salience
-      // experience that reflect can act on.
-      const noActionLedger = {
-        action_id: `a_${Date.now()}_noaction`,
-        plan,
-        tool_calls: [],
-        final_text: plan.reason,
-      };
-      const evalResult = await evaluateAction(K, noActionLedger, desires, patterns, inferenceConfig || {});
-      const syntheticReview = {
-        assessment: "no_action",
-        narrative: `No action taken: ${plan.reason}`,
-        salience_estimate: evalResult.salience || 0,
-      };
-      await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+        // Still run eval + memory so the experience gets recorded. When
+        // patterns are empty, eval returns σ=1 (max surprise) — this is
+        // what bootstraps the agent by making "no desires" a high-salience
+        // experience that reflect can act on.
+        const noActionLedger = {
+          action_id: `a_${Date.now()}_noaction`,
+          plan,
+          tool_calls: [],
+          final_text: plan.reason,
+        };
+        const evalResult = await evaluateAction(K, noActionLedger, desires, patterns, inferenceConfig || {}, cycleAbortController.signal);
+        const syntheticReview = {
+          assessment: "no_action",
+          narrative: `No action taken: ${plan.reason}`,
+          salience_estimate: evalResult.salience || 0,
+        };
+        await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
-      break;
+        break;
+      }
+
+      // 6c. Act phase
+      const ledger = await actPhase(K, {
+        plan, systemPrompt, messages, tools, model, effort, maxTokens, defaults,
+      });
+
+      // 6d. Eval phase
+      const evalResult = await evaluateAction(K, ledger, desires, patterns, inferenceConfig || {}, cycleAbortController.signal);
+
+      // 6e. Review phase
+      const review = await reviewPhase(K, { ledger, evalResult, defaults, signal: cycleAbortController.signal });
+
+      // 6f. Memory writes
+      await writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+
+      cyclesRun++;
+
+      // 6g. Record outcome for planner
+      priorActions.push({
+        action: plan.action,
+        tools: ledger.tool_calls.map(tc => tc.tool),
+        accomplished: review?.accomplished || ledger.final_text?.slice(0, 150) || null,
+        key_findings: review?.key_findings || null,
+        next_gap: review?.next_gap || null,
+      });
+
+      // 6h. Refresh circumstances
+      const freshBalances = await K.checkBalance();
+      circumstances = buildCircumstances(
+        null, // events only on first cycle
+        freshBalances,
+        null, // crashData only on first cycle
+      );
+      // Add recent tool outcomes
+      if (ledger.tool_calls.length) {
+        circumstances.recent_outcomes = ledger.tool_calls.map(tc => ({
+          tool: tc.tool, ok: tc.ok,
+        }));
+      }
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        await K.karmaRecord({ event: "eval_review_aborted", cycle });
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(cycleTimeout);
+      if (K.sessionAbortSignal && !K.sessionAbortSignal.aborted) {
+        K.sessionAbortSignal.removeEventListener("abort", abortFromSession);
+      }
     }
 
-    // 6c. Act phase
-    const ledger = await actPhase(K, {
-      plan, systemPrompt, messages, tools, model, effort, maxTokens, defaults,
-    });
-
-    // 6d. Eval phase
-    const evalResult = await evaluateAction(K, ledger, desires, patterns, inferenceConfig || {});
-
-    // 6e. Review phase
-    const review = await reviewPhase(K, { ledger, evalResult, defaults });
-
-    // 6f. Memory writes
-    await writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
-
-    cyclesRun++;
-
-    // 6g. Record outcome for planner
-    priorActions.push({
-      action: plan.action,
-      tools: ledger.tool_calls.map(tc => tc.tool),
-      accomplished: review?.accomplished || ledger.final_text?.slice(0, 150) || null,
-      key_findings: review?.key_findings || null,
-      next_gap: review?.next_gap || null,
-    });
-
-    // 6h. Refresh circumstances
-    const freshBalances = await K.checkBalance();
-    circumstances = buildCircumstances(
-      null, // events only on first cycle
-      freshBalances,
-      null, // crashData only on first cycle
-    );
-    // Add recent tool outcomes
-    if (ledger.tool_calls.length) {
-      circumstances.recent_outcomes = ledger.tool_calls.map(tc => ({
-        tool: tc.tool, ok: tc.ok,
-      }));
-    }
   }
 
   // Emit session_complete if any actions were taken
@@ -952,11 +967,21 @@ export async function applyDrResults(K, state, output) {
   }
 
   if (output.reasoning_artifacts?.length) {
-    await writeReasoningArtifacts(output.reasoning_artifacts.map((artifact) => ({
-      ...artifact,
-      created_at: artifact.created_at || new Date().toISOString(),
-      source: artifact.source || "deep-reflect",
-    })));
+    try {
+      await writeReasoningArtifacts(output.reasoning_artifacts.map((artifact) => ({
+        ...artifact,
+        created_at: artifact.created_at || new Date().toISOString(),
+        source: artifact.source || "deep-reflect",
+      })));
+    } catch (err) {
+      // writeReasoningArtifacts writes to /home/swayambhu/reasoning/ (Akash machine path).
+      // The Cloudflare Workers runtime (unenv shim) does not implement fs.mkdir — this always
+      // fails in the Worker. The DR job produces reasoning_artifacts in its JSON output; the
+      // architectural intent is for them to be persisted here, but that requires KV-backed
+      // storage or DR-job-side writes (tracked separately). Log best-effort and continue —
+      // KV operations are already applied and must not be blocked by a filesystem write.
+      try { await K.karmaRecord({ event: "reasoning_artifacts_write_failed", error: err.message }); } catch (_) {}
+    }
   }
 
   const prevLastReflect = await K.kvGet("last_reflect");

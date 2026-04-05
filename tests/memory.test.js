@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { updatePatternStrength, selectExperiences, cosineSimilarity, embeddingCacheKey } from "../memory.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { updatePatternStrength, selectExperiences, cosineSimilarity, embeddingCacheKey, callInference } from "../memory.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {
@@ -121,5 +125,40 @@ describe("embeddingCacheKey", () => {
   it("starts with embedding: prefix", () => {
     const k = embeddingCacheKey("hello", "bge-small");
     expect(k).toMatch(/^embedding:/);
+  });
+});
+
+describe("callInference", () => {
+  it("passes a default timeout signal to fetch when no signal is provided", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    });
+
+    await callInference("https://inference.local", "secret", "/embed", { texts: ["x"] });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://inference.local/embed",
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it("passes the caller-provided signal to fetch unchanged", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    });
+    const controller = new AbortController();
+
+    await callInference("https://inference.local", null, "/nli", { pairs: [] }, controller.signal);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://inference.local/nli",
+      expect.objectContaining({
+        signal: controller.signal,
+      }),
+    );
   });
 });

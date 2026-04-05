@@ -26,7 +26,7 @@ vi.mock("../lib/reasoning.js", () => ({
 
 import { run, classify } from "../userspace.js";
 import { evaluateAction } from "../eval.js";
-import { updatePatternStrength } from "../memory.js";
+import { updatePatternStrength, callInference } from "../memory.js";
 import * as reasoning from "../lib/reasoning.js";
 
 // Helper: builds a callLLM mock response, auto-adding parsed when json:true
@@ -38,6 +38,12 @@ function llmResp(content, opts = {}) {
     }
     return resp;
   };
+}
+
+function makeAbortError() {
+  const err = new Error("aborted");
+  err.name = "AbortError";
+  return err;
 }
 
 // ── Empty desires tests ─────────────────────────────────────
@@ -116,6 +122,149 @@ describe("session with empty desires", () => {
     expect(K.karmaRecord).toHaveBeenCalledWith(
       expect.objectContaining({ event: "act_complete" }),
     );
+  });
+});
+
+describe("act cycle abort handling", () => {
+  const ACTION_PLAN = JSON.stringify({
+    action: "inspect_state",
+    success: "state inspected",
+    relies_on: [],
+    defer_if: [],
+  });
+
+  function makeAbortTestKernel() {
+    const K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify({
+          slug: "d_help",
+          direction: "approach",
+          description: "Be helpful",
+        }),
+        "pattern:p_available": JSON.stringify({
+          pattern: "System is available",
+          strength: 0.8,
+        }),
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model", effort: "medium", max_output_tokens: 1000 },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    K.getSessionCost = vi.fn()
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValue(1);
+    K.callLLM = vi.fn(async (opts) => {
+      if (opts.step === "plan") return llmResp(ACTION_PLAN)(opts);
+      throw new Error(`Unexpected LLM step: ${opts.step}`);
+    });
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    return K;
+  }
+
+  it("records eval_review_aborted and skips memory writes when eval times out", async () => {
+    vi.useFakeTimers();
+    const K = makeAbortTestKernel();
+
+    evaluateAction.mockImplementationOnce((_K, _ledger, _desires, _patterns, _config, signal) => (
+      new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(makeAbortError()), { once: true });
+      })
+    ));
+
+    const runPromise = run(K, { crashData: null, balances: {}, events: [] });
+    await vi.advanceTimersByTimeAsync(120_000);
+    await runPromise;
+
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "eval_review_aborted",
+      cycle: 0,
+    }));
+    const actionWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("action:"));
+    expect(actionWrites).toHaveLength(0);
+    vi.useRealTimers();
+  });
+
+  it("records eval_review_aborted and skips memory writes when review times out", async () => {
+    vi.useFakeTimers();
+    const K = makeAbortTestKernel();
+
+    evaluateAction.mockResolvedValueOnce({
+      sigma: 0.2,
+      alpha: {},
+      salience: 0.2,
+      eval_method: "pipeline",
+      tool_outcomes: [],
+      plan_success_criteria: null,
+      patterns_relied_on: [],
+      pattern_scores: {},
+    });
+    K.callLLM = vi.fn(async (opts) => {
+      if (opts.step === "plan") return llmResp(ACTION_PLAN)(opts);
+      if (opts.step === "review") {
+        return new Promise((_, reject) => {
+          opts.signal.addEventListener("abort", () => reject(makeAbortError()), { once: true });
+        });
+      }
+      throw new Error(`Unexpected LLM step: ${opts.step}`);
+    });
+
+    const runPromise = run(K, { crashData: null, balances: {}, events: [] });
+    await vi.advanceTimersByTimeAsync(120_000);
+    await runPromise;
+
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "eval_review_aborted",
+      cycle: 0,
+    }));
+    const actionWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("action:"));
+    expect(actionWrites).toHaveLength(0);
+    vi.useRealTimers();
+  });
+
+  it("aborts the child eval signal immediately when the session signal aborts", async () => {
+    const K = makeAbortTestKernel();
+    const sessionController = new AbortController();
+    K.sessionAbortSignal = sessionController.signal;
+
+    let childSignal = null;
+    let resolveChildSignalReady;
+    const childSignalReady = new Promise((resolve) => {
+      resolveChildSignalReady = resolve;
+    });
+    evaluateAction.mockImplementationOnce((_K, _ledger, _desires, _patterns, _config, signal) => {
+      childSignal = signal;
+      resolveChildSignalReady();
+      return new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(makeAbortError()), { once: true });
+      });
+    });
+
+    const runPromise = run(K, { crashData: null, balances: {}, events: [] });
+    await childSignalReady;
+    sessionController.abort(new Error("session timeout"));
+    await runPromise;
+
+    expect(childSignal).toBeTruthy();
+    expect(childSignal).not.toBe(sessionController.signal);
+    expect(childSignal.aborted).toBe(true);
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "eval_review_aborted",
+      cycle: 0,
+    }));
+    const actionWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("action:"));
+    expect(actionWrites).toHaveLength(0);
   });
 });
 
@@ -597,6 +746,50 @@ describe("session memory writes", () => {
 
     const experienceCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("experience:"));
     expect(experienceCall).toBeUndefined();
+  });
+
+  it("records embedding timeout from AbortError without Promise.race", async () => {
+    const review = {
+      assessment: "success",
+      narrative: "High-salience event.",
+      salience_estimate: 0.9,
+    };
+    const evalResult = {
+      sigma: 0.7, alpha: {}, salience: 0.7, eval_method: "pipeline",
+      tool_outcomes: [], plan_success_criteria: null,
+      patterns_relied_on: [SAMSKARA_KEY],
+      pattern_scores: {},
+    };
+    K = makeK(review, evalResult);
+    const baseDefaults = await K.getDefaults();
+    K.getDefaults = vi.fn(async () => ({
+      ...baseDefaults,
+      inference: { url: "http://localhost:9000" },
+    }));
+    const abortErr = new Error("timed out");
+    abortErr.name = "AbortError";
+    callInference.mockImplementation(async (_url, _secret, path, body) => {
+      if (path === "/embed" && body?.texts?.[0] === "High-salience event.") {
+        throw abortErr;
+      }
+      return { embeddings: [[0.1, 0.2, 0.3]] };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    expect(callInference).toHaveBeenCalledWith(
+      "http://localhost:9000",
+      null,
+      "/embed",
+      expect.any(Object),
+    );
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "experience_embedding_timeout" }),
+    );
+    expect(K.kvWriteSafe).toHaveBeenCalledWith(
+      expect.stringMatching(/^experience:/),
+      expect.objectContaining({ embedding: null }),
+    );
   });
 
   it("does not update patterns when pattern_scores is empty", async () => {

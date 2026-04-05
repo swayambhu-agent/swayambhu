@@ -59,7 +59,7 @@ function computeMetrics(classified, extras) {
 
 // ── Tier 3: LLM classification ─────────────────────────
 
-async function classifyWithLLM(K, pairs, outcomeText) {
+async function classifyWithLLM(K, pairs, outcomeText, signal) {
   const prompt = `Evaluate the relationship between each statement and the outcome.
 Outcome: "${outcomeText}"
 Statements: [${pairs.map(p => `{"id":"${p.id}","text":"${p.text}"}`).join(",")}]
@@ -73,9 +73,10 @@ Respond with ONLY a JSON array: [{"id":"...","direction":"...","confidence":0.0-
     systemPrompt: "You are a precise classifier. Respond with only JSON.",
     messages: [{ role: "user", content: prompt }],
     step: "eval_tier3",
+    signal,
   });
 
-  const parsed = JSON.parse(response.text);
+  const parsed = JSON.parse(response.content);
   const pairMap = Object.fromEntries(pairs.map(p => [p.id, p]));
 
   return parsed.map(r => {
@@ -92,7 +93,7 @@ Respond with ONLY a JSON array: [{"id":"...","direction":"...","confidence":0.0-
 
 // ── Main pipeline ──────────────────────────────────────
 
-export async function evaluateAction(K, ledger, desires, patterns, config) {
+export async function evaluateAction(K, ledger, desires, patterns, config, signal) {
   const toolOutcomes = (ledger.tool_calls || []).map(tc => ({
     tool: tc.tool,
     ok: tc.ok,
@@ -156,7 +157,7 @@ export async function evaluateAction(K, ledger, desires, patterns, config) {
     // ── Tier 1: Embedding relevance filter ──
     const embedResp = await callInference(config.url, config.secret, "/embed", {
       texts: [outcomeText],
-    });
+    }, signal);
     const outcomeEmb = embedResp.embeddings[0];
 
     const relevant = pairs.filter(p => {
@@ -178,7 +179,7 @@ export async function evaluateAction(K, ledger, desires, patterns, config) {
     // ── Tier 2: NLI classification ──
     const nliResp = await callInference(config.url, config.secret, "/nli", {
       pairs: relevant.map(p => ({ id: p.id, premise: p.text, hypothesis: outcomeText })),
-    });
+    }, signal);
 
     const pairMap = Object.fromEntries(relevant.map(p => [p.id, p]));
     const resolved = [];
@@ -203,7 +204,7 @@ export async function evaluateAction(K, ledger, desires, patterns, config) {
     // ── Tier 3: LLM for ambiguous pairs ──
     let llmClassified = [];
     if (ambiguous.length > 0) {
-      llmClassified = await classifyWithLLM(K, ambiguous, outcomeText);
+      llmClassified = await classifyWithLLM(K, ambiguous, outcomeText, signal);
     }
 
     // Include pairs filtered out by Tier 1 as neutral
@@ -220,7 +221,7 @@ export async function evaluateAction(K, ledger, desires, patterns, config) {
   } catch (_err) {
     // ── Full LLM fallback ──
     try {
-      const llmClassified = await classifyWithLLM(K, pairs, outcomeText);
+      const llmClassified = await classifyWithLLM(K, pairs, outcomeText, signal);
       return computeMetrics(llmClassified, { ...baseResult, eval_method: "llm_fallback" });
     } catch (_fallbackErr) {
       // Degraded: return zeros

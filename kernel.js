@@ -449,6 +449,7 @@ class Kernel {
     return {
       // LLM
       callLLM: async (opts) => kernel.callLLM(opts),
+      sessionAbortSignal: kernel.sessionAbortController?.signal || null,
 
       // KV reads — sealed keys blocked. Quarantined content (from unknown senders)
       // may contain prompt injection. The agent never sees raw sealed content;
@@ -894,6 +895,9 @@ class Kernel {
   async runTick() {
     this.touchedKeys = new Set();
     await this.loadEagerConfig();
+    const maxDurationSeconds = this.defaults?.session_budget?.max_duration_seconds || 720;
+    this.sessionAbortController = new AbortController();
+    const sessionTimeout = setTimeout(() => this.sessionAbortController.abort(), maxDurationSeconds * 1000);
     const K = this.buildKernelInterface();
     let outcome = "clean";
 
@@ -931,6 +935,9 @@ class Kernel {
         error: err.message,
         stack: err.stack,
       });
+    } finally {
+      clearTimeout(sessionTimeout);
+      this.sessionAbortController = null;
     }
 
     // Always record execution outcome and release lock
@@ -1023,7 +1030,7 @@ class Kernel {
     const hardcodedPrompt = `You are Swayambhu in recovery mode. Your session hook has been reset due to repeated failures. Check your balances and report your status. Do not attempt complex operations.`;
 
     await this.loadEagerConfig();
-    this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 120 } };
+    this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 720 } };
     await this.karmaRecord({ event: "act_start", mode: "recovery" });
 
     const tools = this.buildToolDefinitions();
@@ -1371,7 +1378,7 @@ class Kernel {
   // breaks the provider adapter, tier 2 catches it. If tier 2 is also bad,
   // tier 3 is always there.
 
-  async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap, json }) {
+  async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap, json, signal }) {
     const budget = this.defaults?.session_budget;
     const costLimit = budgetCap ?? (this.mode === 'chat' ? null : budget?.max_cost);
     if (costLimit && this.sessionCost >= costLimit)
@@ -1437,7 +1444,7 @@ class Kernel {
     } catch {} // best-effort — don't fail the LLM call if request logging fails
 
     // Try cascade: dynamic adapter → last working → hardcoded fallback
-    const result = await this.callWithCascade(request, step);
+    const result = await this.callWithCascade(request, step, signal);
     const durationMs = Date.now() - startMs;
 
     if (!result.ok) {
@@ -1457,7 +1464,7 @@ class Kernel {
       const resolvedFallback = this.resolveModel(fallbackModel);
       if (fallbackModel && resolvedModel !== resolvedFallback) {
         return this.callLLM({ model: fallbackModel, effort: "low", maxTokens,
-          systemPrompt, messages, tools, step, budgetCap });
+          systemPrompt, messages, tools, step, budgetCap, signal });
       }
       throw new Error(`LLM call failed on all providers: ${result.error}`);
     }
@@ -1505,7 +1512,7 @@ class Kernel {
     return response;
   }
 
-  async callWithCascade(request, step) {
+  async callWithCascade(request, step, signal) {
     // Tier 1: Compiled LLM provider (statically imported)
     try {
       const mod = this.PROVIDERS['provider:llm'];
@@ -1518,12 +1525,21 @@ class Kernel {
         if (this.env[name] !== undefined) secrets[name] = this.env[name];
       }
 
-      const result = await fn({ ...request, secrets, fetch: (...args) => fetch(...args) });
+      const result = await fn({
+        ...request,
+        secrets,
+        signal,
+        fetch: (input, init = {}) => fetch(input, {
+          ...init,
+          signal: init.signal || signal,
+        }),
+      });
       if (!result || (typeof result.content !== "string" && !result.toolCalls?.length)) {
         throw new Error("Provider returned invalid response — missing content and tool calls");
       }
       return { ...result, ok: true, tier: "compiled" };
     } catch (err) {
+      if (err?.name === "AbortError") throw err;
       await this.karmaRecord({
         event: "provider_fallback",
         from: "compiled",
@@ -1534,15 +1550,16 @@ class Kernel {
 
     // Tier 2: Hardcoded direct OpenRouter call (nuclear fallback)
     try {
-      const result = await this._hardcodedLLMFallback(request, step);
+      const result = await this._hardcodedLLMFallback(request, step, signal);
       return result;
     } catch (err) {
+      if (err?.name === "AbortError") throw err;
       return { ok: false, error: err.message, tier: "all_failed" };
     }
   }
 
   // Minimal direct OpenRouter call — no provider module dependency
-  async _hardcodedLLMFallback(request, step) {
+  async _hardcodedLLMFallback(request, step, signal) {
     const body = {
       model: request.model,
       max_tokens: request.max_tokens,
@@ -1552,6 +1569,11 @@ class Kernel {
     if (request.tools?.length) body.tools = request.tools;
 
     const controller = new AbortController();
+    const abortFromParent = () => controller.abort(signal?.reason);
+    if (signal) {
+      if (signal.aborted) controller.abort(signal.reason);
+      else signal.addEventListener("abort", abortFromParent, { once: true });
+    }
     const timeout = setTimeout(() => controller.abort(), 60_000);
     let resp, data;
     try {
@@ -1567,6 +1589,7 @@ class Kernel {
       data = await resp.json();
     } finally {
       clearTimeout(timeout);
+      if (signal && !signal.aborted) signal.removeEventListener("abort", abortFromParent);
     }
 
     if (!resp.ok || data.error) {
