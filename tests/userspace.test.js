@@ -216,6 +216,103 @@ describe("session plan phase", () => {
       expect.objectContaining({ event: "plan_no_action", reason: "nothing to do" }),
     );
   });
+
+  it("injects active carry-forward items with the new planner heading", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        "last_reflect": {
+          carry_forward: [
+            {
+              id: "s_prev:cf1",
+              item: "Follow up with the patron about scheduling",
+              why: "Keeps the conversation moving",
+              priority: "high",
+              status: "active",
+              desire_key: "desire:d_help",
+            },
+          ],
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const planCall = K.callLLM.mock.calls[0][0];
+    expect(planCall.messages[0].content).toContain("[CARRY-FORWARD]");
+    expect(planCall.messages[0].content).toContain("plans from previous session — continue or re-evaluate");
+    expect(planCall.messages[0].content).toContain("Follow up with the patron about scheduling");
+    expect(planCall.messages[0].content).toContain("(supports desire:d_help)");
+    expect(planCall.messages[0].content).not.toContain("[CARRY-FORWARD TASKS]");
+  });
+
+  it("only surfaces active carry-forward items to the planner", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        "last_reflect": {
+          carry_forward: [
+            { id: "s_prev:cf1", item: "Keep this one", status: "active" },
+            { id: "s_prev:cf2", item: "Already done", status: "done" },
+            { id: "s_prev:cf3", item: "Dropped item", status: "dropped" },
+          ],
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const planCall = K.callLLM.mock.calls[0][0];
+    expect(planCall.messages[0].content).toContain("Keep this one");
+    expect(planCall.messages[0].content).not.toContain("Already done");
+    expect(planCall.messages[0].content).not.toContain("Dropped item");
+  });
 });
 
 // ── Memory write tests ───────────────────────────────────────
@@ -616,4 +713,3 @@ describe("applyDrResults key filter", () => {
     expect(writes).toHaveLength(4);
   });
 });
-

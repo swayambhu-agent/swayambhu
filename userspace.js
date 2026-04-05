@@ -111,7 +111,7 @@ async function cacheEmbeddings(K, entities, textField, model, config) {
 
 // ── Plan phase ──────────────────────────────────────────────
 
-async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig }) {
+async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems }) {
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
   const systemPrompt = planPrompt
@@ -135,6 +135,16 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
     sections.push("[TACTICS]");
     for (const t of tactics) {
       sections.push(`- ${t.slug || t.key}: ${t.description}`);
+    }
+    sections.push("");
+  }
+  if (carryForwardItems?.length) {
+    sections.push("[CARRY-FORWARD]", "(plans from previous session — continue or re-evaluate; desires remain the authority)");
+    for (const item of carryForwardItems) {
+      const priority = item.priority ? `[${item.priority}] ` : "";
+      const why = item.why ? ` — ${item.why}` : "";
+      const desire = item.desire_key ? ` (supports ${item.desire_key})` : "";
+      sections.push(`- ${priority}${item.item}${why}${desire}`);
     }
     sections.push("");
   }
@@ -520,6 +530,10 @@ async function actCycle(K, { crashData, balances, events }) {
   let desires = await loadDesires(K);
   let patterns = await loadPatterns(K);
 
+  // 2c. Load carry-forward items from last session's reflect output
+  const lastReflect = await K.kvGet("last_reflect");
+  const carryForwardItems = (lastReflect?.carry_forward || []).filter(item => item.status === "active");
+
   // 2b. Cache embeddings for Tier 1 relevance filtering
   if (inferenceConfig) {
     const embedModel = defaults?.inference?.embed_model || 'bge-small-en-v1.5';
@@ -576,7 +590,7 @@ async function actCycle(K, { crashData, balances, events }) {
     }
 
     // 6b. Plan phase
-    const plan = await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig });
+    const plan = await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems });
     if (!plan) break; // parse failure
     if (plan.no_action) {
       await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
