@@ -96,7 +96,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   if (type === "cc_analysis") {
     const model = jobs.cc_model || "";
     const modelFlag = model ? ` --model '${esc(model)}'` : "";
-    jobCommand = `claude -p "$(cat prompt.txt)" --output-format json${modelFlag}`;
+    jobCommand = `claude -p "$(cat prompt.txt)" --output-format text${modelFlag}`;
   } else {
     jobCommand = command;
   }
@@ -126,6 +126,8 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   const innerLines = [
     pathDirs.length ? `export PATH=${pathDirs.join(':')}` + '${PATH:+:$PATH}' : null,
     `cd '${esc(workdir)}' || { echo 1 > '${esc(workdir)}/exit_code'; exit 1; }`,
+    `umask 000`,
+    `rm -f output.json stderr.log exit_code`,
     type === "custom"
       ? `(${jobCommand}) > output.json 2>stderr.log; echo $? > '${esc(workdir)}/exit_code'`
       : `${jobCommand} > output.json 2>stderr.log; echo $? > exit_code`,
@@ -138,6 +140,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   const shellScript = [
     `mkdir -p '${esc(workdir)}'`,
     `tar xz -f '${esc(uploadResult.path)}' -C '${esc(workdir)}'`,
+    `chmod 0777 '${esc(workdir)}'`,
     `nohup sh -c "printf '%s' '${innerB64}' | base64 -d | sh" > /dev/null 2>&1 & echo $!`,
   ].join(' && \\\n');
 
