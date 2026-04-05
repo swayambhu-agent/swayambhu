@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeMockK } from "./helpers/mock-kernel.js";
+import { applyDrResults } from "../userspace.js";
 
 vi.mock("../eval.js", () => ({
   evaluateAction: vi.fn(async () => ({
@@ -553,6 +554,66 @@ describe("pulse classify", () => {
     const result = classify(new Set(["desire:a", "pattern:b", "experience:c"]));
     const mindCount = result.filter(b => b === "mind").length;
     expect(mindCount).toBe(1);
+  });
+});
+
+describe("applyDrResults key filter", () => {
+  function mockK(writes = []) {
+    return {
+      getExecutionId: async () => "x_test",
+      kvWriteGated: async (op, ctx) => { writes.push({ key: op.key, ctx }); return { ok: true }; },
+      kvWriteSafe: async () => {},
+      kvGet: async () => null,
+      emitEvent: async () => {},
+      karmaRecord: async () => {},
+      stageCode: async () => {},
+      signalDeploy: async () => {},
+    };
+  }
+
+  it("passes config: and prompt: operations to kvWriteGated", async () => {
+    const writes = [];
+    const K = mockK(writes);
+    await applyDrResults(K, {}, {
+      kv_operations: [
+        { key: "config:defaults", op: "put", value: { max_cost: 0.20 } },
+        { key: "prompt:plan", op: "put", value: "new prompt", deliberation: "x".repeat(201) },
+        { key: "pattern:test", op: "put", value: { pattern: "test", strength: 0.5 } },
+      ],
+      reflection: "test",
+    });
+    expect(writes).toHaveLength(3);
+    expect(writes.map(w => w.key)).toEqual(["config:defaults", "prompt:plan", "pattern:test"]);
+    expect(writes.every(w => w.ctx === "deep-reflect")).toBe(true);
+  });
+
+  it("filters out kernel: and other disallowed keys", async () => {
+    const writes = [];
+    const K = mockK(writes);
+    await applyDrResults(K, {}, {
+      kv_operations: [
+        { key: "kernel:secret", op: "put", value: "hacked" },
+        { key: "karma:fake", op: "put", value: "injected" },
+        { key: "sealed:data", op: "put", value: "leaked" },
+      ],
+      reflection: "test",
+    });
+    expect(writes).toHaveLength(0);
+  });
+
+  it("still passes pattern/desire/tactic/principle as before", async () => {
+    const writes = [];
+    const K = mockK(writes);
+    await applyDrResults(K, {}, {
+      kv_operations: [
+        { key: "pattern:foo", op: "put", value: { pattern: "x", strength: 0.5 } },
+        { key: "desire:bar", op: "put", value: { description: "x" } },
+        { key: "tactic:baz", op: "put", value: { tactic: "x" } },
+        { key: "principle:qux", op: "put", value: "x", deliberation: "x".repeat(201) },
+      ],
+      reflection: "test",
+    });
+    expect(writes).toHaveLength(4);
   });
 });
 

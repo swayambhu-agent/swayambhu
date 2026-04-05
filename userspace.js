@@ -6,6 +6,7 @@
 import { evaluateAction } from './eval.js';
 import { updatePatternStrength, callInference, embeddingCacheKey } from './memory.js';
 import { renderActPrompt, buildToolSet, formatDesires, formatPatterns, formatCircumstances } from './act.js';
+import { executeReflect } from './reflect.js';
 import { parseJobOutput } from './lib/parse-job-output.js';
 
 // ── Snapshot loaders ────────────────────────────────────────
@@ -397,9 +398,23 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
 
   // Experience writes — if salience exceeds threshold
   const salienceThreshold = 0.5;
-  const salience = evalResult.salience > 0
+  // Clamp review fallback to [0,1] — some review models output uncalibrated values > 1.
+  const rawSalience = evalResult.salience > 0
     ? evalResult.salience
-    : (review?.salience_estimate || 0);
+    : Math.min(1, Math.max(0, review?.salience_estimate || 0));
+
+  // For no_action: use sigma-only salience. NLI classifies long-horizon aspirational
+  // desires as "contradicted" by no-action outcome text (false positive — not acting
+  // does not falsify "I have demonstrated usefulness"). Only pattern surprise (sigma)
+  // is semantically meaningful for abstention events. Raw evalResult.salience is still
+  // preserved in the action:* audit record for diagnostics.
+  //
+  // Note: this assumes desires are approach-only target states requiring action to
+  // advance. If tactical desires are added that can be entailed by principled
+  // abstention, this gate should be revisited.
+  const salience = ledger.plan?.no_action
+    ? evalResult.sigma
+    : rawSalience;
 
   if (salience > salienceThreshold) {
     let embedding = null;
@@ -424,6 +439,9 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
       narrative: review?.narrative || review?.assessment || ledger.plan?.reason || "",
       embedding,
     });
+    await K.karmaRecord({ event: "experience_written", key: experienceKey, salience, sigma: evalResult.sigma });
+  } else {
+    await K.karmaRecord({ event: "experience_skipped", salience, sigma: evalResult.sigma, threshold: salienceThreshold });
   }
 }
 
@@ -544,14 +562,16 @@ async function actCycle(K, { crashData, balances, events }) {
   const maxCycles = 10;
   const budget = defaults?.session_budget || {};
   const maxCost = budget.max_cost || 0.50;
-  const minReviewCost = defaults?.session?.min_review_cost || 0.05;
+  // Reserve budget for eval+review+reflect — derived from config, not hardcoded
+  const reflectReservePct = budget.reflect_reserve_pct || 0.33;
+  const actBudgetCap = maxCost * (1 - reflectReservePct);
   let cyclesRun = 0;
 
   for (let cycle = 0; cycle < maxCycles; cycle++) {
-    // 6a. Budget preflight
+    // 6a. Budget preflight — stop act cycles when reserve is reached
     const spent = await K.getSessionCost();
-    if (spent + minReviewCost >= maxCost) {
-      await K.karmaRecord({ event: "session_budget_exhausted", spent, cycle });
+    if (spent >= actBudgetCap) {
+      await K.karmaRecord({ event: "session_budget_exhausted", spent, cycle, act_cap: actBudgetCap });
       break;
     }
 
@@ -850,12 +870,13 @@ async function pollJobResult(K, state, defaults) {
   return { status: "completed", output: payload, meta };
 }
 
-async function applyDrResults(K, state, output) {
+export async function applyDrResults(K, state, output) {
   const executionId = await K.getExecutionId();
 
   const ops = (output.kv_operations || []).filter(op =>
     op.key?.startsWith("pattern:") || op.key?.startsWith("desire:") ||
-    op.key?.startsWith("tactic:") || op.key?.startsWith("principle:")
+    op.key?.startsWith("tactic:") || op.key?.startsWith("principle:") ||
+    op.key?.startsWith("config:") || op.key?.startsWith("prompt:")
   );
 
   const blocked = [];
@@ -955,13 +976,29 @@ export function classify(touchedKeys) {
 
 export async function run(K, { crashData, balances, events }) {
   // Independent concern 1: act cycle (schedule-gated)
+  let actResult = { skipped: true };
   try {
-    await actCycle(K, { crashData, balances, events });
+    actResult = await actCycle(K, { crashData, balances, events });
   } catch (e) {
     await K.karmaRecord({ event: "act_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
   }
 
-  // Independent concern 2: DR lifecycle (every tick)
+  // Independent concern 2: session reflect (runs for all non-skipped sessions,
+  // including no_action — those run eval+memory and benefit from reflect)
+  if (actResult.skipped !== true) {
+    try {
+      const state = {
+        defaults: actResult.defaults || await K.getDefaults(),
+        modelsConfig: actResult.modelsConfig || await K.getModelsConfig(),
+        desires: actResult.desires || {},
+      };
+      await executeReflect(K, state, {});
+    } catch (e) {
+      await K.karmaRecord({ event: "reflect_error", error: e.message, stack: e.stack?.slice(0, 500) });
+    }
+  }
+
+  // Independent concern 3: DR lifecycle (every tick)
   try {
     await drCycle(K);
   } catch (e) {
