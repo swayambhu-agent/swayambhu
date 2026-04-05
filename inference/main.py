@@ -39,10 +39,18 @@ async def auth_middleware(request: Request, call_next):
 # Model loading (lazy singletons)
 # ---------------------------------------------------------------------------
 
+def make_session_options():
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.inter_op_num_threads = 1
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    return options
+
 @lru_cache(maxsize=1)
 def load_embed_model():
     session = ort.InferenceSession(
         os.path.join(EMBED_MODEL_PATH, "model.onnx"),
+        sess_options=make_session_options(),
         providers=["CPUExecutionProvider"],
     )
     tokenizer = AutoTokenizer.from_pretrained(EMBED_MODEL_PATH)
@@ -53,6 +61,7 @@ def load_embed_model():
 def load_nli_model():
     session = ort.InferenceSession(
         os.path.join(NLI_MODEL_PATH, "model.onnx"),
+        sess_options=make_session_options(),
         providers=["CPUExecutionProvider"],
     )
     tokenizer = AutoTokenizer.from_pretrained(NLI_MODEL_PATH)
