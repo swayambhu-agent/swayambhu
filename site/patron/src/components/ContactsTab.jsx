@@ -39,6 +39,7 @@ export default function ContactsTab({ patronKey }) {
       }
       setContacts(contactList);
       setBindings(bindingList);
+      if (contactList.length > 0) setSelectedSlug(prev => prev || contactList[0].slug);
       setLoading(false);
     } catch (e) { setError(e.message); setLoading(false); }
   }, [patronKey]);
@@ -129,6 +130,13 @@ export default function ContactsTab({ patronKey }) {
             {selected.chat && (
               <div className="mb-3">
                 <div className="text-gray-500 text-[10px] font-semibold mb-1">Chat config</div>
+                <div className="text-xs text-gray-400 mb-1">
+                  {[
+                    selected.chat.model && `model: ${selected.chat.model}`,
+                    selected.chat.effort && `effort: ${selected.chat.effort}`,
+                    selected.chat.max_output_tokens && `max tokens: ${selected.chat.max_output_tokens}`,
+                  ].filter(Boolean).join(' · ')}
+                </div>
                 <div className="bg-bg rounded p-2 border border-border">
                   <JsonView data={selected.chat} />
                 </div>

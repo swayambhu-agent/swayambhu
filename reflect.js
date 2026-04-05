@@ -44,9 +44,11 @@ export async function executeReflect(K, state, step) {
     return rest;
   });
 
+  const lastReflect = await K.kvGet("last_reflect");
   const initialContext = JSON.stringify({
     karma,
     sessionCost,
+    carry_forward: lastReflect?.carry_forward || [],
   });
 
   const model = await K.resolveModel(

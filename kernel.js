@@ -468,6 +468,7 @@ class Kernel {
       kvWriteSafe: async (key, value, metadata) => kernel.kvWriteSafe(key, value, metadata),
       kvDeleteSafe: async (key) => kernel.kvDeleteSafe(key),
       kvWriteGated: async (op, context) => kernel.kvWriteGated(op, context),
+      updatePatternStrength: async (key, newStrength) => kernel.updatePatternStrength(key, newStrength),
 
       // Agent loop
       runAgentTurn: async (opts) => kernel.runAgentTurn(opts),
@@ -665,6 +666,29 @@ class Kernel {
       new_value: op.value, op: op.op,
     });
     this.privilegedWriteCount++;
+    return { ok: true };
+  }
+
+  // ── Mechanical pattern strength update (act/eval path) ──────
+
+  // Dedicated primitive for EMA strength updates on pattern:* keys.
+  // This is a mechanical operation — it only patches the `strength` field and
+  // does NOT consume the privileged write budget (which is for DR/reflect-level
+  // structural changes). Using kvWriteGated("act") for this would be silently
+  // blocked because pattern:* is a system key requiring "deep-reflect" context.
+  async updatePatternStrength(key, newStrength) {
+    if (!key.startsWith("pattern:")) {
+      return { ok: false, error: `updatePatternStrength only applies to pattern:* keys, got "${key}"` };
+    }
+    const existing = await this.kvGet(key);
+    if (existing === null) return { ok: false, error: `Pattern not found: ${key}` };
+    if (typeof existing !== "object" || !("pattern" in existing)) {
+      return { ok: false, error: `Invalid pattern schema at "${key}"` };
+    }
+    const clamped = Math.max(0, Math.min(1, newStrength));
+    const updated = { ...existing, strength: clamped };
+    await this.kvWrite(key, updated);
+    await this.karmaRecord({ event: "pattern_strength_updated", key, old: existing.strength, new: clamped });
     return { ok: true };
   }
 

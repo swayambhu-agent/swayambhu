@@ -3,7 +3,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8080:8000"
+      - "8090:8000"
     environment:
       - AUTH_TOKEN=test-secret
       - OMP_NUM_THREADS=1
@@ -15,7 +15,4 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-    deploy:
-      resources:
-        limits:
-          memory: 3G
+    mem_limit: 3g

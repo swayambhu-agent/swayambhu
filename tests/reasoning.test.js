@@ -116,7 +116,7 @@ conditions_to_revisit:
       readFile: async (path) => files.get(path),
     };
 
-    const loaded = await loadReasoningArtifacts(fsImpl);
+    const loaded = await loadReasoningArtifacts({ fsImpl });
     expect(loaded.map(x => x.slug)).toEqual(["a", "b"]);
     expect(loaded[0].conditions_to_revisit).toEqual(["Revisit A"]);
     expect(loaded[0].body).toContain("# A");
@@ -185,7 +185,7 @@ conditions_to_revisit:
         created_at: "2026-04-05T12:00:00.000Z",
         source: "deep-reflect",
       },
-    ], fsImpl);
+    ], { fsImpl });
 
     expect(writes.map(x => x.path)).toEqual([
       "/home/swayambhu/reasoning/tasks-vs-desires-debate.md",

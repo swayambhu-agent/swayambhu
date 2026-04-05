@@ -235,10 +235,17 @@ function TimelineTab({ patronKey, onSelectEntry, sessionsRev }) {
           value={selectedSession || ''}
           onChange={(e) => setSelectedSession(e.target.value)}
           className="bg-bg border border-border rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-accent"
+          title={selectedSession || ''}
         >
-          {sessions.map(s => (
-            <option key={s.id} value={s.id}>{s.id}</option>
-          ))}
+          {sessions.map(s => {
+            // Parse timestamp from execution ID (x_{epoch_ms}_{suffix})
+            const parts = s.id.split('_');
+            const epoch = parts.length >= 2 ? parseInt(parts[1], 10) : NaN;
+            const label = !isNaN(epoch)
+              ? new Date(epoch).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+              : s.id;
+            return <option key={s.id} value={s.id}>{label}</option>;
+          })}
         </select>
         <button
           onClick={toggleWatch}

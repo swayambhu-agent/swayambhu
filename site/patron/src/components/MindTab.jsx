@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../lib/api.js';
+import { ExpandableText } from './ui/ExpandableText.jsx';
 
 function MindHealthBar({ health, counts, onRefresh }) {
   const bootstrap = health?.bootstrap_complete;
@@ -85,6 +86,12 @@ function MindGraphExplorer({ data, selected, onSelect }) {
           if (p) upstream.push({ ...p, _type: 'principle' });
         });
       }
+      if (t?.source_experiences) {
+        t.source_experiences.forEach(eRef => {
+          const e = experiences.find(e => e.key === eRef || e.key === `experience:${eRef}`);
+          if (e) upstream.push({ ...e, _type: 'experience' });
+        });
+      }
     }
     if (type === 'desire') {
       const d = desires.find(d => d.key === key);
@@ -96,14 +103,38 @@ function MindGraphExplorer({ data, selected, onSelect }) {
           if (p) upstream.push({ ...p, _type: 'principle' });
         });
       }
-      experiences.slice(0, 5).forEach(e => upstream.push({ ...e, _type: 'experience' }));
+      if (d?.source_experiences) {
+        d.source_experiences.forEach(eRef => {
+          const e = experiences.find(e => e.key === eRef || e.key === `experience:${eRef}`);
+          if (e) upstream.push({ ...e, _type: 'experience' });
+        });
+      }
     }
     if (type === 'pattern') {
-      experiences.slice(0, 5).forEach(e => upstream.push({ ...e, _type: 'experience' }));
+      // Only show experiences that reference this pattern via source_experiences
+      const s = patterns.find(s => s.key === key);
+      if (s?.source_experiences) {
+        s.source_experiences.forEach(eRef => {
+          const e = experiences.find(e => e.key === eRef || e.key === `experience:${eRef}`);
+          if (e) upstream.push({ ...e, _type: 'experience' });
+        });
+      }
     }
     if (type === 'experience') {
-      patterns.forEach(s => downstream.push({ ...s, _type: 'pattern' }));
-      desires.forEach(d => downstream.push({ ...d, _type: 'desire' }));
+      // Only show entities that actually reference this experience
+      const eKey = key;
+      desires.forEach(d => {
+        if (d.source_experiences?.some(s => s === eKey || `experience:${s}` === eKey))
+          downstream.push({ ...d, _type: 'desire' });
+      });
+      tactics.forEach(t => {
+        if (t.source_experiences?.some(s => s === eKey || `experience:${s}` === eKey))
+          downstream.push({ ...t, _type: 'tactic' });
+      });
+      patterns.forEach(s => {
+        if (s.source_experiences?.some(se => se === eKey || `experience:${se}` === eKey))
+          downstream.push({ ...s, _type: 'pattern' });
+      });
     }
     return { upstream, downstream };
   }, [selected, principles, tactics, patterns, desires, experiences]);
@@ -266,8 +297,15 @@ function MindGraphExplorer({ data, selected, onSelect }) {
               <span className="text-gray-600 mx-1">{'\u00b7'}</span>
               <span style={{ color: '#f59e0b' }}>salience={centerEntity.salience?.toFixed(2)}</span>
             </div>
-            {centerEntity.action_taken && <div className="text-xs text-gray-400 mb-1">Action: {centerEntity.action_taken}</div>}
-            <div style={{ fontSize: 13, color: '#d4d4d4', lineHeight: 1.5 }}>{centerEntity.narrative || centerEntity.outcome}</div>
+            {centerEntity.action_taken && (
+              <div className="text-xs text-gray-400 mb-1">
+                <span className="text-gray-500">Action: </span>
+                <ExpandableText text={centerEntity.action_taken} limit={120} color="text-gray-400" />
+              </div>
+            )}
+            <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+              <ExpandableText text={centerEntity.narrative || centerEntity.outcome || ''} limit={150} color="text-gray-300" />
+            </div>
             {centerEntity.timestamp && <div className="text-xs text-gray-600 mt-2">{new Date(centerEntity.timestamp).toLocaleString()}</div>}
           </>
         )}
@@ -291,29 +329,29 @@ function MindGraphExplorer({ data, selected, onSelect }) {
               {label} ({items.length})
             </div>
             {items.slice(0, 10).map(entity => renderSidebarItem(entity, type))}
-            {items.length > 10 && <div className="text-xs text-gray-600 px-1.5 py-1">+{items.length - 10} more</div>}
+            {items.length > 10 && <div className="text-xs text-gray-600 px-1.5 py-1">showing 10 of {items.length}</div>}
           </div>
         ))}
       </div>
 
       {/* Graph area */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-auto">
         {!selected ? (
           <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">
             Select an entity from the sidebar to explore its connections
           </div>
         ) : (
           <>
-            <div className="flex-1 flex items-stretch overflow-auto p-4 gap-2">
+            <div className="flex-1 flex items-start overflow-auto p-4 gap-2">
               {/* Upstream column */}
-              <div className="flex flex-col justify-center" style={{ minWidth: 180, maxWidth: 220 }}>
+              <div className="flex flex-col justify-start pt-4" style={{ minWidth: 180, maxWidth: 220 }}>
                 {connections.upstream.length > 0 ? (
                   <>
                     <div style={{ fontSize: 9, color: '#666', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6, textAlign: 'center' }}>upstream</div>
                     {connections.upstream.map(e => renderConnectedNode(e, e._type))}
                   </>
                 ) : (
-                  <div className="text-xs text-gray-700 text-center italic">
+                  <div className="text-xs text-gray-500 text-center italic">
                     {selected.type === 'principle' ? 'immutable root' : 'no upstream found'}
                   </div>
                 )}
@@ -327,7 +365,7 @@ function MindGraphExplorer({ data, selected, onSelect }) {
               </div>
 
               {/* Center */}
-              <div className="flex flex-col justify-center items-center" style={{ minWidth: 240 }}>
+              <div className="flex flex-col justify-start items-center pt-4" style={{ minWidth: 240 }}>
                 {renderCenterNode()}
               </div>
 
@@ -339,14 +377,14 @@ function MindGraphExplorer({ data, selected, onSelect }) {
               </div>
 
               {/* Downstream column */}
-              <div className="flex flex-col justify-center" style={{ minWidth: 180, maxWidth: 220 }}>
+              <div className="flex flex-col justify-start pt-4" style={{ minWidth: 180, maxWidth: 220 }}>
                 {connections.downstream.length > 0 ? (
                   <>
                     <div style={{ fontSize: 9, color: '#666', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6, textAlign: 'center' }}>downstream</div>
                     {connections.downstream.map(e => renderConnectedNode(e, e._type))}
                   </>
                 ) : (
-                  <div className="text-xs text-gray-700 text-center italic">no downstream found</div>
+                  <div className="text-xs text-gray-500 text-center italic">no downstream found</div>
                 )}
               </div>
             </div>
@@ -395,6 +433,7 @@ export default function MindTab({ patronKey }) {
         const type = first.pattern !== undefined ? 'pattern'
           : first.direction !== undefined ? 'desire'
           : first.surprise_score !== undefined ? 'experience'
+          : first.slug !== undefined && first.source_principles !== undefined ? 'tactic'
           : 'principle';
         setSelected({ type, key: first.key });
       }

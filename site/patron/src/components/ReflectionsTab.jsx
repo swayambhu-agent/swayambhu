@@ -112,12 +112,28 @@ function ReflectionsTab({ patronKey, reflectionsRev }) {
           <div className="flex-1 overflow-y-auto">
             <div className="p-4">
               <div style={{ fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Reflection</div>
+              {drData.execution?.note_to_future_self && (
+                <div style={{ fontSize: 12, color: '#f59e0b', lineHeight: 1.6, padding: 12, marginBottom: 12, background: 'rgba(245,158,11,0.06)', borderRadius: 6, borderLeft: '3px solid #f59e0b' }}>
+                  <div style={{ fontSize: 10, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Note to future self</div>
+                  {drData.execution.note_to_future_self}
+                </div>
+              )}
               {drData.execution?.reflection ? (
                 <div style={{ fontSize: 12, color: '#d4d4d4', lineHeight: 1.6, padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 6, borderLeft: '3px solid #a78bfa' }}>
                   {drData.execution.reflection}
                 </div>
               ) : (
                 <div className="text-xs text-gray-600">No reflection text</div>
+              )}
+              {drData.execution?.experiences_selected?.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 10, color: '#06b6d4', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
+                    Experiences selected ({drData.execution.experiences_selected.length})
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    {drData.execution.experiences_selected.map(k => k.replace('experience:', '')).join(', ')}
+                  </div>
+                </div>
               )}
             </div>
 

@@ -679,12 +679,12 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // Should write updated strength via kvWriteGated (pattern:* is protected)
-    const strengthWrite = K.kvWriteGated.mock.calls.find(([op]) => op.key === SAMSKARA_KEY);
-    expect(strengthWrite).toBeDefined();
-    const written = strengthWrite[0].value;
-    expect(written.strength).toBeGreaterThanOrEqual(0);
-    expect(written.strength).toBeLessThanOrEqual(1);
+    // Should write updated strength via dedicated kernel primitive
+    const strengthCall = K.updatePatternStrength.mock.calls.find(([key]) => key === SAMSKARA_KEY);
+    expect(strengthCall).toBeDefined();
+    const writtenStrength = strengthCall[1];
+    expect(writtenStrength).toBeGreaterThanOrEqual(0);
+    expect(writtenStrength).toBeLessThanOrEqual(1);
   });
 
   it("updates pattern strength on violation", async () => {
@@ -705,11 +705,11 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    const strengthWrite = K.kvWriteGated.mock.calls.find(([op]) => op.key === SAMSKARA_KEY);
-    expect(strengthWrite).toBeDefined();
-    const written = strengthWrite[0].value;
+    const strengthCall = K.updatePatternStrength.mock.calls.find(([key]) => key === SAMSKARA_KEY);
+    expect(strengthCall).toBeDefined();
+    const writtenStrength = strengthCall[1];
     // Violation should decrease strength
-    expect(written.strength).toBeLessThan(0.8);
+    expect(writtenStrength).toBeLessThan(0.8);
   });
 
   it("writes experience when salience exceeds threshold", async () => {

@@ -198,20 +198,12 @@ export default function App() {
           </>
         )}
         {mindCounts && (
-          <div className="flex items-center gap-3 text-gray-500 border-l border-gray-800 pl-3 ml-1">
-            <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-green-400 transition">
-              <span className="text-green-400">●</span> {mindCounts.patterns}s
-            </span>
-            <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-purple-400 transition">
-              <span className="text-purple-400">●</span> {mindCounts.desires}d
-            </span>
-            <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-cyan-400 transition">
-              <span className="text-cyan-400">●</span> {mindCounts.experiences}ε
-            </span>
-            <span className="text-gray-600">
-              DR:{mindCounts.sessionsSinceDr}
-            </span>
-          </div>
+          <span className="text-gray-600 border-l border-gray-800 pl-3 ml-1 cursor-pointer hover:text-gray-400 transition"
+            onClick={() => setActiveTab('mind')}
+            title={`${mindCounts.patterns} patterns, ${mindCounts.desires} desires, ${mindCounts.experiences} experiences — ${mindCounts.sessionsSinceDr} sessions since last DR`}
+          >
+            DR:{mindCounts.sessionsSinceDr}
+          </span>
         )}
         <div className="flex items-center gap-2 ml-auto">
           {health && balances && (() => {

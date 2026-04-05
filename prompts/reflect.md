@@ -57,19 +57,19 @@ Respond with a single JSON object. Nothing outside the JSON.
 
   "carry_forward_updates": [
     {
-      "id": "s_...:cf1",
+      "id": "dr1:cf1",
       "status": "done",
       "updated_at": "{{now_iso}}",
       "result": "what happened"
     },
     {
-      "id": "s_...:cf2",
+      "id": "s_3:cf2",
       "status": "dropped",
       "updated_at": "{{now_iso}}",
       "reason": "why"
     },
     {
-      "id": "s_...:cf3",
+      "id": "session_6:cf1",
       "status": "active",
       "updated_at": "{{now_iso}}",
       "why": "why this is still worth carrying",
@@ -121,7 +121,7 @@ This is unstructured orientation between sessions. Use it for tone, caution, or 
 
 ### Checking carry-forward
 
-If `last_reflect` contains a `carry_forward` array with active items, check whether this session's karma shows progress on any of them. Update via `carry_forward_updates`:
+If `last_reflect` contains a `carry_forward` array with active items, check whether this session's karma shows progress on any of them. Update via `carry_forward_updates` — each `id` must be copied exactly from an existing entry in the list; do not invent new IDs here. To add new items, use `new_carry_forward`. Update via `carry_forward_updates`:
 - `done` — the item was completed this session. Include `result` and `updated_at`.
 - `dropped` — the item is no longer relevant. Include `reason` and `updated_at`.
 - `active` — the item is still live but should be refreshed. Include any changed `why`, `priority`, `desire_key`, `updated_at`, and `expires_at`.

@@ -161,6 +161,8 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
       if (pa.next_gap) line += ` | Gap: ${pa.next_gap}`;
       sections.push(line);
     }
+  } else {
+    sections.push("", "[SESSION STATE]", "This is the start of the session. No tools have been called yet. Any tool outputs referenced in carry-forward or patterns are from prior sessions.");
   }
   sections.push(
     "",
@@ -406,7 +408,10 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
       const existing = patterns[key];
       if (!existing) continue;
       const newStrength = updatePatternStrength(existing.strength, score.surprise);
-      await K.kvWriteGated({ op: "put", key, value: { ...existing, strength: newStrength } }, "act");
+      const writeResult = await K.updatePatternStrength(key, newStrength);
+      if (!writeResult.ok) {
+        await K.karmaRecord({ event: "pattern_strength_write_failed", key, error: writeResult.error });
+      }
     }
   }
 

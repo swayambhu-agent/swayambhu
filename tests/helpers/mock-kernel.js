@@ -163,6 +163,15 @@ export function makeMockK(kvInit = {}, opts = {}) {
   }
   function _isCodeKey(key) { return _CODE_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code'); }
 
+  mock.updatePatternStrength = vi.fn(async (key, newStrength) => {
+    if (!key.startsWith("pattern:")) return { ok: false, error: `Not a pattern key: ${key}` };
+    const existing = await mock.kvGet(key);
+    if (existing === null) return { ok: false, error: `Pattern not found: ${key}` };
+    const clamped = Math.max(0, Math.min(1, newStrength));
+    await mock.kvWriteSafe(key, { ...existing, strength: clamped }, { unprotected: true });
+    return { ok: true };
+  });
+
   mock.kvWriteGated = vi.fn(async (op, context) => {
     const key = op.key;
 
