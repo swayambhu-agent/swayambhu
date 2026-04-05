@@ -129,12 +129,50 @@ Or to replace entirely:
 Use this rarely. Principles are operational ethics — they should change
 slowly, only when experience provides strong evidence.
 
+## Config and Prompt Modification
+
+You can propose changes to config:* and prompt:* keys via kv_operations.
+Your context tarball includes the current prompts and config — read them
+before proposing changes.
+
+When to modify config:
+- Observed performance data justifies a parameter change (e.g. model choice,
+  budget split, interval timing)
+- A config value contradicts observed behavior or principles
+
+When to modify prompts:
+- The agent consistently misframes its situation due to prompt wording
+- A prompt is missing context the agent needs for correct reasoning
+- A prompt contradicts the cognitive architecture design
+
+Requirements:
+- prompt:* changes require a deliberation field (200+ chars) explaining
+  why the change is needed and what behavior it will produce
+- Be conservative — small, targeted changes. Don't rewrite entire prompts.
+- Prefer patch over put when changing a specific section.
+- Changes take effect on the next session (prompts are read live from KV).
+
+Example:
+{ "key": "config:defaults", "op": "patch",
+  "old_string": "\"reflect_reserve_pct\": 0.33",
+  "new_string": "\"reflect_reserve_pct\": 0.40" }
+
+{ "key": "prompt:plan", "op": "patch",
+  "old_string": "decide what single action to take",
+  "new_string": "decide what single action to take — or do nothing",
+  "deliberation": "The plan prompt omits the no_action framing, causing
+  the planner to force unnecessary actions when no desire gap is closable.
+  Sessions 4-8 show repeated low-value actions that waste budget. Adding
+  the explicit 'or do nothing' option aligns with the no_action code path
+  in userspace.js and the cognitive architecture's stance that inaction
+  is a valid choice." }
+
 ## Output
 
 Respond with ONLY a JSON object:
 {
   "kv_operations": [
-    // pattern, desire, tactic, and (rarely) principle changes
+    // pattern, desire, tactic, principle, config, and prompt changes
   ],
   "code_stage_requests": [
     // Optional: code changes for tools, hooks, providers, channels
