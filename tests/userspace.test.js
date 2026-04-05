@@ -1141,4 +1141,51 @@ describe("applyDrResults key filter", () => {
 
     expect(reasoning.writeReasoningArtifacts).not.toHaveBeenCalled();
   });
+
+  it("clamps DR requested after_sessions to the default through generation 5 and allows it after generation 5", async () => {
+    const nextSessionAfter = new Date(Date.now() + 60_000).toISOString();
+    const defaults = {
+      deep_reflect: {
+        default_interval_sessions: 5,
+        default_interval_days: 7,
+      },
+    };
+
+    for (const { generation, expectedNextDueSession } of [
+      { generation: 1, expectedNextDueSession: 105 },
+      { generation: 6, expectedNextDueSession: 120 },
+    ]) {
+      const K = makeMockK({
+        session_counter: 100,
+        session_schedule: { next_session_after: nextSessionAfter },
+        last_reflect: {
+          note_to_future_self: "Existing note",
+          carry_forward: [],
+        },
+        "dr:state:1": {
+          status: "completed",
+          generation,
+          consecutive_failures: 0,
+          last_applied_session: 80,
+          job_id: `job_${generation}`,
+        },
+        [`dr:result:${generation}`]: {
+          reflection: "test",
+          note_to_future_self: "New note",
+          kv_operations: [],
+          next_reflect: {
+            after_sessions: 20,
+            after_days: 7,
+          },
+        },
+      }, { defaults });
+
+      await run(K, { crashData: null, balances: {}, events: [] });
+
+      const drState = await K.kvGet("dr:state:1");
+      expect(drState.status).toBe("idle");
+      expect(drState.last_applied_session).toBe(100);
+      expect(drState.next_due_session).toBe(expectedNextDueSession);
+    }
+  });
 });

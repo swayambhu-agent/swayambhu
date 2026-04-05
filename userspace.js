@@ -786,8 +786,11 @@ async function drCycle(K) {
     state.consecutive_failures = 0;
     state.last_failure_session = null;
 
-    const interval = output.next_reflect?.after_sessions
-      || defaults?.deep_reflect?.default_interval_sessions || 20;
+    const defaultInterval = defaults?.deep_reflect?.default_interval_sessions || 20;
+    const requestedInterval = output.next_reflect?.after_sessions || defaultInterval;
+    const interval = state.generation <= 5
+      ? Math.min(defaultInterval, requestedInterval)
+      : requestedInterval;
     const intervalDays = output.next_reflect?.after_days
       || defaults?.deep_reflect?.default_interval_days || 7;
     state.next_due_session = state.last_applied_session + interval;

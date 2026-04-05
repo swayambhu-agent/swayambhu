@@ -229,5 +229,6 @@ Respond with ONLY a JSON object:
   "next_reflect": {
     "after_sessions": 20,
     "after_days": 7
+    // For DR generations 1-5, after_sessions above config:defaults.deep_reflect.default_interval_sessions is clamped down to that default.
   }
 }
