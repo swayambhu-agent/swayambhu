@@ -22,6 +22,16 @@ describe("reflect prompt contract", () => {
     expect(prompt).toContain("expired");
     expect(prompt).toContain("at most 5 items");
   });
+
+  it("teaches deep-reflect to read and emit reasoning artifacts", () => {
+    const prompt = readFileSync(new URL("../prompts/deep_reflect.md", import.meta.url), "utf8");
+
+    expect(prompt).toContain("/home/swayambhu/reasoning/INDEX.md");
+    expect(prompt).toContain("Treat each artifact as prior deliberation, not immutable truth.");
+    expect(prompt).toContain("reasoning_artifacts");
+    expect(prompt).toContain("conditions_to_revisit");
+    expect(prompt).toContain("full markdown body of the reasoning");
+  });
 });
 
 describe("executeReflect carry-forward merge", () => {

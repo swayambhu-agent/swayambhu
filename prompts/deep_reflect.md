@@ -10,6 +10,17 @@ Read the context files in this directory:
 - kernel/source_map.json — pointers to infrastructure source code
 - reflect/schedule/ — when each depth last ran
 
+## Reasoning artifacts
+
+This machine has a local reasoning archive at `/home/swayambhu/reasoning/`.
+Start with `/home/swayambhu/reasoning/INDEX.md`, then open any relevant artifact files.
+Treat each artifact as prior deliberation, not immutable truth.
+
+When a current question matches a prior artifact:
+- reuse its recorded decision by default
+- revisit only when current evidence hits one of that artifact's `conditions_to_revisit`
+- if you overturn or materially refine it, say so explicitly in `reflection`
+
 ## Self-audit (run first)
 
 Before running the operators below, inspect recent `action:*` and
@@ -197,6 +208,15 @@ Respond with ONLY a JSON object:
       "updated_at": "ISO8601",
       "expires_at": "ISO8601",
       "desire_key": "desire:optional_link"
+    }
+  ],
+  "reasoning_artifacts": [
+    {
+      "slug": "kebab-case-slug",
+      "summary": "Short summary of the reasoning",
+      "decision": "What was decided",
+      "conditions_to_revisit": ["Concrete falsifiable trigger"],
+      "body": "full markdown body of the reasoning"
     }
   ],
   "code_stage_requests": [

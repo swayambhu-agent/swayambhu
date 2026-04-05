@@ -8,6 +8,7 @@ import { updatePatternStrength, callInference, embeddingCacheKey } from './memor
 import { renderActPrompt, buildToolSet, formatDesires, formatPatterns, formatCircumstances } from './act.js';
 import { executeReflect } from './reflect.js';
 import { parseJobOutput } from './lib/parse-job-output.js';
+import { writeReasoningArtifacts } from "./lib/reasoning.js";
 
 // ── Snapshot loaders ────────────────────────────────────────
 
@@ -205,9 +206,10 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
 
   if (plan.no_action) return plan;
 
-  // Validate relies_on keys against desire + pattern snapshots
+  // Validate relies_on keys against desire + pattern + tactic snapshots
+  // tacticList is in scope from the tactic loading above (line 123)
   if (plan.relies_on?.length) {
-    const knownKeys = new Set([...Object.keys(desires), ...Object.keys(patterns)]);
+    const knownKeys = new Set([...Object.keys(desires), ...Object.keys(patterns), ...tacticList.keys.map(k => k.name)]);
     const unknown = plan.relies_on.filter(k => !knownKeys.has(k));
     if (unknown.length) {
       await K.karmaRecord({ event: "plan_unknown_relies_on", unknown_keys: unknown, stripped: true });
@@ -430,12 +432,23 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
     let embedding = null;
     if (inferenceConfig) {
       try {
-        const resp = await callInference(inferenceConfig.url, inferenceConfig.secret, '/embed', {
-          texts: [review?.narrative || review?.assessment || ledger.final_text || '']
-        });
+        // 30s timeout prevents cold-start inference latency from exhausting session budget.
+        // Promise.race abandons the await; CF runtime cancels the in-flight request when the worker completes.
+        const embedTimeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("embedding_timeout")), 30000)
+        );
+        const resp = await Promise.race([
+          callInference(inferenceConfig.url, inferenceConfig.secret, '/embed', {
+            texts: [review?.narrative || review?.assessment || ledger.final_text || '']
+          }),
+          embedTimeout,
+        ]);
         embedding = resp.embeddings?.[0] || null;
-      } catch {
-        await K.karmaRecord({ event: "experience_embedding_failed" });
+      } catch (err) {
+        const event = err?.message === "embedding_timeout"
+          ? "experience_embedding_timeout"
+          : "experience_embedding_failed";
+        await K.karmaRecord({ event });
       }
     }
 
@@ -827,6 +840,9 @@ async function dispatchDr(K, defaults) {
       arguments: JSON.stringify({
         type: "cc_analysis",
         prompt,
+        // Reasoning artifacts live on the shared filesystem at
+        // /home/swayambhu/reasoning/. Deep-reflect reads them directly;
+        // they are not packed into the KV tarball context.
         context_keys: [
           "pattern:*", "experience:*", "desire:*", "tactic:*",
           "action:*", "principle:*",
@@ -933,6 +949,14 @@ export async function applyDrResults(K, state, output) {
 
   if (blocked.length > 0) {
     await K.karmaRecord({ event: "dr_apply_blocked", blocked, applied: ops.length - blocked.length });
+  }
+
+  if (output.reasoning_artifacts?.length) {
+    await writeReasoningArtifacts(output.reasoning_artifacts.map((artifact) => ({
+      ...artifact,
+      created_at: artifact.created_at || new Date().toISOString(),
+      source: artifact.source || "deep-reflect",
+    })));
   }
 
   const prevLastReflect = await K.kvGet("last_reflect");

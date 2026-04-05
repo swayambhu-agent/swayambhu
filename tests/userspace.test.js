@@ -20,9 +20,14 @@ vi.mock("../memory.js", () => ({
   embeddingCacheKey: vi.fn((text, model) => `embedding:mock:${model}`),
 }));
 
+vi.mock("../lib/reasoning.js", () => ({
+  writeReasoningArtifacts: vi.fn(async () => ({ written: [], indexEntries: [] })),
+}));
+
 import { run, classify } from "../userspace.js";
 import { evaluateAction } from "../eval.js";
 import { updatePatternStrength } from "../memory.js";
+import * as reasoning from "../lib/reasoning.js";
 
 // Helper: builds a callLLM mock response, auto-adding parsed when json:true
 function llmResp(content, opts = {}) {
@@ -772,6 +777,10 @@ describe("pulse classify", () => {
 });
 
 describe("applyDrResults key filter", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   function mockK(writes = []) {
     return {
       getExecutionId: async () => "x_test",
@@ -885,5 +894,58 @@ describe("applyDrResults key filter", () => {
     expect(lastReflect.carry_forward).toEqual([
       { id: "s_new:cf1", item: "New item", status: "active" },
     ]);
+  });
+
+  it("writes DR reasoning artifacts through lib/reasoning.js", async () => {
+    const K = makeMockK({
+      last_reflect: {
+        note_to_future_self: "Existing note",
+        carry_forward: [],
+      },
+    });
+
+    await applyDrResults(K, { generation: 7 }, {
+      reflection: "test",
+      note_to_future_self: "New note",
+      kv_operations: [],
+      reasoning_artifacts: [
+        {
+          slug: "tasks-vs-desires-debate",
+          summary: "Decide how continuity should work.",
+          decision: "Use carry_forward as the only structured continuity mechanism.",
+          conditions_to_revisit: ["Planner evidence shows stale-plan inertia."],
+          body: "# Tasks vs Desires\n\nDecision details.",
+        },
+      ],
+    });
+
+    expect(reasoning.writeReasoningArtifacts).toHaveBeenCalledWith([
+      {
+        slug: "tasks-vs-desires-debate",
+        summary: "Decide how continuity should work.",
+        decision: "Use carry_forward as the only structured continuity mechanism.",
+        conditions_to_revisit: ["Planner evidence shows stale-plan inertia."],
+        body: "# Tasks vs Desires\n\nDecision details.",
+        created_at: expect.any(String),
+        source: "deep-reflect",
+      },
+    ]);
+  });
+
+  it("does not call reasoning writer when DR omits reasoning_artifacts", async () => {
+    const K = makeMockK({
+      last_reflect: {
+        note_to_future_self: "Existing note",
+        carry_forward: [],
+      },
+    });
+
+    await applyDrResults(K, { generation: 7 }, {
+      reflection: "test",
+      note_to_future_self: "New note",
+      kv_operations: [],
+    });
+
+    expect(reasoning.writeReasoningArtifacts).not.toHaveBeenCalled();
   });
 });
