@@ -96,7 +96,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   if (type === "cc_analysis") {
     const model = jobs.cc_model || "";
     const modelFlag = model ? ` --model '${esc(model)}'` : "";
-    jobCommand = `claude -p "$(cat prompt.txt)" --output-format text${modelFlag}`;
+    jobCommand = `claude -p "$(cat prompt.txt)" --output-format json${modelFlag}`;
   } else {
     jobCommand = command;
   }
@@ -122,12 +122,30 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     };
   }
 
+  // For cc_analysis jobs, create .claude/settings.json granting Bash (read-only
+  // for reasoning archive) and Write (for job output) so CC doesn't get denied.
+  const ccSettingsLines = type === "cc_analysis" ? [
+    `mkdir -p '${esc(workdir)}/.claude'`,
+    `cat > '${esc(workdir)}/.claude/settings.json' << 'SETTINGS_EOF'\n${JSON.stringify({
+      permissions: {
+        allow: [
+          "Bash(cat /home/swayambhu/reasoning/*)",
+          "Bash(ls /home/swayambhu/reasoning/*)",
+          "Bash(cat /home/swayambhu/reasoning/**/*)",
+          "Bash(ls /home/swayambhu/reasoning/**/*)",
+          `Write(${baseDir}/**)`,
+        ]
+      }
+    }, null, 2)}\nSETTINGS_EOF`,
+  ] : [];
+
   // Build inner script (plain shell text — will be base64-encoded)
   const innerLines = [
     pathDirs.length ? `export PATH=${pathDirs.join(':')}` + '${PATH:+:$PATH}' : null,
     `cd '${esc(workdir)}' || { echo 1 > '${esc(workdir)}/exit_code'; exit 1; }`,
     `umask 000`,
     `rm -f output.json stderr.log exit_code`,
+    ...ccSettingsLines,
     type === "custom"
       ? `(${jobCommand}) > output.json 2>stderr.log; echo $? > '${esc(workdir)}/exit_code'`
       : `${jobCommand} > output.json 2>stderr.log; echo $? > exit_code`,

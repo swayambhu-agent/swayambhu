@@ -35,12 +35,15 @@ Run three operators:
 
 ## S operator: Pattern Management
 
-Patterns are recurring patterns observed across multiple experiences.
+Patterns are recurring situations observed across multiple experiences.
 Mechanical strength updates (EMA) happen during act sessions. Your
 role is pattern recognition across experiences that the numbers miss.
 
+Patterns are purely about observations. They do not include conclusions or 
+recommended actions — that is what tactics are for.
+
 **Create** when multiple experiences reveal a pattern. Initial strength: 0.3.
-**Refine** pattern text when new experience clarifies the understanding.
+**Refine** when new experience sharpens the observation or when similar patterns can be merged into a more general pattern.
 **Erode** strength when experience contradicts the pattern.
 **Delete** patterns near strength 0, or describing temporal state rather than enduring patterns.
 

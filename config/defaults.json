@@ -7,9 +7,9 @@
     "budget_hard_limit_pct": 0.85
   },
   "reflect": {
-    "model": "xiaomi/mimo-v2-pro",
+    "model": "deepseek/deepseek-v3.2",
     "effort": "medium",
-    "max_output_tokens": 1000
+    "max_output_tokens": 2000
   },
   "session_budget": {
     "max_cost": 0.15,

@@ -88,6 +88,17 @@ export async function executeReflect(K, state, step) {
     return;
   }
 
+  // Detect truncation — valid JSON but missing expected fields
+  const hasContent = !!(output.session_summary || output.reflection);
+  if (hasContent && !output.next_session_config && !output.carry_forward_updates && !output.new_carry_forward) {
+    await K.karmaRecord({
+      event: "reflect_incomplete",
+      depth: 0,
+      missing: ["next_session_config", "carry_forward_updates", "new_carry_forward"],
+      session_id: sessionId,
+    });
+  }
+
   // Strip stale fields the LLM might still emit
   const {
     vikalpa_updates,
@@ -182,6 +193,14 @@ export async function executeReflect(K, state, step) {
   if (output.next_session_config) {
     const scheduleConf = { ...output.next_session_config };
     if (scheduleConf.interval_seconds) {
+      // When plan was no_action, don't let reflect shorten below the system default.
+      // Tactics (e.g. backoff-in-waiting) set the default as the floor for waiting states.
+      const wasNoAction = karma.some(e => e.event === 'plan_no_action');
+      if (wasNoAction) {
+        const defaults = await K.getDefaults();
+        const floor = defaults?.schedule?.interval_seconds || 21600;
+        scheduleConf.interval_seconds = Math.max(scheduleConf.interval_seconds, floor);
+      }
       scheduleConf.next_session_after = new Date(
         Date.now() + scheduleConf.interval_seconds * 1000
       ).toISOString();

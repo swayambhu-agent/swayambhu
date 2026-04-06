@@ -348,6 +348,14 @@ alone misses. This has caught critical errors in every dev loop cycle
 so far. Do not skip this step — if you think the work is too obvious
 to need review, that's exactly when you need it most.
 
+**Always save Codex output to a file.** When dispatching work to Codex
+(analysis, plans, reviews, debates), instruct Codex to write its full
+output to a file on disk (e.g. in the run directory or docs/). Codex
+subagent output gets truncated or lost in relay — the only reliable
+record is what Codex writes to the filesystem. If the output is a
+debate or design discussion, save it to `docs/superpowers/specs/`.
+If it's a review, save it to the relevant run directory.
+
 **Comment the "why", not the "what".** Use comments to document high-level
 motivation where it isn't obvious from the code itself — why a design
 choice was made, what would go wrong without it, what constraint it

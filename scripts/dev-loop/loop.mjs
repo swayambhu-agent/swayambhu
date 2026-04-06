@@ -590,6 +590,31 @@ async function runCycle(state) {
     }
   }
 
+  // ── DR STATUS ──
+  let drStatusLine = null;
+  try {
+    const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || 'http://localhost:8790';
+    const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || 'test';
+    const drResp = await fetch(`${DASHBOARD_URL}/kv/multi?keys=${encodeURIComponent('dr:state:1')},${encodeURIComponent('session_counter')}`, {
+      headers: { 'X-Patron-Key': DASHBOARD_KEY },
+    });
+    const drData = await drResp.json();
+    const dr = drData['dr:state:1'] || {};
+    const sc = drData['session_counter'] || 0;
+    if (dr.status === 'dispatched') {
+      const age = dr.dispatched_at ? Math.round((Date.now() - new Date(dr.dispatched_at).getTime()) / 60000) : '?';
+      drStatusLine = `DR: dispatched (gen ${dr.generation}, ${age}min ago)`;
+    } else if (dr.status === 'completed') {
+      drStatusLine = `DR: completed (gen ${dr.generation}, awaiting apply)`;
+    } else if (dr.status === 'idle') {
+      const sessionsUntil = (dr.next_due_session || 0) - sc;
+      drStatusLine = `DR: idle (gen ${dr.generation}, ${sessionsUntil > 0 ? `next in ${sessionsUntil} sessions` : 'due now'})`;
+    } else if (dr.status === 'failed') {
+      drStatusLine = `DR: FAILED (gen ${dr.generation}, ${dr.failure_reason || 'unknown'})`;
+    }
+    if (drStatusLine) console.log(`[LOOP] ${drStatusLine}`);
+  } catch {}
+
   // ── CLASSIFY ──
   state.phase = 'classify';
   await saveState(STATE_DIR, state);
@@ -829,6 +854,7 @@ async function runCycle(state) {
     `Dev Loop Cycle ${state.cycle} — ${displayTime} IST`,
     forceColdStart ? `Cold start: ${coldStartReasons.join(', ')}` : null,
     `Session: ${sessionId} | ${duration}s | $${cost}`,
+    drStatusLine,
     '',
     ccSummary ? `${ccSummary.slice(0, 200)}` : null,
     '',

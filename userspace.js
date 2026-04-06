@@ -112,7 +112,7 @@ async function cacheEmbeddings(K, entities, textField, model, config) {
 
 // ── Plan phase ──────────────────────────────────────────────
 
-async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems }) {
+async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext }) {
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
   const systemPrompt = planPrompt
@@ -146,6 +146,14 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
       const why = item.why ? ` — ${item.why}` : "";
       const desire = item.desire_key ? ` (supports ${item.desire_key})` : "";
       sections.push(`- ${priority}${item.item}${why}${desire}`);
+    }
+    sections.push("");
+  }
+  if (reflectLoadedContext && Object.keys(reflectLoadedContext).length) {
+    sections.push("[REFLECT-LOADED CONTEXT]", "(keys loaded per last session's next_act_context.load_keys)");
+    for (const [key, val] of Object.entries(reflectLoadedContext)) {
+      const display = typeof val === 'string' ? val : JSON.stringify(val);
+      sections.push(`- ${key}: ${display.slice(0, 500)}`);
     }
     sections.push("");
   }
@@ -555,6 +563,16 @@ async function actCycle(K, { crashData, balances, events }) {
     })
     .slice(0, 5);
 
+  // 2d. Load keys requested by last reflect's next_act_context.load_keys
+  const requestedLoadKeys = (lastReflect?.next_act_context?.load_keys || []).slice(0, 10);
+  const alreadyLoaded = new Set([...Object.keys(desires), ...Object.keys(patterns)]);
+  const reflectLoadedContext = {};
+  for (const key of requestedLoadKeys) {
+    if (alreadyLoaded.has(key)) continue;
+    const val = await K.kvGet(key);
+    if (val != null) reflectLoadedContext[key] = val;
+  }
+
   // 2b. Cache embeddings for Tier 1 relevance filtering
   if (inferenceConfig) {
     const embedModel = defaults?.inference?.embed_model || 'bge-small-en-v1.5';
@@ -611,7 +629,7 @@ async function actCycle(K, { crashData, balances, events }) {
     }
 
     // 6b. Plan phase
-    const plan = await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems });
+    const plan = await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext });
     if (!plan) break; // parse failure
     const cycleAbortController = new AbortController();
     const abortFromSession = () => cycleAbortController.abort(K.sessionAbortSignal?.reason);
@@ -709,11 +727,28 @@ async function actCycle(K, { crashData, balances, events }) {
   }
 
   // Schedule next session
-  const scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
-  await K.kvWriteSafe("session_schedule", {
-    next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
-    interval_seconds: scheduleInterval,
-  });
+  let scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
+
+  // Mechanical backoff: if this session was no_action, check for consecutive streak
+  if (cyclesRun === 0) {
+    const schedule = await K.kvGet("session_schedule");
+    const streak = (schedule?.no_action_streak || 0) + 1;
+    if (streak >= 6) scheduleInterval = Math.max(scheduleInterval, 21600); // 6h floor
+    else if (streak >= 3) scheduleInterval = Math.max(scheduleInterval, 7200); // 2h floor
+    // Persist streak for next session
+    await K.kvWriteSafe("session_schedule", {
+      next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
+      interval_seconds: scheduleInterval,
+      no_action_streak: streak,
+    });
+  } else {
+    // Active session: reset streak
+    await K.kvWriteSafe("session_schedule", {
+      next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
+      interval_seconds: scheduleInterval,
+      no_action_streak: 0,
+    });
+  }
 
   // Session complete
   const finalCost = await K.getSessionCost();
