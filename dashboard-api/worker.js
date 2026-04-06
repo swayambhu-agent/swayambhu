@@ -133,7 +133,7 @@ export default {
       const experiences = experienceKeys
         .slice(-20)
         .map(k => ({ key: k.name, ...values[k.name] }))
-        .filter(e => e.narrative || e.action_taken)
+        .filter(e => e.observation || e.text_rendering?.narrative || e.action_ref)
         .reverse();
 
       const principles = principleKeys
@@ -283,10 +283,11 @@ export default {
         },
         experiences: periodExperiences.slice(0, 20).map(e => ({
           key: e.key,
-          surprise_score: e.surprise_score,
+          surprise_score: e.pattern_delta?.sigma ?? e.surprise_score,
           salience: e.salience,
-          narrative: e.narrative,
-          action_taken: e.action_taken,
+          observation: e.observation,
+          narrative: e.text_rendering?.narrative,
+          action_ref: e.action_ref,
           timestamp: e.timestamp,
         })),
         execution: {

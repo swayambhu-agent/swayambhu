@@ -239,6 +239,41 @@ describe("executeReflect carry-forward merge", () => {
     expect(lastReflect.carry_forward[0].status).toBe("expired");
     expect(lastReflect.carry_forward[0].updated_at).toBe("2026-04-05T12:00:00.000Z");
   });
+
+  it("synthesizes minimal bootstrap reflect output without calling the LLM", async () => {
+    const bootstrapState = {
+      defaults: {
+        reflect: { model: "test-model", effort: "medium", max_output_tokens: 1000 },
+      },
+      desires: {},
+    };
+
+    const K = makeMockK(
+      { session_counter: 1 },
+      {
+        defaults: bootstrapState.defaults,
+        executionId: "s_bootstrap",
+        karma: [
+          { event: "plan_no_action", cycle: 0 },
+          { event: "experience_written", key: "experience:1", salience: 1, sigma: 1 },
+          { event: "act_complete", cycles_run: 0, total_cost: 0 },
+        ],
+      },
+    );
+
+    await executeReflect(K, bootstrapState, bootstrapState.defaults.reflect);
+
+    expect(K.runAgentLoop).not.toHaveBeenCalled();
+
+    const lastReflect = await K.kvGet("last_reflect");
+    expect(lastReflect.session_summary).toBe("Session 1 had no active desires. No action was taken. A bootstrap experience was written.");
+    expect(lastReflect.note_to_future_self).toBe("No action until desire exists.");
+    expect(lastReflect.carry_forward).toEqual([]);
+
+    const record = await K.kvGet("reflect:0:s_bootstrap");
+    expect(record.reflection).toBe("Session 1 had no active desires. No action was taken. A bootstrap experience was written.");
+    expect(record.note_to_future_self).toBe("No action until desire exists.");
+  });
 });
 
 describe("applyReflectOutput deep-reflect carry-forward writeback", () => {

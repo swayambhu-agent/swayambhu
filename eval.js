@@ -2,7 +2,7 @@
 // Tier 1: embedding similarity filter, Tier 2: NLI classification,
 // Tier 3: LLM fallback for ambiguous pairs. Degrades gracefully.
 
-import { callInference, cosineSimilarity, l1Norm } from './memory.js';
+import { callInference, cosineSimilarity } from './memory.js';
 
 // ── Outcome text extraction ────────────────────────────
 
@@ -30,7 +30,35 @@ function extractOutcomeText(ledger) {
 
 // ── Metric computation ─────────────────────────────────
 
-function computeMetrics(classified, extras) {
+function getSourcePrinciples(desires, key) {
+  const principles = desires?.[key]?.source_principles;
+  return Array.isArray(principles) && principles.length > 0 ? principles : [];
+}
+
+function computeDesireAxis(alpha, desires) {
+  const active = Object.entries(alpha).filter(([, value]) => typeof value === "number" && value !== 0);
+  if (active.length === 0) return 0;
+
+  const weighted = active.map(([key, value]) => {
+    const mine = getSourcePrinciples(desires, key);
+    const overlap = active.filter(([otherKey]) => {
+      if (otherKey === key || mine.length === 0) return false;
+      const theirs = getSourcePrinciples(desires, otherKey);
+      return theirs.some(principle => mine.includes(principle));
+    }).length;
+
+    const weight = 1 / Math.sqrt(Math.max(1, mine.length) * (1 + overlap));
+    return { affinity: Math.abs(value), weight };
+  });
+
+  const denominator = weighted.reduce((sum, item) => sum + item.weight ** 2, 0);
+  if (denominator === 0) return 0;
+
+  const numerator = weighted.reduce((sum, item) => sum + (item.weight * item.affinity) ** 2, 0);
+  return Math.sqrt(numerator / denominator);
+}
+
+function computeMetrics(classified, extras, desires) {
   let sigma = 0;
   const patternScores = {};
   const alpha = {};
@@ -38,20 +66,24 @@ function computeMetrics(classified, extras) {
   for (const c of classified) {
     if (c.type === "pattern") {
       const surprise = c.surprise || 0;
-      patternScores[c.slug] = { direction: c.direction, surprise };
+      patternScores[c.id] = { direction: c.direction, surprise };
       if (surprise > sigma) sigma = surprise;
     }
     if (c.type === "desire") {
-      if (c.direction === "entailment") alpha[c.slug] = c.confidence || 0;
-      else if (c.direction === "contradiction") alpha[c.slug] = -(c.confidence || 0);
-      else alpha[c.slug] = 0;
+      if (c.direction === "entailment") alpha[c.id] = c.confidence || 0;
+      else if (c.direction === "contradiction") alpha[c.id] = -(c.confidence || 0);
+      else alpha[c.id] = 0;
     }
   }
+
+  const desireAxis = computeDesireAxis(alpha, desires);
+  const salience = 1 - (1 - sigma) * (1 - desireAxis);
 
   return {
     sigma,
     alpha,
-    salience: sigma + l1Norm(alpha),
+    desire_axis: desireAxis,
+    salience,
     pattern_scores: patternScores,
     ...extras,
   };
@@ -124,6 +156,7 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
     return {
       sigma: 1,
       alpha: {},
+      desire_axis: 0,
       salience: 1,
       pattern_scores: {},
       ...baseResult,
@@ -173,7 +206,7 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
         confidence: 0,
         surprise: 0,
       }));
-      return computeMetrics(neutralClassified, baseResult);
+      return computeMetrics(neutralClassified, baseResult, desires);
     }
 
     // ── Tier 2: NLI classification ──
@@ -216,18 +249,19 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
     }));
 
     const allClassified = [...resolved, ...llmClassified, ...filteredOut];
-    return computeMetrics(allClassified, baseResult);
+    return computeMetrics(allClassified, baseResult, desires);
 
   } catch (_err) {
     // ── Full LLM fallback ──
     try {
       const llmClassified = await classifyWithLLM(K, pairs, outcomeText, signal);
-      return computeMetrics(llmClassified, { ...baseResult, eval_method: "llm_fallback" });
+      return computeMetrics(llmClassified, { ...baseResult, eval_method: "llm_fallback" }, desires);
     } catch (_fallbackErr) {
       // Degraded: return zeros
       return {
         sigma: 0,
         alpha: {},
+        desire_axis: 0,
         salience: 0,
         pattern_scores: {},
         ...baseResult,

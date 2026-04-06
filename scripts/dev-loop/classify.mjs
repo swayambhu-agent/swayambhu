@@ -155,23 +155,11 @@ export function auditExperiences(experiences) {
 
   for (const e of experiences) {
     const key = e.key || e.id || "unknown";
-
-    if (!e.embedding && !e.embeddings) {
+    const observation = e.observation || e.text_rendering?.narrative || e.narrative || e.description || "";
+    if (observation.length < 30) {
       issues.push(
         createIssue({
-          summary: `Experience ${key} missing embedding`,
-          locus: "userspace",
-          severity: "low",
-          confidence: 0.6,
-        }),
-      );
-    }
-
-    const narrative = e.narrative || e.description || "";
-    if (narrative.length < 30) {
-      issues.push(
-        createIssue({
-          summary: `Experience ${key} has vague narrative (${narrative.length} chars)`,
+          summary: `Experience ${key} has vague observation (${observation.length} chars)`,
           locus: "userspace",
           severity: "low",
           confidence: 0.6,

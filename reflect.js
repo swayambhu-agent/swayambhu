@@ -17,6 +17,34 @@ async function loadPatternManifest(K) {
   }));
 }
 
+function isBootstrapNoActionSession({ sessionCounter, desires, karma }) {
+  const noDesires = !desires || Object.keys(desires).length === 0;
+  const plannedNoAction = karma.some((event) => event.event === "plan_no_action");
+  const wroteBootstrapExperience = karma.some((event) => event.event === "experience_written");
+  const actComplete = karma.find((event) => event.event === "act_complete");
+  const cyclesRun = typeof actComplete?.cycles_run === "number" ? actComplete.cycles_run : null;
+
+  return sessionCounter === 1
+    && noDesires
+    && plannedNoAction
+    && wroteBootstrapExperience
+    && cyclesRun === 0;
+}
+
+function buildBootstrapReflectOutput(sessionCounter) {
+  return {
+    session_summary: `Session ${sessionCounter} had no active desires. No action was taken. A bootstrap experience was written.`,
+    note_to_future_self: "No action until desire exists.",
+    next_act_context: {
+      load_keys: [],
+      reason: "No active desires or live context.",
+    },
+    carry_forward_updates: [],
+    new_carry_forward: [],
+    kv_operations: [],
+  };
+}
+
 // ── Session reflect ─────────────────────────────────────────
 
 export async function executeReflect(K, state, step) {
@@ -51,20 +79,28 @@ export async function executeReflect(K, state, step) {
     carry_forward: lastReflect?.carry_forward || [],
   });
 
-  const model = await K.resolveModel(
-    step.model || defaults?.reflect?.model
-  );
+  const output = isBootstrapNoActionSession({
+    sessionCounter,
+    desires: state.desires,
+    karma,
+  })
+    ? buildBootstrapReflectOutput(sessionCounter)
+    : await (async () => {
+        const model = await K.resolveModel(
+          step.model || defaults?.reflect?.model
+        );
 
-  const output = await K.runAgentLoop({
-    systemPrompt,
-    initialContext,
-    tools: [],
-    model,
-    effort: step.effort || defaults?.reflect?.effort,
-    maxTokens: step.max_output_tokens || defaults?.reflect?.max_output_tokens,
-    maxSteps: 1,
-    step: "reflect",
-  });
+        return K.runAgentLoop({
+          systemPrompt,
+          initialContext,
+          tools: [],
+          model,
+          effort: step.effort || defaults?.reflect?.effort,
+          maxTokens: step.max_output_tokens || defaults?.reflect?.max_output_tokens,
+          maxSteps: 1,
+          step: "reflect",
+        });
+      })();
 
   // Detect parse failure — preserve previous last_reflect state
   if (output.raw !== undefined) {

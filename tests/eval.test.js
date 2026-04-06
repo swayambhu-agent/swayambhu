@@ -14,6 +14,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
       slug: "serve",
       direction: "approach",
       description: "Serve seekers",
+      source_principles: ["care"],
       _embedding: [0.5, 0.3, 0.1],
     },
   };
@@ -82,12 +83,13 @@ describe("evaluateAction (three-tier pipeline)", () => {
     const result = await evaluateAction(K, ledger, desires, patterns, config);
 
     expect(result.eval_method).toBe("pipeline");
-    expect(result.alpha).toHaveProperty("serve");
-    expect(result.alpha.serve).toBeGreaterThan(0); // entailment -> positive
+    expect(result.alpha).toHaveProperty("desire:serve");
+    expect(result.alpha["desire:serve"]).toBeGreaterThan(0); // entailment -> positive
     expect(result.pattern_scores).toHaveProperty("pattern:google-docs-accessible");
     expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("entailment");
     expect(typeof result.sigma).toBe("number");
     expect(typeof result.salience).toBe("number");
+    expect(result.salience).toBeLessThanOrEqual(1);
     // callInference called twice: /embed, /nli
     expect(callInference).toHaveBeenCalledTimes(2);
     expect(callInference.mock.calls[0][2]).toBe("/embed");
@@ -108,7 +110,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
 
     expect(result.eval_method).toBe("llm_fallback");
     expect(K.callLLM).toHaveBeenCalledTimes(1);
-    expect(result.alpha.serve).toBeCloseTo(0.7);
+    expect(result.alpha["desire:serve"]).toBeCloseTo(0.7);
     expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("neutral");
   });
 
@@ -144,7 +146,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
     expect(result.eval_method).toBe("pipeline");
     expect(K.callLLM).toHaveBeenCalledTimes(1);
     // Desire resolved by NLI
-    expect(result.alpha.serve).toBeCloseTo(0.85);
+    expect(result.alpha["desire:serve"]).toBeCloseTo(0.85);
     // Pattern resolved by LLM
     expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("entailment");
   });
@@ -195,7 +197,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
     const result = await evaluateAction(K, ledger, desires, patterns, config);
 
     expect(result.eval_method).toBe("llm_fallback");
-    expect(result.alpha.serve).toBeCloseTo(0.9);
+    expect(result.alpha["desire:serve"]).toBeCloseTo(0.9);
     expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("contradiction");
   });
 

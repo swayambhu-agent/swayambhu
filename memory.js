@@ -53,12 +53,15 @@ export function selectExperiences(experiences, desireEmbeddings, options = {}) {
 
   // 2. Score each experience
   // Skip non-canonical entries (e.g. bootstrap_state written directly by act code without
-  // going through the eval/review pipeline). Without salience + surprise_score + timestamp,
-  // scoring produces NaN which contaminates ranking order.
+  // going through the eval/review pipeline). Without salience + timestamp, scoring becomes
+  // unstable and can contaminate ranking order.
   const scored = candidates
-    .filter(exp => typeof exp.salience === 'number' && typeof exp.surprise_score === 'number' && typeof exp.timestamp === 'string')
+    .filter(exp => typeof exp.salience === 'number' && typeof exp.timestamp === 'string')
     .map(exp => {
-    const baseSalience = exp.salience || (exp.surprise_score + l1Norm(exp.affinity_vector));
+    const sigma = typeof exp.surprise_score === 'number'
+      ? exp.surprise_score
+      : (typeof exp.pattern_delta?.sigma === 'number' ? exp.pattern_delta.sigma : 0);
+    const baseSalience = exp.salience || sigma || l1Norm(exp.affinity_vector);
 
     // 3. Embedding similarity boost
     let similarityBoost = 0;

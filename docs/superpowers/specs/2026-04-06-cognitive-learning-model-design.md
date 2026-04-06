@@ -993,6 +993,50 @@ For the custom cognitive core:
 - training should use a rented GPU and periodic adaptation, not constant online
   retraining
 
+### Training cadence and diminishing returns
+
+Dream-learning should not run on a naive fixed schedule forever.
+
+Expected return curve:
+
+1. Early phase: high returns. The first training runs should produce large gains
+   because the model is still learning the basic regularities of Swayambhu's own
+   life.
+2. Middle phase: slower but still meaningful returns. Common patterns saturate
+   and each additional batch adds less.
+3. Mature phase: stepwise returns. Additional training matters mainly when the
+   agent's life changes meaningfully rather than simply because more of the same
+   sessions accumulated.
+
+Therefore production training policy should be:
+
+- frequent early
+- less frequent once stable
+- increased again on novelty, drift, or architectural change
+- justified by measured lift rather than habit
+
+Useful triggers for extra dream-learning runs:
+
+- new toolsets or providers
+- substantial prompt/config/ontology changes
+- entry into a meaningfully new operating environment
+- repeated failures or behavioral drift
+- evidence that recent experiences are opening a new pattern domain
+
+Useful reasons to reduce training frequency:
+
+- held-out validation has flattened
+- behavioral gains per run are small
+- recent sessions are largely redundant
+- infrastructure cost exceeds marginal cognitive gain
+
+The correct mature rule is:
+
+"Train while marginal validated cognitive gain per dollar remains worthwhile."
+
+This preserves the possibility of ongoing learning without assuming that
+constant retraining is inherently virtuous.
+
 ## Self-Modification Of The Learned Framework
 
 Swayambhu should be able to modify the entire cognitive framework, including

@@ -110,6 +110,84 @@ async function cacheEmbeddings(K, entities, textField, model, config) {
   }
 }
 
+function normalizeReview(review, ledger) {
+  const observation = String(
+    review?.observation
+    || review?.narrative
+    || review?.assessment
+    || ledger.final_text
+    || ledger.plan?.reason
+    || ""
+  );
+
+  return {
+    observation,
+    assessment: review?.assessment || null,
+    accomplished: review?.accomplished || null,
+    key_findings: Array.isArray(review?.key_findings)
+      ? review.key_findings.filter(item => typeof item === "string" && item.trim())
+      : [],
+    next_gap: review?.next_gap || null,
+    narrative: review?.narrative || null,
+    salience_estimate: typeof review?.salience_estimate === "number" ? review.salience_estimate : null,
+  };
+}
+
+function deriveDesireAlignment(alpha = {}) {
+  const entries = Object.entries(alpha)
+    .filter(([, score]) => typeof score === "number" && Math.abs(score) >= 0.3)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+
+  const top_positive = entries
+    .filter(([, score]) => score > 0)
+    .slice(0, 3)
+    .map(([desire_key, score]) => ({ desire_key, score: Math.abs(score) }));
+
+  const top_negative = entries
+    .filter(([, score]) => score < 0)
+    .slice(0, 3)
+    .map(([desire_key, score]) => ({ desire_key, score: Math.abs(score) }));
+
+  const magnitudes = entries.map(([, score]) => Math.abs(score));
+  const affinity_magnitude = magnitudes.length
+    ? Math.sqrt(magnitudes.reduce((sum, score) => sum + score ** 2, 0) / magnitudes.length)
+    : 0;
+
+  return {
+    top_positive,
+    top_negative,
+    affinity_magnitude,
+  };
+}
+
+function derivePatternDelta(evalResult) {
+  const scores = Object.entries(evalResult.pattern_scores || {})
+    .map(([pattern_key, value]) => ({
+      pattern_key,
+      direction: value.direction,
+      surprise: value.surprise || 0,
+    }))
+    .sort((a, b) => b.surprise - a.surprise);
+
+  return {
+    sigma: evalResult.sigma || 0,
+    scores,
+  };
+}
+
+function deriveBootstrapNoActionPlan({ circumstances }) {
+  let reason = "No active desires are present. Action is not warranted until experience seeds desire through reflection.";
+
+  if (circumstances?.events?.length) {
+    reason += " External events are noted as circumstances, but without desire-grounding they do not yet authorize action.";
+  }
+
+  return {
+    no_action: true,
+    reason,
+  };
+}
+
 // ── Plan phase ──────────────────────────────────────────────
 
 async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext }) {
@@ -301,9 +379,12 @@ async function reviewPhase(K, { ledger, evalResult, defaults, signal }) {
 
   const evalBlock = [
     "[KERNEL EVALUATION]",
-    `sigma (alignment signal): ${evalResult.sigma}`,
+    `sigma (surprise signal): ${evalResult.sigma}`,
+    `desire_axis: ${evalResult.desire_axis ?? 0}`,
     `salience: ${evalResult.salience}`,
     `eval_method: ${evalResult.eval_method}`,
+    `alpha: ${JSON.stringify(evalResult.alpha || {})}`,
+    `pattern_scores: ${JSON.stringify(evalResult.pattern_scores || {})}`,
     `tool_outcomes: ${JSON.stringify(evalResult.tool_outcomes)}`,
     `plan_success_criteria: ${evalResult.plan_success_criteria || "none"}`,
     `patterns_relied_on: ${JSON.stringify(evalResult.patterns_relied_on)}`,
@@ -329,10 +410,14 @@ async function reviewPhase(K, { ledger, evalResult, defaults, signal }) {
       final_text: ledger.final_text?.slice(0, 500),
     }, null, 2),
     "",
-    "Respond with JSON: { assessment, narrative, salience_estimate, accomplished, key_findings, next_gap }",
+    "Respond with JSON: { observation, assessment, accomplished, key_findings, next_gap, narrative }",
+    "- observation: factual account of what happened; no advice, no tactics, no scheduler policy",
+    "- assessment: optional one-sentence judgment",
     "- accomplished: one sentence summary of what was achieved",
     "- key_findings: array of 1-3 short factual findings",
     "- next_gap: one sentence describing what remains unknown or unfinished (or null if complete)",
+    "- narrative: optional concise audit text for humans",
+    "- only include salience_estimate if eval_method is degraded and you need an emergency fallback",
   ].join("\n");
 
   const maxTokens = defaults?.reflect?.max_output_tokens || 1000;
@@ -382,9 +467,29 @@ async function reviewPhase(K, { ledger, evalResult, defaults, signal }) {
 async function writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber, cycle }) {
   const now = new Date().toISOString();
   const cap = (s, n = 500) => s && s.length > n ? s.slice(0, n) + '…' : s;
+  const reviewRecord = normalizeReview(review, ledger);
+
+  const salienceThreshold = 0.5;
+  const rawSalience = evalResult.salience > 0
+    ? evalResult.salience
+    : Math.min(1, Math.max(0, reviewRecord.salience_estimate || 0));
+
+  // For no_action: use sigma-only salience. NLI classifies long-horizon aspirational
+  // desires as "contradicted" by no-action outcome text (false positive — not acting
+  // does not falsify "I have demonstrated usefulness"). Only pattern surprise (sigma)
+  // is semantically meaningful for abstention events. Raw evalResult.salience is still
+  // preserved in the action:* audit record for diagnostics.
+  //
+  // Note: this assumes desires are approach-only target states requiring action to
+  // advance. If tactical desires are added that can be entailed by principled
+  // abstention, this gate should be revisited.
+  const salience = ledger.plan?.no_action
+    ? evalResult.sigma
+    : rawSalience;
+  const actionKey = `action:${ledger.action_id}`;
 
   // Action record — structured audit trail
-  await K.kvWriteSafe(`action:${ledger.action_id}`, {
+  await K.kvWriteSafe(actionKey, {
     kind: ledger.plan?.no_action ? "no_action" : "action",
     timestamp: now,
     execution_id: executionId || null,
@@ -400,14 +505,17 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
     final_text: cap(ledger.final_text, 1000),
     eval: {
       sigma: evalResult.sigma,
+      desire_axis: evalResult.desire_axis ?? 0,
+      alpha: evalResult.alpha || {},
       salience: evalResult.salience,
+      memory_gate_salience: salience,
       method: evalResult.eval_method,
       tool_outcomes: evalResult.tool_outcomes,
+      pattern_scores: evalResult.pattern_scores || {},
+      plan_success_criteria: evalResult.plan_success_criteria || null,
+      patterns_relied_on: evalResult.patterns_relied_on || [],
     },
-    review: review ? {
-      assessment: review.assessment,
-      narrative: review.narrative,
-    } : null,
+    review: reviewRecord,
   });
 
   // Pattern strength updates — from eval's per-pattern surprise scores
@@ -423,32 +531,12 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
     }
   }
 
-  // Experience writes — if salience exceeds threshold
-  const salienceThreshold = 0.5;
-  // Clamp review fallback to [0,1] — some review models output uncalibrated values > 1.
-  const rawSalience = evalResult.salience > 0
-    ? evalResult.salience
-    : Math.min(1, Math.max(0, review?.salience_estimate || 0));
-
-  // For no_action: use sigma-only salience. NLI classifies long-horizon aspirational
-  // desires as "contradicted" by no-action outcome text (false positive — not acting
-  // does not falsify "I have demonstrated usefulness"). Only pattern surprise (sigma)
-  // is semantically meaningful for abstention events. Raw evalResult.salience is still
-  // preserved in the action:* audit record for diagnostics.
-  //
-  // Note: this assumes desires are approach-only target states requiring action to
-  // advance. If tactical desires are added that can be entailed by principled
-  // abstention, this gate should be revisited.
-  const salience = ledger.plan?.no_action
-    ? evalResult.sigma
-    : rawSalience;
-
   if (salience > salienceThreshold) {
     let embedding = null;
     if (inferenceConfig) {
       try {
         const resp = await callInference(inferenceConfig.url, inferenceConfig.secret, '/embed', {
-          texts: [review?.narrative || review?.assessment || ledger.final_text || '']
+          texts: [reviewRecord.observation || reviewRecord.narrative || ledger.final_text || '']
         });
         embedding = resp.embeddings?.[0] || null;
       } catch (err) {
@@ -460,15 +548,19 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
     }
 
     const experienceKey = `experience:${Date.now()}`;
-    await K.kvWriteSafe(experienceKey, {
+    const experienceRecord = {
       timestamp: now,
-      action_taken: ledger.plan?.action || "no_action",
-      outcome: ledger.final_text || review?.assessment || "",
-      surprise_score: evalResult.sigma,
+      action_ref: actionKey,
+      session_id: executionId || null,
+      cycle: cycle ?? null,
+      observation: reviewRecord.observation,
+      desire_alignment: deriveDesireAlignment(evalResult.alpha || {}),
+      pattern_delta: derivePatternDelta(evalResult),
       salience,
-      narrative: review?.narrative || review?.assessment || ledger.plan?.reason || "",
       embedding,
-    });
+      ...(reviewRecord.narrative ? { text_rendering: { narrative: reviewRecord.narrative } } : {}),
+    };
+    await K.kvWriteSafe(experienceKey, experienceRecord);
     await K.karmaRecord({ event: "experience_written", key: experienceKey, salience, sigma: evalResult.sigma });
   } else {
     await K.karmaRecord({ event: "experience_skipped", salience, sigma: evalResult.sigma, threshold: salienceThreshold });
@@ -495,11 +587,16 @@ async function actCycle(K, { crashData, balances, events }) {
 
       await K.kvWriteSafe(`experience:${Date.now()}`, {
         timestamp: new Date().toISOString(),
-        action_taken: "session_killed",
-        outcome: `Session ${crashData.dead_execution_id} killed after ${elapsed}s. ${llmCalls} LLM calls, ${toolCalls} tool calls, $${cost.toFixed(4)} spent. Last activity: ${lastStep}. Probable cause: execution time limit exceeded.`,
-        surprise_score: 1,
+        action_ref: null,
+        session_id: crashData.dead_execution_id,
+        cycle: 0,
+        observation: `Session ${crashData.dead_execution_id} was killed after ${elapsed}s. ${llmCalls} LLM calls and ${toolCalls} tool calls ran. Last activity: ${lastStep}. Probable cause: execution time limit exceeded.`,
+        desire_alignment: { top_positive: [], top_negative: [], affinity_magnitude: 0 },
+        pattern_delta: { sigma: 1, scores: [] },
         salience: 1,
-        narrative: `A session was killed before it could complete. The last activity was ${lastStep} after ${elapsed}s of execution. This is a crash the agent should learn from — either sessions need to be shorter, or the activity that caused the hang should be avoided.`,
+        text_rendering: {
+          narrative: `A session was killed before it could complete. The last activity was ${lastStep} after ${elapsed}s of execution. This crash should inform future tactic and configuration changes.`,
+        },
         embedding: null,
       });
       await K.kvWriteSafe(marker, { written_at: new Date().toISOString() }, { unprotected: true });
@@ -605,7 +702,7 @@ async function actCycle(K, { crashData, balances, events }) {
     priorActions.push({
       action: rec.plan?.action || rec.plan?.reason || "no_action",
       tools: (rec.tool_calls || []).map(tc => tc.tool),
-      accomplished: rec.review?.accomplished || String(rec.review?.narrative || "").slice(0, 150) || null,
+      accomplished: rec.review?.accomplished || String(rec.review?.observation || rec.review?.narrative || "").slice(0, 150) || null,
       key_findings: rec.review?.key_findings || null,
       next_gap: rec.review?.next_gap || null,
     });
@@ -629,7 +726,9 @@ async function actCycle(K, { crashData, balances, events }) {
     }
 
     // 6b. Plan phase
-    const plan = await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext });
+    const plan = Object.keys(desires).length === 0
+      ? deriveBootstrapNoActionPlan({ circumstances })
+      : await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext });
     if (!plan) break; // parse failure
     const cycleAbortController = new AbortController();
     const abortFromSession = () => cycleAbortController.abort(K.sessionAbortSignal?.reason);
@@ -654,6 +753,7 @@ async function actCycle(K, { crashData, balances, events }) {
         };
         const evalResult = await evaluateAction(K, noActionLedger, desires, patterns, inferenceConfig || {}, cycleAbortController.signal);
         const syntheticReview = {
+          observation: `No action was taken. Reason: ${plan.reason}`,
           assessment: "no_action",
           narrative: `No action taken: ${plan.reason}`,
           salience_estimate: evalResult.salience || 0,
@@ -728,12 +828,17 @@ async function actCycle(K, { crashData, balances, events }) {
 
   // Schedule next session
   let scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
+  const isBootstrapNoAction = cyclesRun === 0
+    && sessionCount === 0
+    && Object.keys(desires).length === 0;
 
   // Mechanical backoff: if this session was no_action, check for consecutive streak
   if (cyclesRun === 0) {
     const schedule = await K.kvGet("session_schedule");
     const streak = (schedule?.no_action_streak || 0) + 1;
-    if (streak >= 6) scheduleInterval = Math.max(scheduleInterval, 21600); // 6h floor
+    if (isBootstrapNoAction) {
+      scheduleInterval = 1;
+    } else if (streak >= 6) scheduleInterval = Math.max(scheduleInterval, 21600); // 6h floor
     else if (streak >= 3) scheduleInterval = Math.max(scheduleInterval, 7200); // 2h floor
     // Persist streak for next session
     await K.kvWriteSafe("session_schedule", {

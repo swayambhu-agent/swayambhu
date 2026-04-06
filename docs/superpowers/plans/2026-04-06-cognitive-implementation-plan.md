@@ -333,6 +333,33 @@ Once the substrate is repaired and validated:
 - dream-learning adapters/checkpoints
 - full cognitive-core replacement path
 
+### Production training policy
+
+When learned components are introduced, do not assume that dream-learning
+should run forever on a fixed frequent cadence.
+
+Expected operational policy:
+
+- early on, train relatively often because the first runs should have the
+  highest leverage
+- once behavior stabilizes, reduce cadence
+- temporarily increase cadence again when tools, prompts, architecture, or
+  operating environment change materially
+- skip or slow runs when validation lift is flat and recent sessions are mostly
+  redundant
+
+The right long-term criterion is marginal gain, not ritual frequency:
+
+- keep training while held-out behavior, retrieval quality, salience quality,
+  or long-horizon coherence improve enough to justify the GPU spend
+- reduce training when gains flatten
+- resume heavier training when the agent's life changes enough to create a new
+  learning opportunity
+
+This means a modest permanent GPU budget is defensible if it keeps producing
+validated improvements in real operation, but diminishing returns should be
+expected and planned for.
+
 ## What Not To Do Yet
 
 Do not:

@@ -218,10 +218,10 @@ describe("auditPatterns", () => {
 describe("auditExperiences", () => {
   it("flags too many low-salience experiences", () => {
     const experiences = [
-      { key: "e:1", salience: 0.01, narrative: "a".repeat(30), embedding: [1] },
-      { key: "e:2", salience: 0.02, narrative: "b".repeat(30), embedding: [1] },
-      { key: "e:3", salience: 0.8, narrative: "c".repeat(30), embedding: [1] },
-      { key: "e:4", salience: 0.05, narrative: "d".repeat(30), embedding: [1] },
+      { key: "e:1", salience: 0.01, observation: "a".repeat(30) },
+      { key: "e:2", salience: 0.02, observation: "b".repeat(30) },
+      { key: "e:3", salience: 0.8, observation: "c".repeat(30) },
+      { key: "e:4", salience: 0.05, observation: "d".repeat(30) },
     ];
     const issues = auditExperiences(experiences);
     const lowSalience = issues.filter((i) => i.summary.includes("salience"));
@@ -231,8 +231,8 @@ describe("auditExperiences", () => {
 
   it("skips low-salience check when too few experiences", () => {
     const experiences = [
-      { key: "e:1", salience: 0.01, narrative: "a".repeat(30), embedding: [1] },
-      { key: "e:2", salience: 0.02, narrative: "b".repeat(30), embedding: [1] },
+      { key: "e:1", salience: 0.01, observation: "a".repeat(30) },
+      { key: "e:2", salience: 0.02, observation: "b".repeat(30) },
     ];
     const issues = auditExperiences(experiences);
     const lowSalience = issues.filter((i) =>
@@ -241,21 +241,21 @@ describe("auditExperiences", () => {
     expect(lowSalience).toHaveLength(0);
   });
 
-  it("flags missing embeddings", () => {
+  it("does not require embeddings in the first-wave experience schema", () => {
     const experiences = [
-      { key: "e:1", narrative: "a decent narrative for testing purposes" },
+      { key: "e:1", observation: "A decent factual observation for testing purposes." },
     ];
     const issues = auditExperiences(experiences);
     const missing = issues.filter((i) => i.summary.includes("missing embedding"));
-    expect(missing).toHaveLength(1);
+    expect(missing).toHaveLength(0);
   });
 
-  it("flags vague narratives", () => {
+  it("flags vague observations", () => {
     const experiences = [
-      { key: "e:1", narrative: "short", embedding: [1] },
+      { key: "e:1", observation: "short" },
     ];
     const issues = auditExperiences(experiences);
-    const vague = issues.filter((i) => i.summary.includes("vague narrative"));
+    const vague = issues.filter((i) => i.summary.includes("vague observation"));
     expect(vague).toHaveLength(1);
   });
 });

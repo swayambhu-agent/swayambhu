@@ -148,6 +148,7 @@ await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool (k
 console.log("--- Prompts ---");
 await put("prompt:plan", read("prompts/plan.md"), "text", "Plan phase system prompt — decides what action to take");
 await put("prompt:act", read("prompts/act.md"), "text", "Act phase system prompt — executes the plan using tools");
+await put("prompt:review", read("prompts/review.md"), "text", "Review phase system prompt — authors factual experience records");
 await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
 // prompt:reflect:1 removed — depth-1 in-session reflect replaced by async DR operator
 // Old prompt preserved as prompts/deep_reflect_old.md for reference

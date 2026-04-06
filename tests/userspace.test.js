@@ -47,7 +47,7 @@ function makeAbortError() {
 }
 
 // ── Empty desires tests ─────────────────────────────────────
-// When d=∅, the session runs normally — plan phase handles it.
+// When d=∅, bootstrap is mechanical: no action without desire.
 
 describe("session with empty desires", () => {
   let K;
@@ -63,13 +63,20 @@ describe("session with empty desires", () => {
         execution: { max_steps: { act: 5 } },
       },
     });
-
-    // Plan returns no_action when desires are empty
-    const noActionContent = JSON.stringify({ no_action: true, reason: "no desires to act on" });
-    K.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
   });
 
-  it("runs normal plan phase even with no desires — no cold_start karma", async () => {
+  it("skips plan phase and writes a bootstrap no_action experience", async () => {
+    evaluateAction.mockResolvedValueOnce({
+      sigma: 1,
+      alpha: {},
+      salience: 0,
+      eval_method: "pipeline",
+      tool_outcomes: [],
+      plan_success_criteria: null,
+      patterns_relied_on: [],
+      pattern_scores: {},
+    });
+
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
     // Should NOT log cold_start karma
@@ -77,51 +84,32 @@ describe("session with empty desires", () => {
       expect.objectContaining({ event: "cold_start" }),
     );
 
-    // callLLM should have been called (plan phase ran)
-    expect(K.callLLM).toHaveBeenCalledTimes(1);
+    // Plan/review LLM calls are bypassed during pre-bootstrap
+    expect(K.callLLM).not.toHaveBeenCalled();
+    expect(K.runAgentTurn).not.toHaveBeenCalled();
 
-    // Plan call should include DESIRES and PATTERNS sections
-    const planCall = K.callLLM.mock.calls[0][0];
-    expect(planCall.messages[0].content).toMatch(/DESIRES/);
-    expect(planCall.messages[0].content).toMatch(/PATTERNS/);
-  });
-
-  it("can precipitate an action even with empty desires", async () => {
-    // Override: plan returns an action despite empty desires
-    const VALID_PLAN = JSON.stringify({
-      action: "orient_from_principles",
-      success: "initial orientation complete",
-      relies_on: [],
-      defer_if: [],
-    });
-    const VALID_REVIEW = JSON.stringify({
-      assessment: "success",
-      narrative: "Oriented from principles.",
-      salience_estimate: 0.1,
-    });
-
-    let callCount = 0;
-    K.callLLM = vi.fn(async (opts) => {
-      callCount++;
-      return callCount === 1
-        ? llmResp(VALID_PLAN)(opts)
-        : llmResp(VALID_REVIEW)(opts);
-    });
-
-    K.runAgentTurn = vi.fn(async ({ messages }) => {
-      messages.push({ role: "assistant", content: "Done." });
-      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
-    });
-
-    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
-
-    // Act phase ran (runAgentTurn called)
-    expect(K.runAgentTurn).toHaveBeenCalled();
-
-    // Session completed normally
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "act_complete" }),
+    expect(K.kvWriteSafe).toHaveBeenCalledWith(
+      expect.stringMatching(/^action:/),
+      expect.objectContaining({
+        kind: "no_action",
+        plan: expect.objectContaining({
+          no_action: true,
+        }),
+      }),
     );
+
+    expect(K.kvWriteSafe).toHaveBeenCalledWith(
+      expect.stringMatching(/^experience:/),
+      expect.objectContaining({
+        observation: expect.stringContaining("No action was taken."),
+        salience: 1,
+        pattern_delta: expect.objectContaining({ sigma: 1 }),
+      }),
+    );
+
+    const sessionSchedule = await K.kvGet("session_schedule");
+    expect(sessionSchedule.interval_seconds).toBe(1);
+    expect(sessionSchedule.no_action_streak).toBe(1);
   });
 });
 
@@ -714,6 +702,7 @@ describe("session memory writes", () => {
 
   it("writes experience when salience exceeds threshold", async () => {
     const review = {
+      observation: "A significant event occurred during execution.",
       assessment: "success",
       narrative: "Something significant happened.",
       salience_estimate: 0.8,
@@ -725,13 +714,17 @@ describe("session memory writes", () => {
     const experienceCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("experience:"));
     expect(experienceCall).toBeDefined();
     const experienceValue = typeof experienceCall[1] === "string" ? JSON.parse(experienceCall[1]) : experienceCall[1];
-    expect(experienceValue.narrative).toBe("Something significant happened.");
+    expect(experienceValue.observation).toBe("A significant event occurred during execution.");
+    expect(experienceValue.text_rendering).toEqual({ narrative: "Something significant happened." });
     expect(experienceValue.salience).toBeDefined();
-    expect(experienceValue.surprise_score).toBeDefined();
+    expect(experienceValue.pattern_delta).toEqual({ sigma: 0, scores: [] });
+    expect(experienceValue.desire_alignment).toEqual({
+      top_positive: [],
+      top_negative: [],
+      affinity_magnitude: 0,
+    });
     expect(experienceValue.embedding).toBeNull(); // no inferenceConfig
-    expect(experienceValue.affinity_vector).toBeUndefined();
-    expect(experienceValue.active_assumptions).toBeUndefined();
-    expect(experienceValue.active_desires).toBeUndefined();
+    expect(experienceValue.action_ref).toMatch(/^action:/);
   });
 
   it("skips experience when salience is below threshold", async () => {
@@ -750,6 +743,7 @@ describe("session memory writes", () => {
 
   it("records embedding timeout from AbortError without Promise.race", async () => {
     const review = {
+      observation: "A high-salience event occurred.",
       assessment: "success",
       narrative: "High-salience event.",
       salience_estimate: 0.9,
@@ -769,7 +763,7 @@ describe("session memory writes", () => {
     const abortErr = new Error("timed out");
     abortErr.name = "AbortError";
     callInference.mockImplementation(async (_url, _secret, path, body) => {
-      if (path === "/embed" && body?.texts?.[0] === "High-salience event.") {
+      if (path === "/embed" && body?.texts?.[0] === "A high-salience event occurred.") {
         throw abortErr;
       }
       return { embeddings: [[0.1, 0.2, 0.3]] };

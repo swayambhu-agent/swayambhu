@@ -63,10 +63,10 @@ describe("updatePatternStrength", () => {
 
 describe("selectExperiences", () => {
   const experiences = [
-    { timestamp: "2026-03-01T00:00:00Z", salience: 0.9, surprise_score: 0.8, affinity_vector: { serve: 0.1 }, embedding: [1, 0, 0] },
-    { timestamp: "2026-03-15T00:00:00Z", salience: 0.3, surprise_score: 0.2, affinity_vector: { serve: 0.1 }, embedding: [0, 1, 0] },
-    { timestamp: "2026-03-29T00:00:00Z", salience: 0.7, surprise_score: 0.5, affinity_vector: { serve: 0.2 }, embedding: [0.7, 0.7, 0] },
-    { timestamp: "2026-03-30T00:00:00Z", salience: 0.5, surprise_score: 0.3, affinity_vector: { serve: 0.2 }, embedding: [0, 0, 1] },
+    { timestamp: "2026-03-01T00:00:00Z", salience: 0.9, pattern_delta: { sigma: 0.8 }, embedding: [1, 0, 0] },
+    { timestamp: "2026-03-15T00:00:00Z", salience: 0.3, pattern_delta: { sigma: 0.2 }, embedding: [0, 1, 0] },
+    { timestamp: "2026-03-29T00:00:00Z", salience: 0.7, pattern_delta: { sigma: 0.5 }, embedding: [0.7, 0.7, 0] },
+    { timestamp: "2026-03-30T00:00:00Z", salience: 0.5, pattern_delta: { sigma: 0.3 }, embedding: [0, 0, 1] },
   ];
 
   it("returns top N by salience", () => {
