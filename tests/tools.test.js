@@ -17,6 +17,7 @@ import * as test_model from "../tools/test_model.js";
 import * as web_search from "../tools/web_search.js";
 import * as start_job from "../tools/start_job.js";
 import * as collect_jobs from "../tools/collect_jobs.js";
+import * as delegate_task from "../tools/delegate_task.js";
 import * as send_whatsapp from "../tools/send_whatsapp.js";
 import * as google_docs from "../tools/google_docs.js";
 import * as gnanetra from "../tools/gnanetra.js";
@@ -117,7 +118,7 @@ function mockKV(initial = {}) {
 const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
-  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra, request_message,
+  start_job, collect_jobs, delegate_task, send_whatsapp, google_docs, gnanetra, request_message,
   update_request,
 };
 
@@ -1886,6 +1887,181 @@ describe("start_job", () => {
     const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).not.toContain("export PATH");
+  });
+
+  it("supports subagent_task jobs via Codex in a target cwd", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "24680\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "subagent_task",
+      prompt: "Do one useful thing",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "codex",
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner_model: "gpt-5.4" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("cd '/home/swami/fano/repo' || exit 1");
+    expect(innerScript).toContain("codex exec - < '/tmp/jobs/");
+    expect(innerScript).toContain("--output-last-message '/tmp/jobs/");
+    expect(innerScript).toContain("--model 'gpt-5.4'");
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.type).toBe("subagent_task");
+    expect(record.config.cwd).toBe("/home/swami/fano/repo");
+    expect(record.config.subagent).toBe("codex");
+  });
+
+  it("supports subagent_task jobs via Claude Code", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "13579\r\n" }] };
+      }),
+    };
+
+    const result = await start_job.execute({
+      type: "subagent_task",
+      prompt: "Investigate the repo",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "claude-code",
+      provider, secrets, fetch: vi.fn(), kv: mockKV(),
+      config: { jobs: { ...config.jobs, runner_model: "opus" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("cd '/home/swami/fano/repo' || exit 1");
+    expect(innerScript).toContain("claude -p \"$(cat '/tmp/jobs/");
+    expect(innerScript).toContain("--output-format json --dangerously-skip-permissions --model 'opus'");
+  });
+
+  it("rejects invalid cwd for subagent_task", async () => {
+    const result = await start_job.execute({
+      type: "subagent_task",
+      prompt: "test",
+      context_keys: [],
+      cwd: "relative/path",
+      provider: {}, secrets, fetch: vi.fn(), kv: mockKV(), config,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Invalid cwd for subagent_task: relative/path",
+    });
+  });
+
+  it("rejects unsupported subagents for subagent_task", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(),
+    };
+
+    const result = await start_job.execute({
+      type: "subagent_task",
+      prompt: "test",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "bad-runner",
+      provider, secrets, fetch: vi.fn(), kv: mockKV(), config,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Unsupported subagent for subagent_task: bad-runner",
+    });
+    expect(provider.call).not.toHaveBeenCalled();
+  });
+});
+
+describe("delegate_task", () => {
+  it("dispatches a subagent_task job with the requested cwd", async () => {
+    const launchSpy = vi.spyOn(start_job, "execute").mockResolvedValue({
+      ok: true,
+      job_id: "j_test",
+      workdir: "/tmp/jobs/j_test",
+      pid: 123,
+    });
+
+    const result = await delegate_task.execute({
+      objective: "Inspect the repo and report back",
+      cwd: "/home/swami/fano/repo",
+      subagent: "codex",
+      context: "Focus on one meaningful next step.",
+      provider: {},
+      secrets: {},
+      fetch: vi.fn(),
+      kv: mockKV(),
+      config: {},
+    });
+
+    expect(result.ok).toBe(true);
+    expect(launchSpy).toHaveBeenCalledOnce();
+    expect(launchSpy.mock.calls[0][0]).toMatchObject({
+      type: "subagent_task",
+      cwd: "/home/swami/fano/repo",
+      subagent: "codex",
+      context_keys: [],
+    });
+    expect(launchSpy.mock.calls[0][0].prompt).toContain('"status": "completed | blocked | needs_follow_up"');
+    launchSpy.mockRestore();
+  });
+
+  it("can wait for completion and return the parsed job result", async () => {
+    const launchSpy = vi.spyOn(start_job, "execute").mockResolvedValue({
+      ok: true,
+      job_id: "j_wait",
+      workdir: "/tmp/jobs/j_wait",
+      pid: 456,
+    });
+    const collectSpy = vi.spyOn(collect_jobs, "execute").mockResolvedValue({
+      ok: true,
+      completed: [{ job_id: "j_wait", result_key: "job_result:j_wait" }],
+      still_running: [],
+      failed: [],
+      expired: [],
+    });
+    const kv = mockKV({
+      "job_result:j_wait": JSON.stringify({
+        job_id: "j_wait",
+        type: "subagent_task",
+        result: { status: "completed", summary: "Made a useful change" },
+      }),
+    });
+
+    const result = await delegate_task.execute({
+      objective: "Implement one improvement",
+      cwd: "/home/swami/fano/repo",
+      wait_seconds: 5,
+      provider: {},
+      secrets: {},
+      fetch: vi.fn(),
+      kv,
+      config: {},
+    });
+
+    expect(collectSpy).toHaveBeenCalledOnce();
+    expect(result.result).toEqual({ status: "completed", summary: "Made a useful change" });
+
+    launchSpy.mockRestore();
+    collectSpy.mockRestore();
   });
 });
 

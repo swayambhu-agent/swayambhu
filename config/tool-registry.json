@@ -88,6 +88,17 @@
       }
     },
     {
+      "name": "delegate_task",
+      "description": "Run a bounded Codex or Claude Code task in a target directory on the compute server. Prefer this over raw computer commands for multi-step repo work, investigation, and implementation.",
+      "input": {
+        "objective": "required — concrete bounded goal for the delegated task",
+        "cwd": "required — absolute directory path on the compute server",
+        "subagent": "optional — codex | claude-code (default codex)",
+        "context": "optional — short extra context or constraints",
+        "wait_seconds": "optional — poll briefly for completion (max 30)"
+      }
+    },
+    {
       "name": "request_message",
       "description": "Request that a message be sent to a contact. The communication agent decides whether and how to deliver.",
       "input": {

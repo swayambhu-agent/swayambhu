@@ -26,6 +26,7 @@ import * as test_model from './tools/test_model.js';
 import * as web_search from './tools/web_search.js';
 import * as start_job from './tools/start_job.js';
 import * as collect_jobs from './tools/collect_jobs.js';
+import * as delegate_task from './tools/delegate_task.js';
 import * as send_whatsapp from './tools/send_whatsapp.js';
 import * as google_docs from './tools/google_docs.js';
 import * as gnanetra from './tools/gnanetra.js';
@@ -46,7 +47,7 @@ import * as compute from './providers/compute.js';
 const TOOLS = {
   send_slack, web_fetch, kv_manifest, kv_query,
   computer, check_email, send_email, test_model, web_search,
-  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra,
+  start_job, collect_jobs, delegate_task, send_whatsapp, google_docs, gnanetra,
   request_message, trigger_session, update_request,
 };
 

@@ -22,6 +22,10 @@ there is a live actionable contract in [PENDING REQUESTS].
 
 {{subagents}}
 
+For multi-step repo work or bounded autonomous investigation, prefer
+plans that use `delegate_task` rather than chaining many raw `computer`
+commands.
+
 ## Output
 
 ```json

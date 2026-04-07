@@ -37,10 +37,11 @@ that too before acting.
 
 {{subagents}}
 
-You have external subagents available via the `computer` tool. For
-tasks that benefit from multi-step autonomous work — research,
-writing, investigation, code generation — delegate to a subagent.
-Load the agent's skill for invocation instructions before delegating.
+For multi-step autonomous work in a repo or directory — research,
+implementation, investigation, structured writing, or code review —
+prefer `delegate_task` over raw `computer` commands. Use `computer`
+for short bounded shell probes or when you need a very specific
+one-shot command that does not justify delegation.
 
 ## Your patterns
 

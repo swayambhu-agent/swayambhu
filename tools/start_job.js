@@ -13,8 +13,8 @@ export const meta = {
   provider: "compute",
 };
 
-export async function execute({ type, prompt, context_keys, include_code, command, provider, secrets, fetch, kv, config }) {
-  if (!type) return { ok: false, error: "type is required (cc_analysis | custom)" };
+export async function execute({ type, prompt, context_keys, include_code, command, provider, secrets, fetch, kv, config, cwd, subagent = "codex" }) {
+  if (!type) return { ok: false, error: "type is required (cc_analysis | subagent_task | custom)" };
   if (!prompt && type !== "custom") return { ok: false, error: "prompt is required" };
   if (type === "custom" && !command) return { ok: false, error: "command is required for custom type" };
 
@@ -112,6 +112,21 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     } else {
       return { ok: false, error: `Unsupported jobs.runner: ${ccRunner}` };
     }
+  } else if (type === "subagent_task") {
+    if (!cwd) return { ok: false, error: "cwd is required for subagent_task" };
+    if (!/^\/[a-zA-Z0-9._/-]+$/.test(cwd)) {
+      return { ok: false, error: `Invalid cwd for subagent_task: ${cwd}` };
+    }
+    ccRunner = subagent;
+    const model = jobs.runner_model || jobs.cc_model || "";
+    const modelFlag = model ? ` --model '${esc(model)}'` : "";
+    if (ccRunner === "codex") {
+      jobCommand = `cd '${esc(cwd)}' || exit 1\ncodex exec - < '${esc(`${baseDir}/${jobId}/prompt.txt`)}' --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox --output-last-message '${esc(`${baseDir}/${jobId}/output.json`)}' --color never${modelFlag} > '${esc(`${baseDir}/${jobId}/stdout.log`)}' 2> '${esc(`${baseDir}/${jobId}/stderr.log`)}'`;
+    } else if (ccRunner === "claude-code") {
+      jobCommand = `cd '${esc(cwd)}' || exit 1\nclaude -p "$(cat '${esc(`${baseDir}/${jobId}/prompt.txt`)}')" --output-format json --dangerously-skip-permissions${modelFlag} > '${esc(`${baseDir}/${jobId}/output.json`)}' 2> '${esc(`${baseDir}/${jobId}/stderr.log`)}'`;
+    } else {
+      return { ok: false, error: `Unsupported subagent for subagent_task: ${ccRunner}` };
+    }
   } else {
     jobCommand = command;
   }
@@ -171,6 +186,8 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     ...ccSettingsLines,
     type === "custom"
       ? `(${jobCommand}) > output.json 2>stderr.log; EXIT=$?; echo $EXIT > ${exitCodePath}`
+      : type === "subagent_task"
+        ? `${jobCommand}; EXIT=$?; echo $EXIT > ${exitCodePath}`
       : ccRunner === "codex"
         ? `${jobCommand} < prompt.txt > stdout.log 2>stderr.log; EXIT=$?; echo $EXIT > ${exitCodePath}`
         : `${jobCommand} > output.json 2>stderr.log; EXIT=$?; echo $EXIT > ${exitCodePath}`,
@@ -220,6 +237,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
       context_keys: context_keys || [],
       ttl_minutes: ttlMinutes,
       ...(ccRunner ? { runner: ccRunner, model: jobs.runner_model || jobs.cc_model || null } : {}),
+      ...(type === "subagent_task" ? { cwd, subagent: ccRunner } : {}),
     },
     ...(callbackSecret ? { callback_secret: callbackSecret, callback_url: callbackUrl } : {}),
   };
