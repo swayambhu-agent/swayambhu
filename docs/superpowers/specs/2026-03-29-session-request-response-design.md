@@ -1,5 +1,8 @@
 # Session Request/Response Contract
 
+Current repair plan:
+- [2026-04-07-comms-session-seam-repair-plan.md](/home/swami/swayambhu/repo/docs/superpowers/plans/2026-04-07-comms-session-seam-repair-plan.md)
+
 ## Problem
 
 When a contact asks the agent to do something, the communication hook

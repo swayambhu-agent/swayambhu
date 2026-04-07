@@ -1,5 +1,8 @@
 # Unified Communication Pipeline
 
+Current repair plan:
+- [2026-04-07-comms-session-seam-repair-plan.md](/home/swami/swayambhu/repo/docs/superpowers/plans/2026-04-07-comms-session-seam-repair-plan.md)
+
 Redesign the communication subsystem so all messaging — inbound chat and
 agent-initiated outbound — flows through a single conversation processor
 with one brain, one state, one prompt, and single-writer guarantees.

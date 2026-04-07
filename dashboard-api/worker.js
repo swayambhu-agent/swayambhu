@@ -31,6 +31,74 @@ async function kvListAll(kv, opts = {}) {
   return keys;
 }
 
+function classifyExecutionType(id, { deepReflectIds, actSessionIds, karma }) {
+  if (deepReflectIds.has(id)) return "deep_reflect";
+  if (actSessionIds.has(id)) return "act";
+  if (!Array.isArray(karma)) return "event_only";
+  if (karma.some((entry) => entry?.event === "act_start")) return "act";
+  if (karma.some((entry) => entry?.event === "privileged_write")) return "deep_reflect";
+  return "event_only";
+}
+
+function buildOperatorOutputsFromKvOps(kvOperations = []) {
+  const sOutput = [];
+  const dOutput = [];
+
+  for (const op of kvOperations) {
+    if (op.key?.startsWith("pattern:")) {
+      sOutput.push({
+        action: op.op === "delete" ? "deleted" : "written",
+        key: op.key,
+        pattern: op.value?.pattern,
+        strength: op.value?.strength,
+      });
+    }
+    if (op.key?.startsWith("desire:")) {
+      dOutput.push({
+        action: op.op === "delete" ? "retired" : "written",
+        key: op.key,
+        description: op.value?.description,
+        direction: op.value?.direction,
+        source_principles: op.value?.source_principles,
+      });
+    }
+  }
+
+  return { sOutput, dOutput };
+}
+
+function buildOperatorOutputsFromKarma(drKarma = []) {
+  const sOutput = [];
+  const dOutput = [];
+
+  for (const entry of drKarma) {
+    if (entry?.event !== "privileged_write" || !entry.key) continue;
+    const action = entry.op === "delete"
+      ? (entry.key.startsWith("desire:") ? "retired" : "deleted")
+      : "written";
+
+    if (entry.key.startsWith("pattern:")) {
+      sOutput.push({
+        action,
+        key: entry.key,
+        pattern: entry.new_value?.pattern || null,
+        strength: entry.new_value?.strength ?? null,
+      });
+    }
+    if (entry.key.startsWith("desire:")) {
+      dOutput.push({
+        action,
+        key: entry.key,
+        description: entry.new_value?.description || null,
+        direction: entry.new_value?.direction || null,
+        source_principles: entry.new_value?.source_principles || null,
+      });
+    }
+  }
+
+  return { sOutput, dOutput };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -90,7 +158,7 @@ export default {
     if (path === "/mind") {
       const [
         patternKeys, desireKeys, experienceKeys, principleKeys, tacticKeys,
-        reflectSchedule, sessionCounter,
+        reflectSchedule, drState, sessionCounter,
       ] = await Promise.all([
         kvListAll(env.KV, { prefix: "pattern:" }),
         kvListAll(env.KV, { prefix: "desire:" }),
@@ -98,6 +166,7 @@ export default {
         kvListAll(env.KV, { prefix: "principle:" }),
         kvListAll(env.KV, { prefix: "tactic:" }),
         env.KV.get("reflect:schedule:1", "json"),
+        env.KV.get("dr:state:1", "json"),
         env.KV.get("session_counter", "json"),
       ]);
 
@@ -156,18 +225,20 @@ export default {
         ? await env.KV.get(latestReflectKey.name, "json")
         : null;
 
-      const lastDrSession = reflectSchedule?.last_reflect_session || 0;
+      const lastDrSession = drState?.last_applied_session ?? reflectSchedule?.last_reflect_session ?? 0;
       const currentSession = sessionCounter || 0;
       const sessionsSinceDr = currentSession - lastDrSession;
-      const nextDrDue = reflectSchedule?.after_sessions
+      const nextDrDue = drState?.next_due_session ?? (reflectSchedule?.after_sessions
         ? lastDrSession + reflectSchedule.after_sessions
-        : null;
+        : null);
 
       const operatorHealth = {
         bootstrap_complete: patterns.length > 0 || desires.length > 0,
         last_deep_reflect_session: lastDrSession,
         sessions_since_dr: sessionsSinceDr,
         next_dr_due: nextDrDue,
+        deep_reflect_status: drState?.status || null,
+        deep_reflect_generation: drState?.generation ?? null,
         last_reflect_output: latestReflect ? {
           session_id: latestReflect.session_id,
           reflection: latestReflect.reflection?.slice(0, 200),
@@ -200,13 +271,15 @@ export default {
       const prevDrSessionId = drIndex > 0 ? drSessionIds[drIndex - 1] : null;
 
       // Load all session IDs from karma keys
-      const allKarmaKeys = await kvListAll(env.KV, { prefix: "karma:" });
+      const [allKarmaKeys, cachedActSessions] = await Promise.all([
+        kvListAll(env.KV, { prefix: "karma:" }),
+        env.KV.get("cache:session_ids", "json"),
+      ]);
       const allSessionIds = allKarmaKeys.map(k => k.name.replace("karma:", "")).sort();
+      const actSessionIds = Array.isArray(cachedActSessions) ? [...cachedActSessions].sort() : [];
 
       // Find act sessions in the accumulation period
-      const actSessions = allSessionIds.filter(id => {
-        if (id === drSessionId) return false;
-        if (drSessionIds.includes(id)) return false;
+      const actSessions = actSessionIds.filter(id => {
         if (prevDrSessionId && id <= prevDrSessionId) return false;
         if (id > drSessionId) return false;
         return true;
@@ -233,28 +306,9 @@ export default {
         }
       }
 
-      // Parse S/D operator output from DR's kv_operations
-      const sOutput = [];
-      const dOutput = [];
-      for (const op of (drOutput.kv_operations || [])) {
-        if (op.key?.startsWith('pattern:')) {
-          sOutput.push({
-            action: op.op === 'delete' ? 'deleted' : 'written',
-            key: op.key,
-            pattern: op.value?.pattern,
-            strength: op.value?.strength,
-          });
-        }
-        if (op.key?.startsWith('desire:')) {
-          dOutput.push({
-            action: op.op === 'delete' ? 'retired' : 'written',
-            key: op.key,
-            description: op.value?.description,
-            direction: op.value?.direction,
-            source_principles: op.value?.source_principles,
-          });
-        }
-      }
+      const { sOutput, dOutput } = Array.isArray(drOutput.kv_operations) && drOutput.kv_operations.length > 0
+        ? buildOperatorOutputsFromKvOps(drOutput.kv_operations)
+        : buildOperatorOutputsFromKarma(drKarma);
 
       // DR execution cost and model from karma, duration from dr:state
       let cost = 0, durationMs = 0, model = null;
@@ -286,6 +340,7 @@ export default {
           surprise_score: e.pattern_delta?.sigma ?? e.surprise_score,
           salience: e.salience,
           observation: e.observation,
+          desire_alignment: e.desire_alignment,
           narrative: e.text_rendering?.narrative,
           action_ref: e.action_ref,
           timestamp: e.timestamp,
@@ -316,15 +371,20 @@ export default {
         reflectKeys.map(k => k.name.replace("reflect:1:", ""))
       );
 
-      // Build session list from karma keys (ground truth)
-      const sessions = karmaKeys.map(k => {
+      const actSessionIds = new Set(Array.isArray(cached) ? cached : []);
+
+      // Build execution list from karma keys, distinguishing act, deep-reflect, and event-only runs.
+      const sessions = await Promise.all(karmaKeys.map(async (k) => {
         const id = k.name.replace("karma:", "");
+        const karma = !deepReflectIds.has(id) && !actSessionIds.has(id)
+          ? await env.KV.get(k.name, "json")
+          : null;
         return {
           id,
-          type: deepReflectIds.has(id) ? "deep_reflect" : "act",
+          type: classifyExecutionType(id, { deepReflectIds, actSessionIds, karma }),
           ts: k.metadata?.updated_at || null,
         };
-      });
+      }));
 
       // Sort by session ID (contains timestamp) — newest last
       sessions.sort((a, b) => a.id.localeCompare(b.id));

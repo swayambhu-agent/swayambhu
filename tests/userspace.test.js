@@ -108,8 +108,317 @@ describe("session with empty desires", () => {
     );
 
     const sessionSchedule = await K.kvGet("session_schedule");
-    expect(sessionSchedule.interval_seconds).toBe(1);
+    expect(sessionSchedule.interval_seconds).toBe(3600);
     expect(sessionSchedule.no_action_streak).toBe(1);
+  });
+
+  it("waits for bootstrap DR before starting another session when DR is still running", async () => {
+    const now = new Date().toISOString();
+    K = makeMockK({
+      "dr:state:1": {
+        status: "dispatched",
+        generation: 1,
+        dispatched_at: now,
+        job_id: "job_1",
+        workdir: "/tmp/dr-job-1",
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        deep_reflect: { ttl_minutes: 120 },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+    K.executeAdapter = vi.fn(async () => ({ ok: false }));
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    expect(await K.kvGet("session_counter")).toBeNull();
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "bootstrap_waiting_for_dr",
+        dr_status: "dispatched",
+        generation: 1,
+      }),
+    );
+    expect(K.callLLM).not.toHaveBeenCalled();
+    expect(K.runAgentTurn).not.toHaveBeenCalled();
+
+    const actionWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("action:"));
+    expect(actionWrites).toHaveLength(0);
+  });
+
+  it("runs planning when a pending request exists even if desires are empty", async () => {
+    K = makeMockK({
+      "session_request:req_1": {
+        id: "req_1",
+        contact: "swami_kevala",
+        summary: "Inspect the Akash projects folder and see what needs help",
+        status: "pending",
+        created_at: "2026-04-07T00:00:00.000Z",
+        updated_at: "2026-04-07T00:00:00.000Z",
+        ref: "chat:slack:U084ASKBXB7",
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+    K.callLLM = vi.fn(llmResp(JSON.stringify({ no_action: true, reason: "not yet actionable" })));
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{ type: "session_request", ref: "session_request:req_1" }],
+      schedule: {},
+    });
+
+    expect(K.callLLM).toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "unaddressed_requests",
+        request_ids: ["req_1"],
+      }),
+    );
+  });
+
+  it("wakes the first desire-driven session immediately after bootstrap DR applies", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-04-06T12:00:00.000Z");
+    vi.setSystemTime(now);
+
+    K = makeMockK({
+      session_counter: 1,
+      session_schedule: {
+        next_session_after: new Date(now.getTime() + 3600_000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 1,
+      },
+      last_reflect: {
+        note_to_future_self: "Existing note",
+        carry_forward: [],
+      },
+      "dr:state:1": {
+        status: "completed",
+        generation: 1,
+        consecutive_failures: 0,
+        job_id: "job_1",
+      },
+      "dr:result:1": {
+        reflection: "Bootstrap reflection",
+        note_to_future_self: "Seed first desire",
+        kv_operations: [
+          {
+            op: "put",
+            key: "desire:self-knowledge",
+            value: {
+              slug: "self-knowledge",
+              direction: "approach",
+              description: "Know my current operating context.",
+            },
+          },
+        ],
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        deep_reflect: { default_interval_sessions: 20, default_interval_days: 7 },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    expect(await K.kvGet("session_counter")).toBe(1);
+    expect(await K.kvGet("desire:self-knowledge")).toEqual(
+      expect.objectContaining({
+        slug: "self-knowledge",
+        direction: "approach",
+      }),
+    );
+
+    const sessionSchedule = await K.kvGet("session_schedule");
+    expect(sessionSchedule).toEqual({
+      next_session_after: now.toISOString(),
+      interval_seconds: 3600,
+      no_action_streak: 1,
+    });
+
+    const drState = await K.kvGet("dr:state:1");
+    expect(drState.status).toBe("idle");
+    expect(drState.last_applied_session).toBe(1);
+
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "bootstrap_ready_after_dr",
+        generation: 1,
+        desires_created: 1,
+      }),
+    );
+
+    vi.useRealTimers();
+  });
+});
+
+describe("DR completion handling", () => {
+  it("applies a callback-signaled DR result before act runs", async () => {
+    const K = makeMockK({
+      session_counter: 1,
+      session_schedule: {
+        next_session_after: new Date(Date.now() + 3600_000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 0,
+      },
+      "desire:live-situational-direction": {
+        slug: "live-situational-direction",
+        direction: "approach",
+        description: "I have enough situational awareness to justify action or inaction.",
+      },
+      "dr:state:1": {
+        status: "dispatched",
+        generation: 2,
+        job_id: "job_2",
+        workdir: "/tmp/dr-job-2",
+        dispatched_at: new Date().toISOString(),
+        last_applied_session: 1,
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7, ttl_minutes: 120 },
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.50 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+
+    K.executeAdapter
+      .mockResolvedValueOnce({ ok: true, output: [{ data: "0\r\n" }] })
+      .mockResolvedValueOnce({
+        ok: true,
+        output: [{
+          data: JSON.stringify({
+            reflection: "DR complete",
+            note_to_future_self: "Use the new pattern",
+            kv_operations: [
+              {
+                op: "put",
+                key: "pattern:bootstrap:callback-apply",
+                value: {
+                  pattern: "Callback-signaled DR results can be applied before act runs.",
+                  strength: 0.3,
+                },
+              },
+            ],
+            next_reflect: { after_sessions: 5, after_days: 7 },
+          }),
+        }],
+      });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{ type: "job_complete", key: "event:1:job_complete", source: { job_id: "job_2" } }],
+    });
+
+    expect(await K.kvGet("pattern:bootstrap:callback-apply")).toEqual({
+      pattern: "Callback-signaled DR results can be applied before act runs.",
+      strength: 0.3,
+    });
+
+    expect(await K.kvGet("session_counter")).toBe(1);
+    expect(K.callLLM).not.toHaveBeenCalled();
+
+    const drState = await K.kvGet("dr:state:1");
+    expect(drState.status).toBe("idle");
+    expect(drState.last_applied_session).toBe(1);
+    expect(drState.next_due_session).toBe(6);
+  });
+
+  it("applies a polled DR result in the same execution when no callback event arrives", async () => {
+    const K = makeMockK({
+      session_counter: 2,
+      session_schedule: {
+        next_session_after: new Date(Date.now() + 3600_000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 0,
+      },
+      "desire:live-situational-direction": {
+        slug: "live-situational-direction",
+        direction: "approach",
+        description: "I have enough situational awareness to justify action or inaction.",
+      },
+      "dr:state:1": {
+        status: "dispatched",
+        generation: 2,
+        job_id: "job_2",
+        workdir: "/tmp/dr-job-2",
+        dispatched_at: new Date().toISOString(),
+        last_applied_session: 1,
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7, ttl_minutes: 120 },
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.50 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+
+    K.executeAdapter
+      .mockResolvedValueOnce({ ok: true, output: [{ data: "0\r\n" }] })
+      .mockResolvedValueOnce({
+        ok: true,
+        output: [{
+          data: JSON.stringify({
+            reflection: "DR complete",
+            note_to_future_self: "Keep the new pattern active",
+            kv_operations: [
+              {
+                op: "put",
+                key: "pattern:bootstrap:polled-apply",
+                value: {
+                  pattern: "Polling fallback can now apply DR in the same execution.",
+                  strength: 0.25,
+                },
+              },
+            ],
+            next_reflect: { after_sessions: 5, after_days: 7 },
+          }),
+        }],
+      });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [],
+    });
+
+    expect(await K.kvGet("pattern:bootstrap:polled-apply")).toEqual({
+      pattern: "Polling fallback can now apply DR in the same execution.",
+      strength: 0.25,
+    });
+
+    expect(await K.kvGet("session_counter")).toBe(2);
+    expect(K.callLLM).not.toHaveBeenCalled();
+
+    const drState = await K.kvGet("dr:state:1");
+    expect(drState.status).toBe("idle");
+    expect(drState.last_applied_session).toBe(2);
+    expect(drState.next_due_session).toBe(7);
   });
 });
 
@@ -117,7 +426,8 @@ describe("act cycle abort handling", () => {
   const ACTION_PLAN = JSON.stringify({
     action: "inspect_state",
     success: "state inspected",
-    relies_on: [],
+    serves_desires: ["desire:d_help"],
+    follows_tactics: [],
     defer_if: [],
   });
 
@@ -276,7 +586,8 @@ describe("session plan phase", () => {
   const VALID_PLAN = JSON.stringify({
     action: "send_greeting",
     success: "patron receives greeting",
-    relies_on: [],
+    serves_desires: ["desire:d_help"],
+    follows_tactics: [],
     defer_if: [],
   });
 
@@ -284,6 +595,14 @@ describe("session plan phase", () => {
     assessment: "success",
     narrative: "Greeting sent successfully.",
     salience_estimate: 0.1,
+  });
+
+  const UNGROUNDED_PLAN = JSON.stringify({
+    action: "inspect_workspace_for_help_opportunities",
+    success: "I inspect the workspace and identify whether there is a concrete project gap worth helping with.",
+    serves_desires: [],
+    follows_tactics: [],
+    defer_if: [],
   });
 
   beforeEach(() => {
@@ -328,10 +647,10 @@ describe("session plan phase", () => {
     // callLLM should have been called at least twice: plan + review (may loop more cycles)
     expect(K.callLLM.mock.calls.length).toBeGreaterThanOrEqual(2);
 
-    // First call: plan phase — messages contain desires/patterns
+    // First call: plan phase — messages contain desires and no direct pattern block
     const planCall = K.callLLM.mock.calls[0][0];
     expect(planCall.messages[0].content).toMatch(/DESIRES/);
-    expect(planCall.messages[0].content).toMatch(/PATTERNS/);
+    expect(planCall.messages[0].content).not.toMatch(/\[PATTERNS\]/);
 
     // runAgentTurn should have been called at least once (act phase ran)
     expect(K.runAgentTurn.mock.calls.length).toBeGreaterThanOrEqual(1);
@@ -339,6 +658,61 @@ describe("session plan phase", () => {
     // Second call: review phase — user content mentions "Action ledger"
     const reviewCall = K.callLLM.mock.calls[1][0];
     expect(reviewCall.messages[0].content).toMatch(/Action ledger/);
+  });
+
+  it("bypasses the future schedule gate for an external wake and surfaces wake provenance", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        session_schedule: {
+          next_session_after: new Date(Date.now() + 3600_000).toISOString(),
+          interval_seconds: 3600,
+          no_action_streak: 2,
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1 ? llmResp(VALID_PLAN)(opts) : llmResp(VALID_REVIEW)(opts);
+    });
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{
+        type: "wake",
+        origin: "external",
+        trigger: { actor: "dev_loop", context: { intent: "probe" } },
+      }],
+    });
+
+    expect(K.callLLM).toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "act_start",
+        wake_origin: "external",
+        wake_actor: "dev_loop",
+        wake_context: { intent: "probe" },
+      }),
+    );
+    expect(K.callLLM.mock.calls[0][0].messages[0].content).toContain("\"wake\"");
+    expect(K.callLLM.mock.calls[0][0].messages[0].content).toContain("\"actor\": \"dev_loop\"");
   });
 
   it("stops loop when plan returns no_action", async () => {
@@ -356,6 +730,150 @@ describe("session plan phase", () => {
     // Karma logged plan_no_action
     expect(K.karmaRecord).toHaveBeenCalledWith(
       expect.objectContaining({ event: "plan_no_action", reason: "nothing to do" }),
+    );
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "review_synthesized",
+        source: "no_action_bootstrap",
+        assessment: "no_action",
+        observation: "No action was taken. Reason: nothing to do",
+      }),
+    );
+  });
+
+  it("surfaces idle-streak and capacity facts to the planner", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        session_schedule: {
+          next_session_after: new Date(Date.now() - 1000).toISOString(),
+          interval_seconds: 3600,
+          no_action_streak: 3,
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.5 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(JSON.stringify({ no_action: true, reason: "nothing to do" }))(opts)
+        : llmResp(VALID_REVIEW)(opts);
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: { wallets: { base: { balance: 50, scope: "general" } } },
+      events: [],
+      schedule: {},
+    });
+
+    const planCall = K.callLLM.mock.calls[0][0];
+    expect(planCall.messages[0].content).toContain("\"no_action_streak\": 3");
+    expect(planCall.messages[0].content).toContain("\"operating_balance_usd\": 50");
+    expect(planCall.messages[0].content).toContain("\"healthy\": true");
+  });
+
+  it("allows one exploratory plan without serves_desires after repeated healthy idle streaks", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        session_schedule: {
+          next_session_after: new Date(Date.now() - 1000).toISOString(),
+          interval_seconds: 3600,
+          no_action_streak: 3,
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.5 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      if (callCount === 1) return llmResp(UNGROUNDED_PLAN)(opts);
+      if (callCount === 2) return llmResp(VALID_REVIEW)(opts);
+      return llmResp(JSON.stringify({ no_action: true, reason: "done probing" }))(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Workspace inspected." });
+      return { response: { content: "Workspace inspected.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: { wallets: { base: { balance: 50, scope: "general" } } },
+      events: [],
+      schedule: {},
+    });
+
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "plan_exploratory_without_desire",
+        no_action_streak: 3,
+      }),
+    );
+    expect(K.runAgentTurn).toHaveBeenCalled();
+  });
+
+  it("shortens repeated healthy no_action sessions to the idle cadence", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        session_schedule: {
+          next_session_after: new Date(Date.now() - 1000).toISOString(),
+          interval_seconds: 3600,
+          no_action_streak: 3,
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.5 },
+          schedule: { interval_seconds: 3600, idle_interval_seconds: 1800, exploration_unlock_streak: 3 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    K.callLLM = vi.fn(async (opts) => llmResp(JSON.stringify({ no_action: true, reason: "nothing worth doing yet" }))(opts));
+
+    await run(K, {
+      crashData: null,
+      balances: { wallets: { base: { balance: 50, scope: "general" } } },
+      events: [],
+      schedule: {},
+    });
+
+    const sessionSchedule = await K.kvGet("session_schedule");
+    expect(sessionSchedule.interval_seconds).toBe(1800);
+    expect(sessionSchedule.no_action_streak).toBe(4);
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "capacity_rich_no_action",
+        no_action_streak: 4,
+      }),
     );
   });
 
@@ -596,7 +1114,8 @@ describe("session memory writes", () => {
   const VALID_PLAN = JSON.stringify({
     action: "send_greeting",
     success: "patron receives greeting",
-    relies_on: [],
+    serves_desires: ["desire:d_help"],
+    follows_tactics: [],
     defer_if: [],
   });
 
@@ -821,7 +1340,8 @@ describe("session event emission", () => {
   const VALID_PLAN = JSON.stringify({
     action: "send_greeting",
     success: "patron receives greeting",
-    relies_on: [],
+    serves_desires: ["desire:d_help"],
+    follows_tactics: [],
     defer_if: [],
   });
 

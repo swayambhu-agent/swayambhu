@@ -30,10 +30,18 @@ For a fresh start (wipe and re-seed state):
 source .env && node scripts/dev-loop/loop.mjs --once --cold-start
 ```
 
+For a one-off deep-reflect model comparison on the current live snapshot:
+```bash
+source .env && node scripts/dev-loop/dr-compare.mjs
+```
+
+This writes a frozen DR snapshot plus runner outputs under:
+`/home/swami/swayambhu/dev-loop/runs/{timestamp}/dr-compare/`
+
 ### Stage 3: ANALYZE (your job — deep reasoning)
 
 Read `context.json` from the run directory:
-`.swayambhu/dev-loop/runs/{timestamp}/context.json`
+`/home/swami/swayambhu/dev-loop/runs/{timestamp}/context.json`
 
 This contains the full session data: karma, desires, patterns, experiences,
 tactics, config, prompts, last_reflect, DR state, rubric, and mechanical
@@ -194,7 +202,7 @@ Write a proposal file `proposal-{seq}.md` in the run directory with:
 Then invoke Codex for adversarial challenge (use /codex challenge or):
 
 ```bash
-codex exec --full-auto "Read the proposal at .swayambhu/dev-loop/runs/{timestamp}/proposal-01.md. Challenge it. Find flaws. Each objection must be new and falsifiable. Evaluate against: elegance, generality, robustness, simplicity, modularity, kernel/userspace boundary, self-improving agent principle. Write objections to .swayambhu/dev-loop/runs/{timestamp}/challenge-01-round-1.json"
+codex exec --full-auto "Read the proposal at /home/swami/swayambhu/dev-loop/runs/{timestamp}/proposal-01.md. Challenge it. Find flaws. Each objection must be new and falsifiable. Evaluate against: elegance, generality, robustness, simplicity, modularity, kernel/userspace boundary, self-improving agent principle. Write objections to /home/swami/swayambhu/dev-loop/runs/{timestamp}/challenge-01-round-1.json"
 ```
 
 Read objections. For each valid one, revise. For invalid ones, defend.
@@ -225,7 +233,7 @@ After applying any change:
 
 ## Overnight Log
 
-Maintain a running log at `.swayambhu/dev-loop/overnight-log.md` that
+Maintain a running log at `/home/swami/swayambhu/dev-loop/overnight-log.md` that
 accumulates across cycles. Append to it after each cycle — never
 overwrite. This is what Swami reads in the morning.
 

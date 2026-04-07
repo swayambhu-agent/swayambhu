@@ -4,12 +4,12 @@ import { makeKVStore } from "./helpers/mock-kv.js";
 
 // ── Test helpers ──────────────────────────────────────────────
 
-function makeEnv(kvInit = {}) {
-  return { KV: makeKVStore(kvInit) };
+function makeEnv(kvInit = {}, extra = {}) {
+  return { KV: makeKVStore(kvInit), ...extra };
 }
 
 function makeKernel(kvInit = {}, opts = {}) {
-  const env = makeEnv(kvInit);
+  const env = makeEnv(kvInit, opts.env || {});
   const kernel= new Kernel(env, {
     TOOLS: opts.TOOLS || {},
     HOOKS: opts.HOOKS || {},
@@ -158,6 +158,26 @@ describe("buildToolDefinitions", () => {
     const defs = kernel.buildToolDefinitions([extra]);
     expect(defs.length).toBe(2); // verify_patron + extra
     expect(defs[1]).toBe(extra);
+  });
+
+  it("filters denied tools in bounded_continuation profile", () => {
+    const { kernel } = makeKernel({}, {
+      env: { SWAYAMBHU_LAB_PROFILE: "bounded_continuation" },
+      TOOLS: {
+        send_slack: { meta: { communication: { channel: "slack" } } },
+        web_fetch: { meta: {} },
+      },
+      toolRegistry: {
+        tools: [
+          { name: "send_slack", description: "Send Slack", input: { text: "body" } },
+          { name: "web_fetch", description: "Fetch web page", input: { url: "URL" } },
+        ],
+      },
+    });
+
+    const defs = kernel.buildToolDefinitions();
+    expect(defs.map(d => d.function.name)).not.toContain("send_slack");
+    expect(defs.map(d => d.function.name)).toContain("web_fetch");
   });
 });
 
@@ -885,6 +905,25 @@ describe("executeToolCall", () => {
       input: { x: 99 },
       id: "tc1",
     });
+  });
+
+  it("blocks denied tools before execution", async () => {
+    const { kernel } = makeKernel({}, {
+      env: { SWAYAMBHU_TOOL_DENYLIST: "web_fetch" },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.executeAction = vi.fn(async () => ({ ok: true }));
+
+    const result = await kernel.executeToolCall({
+      id: "tc1",
+      function: { name: "web_fetch", arguments: '{"url":"https://example.com"}' },
+    });
+
+    expect(result).toEqual({ error: 'Tool "web_fetch" is disabled by policy' });
+    expect(kernel.executeAction).not.toHaveBeenCalled();
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "tool_blocked_by_policy", tool: "web_fetch" }),
+    );
   });
 });
 
@@ -1971,6 +2010,55 @@ describe("checkBalance", () => {
     const result = await kernel.checkBalance({});
 
     expect(result.providers.broken).toEqual({ balance: null, scope: "general", error: "no code" });
+  });
+
+  it("prefers frozen balance overrides when present", async () => {
+    const { kernel } = makeKernel({
+      providers: JSON.stringify({
+        openrouter: { adapter: "provider:llm_balance", scope: "general" },
+      }),
+      wallets: JSON.stringify({
+        base: { adapter: "provider:wallet_balance", scope: "general" },
+      }),
+      "kernel:balance_overrides": JSON.stringify({
+        providers: {
+          openrouter: { balance: 12.34, scope: "general" },
+        },
+        wallets: {
+          base: { balance: 56.78, scope: "general" },
+        },
+      }),
+    });
+    kernel.executeAdapter = vi.fn(async () => 999);
+
+    const result = await kernel.checkBalance({});
+
+    expect(kernel.executeAdapter).not.toHaveBeenCalled();
+    expect(result.providers.openrouter).toEqual({ balance: 12.34, scope: "general" });
+    expect(result.wallets.base).toEqual({ balance: 56.78, scope: "general" });
+  });
+
+  it("uses overrides selectively and still executes uncovered balances", async () => {
+    const { kernel } = makeKernel({
+      providers: JSON.stringify({
+        openrouter: { adapter: "provider:llm_balance", scope: "general" },
+      }),
+      wallets: JSON.stringify({
+        base: { adapter: "provider:wallet_balance", scope: "general" },
+      }),
+      "kernel:balance_overrides": JSON.stringify({
+        providers: {
+          openrouter: { balance: 12.34, scope: "general" },
+        },
+      }),
+    });
+    kernel.executeAdapter = vi.fn(async () => 42);
+
+    const result = await kernel.checkBalance({});
+
+    expect(kernel.executeAdapter).toHaveBeenCalledTimes(1);
+    expect(result.providers.openrouter).toEqual({ balance: 12.34, scope: "general" });
+    expect(result.wallets.base).toEqual({ balance: 42, scope: "general" });
   });
 
 });

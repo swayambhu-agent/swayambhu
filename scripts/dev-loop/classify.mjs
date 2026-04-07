@@ -155,7 +155,7 @@ export function auditExperiences(experiences) {
 
   for (const e of experiences) {
     const key = e.key || e.id || "unknown";
-    const observation = e.observation || e.text_rendering?.narrative || e.narrative || e.description || "";
+    const observation = e.observation || e.text_rendering?.narrative || e.narrative || e.summary || e.description || "";
     if (observation.length < 30) {
       issues.push(
         createIssue({
@@ -226,8 +226,12 @@ export function auditKarma(karma) {
 
 // ── Dedup ───────────────────────────────────────────────────
 
+// Probes not reproduced for this many consecutive cycles are marked resolved.
+const STALE_THRESHOLD = 3;
+
 export function dedup(newIssues, existingProbes) {
   const probeMap = new Map(existingProbes.map((p) => [p.id, p]));
+  const newIssueIds = new Set(newIssues.map((i) => i.id));
   const fresh = [];
   const updated = [];
 
@@ -238,9 +242,23 @@ export function dedup(newIssues, existingProbes) {
         source: "classify",
         summary: issue.summary,
       });
+      // Reset miss counter — issue was reproduced this cycle
+      merged.consecutive_misses = 0;
       updated.push(merged);
     } else {
       fresh.push(issue);
+    }
+  }
+
+  // Expire stale probes: existing probes not reproduced this cycle
+  for (const probe of existingProbes) {
+    if (newIssueIds.has(probe.id)) continue; // already handled above
+    if (probe.status === "resolved") continue; // already resolved
+    const misses = (probe.consecutive_misses || 0) + 1;
+    if (misses >= STALE_THRESHOLD) {
+      updated.push({ ...probe, consecutive_misses: misses, status: "resolved" });
+    } else {
+      updated.push({ ...probe, consecutive_misses: misses });
     }
   }
 

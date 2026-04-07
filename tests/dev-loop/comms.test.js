@@ -1,8 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   formatApprovalMessage,
   parseReply,
+  sendSlack,
 } from "../../scripts/dev-loop/comms.mjs";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  delete process.env.SLACK_BOT_TOKEN;
+});
 
 // ── formatApprovalMessage ───────────────────────────────────
 
@@ -107,5 +113,59 @@ describe("parseReply", () => {
       action: "APPROVE",
       reason: null,
     });
+  });
+});
+
+describe("sendSlack", () => {
+  it("resolves DM user ids before sending", async () => {
+    process.env.SLACK_BOT_TOKEN = "xoxb-test";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        json: async () => ({ ok: true, channel: { id: "D123" } }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({ ok: true, ts: "1.23" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendSlack("hello", { channel: "U123" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://slack.com/api/conversations.open",
+      expect.objectContaining({
+        body: JSON.stringify({ users: "U123" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://slack.com/api/chat.postMessage",
+      expect.objectContaining({
+        body: JSON.stringify({ channel: "D123", text: "hello" }),
+      }),
+    );
+  });
+
+  it("falls back to configured channel id when DM resolution lacks scope", async () => {
+    process.env.SLACK_BOT_TOKEN = "xoxb-test";
+    process.env.SLACK_CHANNEL_ID = "C123";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        json: async () => ({ ok: false, error: "missing_scope" }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({ ok: true, ts: "1.23" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendSlack("hello", { channel: "U123" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://slack.com/api/chat.postMessage",
+      expect.objectContaining({
+        body: JSON.stringify({ channel: "C123", text: "hello" }),
+      }),
+    );
   });
 });

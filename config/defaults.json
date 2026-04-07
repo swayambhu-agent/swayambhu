@@ -33,8 +33,16 @@
     "retries": 1,
     "on_fail": "skip_and_cascade"
   },
+  "debug_mode": {
+    "enabled": false,
+    "label": null,
+    "schedule_may_be_overridden": false,
+    "external_wakes_expected": false
+  },
   "schedule": {
     "interval_seconds": 21600,
+    "idle_interval_seconds": 1800,
+    "exploration_unlock_streak": 3,
     "default_effort": "low"
   },
   "memory": {
@@ -72,6 +80,8 @@
   "jobs": {
     "base_url": "https://akash.swayambhu.dev",
     "base_dir": "/home/swayambhu/jobs",
+    "runner": "codex",
+    "runner_model": "gpt-5.4",
     "cc_model": "opus",
     "path_dirs": ["/home/swayambhu/.local/bin"],
     "default_ttl_minutes": 120,

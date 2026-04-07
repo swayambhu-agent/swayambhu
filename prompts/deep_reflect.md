@@ -39,8 +39,11 @@ Patterns are recurring situations observed across multiple experiences.
 Mechanical strength updates (EMA) happen during act sessions. Your
 role is pattern recognition across experiences that the numbers miss.
 
-Patterns are purely about observations. They do not include conclusions or 
-recommended actions — that is what tactics are for.
+Patterns are descriptive only. A pattern should name the regularity
+that recurs in experience, not the explanation of that regularity and
+not the response to it. If the content starts to read like diagnosis,
+judgment, or guidance for future action, it belongs in reflection or
+in a tactic, not in the pattern itself.
 
 For the S operator, treat `experience.observation` as the canonical source.
 Use `text_rendering.narrative` only as optional audit context, not as the

@@ -170,42 +170,46 @@ export default function App() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       {/* Header + status bar */}
-      <div className="bg-bg-panel border-b border-border px-4 py-2 flex items-center gap-4 text-xs">
-        <span className="text-accent font-bold tracking-widest text-sm">SWAYAMBHU</span>
-        <span className="text-gray-600">patron</span>
-        {health && (
-          <>
-            <span className="text-gray-600">|</span>
-            <span className="text-gray-500">Runs:</span>
-            <span className="text-accent font-semibold">{health.sessionCounter || 0}</span>
-            {countdown && (
-              <>
-                <span className="text-gray-600">|</span>
-                <span className="text-gray-500">Next run:</span>
-                <span className={`font-semibold ${countdown === 'now' ? 'text-green-400' : 'text-blue-400'}`}>
-                  {countdown}
-                </span>
-              </>
-            )}
-            <span className="text-gray-600">|</span>
-            <span className={`ml-1 px-2 py-0.5 rounded text-xs font-semibold ${
-              health.session
-                ? 'bg-green-900/30 text-green-400'
-                : countdown === 'now'
-                  ? 'bg-yellow-900/30 text-yellow-400'
-                  : 'bg-gray-800 text-gray-500'
-            }`}>{health.session ? 'In session' : countdown === 'now' ? 'Starting' : 'Idle'}</span>
-          </>
-        )}
-        {mindCounts && (
-          <span className="text-gray-600 border-l border-gray-800 pl-3 ml-1 cursor-pointer hover:text-gray-400 transition"
-            onClick={() => setActiveTab('mind')}
-            title={`${mindCounts.patterns} patterns, ${mindCounts.desires} desires, ${mindCounts.experiences} experiences — ${mindCounts.sessionsSinceDr} sessions since last DR`}
-          >
-            DR:{mindCounts.sessionsSinceDr}
-          </span>
-        )}
-        <div className="flex items-center gap-2 ml-auto">
+      <div className="bg-bg-panel border-b border-border px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+          <span className="text-accent font-bold tracking-widest text-sm">SWAYAMBHU</span>
+          <span className="text-gray-600">patron</span>
+          {health && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-gray-600 hidden sm:inline">|</span>
+              <span className="text-gray-500">Runs:</span>
+              <span className="text-accent font-semibold">{health.sessionCounter || 0}</span>
+              {countdown && (
+                <>
+                  <span className="text-gray-600 hidden sm:inline">|</span>
+                  <span className="text-gray-500">Next run:</span>
+                  <span className={`font-semibold ${countdown === 'now' ? 'text-green-400' : 'text-blue-400'}`}>
+                    {countdown}
+                  </span>
+                </>
+              )}
+              <span className="text-gray-600 hidden sm:inline">|</span>
+              <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                health.session
+                  ? 'bg-green-900/30 text-green-400'
+                  : countdown === 'now'
+                    ? 'bg-yellow-900/30 text-yellow-400'
+                    : 'bg-gray-800 text-gray-500'
+              }`}>{health.session ? 'In session' : countdown === 'now' ? 'Starting' : 'Idle'}</span>
+            </div>
+          )}
+          {mindCounts && (
+            <button
+              type="button"
+              className="text-gray-600 cursor-pointer hover:text-gray-400 transition md:border-l md:border-gray-800 md:pl-3 md:ml-1"
+              onClick={() => setActiveTab('mind')}
+              title={`${mindCounts.patterns} patterns, ${mindCounts.desires} desires, ${mindCounts.experiences} experiences — ${mindCounts.sessionsSinceDr} sessions since last DR`}
+            >
+              DR:{mindCounts.sessionsSinceDr}
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 w-full md:w-auto md:ml-auto md:justify-end">
           {health && balances && (() => {
             const extract = (v) => typeof v === 'object' && v !== null ? v.balance : v;
             const items = [
@@ -235,20 +239,22 @@ export default function App() {
       </div>
 
       {/* Tab bar */}
-      <div className="bg-bg-panel border-b border-border px-4 flex gap-1">
-        {tabs.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-3 py-1.5 text-xs font-semibold transition border-b-2 ${
-              activeTab === tab.id
-                ? 'border-accent text-accent'
-                : 'border-transparent text-gray-500 hover:text-gray-300'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="bg-bg-panel border-b border-border px-2 sm:px-4 overflow-x-auto scrollbar-thin">
+        <div className="flex gap-1 min-w-max">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-shrink-0 px-3 py-1.5 text-xs font-semibold transition border-b-2 ${
+                activeTab === tab.id
+                  ? 'border-accent text-accent'
+                  : 'border-transparent text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Direct message bar */}

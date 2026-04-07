@@ -4,6 +4,23 @@ import { formatTime } from '../lib/format.js';
 import { eventColor } from '../lib/colors.js';
 import { JsonTree } from './ui/JsonView.jsx';
 
+function summarizeEntry(entry) {
+  if (entry.summary) return entry.summary;
+  if (entry.type === 'review_synthesized') return entry.observation || 'Synthetic review recorded';
+  if (entry.type === 'plan_no_action') return entry.reason || 'No action chosen';
+  if (entry.type === 'experience_written') {
+    const salience = typeof entry.salience === 'number' ? `salience ${entry.salience}` : null;
+    const sigma = typeof entry.sigma === 'number' ? `sigma ${entry.sigma}` : null;
+    return [entry.key, salience, sigma].filter(Boolean).join(' · ');
+  }
+  if (entry.type === 'act_complete') {
+    const cycles = typeof entry.cycles_run === 'number' ? `${entry.cycles_run} cycles` : null;
+    const cost = typeof entry.total_cost === 'number' ? `$${entry.total_cost.toFixed(4)}` : null;
+    return [cycles, cost].filter(Boolean).join(' · ');
+  }
+  return null;
+}
+
 // ── Draggable Divider ─────────────────────────────────────
 function DraggableDivider({ onDrag }) {
   const handleMouseDown = useCallback((e) => {
@@ -116,7 +133,7 @@ function TimelineTab({ patronKey, onSelectEntry, sessionsRev }) {
   const refreshSessions = useCallback(async () => {
     try {
       const d = await api('/sessions', patronKey);
-      const list = (d.sessions || []).filter(s => s.type !== 'deep_reflect').reverse();
+      const list = (d.sessions || []).filter(s => s.type === 'act').reverse();
       if (list.length > 0) {
         setSessions(list);
         setSelectedSession(prev => prev || list[0].id);
@@ -317,7 +334,9 @@ function TimelineTab({ patronKey, onSelectEntry, sessionsRev }) {
                 </div>
                 {entry.tool && <span className="text-purple-300 ml-4">{entry.tool}</span>}
                 {entry.model && <span className="text-blue-300 ml-4">{entry.model}</span>}
-                {entry.summary && <p className="text-gray-400 ml-4 mt-1 truncate">{entry.summary}</p>}
+                {summarizeEntry(entry) && (
+                  <p className="text-gray-400 ml-4 mt-1 truncate">{summarizeEntry(entry)}</p>
+                )}
                 {entry.error && <p className="text-red-300 ml-4 mt-1 truncate">{entry.error}</p>}
               </div>
             );

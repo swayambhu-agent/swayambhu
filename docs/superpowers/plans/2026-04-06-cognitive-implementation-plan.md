@@ -12,6 +12,7 @@ from:
 
 - the current runtime (`userspace.js`, `eval.js`, `reflect.js`, `memory.js`)
 - the cognitive learning model design
+- the revised cognitive framework spec
 - the vision notes
 - the implementation concerns raised in discussion
 
@@ -22,6 +23,86 @@ The agent is not yet live. Therefore, backwards compatibility is not a primary
 goal. Prefer the simplest coherent implementation over migration ceremony unless
 small shims materially reduce implementation cost or make short-term inspection
 easier.
+
+## Additional Constraint From DR Comparison
+
+Recent deep-reflect comparison work should be treated as a source of design
+requirements for the next cognitive model, not as a reason to optimize the
+current DR mechanism into a final architecture.
+
+The distilled requirements are captured in:
+
+- `docs/superpowers/specs/2026-04-06-next-cognitive-model-requirements-from-dr-comparison.md`
+
+In particular:
+
+- bootstrap updates should be minimal and explicitly calibrated
+- continuation quality matters more than one-shot reflective prose
+- cognitive context should be compact and exclude low-signal payloads by default
+- debugger legibility is a core architectural requirement, not just a UI concern
+
+## Additional Constraint From Overnight Dev-Looping
+
+The overnight run also produced a stronger architectural constraint: the next
+framework should not remain flat.
+
+The active top-level framework spec is now:
+
+- `docs/superpowers/specs/2026-04-07-cognitive-framework-v2.md`
+
+The active review-system direction is now:
+
+- `docs/superpowers/specs/2026-04-07-userspace-review-roles.md`
+- `docs/superpowers/specs/2026-04-07-dr2-lab-runtime-design.md`
+- `docs/superpowers/specs/2026-04-07-three-tier-runtime-evolution.md`
+- `docs/superpowers/plans/2026-04-07-wake-provenance-and-external-trigger-plan.md`
+
+That spec changes the target ontology from a flat
+`experience -> desire -> tactic -> action` loop to a layered framework centered
+on:
+
+- the existing normative floor
+- standing desires
+- situational state
+- active aims
+- tactics
+- patterns
+- experiences
+
+Separately, the review-system discussion now treats self-improvement as
+role-based userspace review rather than as a necessarily strict numeric deep
+reflect hierarchy. In particular:
+
+- operational review may remain architecture-specific
+- userspace review should critique userspace generically
+- architecture research should remain more speculative and more heavily
+  validated
+
+It also explicitly defers identity commitments to a later stage until the
+desire/aim split and situational-state layer are proven.
+
+## Additional Constraint From The Vision Notes
+
+The vision notes add an important refinement to that direction:
+
+- curiosity should be allowed to emerge, not installed as a separate drive
+
+The active vision source is:
+
+- `docs/superpowers/specs/2026-04-06-swayambhu-vision-notes.md`
+
+This means the near-term work should prefer:
+
+- removing gates that suppress exploratory action
+- making capacity and stagnation legible to the planner and slow cycle
+- making `no_action` a justified positive judgment rather than a sink state
+
+before adding more motivational layers or explicit curiosity machinery.
+
+One concrete runtime consequence of that constraint: externally forced sessions
+must become explicit runtime facts rather than hidden schedule manipulation.
+Otherwise dev-loop or review-lab probes contaminate scheduler-learning and make
+the resulting corpus less trustworthy.
 
 ## Current Runtime Facts
 
@@ -72,7 +153,22 @@ Do not begin by forcing the full end-state schema into production.
 
 Repair the substrate first.
 
-### 2. The first-wave experience schema must be minimal and authorable
+### 2. Execution-surface unblocking comes before adding more live motivation structure
+
+Before adding more persistent cognitive objects, first remove the main runtime
+gates that currently suppress exploratory life:
+
+- planner framing that treats `no_action` as the default
+- hard pre-grounding of every act in an existing desire
+- weak visibility of available capacity and stagnation
+- low salience for repeated capacity-rich passivity
+- dormancy-inducing interval backoff
+
+This is the most elegant next move because it tests whether the existing
+experience/desire/tactic loop is already sufficient once the surface is no
+longer biased toward inaction.
+
+### 3. The first-wave experience schema must be minimal and authorable
 
 The first production schema should be small and grounded in signals the current
 runtime can actually author.
@@ -95,7 +191,7 @@ Do not require:
 
 Those belong later, after the runtime proves it can produce stable records.
 
-### 3. Do not store raw `alpha` as the canonical long-term experience field
+### 4. Do not store raw `alpha` as the canonical long-term experience field
 
 Eval's `alpha` vector is useful, but it is defined relative to the current
 desire set and current desire wording.
@@ -135,7 +231,7 @@ Selection policy for the first-wave `desire_alignment` summary:
 - only include entries where `|alpha| >= 0.3`
 - compute `affinity_magnitude` from the same filtered subset
 
-### 4. `pattern_delta` must be mechanically derived, not invented as prose
+### 5. `pattern_delta` must be mechanically derived, not invented as prose
 
 `pattern_delta` is only acceptable if it has a real authoring path.
 
@@ -147,7 +243,7 @@ For the current runtime, that means:
 
 This keeps the field aligned with current code reality.
 
-### 5. The salience-formula fix is immediate, not deferred
+### 6. The salience-formula fix is immediate, not deferred
 
 The bounded salience redesign should be implemented before collecting the next
 50-100 sessions intended as a seed corpus.
@@ -160,7 +256,7 @@ Reason:
 
 Learned salience comes later. Formula repair comes now.
 
-### 6. Deep-reflect prompt changes are first-wave work
+### 7. Deep-reflect prompt changes are first-wave work
 
 Deep-reflect must be aligned to the repaired substrate immediately.
 
@@ -276,10 +372,56 @@ compact durable cognitive record.
 
 ## Implementation Order
 
-The cleanest implementation against the current codebase is one coherent
-substrate-repair pass, followed by data stabilization and inspection.
+The cleanest implementation against the current codebase now starts with a
+runtime-seam repair before the two main cognitive bites:
 
-### Atomic substrate-repair pass
+1. repair the communication/work seam
+2. substrate repair and corpus cleanup
+3. controlled cognitive-architecture changes
+
+The comms/session seam repair plan is:
+
+- [2026-04-07-comms-session-seam-repair-plan.md](/home/swami/swayambhu/repo/docs/superpowers/plans/2026-04-07-comms-session-seam-repair-plan.md)
+
+This is the current `#1` implementation priority because patron messages and
+durable request tracking are part of the live behavioral substrate. Leaving the
+request seam broken would pollute both the runtime behavior and the corpus we
+use to judge later cognitive changes.
+
+After that, the remaining implementation should proceed in two bites, not one
+blurred pass:
+
+1. substrate repair and corpus cleanup
+2. controlled cognitive-architecture changes
+
+This separation matters because salience repair, review contract repair, and
+experience-structure repair are not the same thing as introducing active aims,
+situational state, or role-based self-review.
+
+### Priority 0: Comms/session seam repair
+
+Touch these files first:
+
+- [index.js](/home/swami/swayambhu/repo/index.js)
+- [hook-communication.js](/home/swami/swayambhu/repo/hook-communication.js)
+- [tools/trigger_session.js](/home/swami/swayambhu/repo/tools/trigger_session.js)
+- [userspace.js](/home/swami/swayambhu/repo/userspace.js)
+- [act.js](/home/swami/swayambhu/repo/act.js)
+- relevant tests
+
+Required outcomes:
+
+1. `trigger_session` runs through the normal kernel tool path.
+2. pending `session_request:*` records are loaded into act context.
+3. sessions can write durable request updates and emit `session_response`.
+4. stale or unaddressed requests are surfaced mechanically instead of
+   disappearing.
+5. comms renders patron-facing updates from durable request state, not
+   ephemeral inbound evidence.
+
+Do this before Bite 1.
+
+### Bite 1: Atomic substrate-repair pass
 
 Touch these files together:
 
@@ -304,6 +446,49 @@ Required changes:
 Because the agent is not yet live, do not optimize this pass for long-term
 backwards compatibility. If a small read shim in `memory.js` makes inspection of
 old dev data easier, that is acceptable, but it is optional.
+
+### Bite 2: Controlled v2 architecture changes
+
+Only after Bite 1 is live and producing a cleaner corpus:
+
+- first unblock exploratory emergence at the execution surface
+- introduce `standing_desire` vs `active_aim` handling
+- introduce `situational_state`
+- update planner/eval contracts around aims
+- extend tactic reach where needed
+- begin the shift from numeric deep-reflect framing toward role-based
+
+### First sub-stage inside Bite 2: unblock exploratory emergence
+
+Before treating the current flat ontology as insufficient, test whether the
+existing desire/tactic/experience loop becomes much richer once the main
+suppression gates are removed.
+
+Priority changes in this sub-stage:
+
+1. Reframe the planner so `no_action` is a positive judgment, not the default
+   fallback when no gap is obviously closable.
+2. Remove the hard requirement that every non-`no_action` act be pre-grounded
+   in an already-existing desire key.
+3. Surface capacity and stagnation signals to planning and deep-reflect.
+4. Make repeated capacity-rich `no_action` states more visible to the slow
+   cycle instead of letting them fade as low-value inactivity.
+5. Replace dormancy-deepening backoff with cheaper/faster idle behavior where
+   possible.
+
+This sub-stage is the cleanest test of the vision-notes claim that curiosity
+should be emergent from expansion plus salience, not installed as its own
+drive.
+
+If this sub-stage materially improves aliveness and exploratory behavior, that
+is evidence for restraint in adding further motivational structure.
+
+If it does not, then additional structure such as more explicit aim handling is
+better justified.
+  userspace review
+
+Gate Bite 2 on at least a modest clean sample from Bite 1 rather than rolling
+it into the same migration wave.
 
 ### Phase 2: Implement through the dev loop
 
@@ -332,6 +517,27 @@ Once the substrate is repaired and validated:
 - action ranking
 - dream-learning adapters/checkpoints
 - full cognitive-core replacement path
+
+### Final queued task after the runtime/cognition repair stack
+
+After the above implementation stack is complete and verified, switch the
+agent's deep-reflect execution path from Claude Code to Codex, then validate the
+quality of the resulting DR outputs before resuming long dev-loop runs.
+
+Do this last, not first, so model-provider comparison happens against a cleaner
+runtime with:
+
+- repaired request/comms seam
+- explicit wake provenance
+- reduced dormancy bias
+- cleaner experience substrate
+
+Required outcomes:
+
+1. update the DR execution path and config to use Codex instead of Claude Code
+2. run focused validation on DR quality and apply path correctness
+3. only then resume sustained dev-looping, choosing fresh-bootstrap vs
+   continuation based on which produces the cleaner comparison corpus
 
 ### Production training policy
 

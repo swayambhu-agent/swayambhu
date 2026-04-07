@@ -4,8 +4,8 @@
 // Mutable — the agent can propose changes to this file via the proposal system.
 
 import { evaluateAction } from './eval.js';
-import { updatePatternStrength, callInference, embeddingCacheKey } from './memory.js';
-import { renderActPrompt, buildToolSet, formatDesires, formatPatterns, formatCircumstances } from './act.js';
+import { updatePatternStrength, callInference, embeddingCacheKey, cosineSimilarity } from './memory.js';
+import { renderActPrompt, buildToolSet, formatDesires, formatCircumstances, deriveDebugMode, buildDebugModeNote } from './act.js';
 import { executeReflect } from './reflect.js';
 import { parseJobOutput } from './lib/parse-job-output.js';
 import { writeReasoningArtifacts } from "./lib/reasoning.js";
@@ -32,11 +32,49 @@ async function loadPatterns(K) {
   return patterns;
 }
 
+async function loadPendingRequests(K, defaults, events = []) {
+  const scheduleIntervalMs = (defaults?.schedule?.interval_seconds || 21600) * 1000;
+  const staleAfterMs = Math.max(60 * 60 * 1000, scheduleIntervalMs);
+  const now = Date.now();
+  const referencedKeys = new Set(
+    (events || [])
+      .filter(event => event?.ref?.startsWith("session_request:"))
+      .map(event => event.ref)
+  );
+
+  const list = await K.kvList({ prefix: "session_request:" });
+  const requests = [];
+  for (const entry of list.keys) {
+    const request = await K.kvGet(entry.name);
+    if (!request) continue;
+    if (request.status === "fulfilled" || request.status === "rejected") continue;
+
+    const updatedMs = request.updated_at ? new Date(request.updated_at).getTime() : 0;
+    const ageMs = updatedMs ? Math.max(0, now - updatedMs) : null;
+    requests.push({
+      ...request,
+      key: entry.name,
+      from_event: referencedKeys.has(entry.name),
+      stale: ageMs !== null ? ageMs >= staleAfterMs : false,
+      age_hours: ageMs !== null ? Number((ageMs / 3_600_000).toFixed(1)) : null,
+    });
+  }
+
+  requests.sort((a, b) => {
+    if (a.from_event !== b.from_event) return a.from_event ? -1 : 1;
+    if (a.stale !== b.stale) return a.stale ? -1 : 1;
+    return new Date(a.updated_at || a.created_at || 0).getTime()
+      - new Date(b.updated_at || b.created_at || 0).getTime();
+  });
+
+  return requests.slice(0, 5);
+}
+
 // ── Plan prompt vars ────────────────────────────────────────
 
-const COMMS_TOOLS = new Set(["send_slack", "send_whatsapp", "send_email", "check_email"]);
+const NON_PLANNER_TOOLS = new Set(["send_slack", "send_whatsapp", "send_email", "check_email", "update_request"]);
 
-async function loadPlanVars(K, defaults) {
+async function loadPlanVars(K, defaults, debugMode) {
   const subagents = await K.kvGet("config:subagents");
   const skillList = await K.kvList({ prefix: "skill:", limit: 100 });
   const skills = [];
@@ -54,11 +92,12 @@ async function loadPlanVars(K, defaults) {
   // Tool manifest for planner — names and descriptions, excluding comms tools
   const allTools = await K.buildToolDefinitions();
   const tools = allTools
-    .filter(t => !COMMS_TOOLS.has(t.function.name))
+    .filter(t => !NON_PLANNER_TOOLS.has(t.function.name))
     .map(t => ({ name: t.function.name, description: t.function.description }));
 
   return {
     config: defaults,
+    debug_mode_note: buildDebugModeNote(debugMode),
     tools: tools.length ? tools : null,
     skill_manifest: skills.length ? skills : null,
     subagents: subagents || null,
@@ -67,11 +106,82 @@ async function loadPlanVars(K, defaults) {
 
 // ── Circumstances builder ───────────────────────────────────
 
-function buildCircumstances(events, balances, crashData) {
+function buildCircumstances(events, balances, crashData, pendingRequests) {
   const circumstances = {};
   if (events?.length) circumstances.events = events;
   if (balances) circumstances.balances = balances;
   if (crashData) circumstances.crash = crashData;
+  if (pendingRequests?.length) circumstances.pending_requests = pendingRequests;
+  return circumstances;
+}
+
+function extractWakeProvenance(events = []) {
+  const wake = (events || []).find(event => event?.type === "wake");
+  if (!wake) return null;
+  return {
+    origin: wake.origin || null,
+    actor: wake.trigger?.actor || null,
+    context: wake.trigger?.context || null,
+  };
+}
+
+function getOperatingBalanceUsd(balances) {
+  let total = 0;
+  let found = false;
+
+  // Sum wallet balances
+  const wallets = balances?.wallets;
+  if (wallets && typeof wallets === "object") {
+    for (const entry of Object.values(wallets)) {
+      if (!entry || entry.scope !== "general") continue;
+      if (typeof entry.balance !== "number" || Number.isNaN(entry.balance)) continue;
+      total += entry.balance;
+      found = true;
+    }
+  }
+
+  // Sum provider balances
+  const providers = balances?.providers;
+  if (providers && typeof providers === "object") {
+    for (const entry of Object.values(providers)) {
+      if (!entry || entry.scope !== "general") continue;
+      if (typeof entry.balance !== "number" || Number.isNaN(entry.balance)) continue;
+      total += entry.balance;
+      found = true;
+    }
+  }
+
+  return found ? Number(total.toFixed(2)) : null;
+}
+
+function deriveCapacitySnapshot({ balances, defaults, sessionCost = 0 }) {
+  const sessionBudgetMax = defaults?.session_budget?.max_cost || 0;
+  const remainingUsd = sessionBudgetMax > 0
+    ? Math.max(0, sessionBudgetMax - sessionCost)
+    : null;
+  const remainingPct = sessionBudgetMax > 0
+    ? Math.max(0, Math.min(1, remainingUsd / sessionBudgetMax))
+    : null;
+  const operatingBalanceUsd = getOperatingBalanceUsd(balances);
+  const healthy = remainingPct !== null
+    ? remainingPct >= 0.5 && (operatingBalanceUsd === null || operatingBalanceUsd >= sessionBudgetMax * 10)
+    : (operatingBalanceUsd === null ? false : operatingBalanceUsd >= 1);
+
+  return {
+    budget_remaining_pct: remainingPct !== null ? Number(remainingPct.toFixed(2)) : null,
+    session_budget_remaining_usd: remainingUsd !== null ? Number(remainingUsd.toFixed(3)) : null,
+    operating_balance_usd: operatingBalanceUsd,
+    healthy,
+  };
+}
+
+function buildPlannerCircumstances(events, balances, crashData, pendingRequests, schedule, capacity, wake) {
+  const circumstances = buildCircumstances(events, balances, crashData, pendingRequests);
+  if (typeof schedule?.no_action_streak === "number") {
+    circumstances.no_action_streak = schedule.no_action_streak;
+  }
+  if (capacity) circumstances.capacity = capacity;
+  if (wake) circumstances.wake = wake;
   return circumstances;
 }
 
@@ -190,12 +300,13 @@ function deriveBootstrapNoActionPlan({ circumstances }) {
 
 // ── Plan phase ──────────────────────────────────────────────
 
-async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext }) {
+async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext, pendingRequests }) {
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
+  const debugMode = deriveDebugMode(defaults, { wake: circumstances?.wake });
   const systemPrompt = planPrompt
-    ? await K.buildPrompt(planPrompt, await loadPlanVars(K, defaults))
-    : "You are a planning agent. Given desires, patterns, and circumstances, output a JSON action plan.";
+    ? await K.buildPrompt(planPrompt, await loadPlanVars(K, defaults, debugMode))
+    : "You are a planning agent. Given desires, tactics, and circumstances, output a JSON action plan.";
 
   // Load tactics — agent-managed behavioral rules, injected into planner context
   // alongside desires (not kernel-injected, because they're not safety invariants)
@@ -208,7 +319,6 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
 
   const sections = [
     "[DESIRES]", formatDesires(desires), "",
-    "[PATTERNS]", formatPatterns(patterns), "",
   ];
   if (tactics.length) {
     sections.push("[TACTICS]");
@@ -235,6 +345,35 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
     }
     sections.push("");
   }
+  if (pendingRequests?.length) {
+    sections.push("[PENDING REQUESTS]", "(durable work contracts currently awaiting execution or update)");
+    for (const request of pendingRequests) {
+      const stale = request.stale ? " [stale]" : "";
+      const age = request.age_hours != null ? ` (${request.age_hours}h old)` : "";
+      const note = request.note ? ` — ${request.note}` : "";
+      sections.push(`- ${request.id}: ${request.summary}${stale}${age}${note}`);
+    }
+    sections.push("");
+  }
+  // Idle trap breaker: when the agent has been idle far beyond the exploration
+  // unlock threshold, override any tactics that justify continued inaction.
+  // This prevents self-imposed tactics from creating permanent idle loops.
+  const noActionStreak = circumstances?.no_action_streak || 0;
+  const idleTrapThreshold = (defaults?.schedule?.exploration_unlock_streak || 3) * 2;
+  const noRequestsPending = !Array.isArray(pendingRequests) || pendingRequests.length === 0;
+  if (noRequestsPending && noActionStreak >= idleTrapThreshold) {
+    sections.push(
+      "[IDLE TRAP OVERRIDE]",
+      `You have been idle for ${noActionStreak} consecutive sessions. Your tactics may`,
+      "be keeping you idle, but prolonged inaction is itself a failure mode.",
+      "Re-evaluate whether your blocked dependency is still the right path.",
+      "Consider: sending a follow-up, exploring alternative approaches, or",
+      "updating the carry-forward plan to reflect changed circumstances.",
+      "Do NOT cite a tactic as justification for continued inaction beyond",
+      "this threshold.",
+      "",
+    );
+  }
   sections.push("[CIRCUMSTANCES]", formatCircumstances(circumstances));
   if (priorActions?.length) {
     sections.push("", "[PRIOR ACTIONS THIS SESSION]");
@@ -252,7 +391,7 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
   }
   sections.push(
     "",
-    "Respond with a JSON plan object: { action, success, relies_on, defer_if, no_action }",
+    "Respond with a JSON plan object: { action, success, serves_desires, follows_tactics, defer_if, no_action }",
     "If no action is warranted, respond: { no_action: true, reason: \"...\" }",
   );
   const userContent = sections.join("\n");
@@ -294,15 +433,77 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
 
   if (plan.no_action) return plan;
 
-  // Validate relies_on keys against desire + pattern + tactic snapshots
-  // tacticList is in scope from the tactic loading above (line 123)
-  if (plan.relies_on?.length) {
-    const knownKeys = new Set([...Object.keys(desires), ...Object.keys(patterns), ...tacticList.keys.map(k => k.name)]);
-    const unknown = plan.relies_on.filter(k => !knownKeys.has(k));
-    if (unknown.length) {
-      await K.karmaRecord({ event: "plan_unknown_relies_on", unknown_keys: unknown, stripped: true });
-      plan.relies_on = plan.relies_on.filter(k => knownKeys.has(k));
-    }
+  const legacyReliesOn = Array.isArray(plan.relies_on)
+    ? plan.relies_on.filter(key => typeof key === "string")
+    : [];
+  const servesDesires = (Array.isArray(plan.serves_desires)
+    ? plan.serves_desires.filter(key => typeof key === "string")
+    : legacyReliesOn.filter(key => key.startsWith("desire:"))
+  ).map(d => d.startsWith("desire:") ? d : `desire:${d}`);
+  const followsTactics = (Array.isArray(plan.follows_tactics)
+    ? plan.follows_tactics.filter(key => typeof key === "string")
+    : legacyReliesOn.filter(key => key.startsWith("tactic:"))
+  ).map(t => t.startsWith("tactic:") ? t : `tactic:${t}`);
+  const legacyPatterns = legacyReliesOn.filter(key => key.startsWith("pattern:"));
+
+  if (legacyPatterns.length) {
+    await K.karmaRecord({
+      event: "plan_pattern_guidance_stripped",
+      pattern_keys: legacyPatterns,
+      stripped: true,
+    });
+  }
+
+  const desireKeys = new Set(Object.keys(desires));
+  const tacticKeys = new Set(tacticList.keys.map(k => k.name));
+  const unknownDesires = servesDesires.filter(key => !desireKeys.has(key));
+  const unknownTactics = followsTactics.filter(key => !tacticKeys.has(key));
+  if (unknownDesires.length || unknownTactics.length) {
+    await K.karmaRecord({
+      event: "plan_unknown_refs",
+      unknown_desires: unknownDesires,
+      unknown_tactics: unknownTactics,
+      stripped: true,
+    });
+  }
+
+  plan.serves_desires = servesDesires.filter(key => desireKeys.has(key));
+  plan.follows_tactics = followsTactics.filter(key => tacticKeys.has(key));
+  delete plan.relies_on;
+
+  const allowRequestDrivenPlan = Array.isArray(pendingRequests) && pendingRequests.length > 0;
+  const explorationUnlockStreak = defaults?.schedule?.exploration_unlock_streak || 3;
+  const allowExploratoryPlan = !allowRequestDrivenPlan
+    && (priorActions?.length || 0) === 0
+    && (circumstances?.no_action_streak || 0) >= explorationUnlockStreak
+    && circumstances?.capacity?.healthy === true
+    && typeof plan.action === "string"
+    && plan.action.trim().length > 0
+    && typeof plan.success === "string"
+    && plan.success.trim().length > 0;
+
+  if (plan.serves_desires.length === 0 && !allowRequestDrivenPlan && !allowExploratoryPlan) {
+    await K.karmaRecord({
+      event: "plan_missing_serves_desires",
+      action: plan.action || null,
+    });
+    return null;
+  }
+  if (plan.serves_desires.length === 0 && allowRequestDrivenPlan) {
+    await K.karmaRecord({
+      event: "plan_request_driven_without_desire",
+      action: plan.action || null,
+      request_ids: pendingRequests.map(request => request.id),
+    });
+  }
+  if (plan.serves_desires.length === 0 && allowExploratoryPlan) {
+    await K.karmaRecord({
+      event: "plan_exploratory_without_desire",
+      action: plan.action || null,
+      no_action_streak: circumstances?.no_action_streak || 0,
+      operating_balance_usd: circumstances?.capacity?.operating_balance_usd ?? null,
+      budget_remaining_pct: circumstances?.capacity?.budget_remaining_pct ?? null,
+    });
   }
 
   return plan;
@@ -310,7 +511,7 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
 
 // ── Act phase ───────────────────────────────────────────────
 
-async function actPhase(K, { plan, systemPrompt, messages, tools, model, effort, maxTokens, defaults }) {
+async function actPhase(K, { plan, systemPrompt, messages, tools, model, effort, maxTokens, defaults, pendingRequests }) {
   const maxActSteps = defaults?.execution?.max_steps?.act || 12;
   const budget = defaults?.session_budget || {};
   const maxCost = budget.max_cost || 0.50;
@@ -326,7 +527,12 @@ async function actPhase(K, { plan, systemPrompt, messages, tools, model, effort,
   // Initial user message with the plan
   messages.push({
     role: "user",
-    content: `Execute this plan:\n${JSON.stringify(plan, null, 2)}`,
+    content: [
+      pendingRequests?.length
+        ? `Pending requests in scope:\n${JSON.stringify(pendingRequests, null, 2)}`
+        : null,
+      `Execute this plan:\n${JSON.stringify(plan, null, 2)}`,
+    ].filter(Boolean).join("\n\n"),
   });
 
   for (let actStep = 0; actStep < maxActSteps; actStep++) {
@@ -387,7 +593,8 @@ async function reviewPhase(K, { ledger, evalResult, defaults, signal }) {
     `pattern_scores: ${JSON.stringify(evalResult.pattern_scores || {})}`,
     `tool_outcomes: ${JSON.stringify(evalResult.tool_outcomes)}`,
     `plan_success_criteria: ${evalResult.plan_success_criteria || "none"}`,
-    `patterns_relied_on: ${JSON.stringify(evalResult.patterns_relied_on)}`,
+    `served_desires: ${JSON.stringify(evalResult.served_desires || [])}`,
+    `followed_tactics: ${JSON.stringify(evalResult.followed_tactics || [])}`,
   ].join("\n");
 
   const systemPrompt = reviewPrompt
@@ -483,9 +690,12 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
   // Note: this assumes desires are approach-only target states requiring action to
   // advance. If tactical desires are added that can be entailed by principled
   // abstention, this gate should be revisited.
-  const salience = ledger.plan?.no_action
+  let salience = ledger.plan?.no_action
     ? evalResult.sigma
     : rawSalience;
+  if (ledger.plan?.no_action && typeof ledger.meta?.salience_floor === "number") {
+    salience = Math.max(salience, ledger.meta.salience_floor);
+  }
   const actionKey = `action:${ledger.action_id}`;
 
   // Action record — structured audit trail
@@ -513,14 +723,19 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
       tool_outcomes: evalResult.tool_outcomes,
       pattern_scores: evalResult.pattern_scores || {},
       plan_success_criteria: evalResult.plan_success_criteria || null,
-      patterns_relied_on: evalResult.patterns_relied_on || [],
+      served_desires: evalResult.served_desires || [],
+      followed_tactics: evalResult.followed_tactics || [],
     },
     review: reviewRecord,
   });
 
-  // Pattern strength updates — from eval's per-pattern surprise scores
-  if (evalResult.pattern_scores) {
+  // Pattern strength updates — skip for no_action cycles.
+  // NLI classifies no-action text as contradicting descriptive patterns
+  // (false positive — abstention doesn't invalidate observed regularities).
+  // Same rationale as the desire-axis gate at line 521.
+  if (evalResult.pattern_scores && !ledger.plan?.no_action) {
     for (const [key, score] of Object.entries(evalResult.pattern_scores)) {
+      if (score.direction === "neutral") continue;  // irrelevant → no update
       const existing = patterns[key];
       if (!existing) continue;
       const newStrength = updatePatternStrength(existing.strength, score.surprise);
@@ -560,6 +775,40 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
       embedding,
       ...(reviewRecord.narrative ? { text_rendering: { narrative: reviewRecord.narrative } } : {}),
     };
+    // Deduplicate near-identical experiences — decay salience for similar
+    // observations, skip entirely for near-duplicates. Prevents repetitive
+    // eval signals (e.g. tactic-blind contradiction flags) from polluting
+    // the experience store and drowning out genuinely novel experiences.
+    if (embedding) {
+      const recentList = await K.kvList({ prefix: "experience:", limit: 5 });
+      const recentKeys = recentList.keys || [];
+      let maxSim = 0;
+      for (const k of recentKeys) {
+        const recentExp = await K.kvGet(k.name);
+        if (recentExp?.embedding) {
+          const sim = cosineSimilarity(embedding, recentExp.embedding);
+          if (sim > maxSim) maxSim = sim;
+        }
+      }
+      if (maxSim > 0.95) {
+        await K.karmaRecord({ event: "experience_deduplicated", similarity: maxSim, salience });
+        return;
+      }
+      if (maxSim > 0.90) {
+        salience *= 0.2;
+        await K.karmaRecord({ event: "experience_salience_decayed", similarity: maxSim, original_salience: experienceRecord.salience, decayed_salience: salience });
+        experienceRecord.salience = salience;
+      }
+    }
+
+    // Schema validation — reject experiences missing required fields
+    const requiredFields = ['observation', 'desire_alignment', 'pattern_delta', 'salience'];
+    const missing = requiredFields.filter(f => experienceRecord[f] === undefined || experienceRecord[f] === null);
+    if (missing.length > 0) {
+      await K.karmaRecord({ event: "experience_schema_rejected", key: experienceKey, missing });
+      return;
+    }
+
     await K.kvWriteSafe(experienceKey, experienceRecord);
     await K.karmaRecord({ event: "experience_written", key: experienceKey, salience, sigma: evalResult.sigma });
   } else {
@@ -606,10 +855,35 @@ async function actCycle(K, { crashData, balances, events }) {
 
   // Schedule gate — userspace decides if it's time
   const schedule = await K.kvGet("session_schedule");
+  const wake = extractWakeProvenance(events);
+  const externalWake = wake?.origin === "external";
   if (schedule?.next_session_after) {
-    if (Date.now() < new Date(schedule.next_session_after).getTime()) {
+    if (!externalWake && Date.now() < new Date(schedule.next_session_after).getTime()) {
       return { skipped: true };
     }
+  }
+  if (externalWake && schedule?.next_session_after && Date.now() < new Date(schedule.next_session_after).getTime()) {
+    await K.karmaRecord({
+      event: "schedule_gate_bypassed",
+      reason: "external_wake",
+      scheduled_for: schedule.next_session_after,
+      wake_origin: wake?.origin,
+      wake_actor: wake?.actor,
+    });
+  }
+
+  let desires = await loadDesires(K);
+  const drState = await K.kvGet("dr:state:1");
+  if (
+    Object.keys(desires).length === 0
+    && (drState?.status === "dispatched" || drState?.status === "completed")
+  ) {
+    await K.karmaRecord({
+      event: "bootstrap_waiting_for_dr",
+      dr_status: drState.status,
+      generation: drState.generation || 0,
+    });
+    return { skipped: true };
   }
 
   // Session bookkeeping — userspace concept
@@ -627,11 +901,26 @@ async function actCycle(K, { crashData, balances, events }) {
     scheduled_at: schedule?.next_session_after || null,
     crash_detected: !!crashData,
     balances,
+    no_action_streak: schedule?.no_action_streak || 0,
+    wake_origin: wake?.origin || "scheduled",
+    wake_actor: wake?.actor || null,
+    wake_context: wake?.context || null,
   });
 
   // 1. Load config
   const defaults = await K.getDefaults();
   const modelsConfig = await K.getModelsConfig();
+  const pendingRequests = await loadPendingRequests(K, defaults, events);
+  const initialCapacity = deriveCapacitySnapshot({
+    balances,
+    defaults,
+    sessionCost: await K.getSessionCost(),
+  });
+  await K.karmaRecord({
+    event: "capacity_snapshot",
+    no_action_streak: schedule?.no_action_streak || 0,
+    ...initialCapacity,
+  });
 
   // 1b. Load inference config for embedding pipeline
   const inferenceUrl = defaults?.inference?.url || null;
@@ -644,13 +933,19 @@ async function actCycle(K, { crashData, balances, events }) {
   } : null;
 
   // 2. Snapshot desires and patterns
-  let desires = await loadDesires(K);
   let patterns = await loadPatterns(K);
 
   // 2c. Load carry-forward items from last session's reflect output
   const lastReflect = await K.kvGet("last_reflect");
   const priorityRank = { high: 0, medium: 1, low: 2 };
+  const normalizeDate = (s) => { const d = new Date(s); return isNaN(d.getTime()) ? null : d.toISOString(); };
   const carryForwardItems = (lastReflect?.carry_forward || [])
+    .map(item => ({
+      ...item,
+      expires_at: item.expires_at ? normalizeDate(item.expires_at) : undefined,
+      created_at: item.created_at ? normalizeDate(item.created_at) : undefined,
+      updated_at: item.updated_at ? normalizeDate(item.updated_at) : undefined,
+    }))
     .filter(item => item.status === "active")
     .filter(item => !item.expires_at || new Date(item.expires_at).getTime() >= Date.now())
     .sort((a, b) => {
@@ -678,10 +973,19 @@ async function actCycle(K, { crashData, balances, events }) {
   }
 
   // 3. Build initial circumstances
-  let circumstances = buildCircumstances(events, balances, crashData);
+  let circumstances = buildPlannerCircumstances(
+    events,
+    balances,
+    crashData,
+    pendingRequests,
+    schedule,
+    initialCapacity,
+    wake,
+  );
 
   // 4. Build system prompt, tools, model
-  const systemPrompt = await renderActPrompt(K, { defaults });
+  const debugMode = deriveDebugMode(defaults, { wake });
+  const systemPrompt = await renderActPrompt(K, { defaults, debugMode });
   const tools = await buildToolSet(K);
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const effort = defaults?.act?.effort || "low";
@@ -716,6 +1020,7 @@ async function actCycle(K, { crashData, balances, events }) {
   const reflectReservePct = budget.reflect_reserve_pct || 0.33;
   const actBudgetCap = maxCost * (1 - reflectReservePct);
   let cyclesRun = 0;
+  const respondedRequestIds = new Set();
 
   for (let cycle = 0; cycle < maxCycles; cycle++) {
     // 6a. Budget preflight — stop act cycles when reserve is reached
@@ -726,9 +1031,9 @@ async function actCycle(K, { crashData, balances, events }) {
     }
 
     // 6b. Plan phase
-    const plan = Object.keys(desires).length === 0
+    const plan = (Object.keys(desires).length === 0 && pendingRequests.length === 0)
       ? deriveBootstrapNoActionPlan({ circumstances })
-      : await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext });
+      : await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext, pendingRequests });
     if (!plan) break; // parse failure
     const cycleAbortController = new AbortController();
     const abortFromSession = () => cycleAbortController.abort(K.sessionAbortSignal?.reason);
@@ -740,6 +1045,18 @@ async function actCycle(K, { crashData, balances, events }) {
     try {
       if (plan.no_action) {
         await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
+        const projectedNoActionStreak = (schedule?.no_action_streak || 0) + 1;
+        const capacityRichNoAction = circumstances?.capacity?.healthy === true
+          && projectedNoActionStreak >= (defaults?.schedule?.exploration_unlock_streak || 3);
+        if (capacityRichNoAction) {
+          await K.karmaRecord({
+            event: "capacity_rich_no_action",
+            cycle,
+            no_action_streak: projectedNoActionStreak,
+            operating_balance_usd: circumstances?.capacity?.operating_balance_usd ?? null,
+            budget_remaining_pct: circumstances?.capacity?.budget_remaining_pct ?? null,
+          });
+        }
 
         // Still run eval + memory so the experience gets recorded. When
         // patterns are empty, eval returns σ=1 (max surprise) — this is
@@ -750,14 +1067,34 @@ async function actCycle(K, { crashData, balances, events }) {
           plan,
           tool_calls: [],
           final_text: plan.reason,
+          meta: capacityRichNoAction ? {
+            // Only floor salience on the first idle session that crosses the
+            // exploration-unlock threshold — subsequent near-identical observations
+            // should be filtered by natural dedup (sigma < threshold).
+            ...(projectedNoActionStreak === (defaults?.schedule?.exploration_unlock_streak || 3)
+              ? { salience_floor: 0.6 } : {}),
+            no_action_streak: projectedNoActionStreak,
+            capacity: circumstances?.capacity || null,
+          } : null,
         };
         const evalResult = await evaluateAction(K, noActionLedger, desires, patterns, inferenceConfig || {}, cycleAbortController.signal);
         const syntheticReview = {
-          observation: `No action was taken. Reason: ${plan.reason}`,
+          observation: capacityRichNoAction
+            ? `No action was taken despite healthy available capacity after ${projectedNoActionStreak} consecutive idle sessions. Reason: ${plan.reason}`
+            : `No action was taken. Reason: ${plan.reason}`,
           assessment: "no_action",
-          narrative: `No action taken: ${plan.reason}`,
+          narrative: capacityRichNoAction
+            ? `No action taken after ${projectedNoActionStreak} consecutive idle sessions despite healthy available capacity. Reason: ${plan.reason}`
+            : `No action taken: ${plan.reason}`,
           salience_estimate: evalResult.salience || 0,
         };
+        await K.karmaRecord({
+          event: "review_synthesized",
+          source: "no_action_bootstrap",
+          observation: syntheticReview.observation,
+          assessment: syntheticReview.assessment,
+          cycle,
+        });
         await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
         break;
@@ -765,8 +1102,16 @@ async function actCycle(K, { crashData, balances, events }) {
 
       // 6c. Act phase
       const ledger = await actPhase(K, {
-        plan, systemPrompt, messages, tools, model, effort, maxTokens, defaults,
+        plan, systemPrompt, messages, tools, model, effort, maxTokens, defaults, pendingRequests,
       });
+      for (const call of ledger.tool_calls) {
+        if (call.tool !== "update_request") continue;
+        let parsedInput = call.input;
+        if (typeof parsedInput === "string") {
+          try { parsedInput = JSON.parse(parsedInput); } catch { parsedInput = null; }
+        }
+        if (parsedInput?.request_id) respondedRequestIds.add(parsedInput.request_id);
+      }
 
       // 6d. Eval phase
       const evalResult = await evaluateAction(K, ledger, desires, patterns, inferenceConfig || {}, cycleAbortController.signal);
@@ -790,10 +1135,19 @@ async function actCycle(K, { crashData, balances, events }) {
 
       // 6h. Refresh circumstances
       const freshBalances = await K.checkBalance();
-      circumstances = buildCircumstances(
+      const freshCapacity = deriveCapacitySnapshot({
+        balances: freshBalances,
+        defaults,
+        sessionCost: await K.getSessionCost(),
+      });
+      circumstances = buildPlannerCircumstances(
         null, // events only on first cycle
         freshBalances,
         null, // crashData only on first cycle
+        pendingRequests,
+        schedule,
+        freshCapacity,
+        wake,
       );
       // Add recent tool outcomes
       if (ledger.tool_calls.length) {
@@ -826,20 +1180,37 @@ async function actCycle(K, { crashData, balances, events }) {
     });
   }
 
+  if (pendingRequests.length) {
+    const unaddressed = pendingRequests
+      .map(request => request.id)
+      .filter(id => !respondedRequestIds.has(id));
+    if (unaddressed.length > 0) {
+      await K.karmaRecord({
+        event: "unaddressed_requests",
+        count: unaddressed.length,
+        request_ids: unaddressed,
+      });
+    }
+  }
+
   // Schedule next session
   let scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
+  const idleInterval = defaults?.schedule?.idle_interval_seconds || 1800;
+  const explorationUnlockStreak = defaults?.schedule?.exploration_unlock_streak || 3;
   const isBootstrapNoAction = cyclesRun === 0
     && sessionCount === 0
     && Object.keys(desires).length === 0;
 
-  // Mechanical backoff: if this session was no_action, check for consecutive streak
+  // Repeated no_action under healthy capacity should become cheaper/faster rather
+  // than deepening into long dormancy. Preserve the default cadence for
+  // bootstrap or genuinely constrained states.
   if (cyclesRun === 0) {
-    const schedule = await K.kvGet("session_schedule");
-    const streak = (schedule?.no_action_streak || 0) + 1;
-    if (isBootstrapNoAction) {
-      scheduleInterval = 1;
-    } else if (streak >= 6) scheduleInterval = Math.max(scheduleInterval, 21600); // 6h floor
-    else if (streak >= 3) scheduleInterval = Math.max(scheduleInterval, 7200); // 2h floor
+    const currentSchedule = await K.kvGet("session_schedule");
+    const streak = (currentSchedule?.no_action_streak || 0) + 1;
+    const capacityHealthy = circumstances?.capacity?.healthy === true;
+    if (!isBootstrapNoAction && capacityHealthy && streak >= explorationUnlockStreak) {
+      scheduleInterval = Math.min(scheduleInterval, idleInterval);
+    }
     // Persist streak for next session
     await K.kvWriteSafe("session_schedule", {
       next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
@@ -868,14 +1239,22 @@ async function actCycle(K, { crashData, balances, events }) {
 
 // ── DR Lifecycle (independent state machine) ──────────────
 
-async function drCycle(K) {
+async function drCycle(K, { phase = "post", events = [] } = {}) {
   const defaults = await K.getDefaults();
   const sessionCount = (await K.kvGet("session_counter")) || 0;
   const state = await K.kvGet("dr:state:1") || {
     status: "idle", generation: 0, consecutive_failures: 0,
   };
+  const callbackJobIds = new Set(
+    (events || [])
+      .filter(event => event?.type === "job_complete")
+      .map(getEventJobId)
+      .filter(Boolean),
+  );
+  const hasMatchingCallback = !!(state.job_id && callbackJobIds.has(state.job_id));
+  const handledJobIds = hasMatchingCallback ? [state.job_id] : [];
 
-  if (state.status === "dispatched") {
+  if (state.status === "dispatched" && (phase !== "pre" || hasMatchingCallback)) {
     const ttl = defaults?.deep_reflect?.ttl_minutes || 120;
     const age = (Date.now() - new Date(state.dispatched_at).getTime()) / 60000;
     if (age > ttl) {
@@ -887,7 +1266,7 @@ async function drCycle(K) {
       await updateJobRecord(K, state.job_id, "expired");
       await K.kvWriteSafe("dr:state:1", state);
       await K.karmaRecord({ event: "dr_expired", job_id: state.job_id, age_minutes: Math.round(age) });
-      return;
+      return { handledJobIds };
     }
 
     const result = await pollJobResult(K, state, defaults);
@@ -907,11 +1286,13 @@ async function drCycle(K) {
       await updateJobRecord(K, state.job_id, "failed");
       await K.kvWriteSafe("dr:state:1", state);
       await K.karmaRecord({ event: "dr_failed", job_id: state.job_id, error: result.error });
+      return { handledJobIds };
+    } else {
+      return { handledJobIds };
     }
-    return;
   }
 
-  if (state.status === "completed") {
+  if (state.status === "completed" && (phase !== "pre" || hasMatchingCallback)) {
     const output = await K.kvGet(`dr:result:${state.generation}`);
     if (!output) {
       state.status = "failed";
@@ -919,10 +1300,25 @@ async function drCycle(K) {
       state.consecutive_failures = (state.consecutive_failures || 0) + 1;
       state.last_failure_session = sessionCount;
       await K.kvWriteSafe("dr:state:1", state);
-      return;
+      return { handledJobIds };
     }
 
+    const hadNoDesires = Object.keys(await loadDesires(K)).length === 0;
     await applyDrResults(K, state, output);
+    const desireCount = Object.keys(await loadDesires(K)).length;
+    if (hadNoDesires && desireCount > 0) {
+      const schedule = await K.kvGet("session_schedule");
+      await K.kvWriteSafe("session_schedule", {
+        next_session_after: new Date().toISOString(),
+        interval_seconds: schedule?.interval_seconds || defaults?.schedule?.interval_seconds || 21600,
+        no_action_streak: schedule?.no_action_streak || 0,
+      });
+      await K.karmaRecord({
+        event: "bootstrap_ready_after_dr",
+        generation: state.generation,
+        desires_created: desireCount,
+      });
+    }
 
     state.status = "idle";
     state.applied_at = new Date().toISOString();
@@ -943,12 +1339,16 @@ async function drCycle(K) {
 
     await K.kvDeleteSafe(`dr:result:${state.generation}`);
     await K.kvWriteSafe("dr:state:1", state);
-    return;
+    return { handledJobIds };
+  }
+
+  if (phase === "pre") {
+    return { handledJobIds };
   }
 
   if (state.status === "failed") {
     const backoff = Math.min(20, Math.pow(2, state.consecutive_failures || 1));
-    if (state.last_failure_session && sessionCount - state.last_failure_session < backoff) return;
+    if (state.last_failure_session && sessionCount - state.last_failure_session < backoff) return { handledJobIds };
 
     state.status = "idle";
     state.next_due_session = sessionCount;
@@ -956,7 +1356,7 @@ async function drCycle(K) {
   }
 
   if (state.status === "idle") {
-    if (!await isDrDue(K, state)) return;
+    if (!await isDrDue(K, state)) return { handledJobIds };
 
     const dispatch = await dispatchDr(K, defaults);
     if (!dispatch) {
@@ -967,7 +1367,7 @@ async function drCycle(K) {
       state.last_failure_session = sessionCount;
       await K.kvWriteSafe("dr:state:1", state);
       await K.karmaRecord({ event: "dr_dispatch_failed" });
-      return;
+      return { handledJobIds };
     }
 
     state.status = "dispatched";
@@ -982,6 +1382,8 @@ async function drCycle(K) {
     await K.kvWriteSafe("dr:state:1", state);
     await K.karmaRecord({ event: "dr_dispatched", job_id: dispatch.job_id, generation: state.generation });
   }
+
+  return { handledJobIds };
 }
 
 async function isDrDue(K, state) {
@@ -1172,6 +1574,10 @@ async function updateJobRecord(K, jobId, status) {
   }
 }
 
+function getEventJobId(event) {
+  return event?.job_id || event?.source?.job_id || null;
+}
+
 // ── Pulse bucket classifier ────────────────────────────────
 // Maps raw touched KV keys to semantic buckets for kernel:pulse.
 // The kernel tracks which keys were written; this function provides
@@ -1203,10 +1609,24 @@ export function classify(touchedKeys) {
 // ── Main session hook ───────────────────────────────────────
 
 export async function run(K, { crashData, balances, events }) {
+  const preDr = await (async () => {
+    try {
+      return await drCycle(K, { phase: "pre", events });
+    } catch (e) {
+      await K.karmaRecord({ event: "dr_cycle_error", phase: "pre", error: e.message, stack: e.stack?.slice(0, 500) });
+      return { handledJobIds: [] };
+    }
+  })();
+
+  const handledJobIds = new Set(preDr?.handledJobIds || []);
+  const actEvents = handledJobIds.size > 0
+    ? events.filter(event => !(event.type === "job_complete" && handledJobIds.has(getEventJobId(event))))
+    : events;
+
   // Independent concern 1: act cycle (schedule-gated)
   let actResult = { skipped: true };
   try {
-    actResult = await actCycle(K, { crashData, balances, events });
+    actResult = await actCycle(K, { crashData, balances, events: actEvents });
   } catch (e) {
     await K.karmaRecord({ event: "act_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
   }
@@ -1228,8 +1648,8 @@ export async function run(K, { crashData, balances, events }) {
 
   // Independent concern 3: DR lifecycle (every tick)
   try {
-    await drCycle(K);
+    await drCycle(K, { phase: "post", events });
   } catch (e) {
-    await K.karmaRecord({ event: "dr_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
+    await K.karmaRecord({ event: "dr_cycle_error", phase: "post", error: e.message, stack: e.stack?.slice(0, 500) });
   }
 }

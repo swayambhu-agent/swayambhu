@@ -30,6 +30,8 @@ import * as send_whatsapp from './tools/send_whatsapp.js';
 import * as google_docs from './tools/google_docs.js';
 import * as gnanetra from './tools/gnanetra.js';
 import * as request_message from './tools/request_message.js';
+import * as trigger_session from './tools/trigger_session.js';
+import * as update_request from './tools/update_request.js';
 
 // Provider adapter modules
 import * as llm from './providers/llm.js';
@@ -45,7 +47,7 @@ const TOOLS = {
   send_slack, web_fetch, kv_manifest, kv_query,
   computer, check_email, send_email, test_model, web_search,
   start_job, collect_jobs, send_whatsapp, google_docs, gnanetra,
-  request_message,
+  request_message, trigger_session, update_request,
 };
 
 const PROVIDERS = {
@@ -197,6 +199,27 @@ const EVENT_HANDLERS = {
   },
 };
 
+async function advanceSessionSchedule(env, defaults, advanceSeconds) {
+  const schedule = await env.KV.get("session_schedule", "json");
+  const nextSessionAfter = new Date(Date.now() + advanceSeconds * 1000).toISOString();
+
+  if (!schedule) {
+    await env.KV.put("session_schedule", JSON.stringify({
+      next_session_after: nextSessionAfter,
+      interval_seconds: defaults?.schedule?.interval_seconds || 21600,
+      no_action_streak: 0,
+    }));
+    return;
+  }
+
+  if (!schedule.next_session_after || new Date(schedule.next_session_after).getTime() > Date.now() + advanceSeconds * 1000) {
+    await env.KV.put("session_schedule", JSON.stringify({
+      ...schedule,
+      next_session_after: nextSessionAfter,
+    }));
+  }
+}
+
 // ── Entry points ──────────────────────────────────────────────
 
 export default {
@@ -208,13 +231,108 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    const jobMatch = url.pathname.match(/^\/job-complete\/([^/]+)$/);
+    if (jobMatch && request.method === "POST") {
+      const jobId = decodeURIComponent(jobMatch[1]);
+      const rawBody = await request.text();
+      const job = await env.KV.get(`job:${jobId}`, "json");
+      if (!job) return new Response("Job not found", { status: 404 });
+
+      const providedSecret = request.headers.get("X-Job-Callback-Secret") || "";
+      if (!job.callback_secret || providedSecret !== job.callback_secret) {
+        return new Response("Invalid callback secret", { status: 401 });
+      }
+
+      let payload;
+      try {
+        payload = rawBody ? JSON.parse(rawBody) : {};
+      } catch {
+        return new Response("Invalid JSON", { status: 400 });
+      }
+
+      const exitCode = Number.isFinite(Number(payload?.exit_code)) ? Number(payload.exit_code) : null;
+      if (!Number.isInteger(exitCode)) {
+        return new Response("exit_code is required", { status: 400 });
+      }
+
+      const now = new Date().toISOString();
+      job.status = exitCode === 0 ? "completed" : "failed";
+      job.completed_at = now;
+      job.callback_received_at = now;
+      job.exit_code = exitCode;
+      await env.KV.put(`job:${jobId}`, JSON.stringify(job));
+
+      const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+      const K = kernel.buildKernelInterface();
+      await K.emitEvent("job_complete", {
+        job_id: jobId,
+        source: { job_id: jobId, via: "callback" },
+        summary: `Job ${jobId} (${job.type}) ${job.status}`,
+        ref: `job:${jobId}`,
+        result_key: `job_result:${jobId}`,
+        exit_code: exitCode,
+      });
+
+      const defaults = await env.KV.get("config:defaults", "json");
+      const advanceSeconds = defaults?.jobs?.callback_advance_seconds || 30;
+      await advanceSessionSchedule(env, defaults, advanceSeconds);
+
+      if (ctx?.waitUntil) {
+        ctx.waitUntil((async () => {
+          const wakeKernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+          await wakeKernel.runScheduled();
+        })());
+      }
+
+      return new Response("OK", { status: 202 });
+    }
+
     // Admin: set schedule to past so next /__scheduled runs immediately
+    // Deprecated for normal dev-loop use. Prefer POST /__wake so the resulting
+    // session carries explicit provenance instead of looking like a scheduler
+    // failure.
     if (url.pathname === "/__clear-schedule" && request.method === "POST") {
       await env.KV.put("session_schedule", JSON.stringify({
         next_session_after: new Date(Date.now() - 1000).toISOString(),
         interval_seconds: 21600,
       }));
       return new Response("session_schedule set to past", { status: 200 });
+    }
+
+    if (url.pathname === "/__wake" && request.method === "POST") {
+      let payload = {};
+      try {
+        payload = await request.json();
+      } catch {
+        return new Response("Invalid JSON", { status: 400 });
+      }
+
+      const actor = typeof payload?.actor === "string" && payload.actor.trim()
+        ? payload.actor.trim()
+        : "external";
+      const contextPayload = payload?.context && typeof payload.context === "object"
+        ? payload.context
+        : {};
+
+      const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+      const K = kernel.buildKernelInterface();
+      await K.emitEvent("wake", {
+        origin: "external",
+        trigger: {
+          actor,
+          context: contextPayload,
+        },
+      });
+
+      const runWake = async () => {
+        const wakeKernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+        await wakeKernel.runScheduled();
+      };
+
+      if (ctx?.waitUntil) ctx.waitUntil(runWake());
+      else await runWake();
+
+      return new Response("wake queued", { status: 202 });
     }
 
     const match = url.pathname.match(/^\/channel\/(\w+)$/);

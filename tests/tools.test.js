@@ -21,6 +21,7 @@ import * as send_whatsapp from "../tools/send_whatsapp.js";
 import * as google_docs from "../tools/google_docs.js";
 import * as gnanetra from "../tools/gnanetra.js";
 import * as request_message from "../tools/request_message.js";
+import * as update_request from "../tools/update_request.js";
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
@@ -117,6 +118,7 @@ const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
   start_job, collect_jobs, send_whatsapp, google_docs, gnanetra, request_message,
+  update_request,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail, compute };
@@ -1591,6 +1593,38 @@ describe("start_job", () => {
     expect(provider.call).not.toHaveBeenCalled();
   });
 
+  it("adds callback curl and stores callback secret when callback_url is configured", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "777\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "custom",
+      command: "echo hello",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, callback_url: "https://worker.example.com" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("curl -fsS --max-time 15 -X POST 'https://worker.example.com/job-complete/");
+    expect(innerScript).toContain("-H 'X-Job-Callback-Secret:");
+    expect(innerScript).toContain(`printf '{"exit_code":%s}' "$EXIT"`);
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.callback_secret).toMatch(/^cb_/);
+    expect(record.callback_url).toMatch(/^https:\/\/worker\.example\.com\/job-complete\//);
+  });
+
   it("returns error when type is missing", async () => {
     const result = await start_job.execute({
       provider: {}, secrets, fetch: vi.fn(), kv: mockKV(), config,
@@ -1629,6 +1663,37 @@ describe("start_job", () => {
     expect(result.context_files).toBe(3); // config/defaults.json, karma/s1.json, prompt.txt
   });
 
+  it("uses Codex as the default cc_analysis runner", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test prompt",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner: "codex", runner_model: "gpt-5.4", path_dirs: ["/home/swayambhu/.local/bin"] } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("codex exec - --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox --output-last-message output.json --color never --model 'gpt-5.4'");
+    expect(innerScript).toContain("< prompt.txt > stdout.log 2>stderr.log; EXIT=$?; echo $EXIT > exit_code");
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.config.runner).toBe("codex");
+    expect(record.config.model).toBe("gpt-5.4");
+  });
+
   it("generates valid inner script for cc_analysis (no && contamination)", async () => {
     const provider = {
       upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
@@ -1645,10 +1710,37 @@ describe("start_job", () => {
       prompt: "test prompt",
       context_keys: [],
       provider, secrets, fetch: vi.fn(), kv,
-      config: { jobs: { ...config.jobs, cc_model: "opus", path_dirs: ["/home/swayambhu/.local/bin"] } },
+      config: { jobs: { ...config.jobs, runner: "codex", runner_model: "gpt-5.4", path_dirs: ["/home/swayambhu/.local/bin"] } },
     });
 
     expect(result.ok).toBe(true);
+  });
+
+  it("supports Claude as an explicit cc_analysis fallback runner", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner: "claude", runner_model: "opus" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("claude -p \"$(cat prompt.txt)\" --output-format json --model 'opus'");
+    expect(innerScript).toContain("mkdir -p '/tmp/jobs/");
+    expect(innerScript).toContain(".claude/settings.json");
   });
 
   it("injects path_dirs into inner script", async () => {
@@ -1676,7 +1768,7 @@ describe("start_job", () => {
     expect(innerScript).toContain("export PATH=/opt/bin:/usr/local/custom${PATH:+:$PATH}");
   });
 
-  it("escapes cc_model with quotes in inner script", async () => {
+  it("escapes runner model with quotes in inner script", async () => {
     let capturedCommand;
     const provider = {
       upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
@@ -1692,13 +1784,34 @@ describe("start_job", () => {
       prompt: "test",
       context_keys: [],
       provider, secrets, fetch: vi.fn(), kv,
-      config: { jobs: { ...config.jobs, cc_model: "model'injection" } },
+      config: { jobs: { ...config.jobs, runner: "codex", runner_model: "model'injection" } },
     });
 
     const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("--model 'model'\\''injection'");
     expect(innerScript).not.toContain("--model model'injection");
+  });
+
+  it("rejects unsupported cc_analysis runners", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(),
+    };
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv: mockKV(),
+      config: { jobs: { ...config.jobs, runner: "bad-runner" } },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Unsupported jobs.runner: bad-runner",
+    });
+    expect(provider.call).not.toHaveBeenCalled();
   });
 
   it("filters invalid path_dirs entries", async () => {
@@ -1748,7 +1861,7 @@ describe("start_job", () => {
     const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("(python3 analyze.py)");
-    expect(innerScript).toMatch(/echo \$\? > '\/tmp\/jobs\/[^']+\/exit_code'/);
+    expect(innerScript).toMatch(/EXIT=\$\?; echo \$EXIT > '\/tmp\/jobs\/[^']+\/exit_code'/);
   });
 
   it("handles non-array path_dirs gracefully", async () => {
@@ -1913,5 +2026,46 @@ describe("request_message", () => {
     });
     expect(result.error).toMatch(/unknown contact/i);
     expect(emitEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("update_request", () => {
+  it("updates a request and emits session_response", async () => {
+    const kv = mockKV({
+      "session_request:req_1": JSON.stringify({
+        id: "req_1",
+        contact: "swami_kevala",
+        summary: "Review the Akash projects folder",
+        status: "pending",
+        created_at: "2026-04-07T00:00:00.000Z",
+        updated_at: "2026-04-07T00:00:00.000Z",
+        ref: "chat:slack:U084ASKBXB7",
+        result: null,
+        error: null,
+        next_session: null,
+      }),
+    });
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
+
+    const result = await update_request.execute({
+      request_id: "req_1",
+      status: "fulfilled",
+      result: "Reviewed the folder and identified next steps.",
+      kv,
+      emitEvent,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(await kv.get("session_request:req_1")).toEqual(
+      expect.objectContaining({
+        status: "fulfilled",
+        result: "Reviewed the folder and identified next steps.",
+      }),
+    );
+    expect(emitEvent).toHaveBeenCalledWith("session_response", {
+      contact: "swami_kevala",
+      ref: "session_request:req_1",
+      status: "fulfilled",
+    });
   });
 });

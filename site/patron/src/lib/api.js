@@ -1,6 +1,5 @@
-export const API_URL = (location.hostname === 'localhost' || location.protocol === 'file:')
-  ? 'http://localhost:8790'
-  : 'https://swayambhu-dashboard-api.swayambhu1.workers.dev';
+import { API_URL } from './config.js';
+export { API_URL };
 
 // ── API helpers ───────────────────────────────────────────
 export const kvReadCount = { current: 0 };

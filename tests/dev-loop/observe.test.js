@@ -30,10 +30,15 @@ describe("chooseStrategy", () => {
       codeChanged: false,
     });
     expect(result.type).toBe("accumulate");
-    expect(result.setup).toEqual([
-      "curl -sf -X POST http://localhost:8787/__clear-schedule",
-    ]);
-    expect(result.trigger).toBe("http://localhost:8787/__scheduled");
+    expect(result.setup).toEqual([]);
+    expect(result.trigger).toEqual({
+      url: "http://localhost:8787/__wake",
+      method: "POST",
+      body: {
+        actor: "dev_loop",
+        context: { intent: "probe", debug_mode: true },
+      },
+    });
   });
 
   it("chooses cold_start on cycle 0", () => {
@@ -44,7 +49,14 @@ describe("chooseStrategy", () => {
     });
     expect(result.type).toBe("cold_start");
     expect(result.setup).toBe("cold_start_sequence");
-    expect(result.trigger).toBe("http://localhost:8787/__scheduled");
+    expect(result.trigger).toEqual({
+      url: "http://localhost:8787/__wake",
+      method: "POST",
+      body: {
+        actor: "dev_loop",
+        context: { intent: "probe", debug_mode: true },
+      },
+    });
   });
 
   it("chooses cold_start when codeChanged", () => {

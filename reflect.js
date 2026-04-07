@@ -7,7 +7,17 @@
 
 import { selectExperiences } from './memory.js';
 
+// ── Validation helpers ─────────────────────────────────────
+
+function isValidISODate(str) {
+  if (!str || typeof str !== 'string') return false;
+  const d = new Date(str);
+  return !isNaN(d.getTime()) && str.length >= 10;
+}
+
 // ── Pattern manifest ────────────────────────────────────────
+
+import { buildDebugModeNote, deriveDebugMode } from "./act.js";
 
 async function loadPatternManifest(K) {
   const list = await K.kvList({ prefix: "pattern:", limit: 200 });
@@ -154,6 +164,9 @@ export async function executeReflect(K, state, step) {
   if (output.carry_forward_updates) {
     const missedCarryForward = [];
     for (const update of output.carry_forward_updates) {
+      // Skip updates with truncated/invalid date fields — preserve existing valid data
+      if (update.expires_at && !isValidISODate(update.expires_at)) continue;
+      if (update.updated_at && !isValidISODate(update.updated_at)) continue;
       const existing = carry_forward.find(item => item.id === update.id);
       if (!existing) {
         missedCarryForward.push(update);
@@ -178,6 +191,22 @@ export async function executeReflect(K, state, step) {
   }
   if (output.new_carry_forward) {
     for (const item of output.new_carry_forward) {
+      // Dedup: skip if an active item with the same desire_key already exists
+      const existingActive = item.desire_key &&
+        carry_forward.find(cf =>
+          cf.status === "active" &&
+          cf.desire_key === item.desire_key &&
+          cf.id !== item.id
+        );
+      if (existingActive) {
+        await K.karmaRecord({
+          event: "carry_forward_dedup_skipped",
+          new_id: item.id,
+          existing_id: existingActive.id,
+          desire_key: item.desire_key,
+        });
+        continue;
+      }
       carry_forward.push({
         ...item,
         status: item.status || "active",
@@ -218,6 +247,15 @@ export async function executeReflect(K, state, step) {
   if (output.kv_operations) {
     const blocked = [];
     for (const op of output.kv_operations) {
+      // Schema gate for experience keys — same validation as userspace.js
+      if (op.key?.startsWith('experience:') && op.op === 'put') {
+        const required = ['observation', 'desire_alignment', 'pattern_delta', 'salience'];
+        const missing = required.filter(f => !op.value?.[f]);
+        if (missing.length > 0) {
+          await K.karmaRecord({ event: 'experience_schema_rejected', key: op.key, missing, source: 'reflect' });
+          continue;
+        }
+      }
       const result = await K.kvWriteGated(op, "reflect");
       if (!result.ok) blocked.push({ key: op.key, error: result.error });
     }
@@ -226,15 +264,19 @@ export async function executeReflect(K, state, step) {
     }
   }
 
-  if (output.next_session_config) {
-    const scheduleConf = { ...output.next_session_config };
+  if (output.next_session_config && Object.keys(output.next_session_config).length > 0) {
+    const existing = await K.kvGet("session_schedule") || {};
+    const scheduleConf = { ...existing, ...output.next_session_config };
     if (scheduleConf.interval_seconds) {
-      // When plan was no_action, don't let reflect shorten below the system default.
-      // Tactics (e.g. backoff-in-waiting) set the default as the floor for waiting states.
+      // When plan was no_action, allow a bounded idle cadence instead of forcing
+      // the full default interval. This keeps repeated healthy idle periods
+      // alive enough to generate exploratory probes without letting reflect
+      // collapse into hyperactive polling.
       const wasNoAction = karma.some(e => e.event === 'plan_no_action');
       if (wasNoAction) {
         const defaults = await K.getDefaults();
-        const floor = defaults?.schedule?.interval_seconds || 21600;
+        const floor = defaults?.schedule?.idle_interval_seconds
+          || Math.min(defaults?.schedule?.interval_seconds || 21600, 1800);
         scheduleConf.interval_seconds = Math.max(scheduleConf.interval_seconds, floor);
       }
       scheduleConf.next_session_after = new Date(
@@ -319,10 +361,14 @@ export async function gatherReflectContext(K, state, depth, context) {
     dead_events: deadEvents.keys.map(k => k.name).slice(0, 10),
   };
 
+  const wake = (context?.events || []).find((event) => event?.type === "wake");
+  const debugMode = deriveDebugMode(defaults, { wake });
+
   const templateVars = {
     actPrompt,
     currentDefaults: defaults,
     models: modelsConfig,
+    debug_mode_note: buildDebugModeNote(debugMode),
     patron_contact: patronContact ? JSON.stringify(patronContact, null, 2) : '(no patron configured)',
     patron_id: patronId || null,
     patron_identity_disputed: patronIdentityDisputed,
@@ -472,6 +518,15 @@ export async function applyReflectOutput(K, state, depth, output, context) {
   if (output.kv_operations?.length) {
     const blocked = [];
     for (const op of output.kv_operations) {
+      // Schema gate for experience keys — same validation as userspace.js
+      if (op.key?.startsWith('experience:') && op.op === 'put') {
+        const required = ['observation', 'desire_alignment', 'pattern_delta', 'salience'];
+        const missing = required.filter(f => !op.value?.[f]);
+        if (missing.length > 0) {
+          await K.karmaRecord({ event: 'experience_schema_rejected', key: op.key, missing, source: 'deep-reflect' });
+          continue;
+        }
+      }
       const result = await K.kvWriteGated(op, "deep-reflect");
       if (!result.ok) blocked.push({ key: op.key, error: result.error });
     }

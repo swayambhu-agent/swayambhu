@@ -1,13 +1,14 @@
 // State module for the dev loop.
-// Manages file-based state in .swayambhu/dev-loop/ — gitignored operational data,
-// not agent state. All other dev-loop stages depend on this for persistent state.
+// Manages file-based state outside the repo so operational traces, logs, and
+// run artifacts do not pollute the working tree.
 
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { mkdir, readFile, writeFile, readdir, rename } from "fs/promises";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-export const STATE_DIR = join(__dirname, "../../.swayambhu/dev-loop");
+const DEFAULT_STATE_DIR = "/home/swami/swayambhu/dev-loop";
+export const STATE_DIR = process.env.SWAYAMBHU_DEV_LOOP_DIR || DEFAULT_STATE_DIR;
 
 const DEFAULT_STATE = () => ({
   cycle: 0,
@@ -18,6 +19,11 @@ const DEFAULT_STATE = () => ({
   stage_failures: {},
   disabled_stages: [],
   processed_reply_ids: [],
+  emailed_issue_hashes: [],
+  emailed_decision_hashes: [],
+  emailed_healthy_hashes: [],
+  emailed_capability_hash: null,
+  emailed_summary_hash: null,
 });
 
 const SUBDIRS = [

@@ -44,8 +44,20 @@ export function parseReply(text) {
 
 export async function sendSlack(text, { channel: channelOverride } = {}) {
   const token = process.env.SLACK_BOT_TOKEN;
-  const channel = channelOverride || process.env.SLACK_DEVLOOP_DM || process.env.SLACK_CHANNEL_ID;
+  let channel = channelOverride || process.env.SLACK_DEVLOOP_DM || process.env.SLACK_CHANNEL_ID;
+  const fallbackChannel = process.env.SLACK_CHANNEL_ID || null;
   if (!token || !channel) throw new Error("Missing SLACK_BOT_TOKEN or SLACK_CHANNEL_ID");
+  if (channel?.startsWith('U')) {
+    try {
+      channel = await resolveDmChannel(token, channel);
+    } catch (error) {
+      if (fallbackChannel && fallbackChannel !== channel) {
+        channel = fallbackChannel;
+      } else {
+        throw error;
+      }
+    }
+  }
 
   const resp = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",

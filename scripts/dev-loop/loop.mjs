@@ -8,17 +8,27 @@
 //   node scripts/dev-loop/loop.mjs --once       # single cycle
 //   node scripts/dev-loop/loop.mjs --cold-start # first cycle uses --reset-all-state
 
-import { initState, loadState, saveState, listProbes, loadQueue, moveQueue, saveRun } from './state.mjs';
+import {
+  STATE_DIR,
+  initState,
+  loadState,
+  saveState,
+  listProbes,
+  loadQueue,
+  moveQueue,
+  saveRun,
+} from './state.mjs';
 import { runObserve } from './observe.mjs';
 import { runClassify } from './classify.mjs';
 import { buildContextFromAnalysis } from './context.mjs';
 import { runVerify } from './verify.mjs';
 import { sendSlack, sendEmail, formatApprovalMessage, checkSlackReplies, checkEmailReplies } from './comms.mjs';
 import { generateApprovalId, routeProposal } from './decide.mjs';
-import { readFileSync, writeFileSync, existsSync, unlinkSync, openSync } from 'fs';
+import { ensureServices, restartServices } from './services.mjs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
 import { createHash } from 'crypto';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { collectReasoningArtifacts, writeReasoningArtifacts } from "../../lib/reasoning.js";
@@ -42,7 +52,6 @@ if (existsSync(envPath)) {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STATE_DIR = '/home/swami/swayambhu/dev-loop';
 const rubric = JSON.parse(readFileSync(join(__dirname, 'rubric.json'), 'utf-8'));
 const CC_PROMPT_PATH = join(__dirname, 'cc-analyze.md');
 const CC_APPLY_SYSTEM_PROMPT = [
@@ -55,6 +64,30 @@ const CC_TIMEOUT_MS = 3_600_000; // 1 hour
 const args = process.argv.slice(2);
 const ONCE = args.includes('--once');
 const COLD_START = args.includes('--cold-start');
+const ANALYSIS_EVERY = readNumericArg(args, '--analysis-every', 1);
+const HEARTBEAT_EVERY = readNumericArg(args, '--heartbeat-every', 10);
+const MAX_CYCLES = readNumericArg(args, '--max-cycles', null);
+const NOTIFY_MODE = readStringArg(args, '--notify', 'all');
+const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || 'http://localhost:8790';
+const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || 'test';
+
+function readNumericArg(argv, flag, defaultValue) {
+  const index = argv.indexOf(flag);
+  if (index === -1) return defaultValue;
+  const raw = argv[index + 1];
+  if (raw === undefined) throw new Error(`${flag} requires a number`);
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${flag} must be a positive number`);
+  return value;
+}
+
+function readStringArg(argv, flag, defaultValue) {
+  const index = argv.indexOf(flag);
+  if (index === -1) return defaultValue;
+  const value = argv[index + 1];
+  if (!value) throw new Error(`${flag} requires a value`);
+  return value;
+}
 
 // ── CC analysis (fresh process per cycle) ───────────────
 
@@ -138,6 +171,77 @@ async function runCC(timestamp, state) {
     child.on('error', (err) => {
       clearTimeout(timer);
       resolve({ success: false, analysis: null, decisions: null, error: err.message });
+    });
+  });
+}
+
+async function runClaudeArchitectureReview(timestamp, decision) {
+  const runDir = join(STATE_DIR, 'runs', timestamp);
+  const proposalPath = join(runDir, `proposal-${decision.seq}.md`);
+  const outputPath = join(runDir, `claude-review-${decision.seq}.json`);
+  const systemPrompt = [
+    'You are a fresh Claude Code reviewer performing an adversarial architecture review.',
+    'Your job is to find concrete design flaws, boundary violations, overfitting, or rollback risks.',
+    'Do not apply changes. Only read the proposal and write the requested JSON file.',
+  ].join('\n');
+  const userMessage = [
+    `Review proposal ${decision.seq} adversarially.`,
+    `Proposal file: ${proposalPath}`,
+    `Focus on: kernel/userspace boundary, generality, robustness, simplicity, modularity, and rollback risk.`,
+    `Write ${outputPath} as JSON exactly in this shape:`,
+    '{"passed":true,"blocking_objections":[],"notes":["short note"]}',
+    'If you find any blocking concern, set passed to false and list each objection in blocking_objections.',
+  ].join('\n');
+
+  const ccArgs = [
+    '-p', userMessage,
+    '--dangerously-skip-permissions',
+    '--output-format', 'text',
+    '--append-system-prompt', systemPrompt,
+    '--no-session-persistence',
+    '--model', 'opus',
+  ];
+
+  return new Promise((resolve) => {
+    let stderr = '';
+    const child = spawn('claude', ccArgs, {
+      cwd: __root,
+      env: { ...process.env },
+    });
+    const timer = setTimeout(() => child.kill('SIGTERM'), CC_TIMEOUT_MS);
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', async (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        resolve({
+          passed: false,
+          blocking_objections: [`claude review exited with code ${code}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`],
+          notes: [],
+        });
+        return;
+      }
+      try {
+        const parsed = JSON.parse(await readFile(outputPath, 'utf8'));
+        resolve({
+          passed: Boolean(parsed.passed),
+          blocking_objections: Array.isArray(parsed.blocking_objections) ? parsed.blocking_objections : [],
+          notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+        });
+      } catch (error) {
+        resolve({
+          passed: false,
+          blocking_objections: [`invalid claude review output: ${error.message}`],
+          notes: [],
+        });
+      }
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({
+        passed: false,
+        blocking_objections: [`failed to spawn claude review: ${error.message}`],
+        notes: [],
+      });
     });
   });
 }
@@ -286,15 +390,12 @@ async function restartWorkersIfNeeded(decisions, label) {
   );
   if (!codeChanged) return false;
 
-  console.log(`[LOOP] Code changed by ${label} — restarting workers...`);
-  try { execSync('pkill -9 -f workerd', { stdio: 'ignore', timeout: 5000 }); } catch {}
-  try { execSync('pkill -9 -f "wrangler dev"', { stdio: 'ignore', timeout: 5000 }); } catch {}
-  await new Promise(r => setTimeout(r, 3000));
-  await ensureServices();
+  console.log(`[LOOP] Code changed by ${label} — restarting managed services...`);
+  await restartServices();
   return true;
 }
 
-const DEVLOOP_REASONING_DIR = '/home/swami/swayambhu/dev-loop/reasoning';
+const DEVLOOP_REASONING_DIR = join(STATE_DIR, 'reasoning');
 
 export async function maybeCompileReasoningArtifacts(runDir, decisionsJson) {
   const decisions = decisionsJson?.decisions || [];
@@ -302,6 +403,128 @@ export async function maybeCompileReasoningArtifacts(runDir, decisionsJson) {
   if (!artifacts.length) return [];
   await writeReasoningArtifacts(artifacts, { dir: DEVLOOP_REASONING_DIR });
   return artifacts;
+}
+
+async function fetchDashboardJson(path) {
+  const response = await fetch(`${DASHBOARD_URL}${path}`, {
+    headers: { 'X-Patron-Key': DASHBOARD_KEY },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`HTTP ${response.status} for ${path}: ${body || response.statusText}`);
+  }
+  return response.json();
+}
+
+function computeStructuralDiff(state, counts = {}, drState = {}) {
+  const previous = {
+    desires: state.last_desire_count,
+    patterns: state.last_pattern_count,
+    tactics: state.last_tactic_count,
+    experiences: state.last_experience_count,
+    dr_generation: state.last_dr_generation,
+    dr_status: state.last_dr_status,
+  };
+  const current = {
+    desires: counts.desires ?? 0,
+    patterns: counts.patterns ?? 0,
+    tactics: counts.tactics ?? 0,
+    experiences: counts.experiences ?? 0,
+    dr_generation: drState.generation ?? null,
+    dr_status: drState.status ?? null,
+  };
+
+  return {
+    counts_changed:
+      previous.desires !== undefined &&
+      (
+        previous.desires !== current.desires ||
+        previous.patterns !== current.patterns ||
+        previous.tactics !== current.tactics
+      ),
+    experiences_changed:
+      previous.experiences !== undefined &&
+      previous.experiences !== current.experiences,
+    dr_generation_changed:
+      previous.dr_generation !== undefined &&
+      previous.dr_generation !== current.dr_generation,
+    dr_status_changed:
+      previous.dr_status !== undefined &&
+      previous.dr_status !== current.dr_status,
+    previous,
+    current,
+  };
+}
+
+function shouldRunDeepAnalysis(state, classification, observation, structuralDiff, drState = {}) {
+  if (ANALYSIS_EVERY <= 1) return true;
+  const hasMaterialMechanicalIssue = (classification?.issues || []).some((issue) =>
+    ['medium', 'high', 'critical'].includes(issue.severity),
+  );
+  if (hasMaterialMechanicalIssue) return true;
+  if (structuralDiff.counts_changed || structuralDiff.dr_generation_changed) return true;
+  if (['failed', 'completed'].includes(drState.status)) return true;
+
+  const outcome = observation?.analysis?.execution_health?.outcome;
+  if (outcome && !['clean', 'ok', 'success'].includes(String(outcome))) return true;
+
+  return state.cycle % ANALYSIS_EVERY === 0;
+}
+
+function shouldSendNotification({ significant, isHeartbeat }) {
+  if (NOTIFY_MODE === 'none') return false;
+  if (NOTIFY_MODE === 'all') return true;
+  return significant || isHeartbeat;
+}
+
+async function appendOvernightLog({
+  timestamp,
+  observation,
+  classification,
+  ccResult,
+  decisions = [],
+  significant,
+  structuralDiff,
+}) {
+  const logPath = join(STATE_DIR, 'overnight-log.md');
+  const existing = await readFile(logPath, 'utf8').catch(() => '# Dev Loop Overnight Log\n');
+  const sessionId = observation?.latest_session_id || '?';
+  const duration = observation?.analysis?.execution_health?.elapsed_ms
+    ? Math.round(observation.analysis.execution_health.elapsed_ms / 1000)
+    : '?';
+  const cost = observation?.analysis?.execution_health?.cost?.toFixed(2) || '?';
+  const ccFindings = ccResult?.analysis?.findings || [];
+  const healthySignals = ccResult?.analysis?.healthy_signals || [];
+  const classificationIssues = classification?.issues || [];
+  const applied = decisions.filter((decision) => decision.verified);
+  const escalated = decisions.filter((decision) => decision.action === 'escalate');
+  const deferred = decisions.filter((decision) => decision.action === 'defer');
+  const sections = [
+    `## Cycle ${observation?.analysis?.session_counter || 'n/a'} — ${timestamp}`,
+    `**Session:** ${sessionId} | **Duration:** ${duration}s | **Cost:** $${cost} | **Significant:** ${significant ? 'yes' : 'no'}`,
+    '',
+    '### Findings',
+    ...(classificationIssues.length
+      ? classificationIssues.map((issue) => `- [${issue.severity}] ${issue.locus}: ${issue.summary}`)
+      : ['- No mechanical findings']),
+    ...ccFindings.map((finding) => `- [${finding.severity}] ${finding.locus}: ${finding.summary}`),
+    '',
+    '### Actions Taken',
+    ...(applied.length ? applied.map((decision) => `- Applied: ${decision.summary}`) : []),
+    ...(escalated.length ? escalated.map((decision) => `- Escalated: ${decision.summary}`) : []),
+    ...(deferred.length ? deferred.map((decision) => `- Deferred: ${decision.summary}`) : []),
+    ...(applied.length || escalated.length || deferred.length ? [] : ['- Observed only']),
+    '',
+    '### Healthy Signals',
+    ...(healthySignals.length ? healthySignals.map((signal) => `- ${signal}`) : ['- None recorded']),
+  ];
+  if (structuralDiff?.counts_changed || structuralDiff?.dr_generation_changed || structuralDiff?.dr_status_changed) {
+    sections.push('', '### Structural Changes');
+    sections.push(`- State: ${JSON.stringify(structuralDiff.previous)} -> ${JSON.stringify(structuralDiff.current)}`);
+  }
+  sections.push('', '---');
+  await writeFile(logPath, `${existing}\n${sections.join('\n')}\n`);
 }
 
 // ── Approval processing ──────────────────────────────────
@@ -398,84 +621,6 @@ async function processApprovals(state) {
   await saveState(STATE_DIR, state);
 }
 
-// ── Service management ───────────────────────────────────
-
-const KERNEL_PORT = process.env.SWAYAMBHU_KERNEL_PORT || 8787;
-const DASHBOARD_PORT = process.env.SWAYAMBHU_DASHBOARD_PORT || 8790;
-
-async function isServiceUp(port) {
-  try {
-    const resp = await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(3000) });
-    return true; // any response means the service is up
-  } catch { return false; }
-}
-
-async function ensureServices() {
-  const kernelUp = await isServiceUp(KERNEL_PORT);
-  const dashboardUp = await isServiceUp(DASHBOARD_PORT);
-
-  if (kernelUp && dashboardUp) {
-    console.log('[LOOP] Services already running');
-    return;
-  }
-
-  console.log('[LOOP] Starting services...');
-
-  // Kill ALL wrangler/workerd processes to free ports
-  try { execSync('pkill -9 -f workerd', { stdio: 'ignore', timeout: 5000 }); } catch {}
-  try { execSync('pkill -9 -f "wrangler dev"', { stdio: 'ignore', timeout: 5000 }); } catch {}
-
-  // Wait for both workerd and wrangler dev to fully exit
-  const killDeadline = Date.now() + 10_000;
-  while (Date.now() < killDeadline) {
-    let alive = false;
-    try { execSync('pgrep -f workerd', { stdio: 'ignore' }); alive = true; } catch {}
-    try { execSync('pgrep -f "wrangler dev"', { stdio: 'ignore' }); alive = true; } catch {}
-    if (!alive) break;
-    await new Promise(r => setTimeout(r, 500));
-  }
-  // Extra wait for ports to free
-  await new Promise(r => setTimeout(r, 2000));
-
-  // Spawn with log files so failures are debuggable
-  const logDir = STATE_DIR;
-  const kernelLog = openSync(join(logDir, 'kernel.log'), 'w');
-  const dashboardLog = openSync(join(logDir, 'dashboard.log'), 'w');
-
-  const kernel = spawn('npx', [
-    'wrangler', 'dev', '-c', 'wrangler.dev.toml',
-    '--test-scheduled', '--persist-to', '.wrangler/shared-state',
-  ], { cwd: __root, detached: true, stdio: ['ignore', kernelLog, kernelLog] });
-  kernel.unref();
-  console.log(`[LOOP] Kernel spawned (pid ${kernel.pid})`);
-
-  const dashboard = spawn('npx', [
-    'wrangler', 'dev', '--port', String(DASHBOARD_PORT),
-    '--inspector-port', '9230', '--persist-to', '../.wrangler/shared-state',
-  ], { cwd: join(__root, 'dashboard-api'), detached: true, stdio: ['ignore', dashboardLog, dashboardLog] });
-  dashboard.unref();
-  console.log(`[LOOP] Dashboard API spawned (pid ${dashboard.pid})`);
-
-  // Wait for services (60s — wrangler can be slow on first start)
-  const startTime = Date.now();
-  const deadline = startTime + 60_000;
-  while (Date.now() < deadline) {
-    const k = await isServiceUp(KERNEL_PORT);
-    const d = await isServiceUp(DASHBOARD_PORT);
-    if (k && d) {
-      console.log('[LOOP] Services ready');
-      return;
-    }
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
-    if (elapsed % 10 === 0 && elapsed > 0) {
-      console.log(`[LOOP] Waiting... ${elapsed}s (kernel: ${k ? 'up' : 'down'}, dashboard: ${d ? 'up' : 'down'})`);
-    }
-    await new Promise(r => setTimeout(r, 2000));
-  }
-  console.error('[LOOP] Check logs: .swayambhu/dev-loop/kernel.log and dashboard.log');
-  throw new Error('Services failed to start within 60s');
-}
-
 // ── Cold-start detection ─────────────────────────────────
 
 const SEED_PATH = join(__root, 'scripts/seed-local-kv.mjs');
@@ -485,6 +630,144 @@ function hashFile(path) {
   try {
     return createHash('md5').update(readFileSync(path)).digest('hex');
   } catch { return null; }
+}
+
+function hashText(value) {
+  return createHash('md5').update(String(value || '')).digest('hex');
+}
+
+function boundedHistory(items, max = 400) {
+  return items.slice(-max);
+}
+
+function buildEmailDeltas(state, classification, ccResult, ccDecisions) {
+  const mechanicalIssues = classification?.issues || [];
+  const findings = (ccResult?.analysis?.findings || []).filter((f) => f.type !== 'healthy_operation');
+  const healthySignals = ccResult?.analysis?.healthy_signals || [];
+  const capabilityObservations = ccResult?.analysis?.capability_observations || {};
+  const summary = ccResult?.analysis?.summary || '';
+
+  const seenIssues = new Set(state.emailed_issue_hashes || []);
+  const seenDecisions = new Set(state.emailed_decision_hashes || []);
+  const seenHealthy = new Set(state.emailed_healthy_hashes || []);
+
+  const newMechanical = mechanicalIssues.filter((issue) => {
+    const key = hashText(`mechanical:${issue.severity}:${issue.locus}:${issue.summary}`);
+    issue._email_hash = key;
+    return !seenIssues.has(key);
+  });
+  const newFindings = findings.filter((finding) => {
+    const key = hashText(`finding:${finding.severity}:${finding.type}:${finding.locus}:${finding.summary}`);
+    finding._email_hash = key;
+    return !seenIssues.has(key);
+  });
+  const newDecisions = ccDecisions.filter((decision) => {
+    const key = hashText(`decision:${decision.seq}:${decision.action}:${decision.summary}:${decision.verified}:${decision.route_reason || ''}`);
+    decision._email_hash = key;
+    return !seenDecisions.has(key);
+  });
+  const newHealthy = healthySignals.filter((signal) => {
+    const key = hashText(`healthy:${signal}`);
+    signal._email_hash = key;
+    return !seenHealthy.has(key);
+  });
+
+  const capabilityHash = Object.keys(capabilityObservations).length
+    ? hashText(JSON.stringify(capabilityObservations))
+    : null;
+  const summaryHash = summary ? hashText(summary) : null;
+
+  return {
+    newMechanical,
+    newFindings,
+    newDecisions,
+    newHealthy,
+    capabilityChanged: Boolean(capabilityHash && capabilityHash !== state.emailed_capability_hash),
+    summaryChanged: Boolean(summaryHash && summaryHash !== state.emailed_summary_hash),
+    capabilityHash,
+    summaryHash,
+    hasDelta: Boolean(
+      newMechanical.length ||
+      newFindings.length ||
+      newDecisions.length ||
+      newHealthy.length ||
+      (capabilityHash && capabilityHash !== state.emailed_capability_hash) ||
+      (summaryHash && summaryHash !== state.emailed_summary_hash)
+    ),
+  };
+}
+
+function markEmailDeltasSent(state, deltas) {
+  state.emailed_issue_hashes = boundedHistory([
+    ...(state.emailed_issue_hashes || []),
+    ...deltas.newMechanical.map((issue) => issue._email_hash),
+    ...deltas.newFindings.map((finding) => finding._email_hash),
+  ]);
+  state.emailed_decision_hashes = boundedHistory([
+    ...(state.emailed_decision_hashes || []),
+    ...deltas.newDecisions.map((decision) => decision._email_hash),
+  ]);
+  state.emailed_healthy_hashes = boundedHistory([
+    ...(state.emailed_healthy_hashes || []),
+    ...deltas.newHealthy.map((signal) => signal._email_hash),
+  ]);
+  if (deltas.capabilityHash) state.emailed_capability_hash = deltas.capabilityHash;
+  if (deltas.summaryHash) state.emailed_summary_hash = deltas.summaryHash;
+}
+
+function sanitizeCommitMessage(summary) {
+  return String(summary || 'auto-applied fix')
+    .replace(/\s+/g, ' ')
+    .replace(/[^ -~]/g, '')
+    .trim()
+    .slice(0, 160);
+}
+
+async function commitAndPushAutoApply(decision) {
+  const files = [...new Set((decision.files_changed || []).filter((file) =>
+    typeof file === 'string' &&
+    file &&
+    !file.startsWith('/') &&
+    !file.includes('\0'),
+  ))];
+  if (!decision.verified || files.length === 0) {
+    return { committed: false, pushed: false, reason: 'no verified file changes' };
+  }
+
+  try {
+    execFileSync('git', ['add', '--', ...files], {
+      cwd: __root,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    const staged = execFileSync('git', ['diff', '--cached', '--name-only', '--', ...files], {
+      cwd: __root,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    }).trim();
+    if (!staged) {
+      return { committed: false, pushed: false, reason: 'no staged diff' };
+    }
+
+    const message = `DEV-LOOP: ${sanitizeCommitMessage(decision.summary)}`;
+    execFileSync('git', ['commit', '-m', message], {
+      cwd: __root,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    execFileSync('git', ['push', 'origin', 'HEAD'], {
+      cwd: __root,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    return { committed: true, pushed: true, message };
+  } catch (error) {
+    return {
+      committed: false,
+      pushed: false,
+      reason: error.message,
+    };
+  }
 }
 
 async function detectColdStart(state) {
@@ -500,8 +783,6 @@ async function detectColdStart(state) {
   // 2. Consecutive crashes
   try {
     const keys = encodeURIComponent('kernel:last_executions');
-    const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || 'http://localhost:8790';
-    const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || 'test';
     const resp = await fetch(`${DASHBOARD_URL}/kv/multi?keys=${keys}`, {
       headers: { 'X-Patron-Key': DASHBOARD_KEY },
     });
@@ -590,30 +871,44 @@ async function runCycle(state) {
     }
   }
 
-  // ── DR STATUS ──
+  // ── LIVE STATE SNAPSHOT ──
   let drStatusLine = null;
+  let drState = {};
+  let mindState = {};
+  let structuralDiff = computeStructuralDiff(state, {}, {});
   try {
-    const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || 'http://localhost:8790';
-    const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || 'test';
-    const drResp = await fetch(`${DASHBOARD_URL}/kv/multi?keys=${encodeURIComponent('dr:state:1')},${encodeURIComponent('session_counter')}`, {
-      headers: { 'X-Patron-Key': DASHBOARD_KEY },
-    });
-    const drData = await drResp.json();
-    const dr = drData['dr:state:1'] || {};
-    const sc = drData['session_counter'] || 0;
-    if (dr.status === 'dispatched') {
-      const age = dr.dispatched_at ? Math.round((Date.now() - new Date(dr.dispatched_at).getTime()) / 60000) : '?';
-      drStatusLine = `DR: dispatched (gen ${dr.generation}, ${age}min ago)`;
-    } else if (dr.status === 'completed') {
-      drStatusLine = `DR: completed (gen ${dr.generation}, awaiting apply)`;
-    } else if (dr.status === 'idle') {
-      const sessionsUntil = (dr.next_due_session || 0) - sc;
-      drStatusLine = `DR: idle (gen ${dr.generation}, ${sessionsUntil > 0 ? `next in ${sessionsUntil} sessions` : 'due now'})`;
-    } else if (dr.status === 'failed') {
-      drStatusLine = `DR: FAILED (gen ${dr.generation}, ${dr.failure_reason || 'unknown'})`;
+    const [drData, liveMind] = await Promise.all([
+      fetchDashboardJson(`/kv/multi?keys=${encodeURIComponent('dr:state:1')},${encodeURIComponent('session_counter')}`),
+      fetchDashboardJson('/mind'),
+    ]);
+    drState = drData['dr:state:1'] || {};
+    const sessionCounter = drData['session_counter'] || 0;
+    mindState = liveMind || {};
+    structuralDiff = computeStructuralDiff(state, {
+      desires: liveMind?.desires?.length || 0,
+      patterns: liveMind?.patterns?.length || 0,
+      tactics: liveMind?.tactics?.length || 0,
+      experiences: liveMind?.experiences?.length || 0,
+    }, drState);
+
+    if (drState.status === 'dispatched') {
+      const age = drState.dispatched_at ? Math.round((Date.now() - new Date(drState.dispatched_at).getTime()) / 60000) : '?';
+      drStatusLine = `DR: dispatched (gen ${drState.generation}, ${age}min ago)`;
+    } else if (drState.status === 'completed') {
+      drStatusLine = `DR: completed (gen ${drState.generation}, awaiting apply)`;
+    } else if (drState.status === 'idle') {
+      const sessionsUntil = (drState.next_due_session || 0) - sessionCounter;
+      drStatusLine = `DR: idle (gen ${drState.generation}, ${sessionsUntil > 0 ? `next in ${sessionsUntil} sessions` : 'due now'})`;
+    } else if (drState.status === 'failed') {
+      drStatusLine = `DR: FAILED (gen ${drState.generation}, ${drState.failure_reason || 'unknown'})`;
     }
     if (drStatusLine) console.log(`[LOOP] ${drStatusLine}`);
-  } catch {}
+    if (structuralDiff.counts_changed || structuralDiff.dr_generation_changed) {
+      console.log(`[LOOP] Structural change: ${JSON.stringify(structuralDiff.previous)} -> ${JSON.stringify(structuralDiff.current)}`);
+    }
+  } catch (error) {
+    console.log(`[LOOP] Live state snapshot failed: ${error.message}`);
+  }
 
   // ── CLASSIFY ──
   state.phase = 'classify';
@@ -652,7 +947,9 @@ async function runCycle(state) {
 
   // ── CC ANALYSIS (fresh process) ──
   let ccResult = null;
-  if (observation && classification && !isStageDisabled(state, 'analyze')) {
+  const runDeepAnalysis = observation && classification && !isStageDisabled(state, 'analyze')
+    && shouldRunDeepAnalysis(state, classification, observation, structuralDiff, drState);
+  if (runDeepAnalysis) {
     state.phase = 'analyze';
     await saveState(STATE_DIR, state);
 
@@ -672,6 +969,8 @@ async function runCycle(state) {
       console.error(`[CC] Error: ${e.message}`);
       recordStageFailure(state, 'analyze');
     }
+  } else if (observation && classification) {
+    console.log(`[LOOP] Skipping CC analysis this cycle (analysis_every=${ANALYSIS_EVERY})`);
   }
 
   // ── PROCESS DECISIONS ──
@@ -692,6 +991,18 @@ async function runCycle(state) {
       }
 
       if (decision.action === 'auto_apply') {
+        if (decision.blast_radius === 'module' || decision.blast_radius === 'system') {
+          console.log(`[LOOP] Running Claude architecture review for proposal ${decision.seq}...`);
+          const review = await runClaudeArchitectureReview(timestamp, decision);
+          decision.architecture_review = review;
+          if (!review.passed) {
+            decision.action = 'defer';
+            decision.route_reason = `claude architecture review blocked auto-apply: ${(review.blocking_objections || []).join('; ').slice(0, 240)}`;
+            console.log(`[LOOP] Claude review blocked proposal ${decision.seq}: ${decision.route_reason}`);
+            continue;
+          }
+        }
+
         console.log(`[LOOP] Auto-applying proposal ${decision.seq}: ${decision.summary}`);
         const result = await runAutoApplyDecision(timestamp, decision);
         decision.verified = result.applied && result.tests_passed;
@@ -701,7 +1012,14 @@ async function runCycle(state) {
         }
 
         if (decision.verified) {
+          const gitResult = await commitAndPushAutoApply(decision);
+          decision.git_commit = gitResult;
           console.log(`[LOOP] Auto-apply verified for proposal ${decision.seq}`);
+          if (gitResult.committed) {
+            console.log(`[LOOP] Auto-apply committed and pushed: ${gitResult.message}`);
+          } else {
+            console.log(`[LOOP] Auto-apply commit/push skipped: ${gitResult.reason}`);
+          }
         } else {
           console.log(`[LOOP] Auto-apply failed for proposal ${decision.seq}: ${decision.revert_reason || 'unknown error'}`);
         }
@@ -836,10 +1154,24 @@ async function runCycle(state) {
   const cost = observation?.analysis?.execution_health?.cost?.toFixed(2) || '?';
   const mechanicalCount = classification?.total_issues_found || 0;
   const ccSummary = ccResult?.analysis?.summary || null;
+  const hasMaterialMechanicalIssue = (classification?.issues || []).some((issue) =>
+    ['medium', 'high', 'critical'].includes(issue.severity),
+  );
 
   // Build per-finding action lines for Slack
   const actionFindings = ccFindings.filter(f => f.type !== 'healthy_operation');
   const healthyFindings = ccFindings.filter(f => f.type === 'healthy_operation');
+  const significant = Boolean(
+    forceColdStart ||
+    structuralDiff.counts_changed ||
+    structuralDiff.dr_generation_changed ||
+    structuralDiff.dr_status_changed ||
+    hasMaterialMechanicalIssue ||
+    actionFindings.length > 0 ||
+    ccDecisions.length > 0 ||
+    drState.status === 'failed',
+  );
+  const isHeartbeat = HEARTBEAT_EVERY > 0 && state.cycle % HEARTBEAT_EVERY === 0;
   const findingLines = actionFindings.map((f, i) => {
     const dec = ccDecisions.find(d => d.seq === (i + 1));
     let action = '';
@@ -855,81 +1187,119 @@ async function runCycle(state) {
     forceColdStart ? `Cold start: ${coldStartReasons.join(', ')}` : null,
     `Session: ${sessionId} | ${duration}s | $${cost}`,
     drStatusLine,
+    (structuralDiff.counts_changed || structuralDiff.dr_generation_changed || structuralDiff.dr_status_changed)
+      ? `State: ${JSON.stringify(structuralDiff.previous)} -> ${JSON.stringify(structuralDiff.current)}`
+      : null,
     '',
     ccSummary ? `${ccSummary.slice(0, 200)}` : null,
     '',
     findingLines.length ? 'Findings:' : null,
     ...findingLines,
     healthyFindings.length ? `\nHealthy: ${healthyFindings.map(f => f.summary?.slice(0, 50)).join(', ')}` : null,
-    !findingLines.length && !healthyFindings.length ? 'Clean — no findings' : null,
+    !findingLines.length && !healthyFindings.length ? (isHeartbeat ? 'Heartbeat — no findings' : 'Clean — no findings') : null,
   ].filter(x => x !== null).join('\n');
 
-  try {
-    const slackDm = rubric.notifications?.slack_dm;
-    await sendSlack(slackMsg, slackDm ? { channel: slackDm } : undefined);
-    console.log('[LOOP] Slack summary sent');
-  } catch (e) {
-    console.log(`[LOOP] Slack send failed: ${e.message}`);
+  if (shouldSendNotification({ significant, isHeartbeat })) {
+    try {
+      const slackDm = rubric.notifications?.slack_dm;
+      await sendSlack(slackMsg, slackDm ? { channel: slackDm } : undefined);
+      console.log('[LOOP] Slack summary sent');
+    } catch (e) {
+      console.log(`[LOOP] Slack send failed: ${e.message}`);
+    }
   }
 
   // Email: full detailed report
-  try {
-    const emailFindings = ccFindings.map((f, i) => {
-      const dec = ccDecisions.find(d => d.seq === (i + 1));
-      const lines = [
-        `### ${i + 1}. [${f.severity}] ${f.type} — ${f.locus}`,
-        f.summary,
-        '',
-        `**Evidence:** ${f.evidence?.slice(0, 300) || 'see analysis.json'}`,
+  if (NOTIFY_MODE === 'all' || significant) {
+    try {
+    const deltas = buildEmailDeltas(state, classification, ccResult, ccDecisions);
+    if (deltas.hasDelta) {
+      const emailDecisionMap = new Map(deltas.newDecisions.map((decision) => [decision.seq, decision]));
+      const emailFindings = [
+        ...deltas.newMechanical.map((issue, i) => {
+          return [
+            `### M${i + 1}. [${issue.severity}] mechanical — ${issue.locus}`,
+            issue.summary,
+          ].join('\n');
+        }),
+        ...deltas.newFindings.map((f, i) => {
+          const dec = emailDecisionMap.get(f.seq) || ccDecisions.find((d) => d.seq === f.seq);
+          const lines = [
+            `### F${i + 1}. [${f.severity}] ${f.type} — ${f.locus}`,
+            f.summary,
+            '',
+            `**Evidence:** ${f.evidence?.slice(0, 300) || 'see analysis.json'}`,
+          ];
+          if (f.proposed_fix) lines.push('', `**Proposed fix:** ${f.proposed_fix.slice(0, 200)}`);
+          if (dec) {
+            lines.push('', `**Decision:** ${dec.action}${dec.verified ? ' (verified)' : ''}`);
+            if (dec.reason) lines.push(`**Reason:** ${dec.reason}`);
+            if (dec.action === 'auto_apply' && dec.files_changed?.length) {
+              lines.push(`**Files changed:** ${dec.files_changed.join(', ')}`);
+            }
+            if (dec.git_commit?.committed) {
+              lines.push(`**Git:** ${dec.git_commit.message} (pushed)`);
+            }
+          }
+          return lines.join('\n');
+        }),
       ];
-      if (f.proposed_fix) lines.push('', `**Proposed fix:** ${f.proposed_fix.slice(0, 200)}`);
-      if (dec) {
-        lines.push('', `**Decision:** ${dec.action}${dec.verified ? ' (verified)' : ''}`);
-        if (dec.reason) lines.push(`**Reason:** ${dec.reason}`);
-        if (dec.action === 'auto_apply' && dec.files_changed?.length) {
-          lines.push(`**Files changed:** ${dec.files_changed.join(', ')}`);
-        }
-      }
-      return lines.join('\n');
-    });
 
-    const capObs = ccResult?.analysis?.capability_observations || {};
-    const emailBody = [
-      `# Dev Loop Cycle ${state.cycle} — ${displayTime} IST`,
-      '',
-      `**Session:** ${sessionId}`,
-      `**Duration:** ${duration}s | **Cost:** $${cost}`,
-      forceColdStart ? `**Cold start:** ${coldStartReasons.join(', ')}` : null,
-      mechanicalCount > 0 ? `**Mechanical issues:** ${mechanicalCount}` : null,
-      '',
-      '## Analysis',
-      ccSummary || 'No CC analysis this cycle.',
-      '',
-      '## Findings',
-      ...emailFindings,
-      '',
-      '## Healthy Signals',
-      ...(ccResult?.analysis?.healthy_signals || []).map(s => `- ${s}`),
-      '',
-      '## Capability Observations',
-      ...Object.entries(capObs).map(([k, v]) => `- **${k}:** ${v}`),
-    ].filter(x => x !== null).join('\n');
+      const capObs = ccResult?.analysis?.capability_observations || {};
+      const emailBody = [
+        `# Dev Loop Cycle ${state.cycle} — ${displayTime} IST`,
+        '',
+        `**Session:** ${sessionId}`,
+        `**Duration:** ${duration}s | **Cost:** $${cost}`,
+        forceColdStart ? `**Cold start:** ${coldStartReasons.join(', ')}` : null,
+        structuralDiff.counts_changed || structuralDiff.dr_generation_changed || structuralDiff.dr_status_changed
+          ? `**State change:** ${JSON.stringify(structuralDiff.previous)} -> ${JSON.stringify(structuralDiff.current)}`
+          : null,
+        '',
+        deltas.summaryChanged ? '## New Analysis' : null,
+        deltas.summaryChanged ? ccSummary : null,
+        '',
+        emailFindings.length ? '## New Findings' : null,
+        ...emailFindings,
+        '',
+        deltas.newDecisions.length ? '## New Decisions' : null,
+        ...deltas.newDecisions.map((decision) =>
+          `- ${decision.action}: ${decision.summary}${decision.verified ? ' (verified)' : ''}${decision.git_commit?.committed ? ` | ${decision.git_commit.message}` : ''}`
+        ),
+        '',
+        deltas.newHealthy.length ? '## Newly Observed Healthy Signals' : null,
+        ...deltas.newHealthy.map((signal) => `- ${signal}`),
+        '',
+        deltas.capabilityChanged ? '## Capability Observation Changes' : null,
+        ...(deltas.capabilityChanged
+          ? Object.entries(capObs).map(([k, v]) => `- **${k}:** ${v}`)
+          : []),
+      ].filter(x => x !== null && x !== '').join('\n');
 
-    await sendEmail(emailBody, `[SWAYAMBHU-DEV] Cycle ${state.cycle} — ${actionFindings.length} findings, ${ccDecisions.filter(d => d.verified).length} applied`);
-    console.log('[LOOP] Email report sent');
-  } catch (e) {
-    console.log(`[LOOP] Email send failed: ${e.message}`);
+      await sendEmail(emailBody, `[SWAYAMBHU-DEV] Cycle ${state.cycle} — ${deltas.newFindings.length + deltas.newMechanical.length} new items`);
+      markEmailDeltasSent(state, deltas);
+      console.log('[LOOP] Delta email report sent');
+    } else {
+      console.log('[LOOP] Email skipped — no new deltas');
+    }
+    } catch (e) {
+      console.log(`[LOOP] Email send failed: ${e.message}`);
+    }
   }
 
-  // Append overnight log entry (if CC wrote one)
   try {
-    const entry = await readFile(join(STATE_DIR, 'runs', timestamp, 'overnight-log-entry.md'), 'utf8');
-    const logPath = join(STATE_DIR, 'overnight-log.md');
-    const existing = await readFile(logPath, 'utf8').catch(() => '# Dev Loop Overnight Log\n');
-    await writeFile(logPath, existing + '\n' + entry);
+    await appendOvernightLog({
+      timestamp,
+      observation,
+      classification,
+      ccResult,
+      decisions: ccDecisions,
+      significant,
+      structuralDiff,
+    });
     console.log('[LOOP] Overnight log updated');
-  } catch {
-    // CC didn't write an entry — fine for clean cycles
+  } catch (e) {
+    console.log(`[LOOP] Overnight log update failed: ${e.message}`);
   }
 
   // Classify result
@@ -948,6 +1318,13 @@ async function runCycle(state) {
     state.stagnation_counter = 0;
   }
 
+  state.last_desire_count = mindState?.desires?.length || 0;
+  state.last_pattern_count = mindState?.patterns?.length || 0;
+  state.last_tactic_count = mindState?.tactics?.length || 0;
+  state.last_experience_count = mindState?.experiences?.length || 0;
+  state.last_dr_generation = drState?.generation ?? null;
+  state.last_dr_status = drState?.status ?? null;
+
   state.phase = 'idle';
   await saveState(STATE_DIR, state);
 
@@ -961,6 +1338,9 @@ async function runCycle(state) {
 async function main() {
   await initState(STATE_DIR);
   let state = await loadState(STATE_DIR);
+  if (!['all', 'significant', 'none'].includes(NOTIFY_MODE)) {
+    throw new Error(`Invalid --notify mode "${NOTIFY_MODE}" (use all, significant, or none)`);
+  }
 
   if (COLD_START) {
     state.cycle = 0;
@@ -972,6 +1352,9 @@ async function main() {
   console.log('[LOOP] Autonomous Dev Loop started');
   console.log(`[LOOP] Budget: $${rubric.daily_cash_budget}/day`);
   console.log(`[LOOP] Stage failure limit: ${rubric.stage_failure_limit}`);
+  console.log(`[LOOP] Analysis cadence: every ${ANALYSIS_EVERY} cycle(s)`);
+  console.log(`[LOOP] Notifications: ${NOTIFY_MODE}`);
+  if (MAX_CYCLES) console.log(`[LOOP] Max cycles this run: ${MAX_CYCLES}`);
 
   // Kill orphaned CC analysis process from a previous loop run (if tracked)
   const ccPidPath = join(STATE_DIR, 'cc.pid');
@@ -1008,7 +1391,7 @@ async function main() {
   process.on('exit', cleanupPid);
   process.on('SIGINT', () => process.exit(0));
   process.on('SIGTERM', () => process.exit(0));
-  process.on('SIGHUP', () => process.exit(0));
+  process.on('SIGHUP', () => {});
 
   try { await ensureServices(); } catch (e) {
     console.error(`[LOOP] Service startup failed: ${e.message} — continuing, observe may fail`);
@@ -1020,6 +1403,7 @@ async function main() {
   }
 
   let consecutiveClean = 0;
+  const stopAtCycle = MAX_CYCLES ? state.cycle + MAX_CYCLES : null;
 
   while (true) {
     if (isBudgetExhausted(state)) {
@@ -1033,6 +1417,11 @@ async function main() {
 
     const result = await runCycle(state);
     state = await loadState(STATE_DIR);
+
+    if (stopAtCycle && state.cycle >= stopAtCycle) {
+      console.log(`[LOOP] Reached target cycle ${stopAtCycle}. Stopping.`);
+      break;
+    }
 
     if (ONCE) {
       console.log(`[LOOP] Stopping. Reason: single run (${result.reason})`);

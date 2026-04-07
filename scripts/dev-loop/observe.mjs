@@ -5,44 +5,14 @@
 import { execSync, spawn } from "child_process";
 import { join } from "path";
 import { saveRun } from "./state.mjs";
+import { restartServices } from "./services.mjs";
 
 const ROOT = join(import.meta.dirname, "../..");
 const KERNEL_URL = process.env.SWAYAMBHU_KERNEL_URL || "http://localhost:8787";
 const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || "http://localhost:8790";
 const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test";
-const KERNEL_PORT = process.env.SWAYAMBHU_KERNEL_PORT || 8787;
-const DASHBOARD_PORT = process.env.SWAYAMBHU_DASHBOARD_PORT || 8790;
 const OBSERVE_TIMEOUT_MS = 900_000; // 15 minutes
 const POLL_INTERVAL_MS = 10_000;
-
-async function restartServices() {
-  // Shared logic with loop.mjs ensureServices — spawns both workers
-  // and waits for HTTP readiness. Duplicated here to avoid circular imports.
-  const kernel = spawn('npx', [
-    'wrangler', 'dev', '-c', 'wrangler.dev.toml',
-    '--test-scheduled', '--persist-to', '.wrangler/shared-state',
-  ], { cwd: ROOT, detached: true, stdio: 'ignore' });
-  kernel.unref();
-
-  const dashboard = spawn('npx', [
-    'wrangler', 'dev', '--port', String(DASHBOARD_PORT),
-    '--inspector-port', '9230', '--persist-to', '../.wrangler/shared-state',
-  ], { cwd: join(ROOT, 'dashboard-api'), detached: true, stdio: 'ignore' });
-  dashboard.unref();
-
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    try {
-      const [k, d] = await Promise.all([
-        fetch(`http://localhost:${KERNEL_PORT}/`, { signal: AbortSignal.timeout(3000) }).then(() => true).catch(() => false),
-        fetch(`http://localhost:${DASHBOARD_PORT}/`, { signal: AbortSignal.timeout(3000) }).then(() => true).catch(() => false),
-      ]);
-      if (k && d) return;
-    } catch {}
-    await sleep(2000);
-  }
-  throw new Error('Services failed to restart within 30s');
-}
 
 // ── Pure functions ──────────────────────────────────────────
 
@@ -51,23 +21,27 @@ export function detectCompletion(beforeCount, afterCount) {
 }
 
 export function chooseStrategy({ probes, cycle, codeChanged, coldStart }) {
-  const clearScheduleCmd = `curl -sf -X POST ${KERNEL_URL}/__clear-schedule`;
-  const triggerUrl = `${KERNEL_URL}/__scheduled`;
+  const wakeTrigger = {
+    url: `${KERNEL_URL}/__wake`,
+    method: "POST",
+    body: {
+      actor: "dev_loop",
+      context: { intent: "probe", debug_mode: true },
+    },
+  };
 
   if (cycle === 0 || codeChanged || coldStart) {
     return {
       type: "cold_start",
       // Full reset handled by runObserve: stop workers, wipe, seed, restart.
       setup: "cold_start_sequence",
-      trigger: triggerUrl,
+      trigger: wakeTrigger,
     };
   }
   return {
     type: "accumulate",
-    // Accumulate keeps existing state, but still needs to bypass the live
-    // schedule gate so the dev loop can force a session on demand.
-    setup: [clearScheduleCmd],
-    trigger: triggerUrl,
+    setup: [],
+    trigger: wakeTrigger,
   };
 }
 
@@ -201,11 +175,17 @@ async function assertDashboardAvailable() {
   await fetchJson(`${DASHBOARD_URL}/health`, { timeoutMs: 10_000 });
 }
 
-function triggerScheduled(url) {
+function triggerRequest(spec) {
+  const method = spec?.method || "GET";
+  const body = spec?.body ? JSON.stringify(spec.body) : null;
   const child = spawn(process.execPath, [
     "--input-type=module",
     "-e",
-    `await fetch(${JSON.stringify(url)});`,
+    `await fetch(${JSON.stringify(spec.url)}, ${JSON.stringify({
+      method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body,
+    })});`,
   ], {
     cwd: ROOT,
     detached: true,
@@ -229,34 +209,8 @@ export async function runObserve({
 
     // Setup
     if (strategy.setup === "cold_start_sequence") {
-      console.log(`[OBSERVE] Running cold start: stop → wipe → seed → restart`);
-
-      // 1. Kill all wrangler/workerd processes
-      try { execSync('pkill -9 -f workerd', { stdio: 'ignore', timeout: 5000 }); } catch {}
-      try { execSync('pkill -9 -f "wrangler dev"', { stdio: 'ignore', timeout: 5000 }); } catch {}
-
-      // 2. Wait for both workerd and wrangler dev to exit (up to 10s)
-      const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline) {
-        let alive = false;
-        try { execSync('pgrep -f workerd', { stdio: 'ignore' }); alive = true; } catch {}
-        try { execSync('pgrep -f "wrangler dev"', { stdio: 'ignore' }); alive = true; } catch {}
-        if (!alive) break;
-        await sleep(500);
-      }
-      await sleep(2000); // extra wait for ports to free
-
-      // 3. Wipe state
-      try { execSync(`rm -rf ${join(ROOT, '.wrangler/shared-state')}`, { stdio: 'ignore' }); } catch {}
-
-      // 4. Seed
-      execSync(`node ${join(ROOT, 'scripts/seed-local-kv.mjs')}`, {
-        cwd: ROOT, stdio: 'inherit', timeout: 60_000,
-      });
-
-      // 5. Restart workers
-      console.log('[OBSERVE] Restarting services...');
-      await restartServices();
+      console.log(`[OBSERVE] Running cold start via managed service restart`);
+      await restartServices({ resetAllState: true });
 
     } else if (strategy.setup) {
       // Normal setup (e.g. clear schedule)
@@ -270,10 +224,10 @@ export async function runObserve({
     await assertDashboardAvailable();
     const beforeIds = await readSessionIds();
 
-    // /__scheduled is synchronous and may run for several minutes.
+    // /__wake runs the session asynchronously via the kernel fetch endpoint.
     // Fire it in a detached child so observe can poll independently.
     console.log(`[OBSERVE] Triggering session (${beforeIds.length} sessions before)`);
-    triggerScheduled(strategy.trigger);
+    triggerRequest(strategy.trigger);
 
     // Poll until a new session ID appears in cache:session_ids (10 min timeout).
     // This only moves when the act lifecycle actually starts.

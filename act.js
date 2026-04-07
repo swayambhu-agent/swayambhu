@@ -4,7 +4,38 @@
 
 // ── Prompt rendering ─────────────────────────────────────────
 
-export async function renderActPrompt(K, { defaults, modelsConfig } = {}) {
+export function deriveDebugMode(defaults, { wake } = {}) {
+  const debugConfig = defaults?.debug_mode || {};
+  const wakeDebug = wake?.context?.debug_mode === true;
+  const active = debugConfig.enabled === true || wakeDebug;
+  if (!active) return null;
+
+  return {
+    active: true,
+    label: wake?.actor || debugConfig.label || "external_debugger",
+    schedule_may_be_overridden: debugConfig.schedule_may_be_overridden === true || wakeDebug,
+    external_wakes_expected: debugConfig.external_wakes_expected === true || wakeDebug,
+  };
+}
+
+export function buildDebugModeNote(debugMode) {
+  if (!debugMode?.active) return "";
+
+  const lines = [
+    "## Debug Mode",
+    `This session is running under external debug/probe conditions (${debugMode.label}).`,
+  ];
+  if (debugMode.external_wakes_expected) {
+    lines.push("External observation wakes may occur even when no new real-world demand has appeared.");
+  }
+  if (debugMode.schedule_may_be_overridden) {
+    lines.push("Your own interval and next-session preferences may be overridden by the harness. Do not infer scheduler bugs or urgency from this wake alone.");
+  }
+  lines.push("Treat this as an observation/diagnostic context. Preserve the distinction between live service demand and externally induced probe activity.", "");
+  return lines.join("\n");
+}
+
+export async function renderActPrompt(K, { defaults, modelsConfig, debugMode } = {}) {
   const actPrompt = await K.kvGet("prompt:act");
   if (!actPrompt) return "You are a helpful agent. Execute the planned action using available tools.";
 
@@ -33,6 +64,7 @@ export async function renderActPrompt(K, { defaults, modelsConfig } = {}) {
     models: modelsConfig,
     resources,
     config: defaults,
+    debug_mode_note: buildDebugModeNote(debugMode),
     skill_manifest: skill_manifest.length ? skill_manifest : null,
     subagents: subagents || null,
   });

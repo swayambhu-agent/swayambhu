@@ -214,21 +214,19 @@ export async function runTurn(K, conversationId, turns) {
       tool_calls: response.toolCalls,
     });
 
+    const chatContext = {
+      channel: turns[0].reply_target?.platform,
+      userId: turns[0].metadata?.userId,
+      contact,
+      convKey: conversationId,
+      chatConfig: chatDefaults,
+    };
     const results = await Promise.all(
       response.toolCalls.map(async (tc2) => {
-        const n = tc2.function?.name;
-        if (n === "trigger_session") {
-          const mod = await import("./tools/trigger_session.js");
-          const chatContext = {
-            channel: turns[0].reply_target?.platform,
-            userId: turns[0].metadata?.userId,
-            contact,
-            convKey: conversationId,
-            chatConfig: chatDefaults,
-          };
-          return mod.execute({ ...JSON.parse(tc2.function?.arguments || "{}"), K, _chatContext: chatContext });
-        }
-        return K.executeToolCall(tc2).catch(err => ({ error: err.message }));
+        const extraArgs = tc2.function?.name === "trigger_session"
+          ? { _chatContext: chatContext }
+          : undefined;
+        return K.executeToolCall(tc2, extraArgs).catch(err => ({ error: err.message }));
       })
     );
 
@@ -296,7 +294,21 @@ export function ingestInbound(channel, inbound) {
 // ── Ingress: internal event ───────────────────────────
 
 export async function ingestInternal(K, event) {
-  const contactSlug = event.contact;
+  let eventContent = event.content || event.reflection || event.actions_summary || JSON.stringify(event);
+  let contactSlug = event.contact;
+
+  if (event.ref?.startsWith("session_request:")) {
+    const request = await K.kvGet(event.ref);
+    if (request) {
+      contactSlug = contactSlug || request.contact;
+      const result = request.result ? ` Result: ${request.result}` : "";
+      const note = request.note ? ` Note: ${request.note}` : "";
+      const error = request.error ? ` Error: ${request.error}` : "";
+      eventContent = `Request "${request.summary}" is now ${request.status}.${result}${note}${error}`;
+    }
+  }
+
+  if (!contactSlug) return null;
   // Resolve conversation_id from contact slug
   let conversationId = await K.kvGet(`conversation_index:${contactSlug}`);
   if (!conversationId) {
@@ -307,7 +319,8 @@ export async function ingestInternal(K, event) {
     const bindings = await K.kvList({ prefix: `contact_platform:` });
     for (const b of bindings.keys) {
       const binding = await K.kvGet(b.name);
-      if (binding?.contact === contactSlug) {
+      const bindingSlug = binding?.slug || binding?.contact;
+      if (bindingSlug === contactSlug) {
         const parts = b.name.replace("contact_platform:", "").split(":");
         const platform = parts[0];
         const platformUserId = parts[1];
@@ -330,7 +343,7 @@ export async function ingestInternal(K, event) {
     conversation_id: conversationId,
     reply_target: conv?.reply_target || { platform, channel: platformUserId, thread_ts: null },
     source: "internal",
-    content: event.content || event.reflection || event.actions_summary || JSON.stringify(event),
+    content: eventContent,
     intent: event.intent || (event.type === "dr_complete" ? "share" : "report"),
     idempotency_key: event.key || null,
     metadata: { event_type: event.type, event_key: event.key },

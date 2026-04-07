@@ -172,6 +172,33 @@ describe("runTurn", () => {
     expect(toolNames).toContain("hold");
     expect(toolNames).toContain("discard");
   });
+
+  it("executes trigger_session through the kernel tool path with chat context", async () => {
+    K.callLLM = vi
+      .fn()
+      .mockResolvedValueOnce(makeLLMResponse(null, [
+        { id: "tc_1", function: { name: "trigger_session", arguments: '{"summary":"Research the Akash projects folder"}' } },
+      ]))
+      .mockResolvedValueOnce(makeLLMResponse(null, [
+        { id: "tc_2", function: { name: "send", arguments: '{"message":"On it."}' } },
+      ]));
+    K.executeToolCall = vi.fn(async () => ({ ok: true, request_id: "req_1" }));
+
+    const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Look into my projects folder")]);
+
+    expect(result.action).toBe("sent");
+    expect(K.executeToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        function: expect.objectContaining({ name: "trigger_session" }),
+      }),
+      expect.objectContaining({
+        _chatContext: expect.objectContaining({
+          convKey: "chat:slack:U084ASKBXB7",
+          userId: "U084ASKBXB7",
+        }),
+      }),
+    );
+  });
 });
 
 describe("handleCommand", () => {
@@ -248,6 +275,33 @@ describe("integration: internal event flow", () => {
 
     const index = await K.kvGet("conversation_index:swami_kevala");
     expect(index).toBe("chat:slack:U084ASKBXB7");
+  });
+
+  it("ingestInternal renders session_response events from durable request state", async () => {
+    const K = makeMockK({
+      "contact:swami_kevala": { name: "Swami Kevala" },
+      "contact_platform:slack:U084ASKBXB7": { contact: "swami_kevala" },
+      "session_request:req_123": {
+        id: "req_123",
+        contact: "swami_kevala",
+        summary: "Review the projects folder",
+        status: "fulfilled",
+        result: "Reviewed the Akash projects and found two promising starting points.",
+      },
+    });
+
+    const turn = await ingestInternal(K, {
+      type: "session_response",
+      contact: "swami_kevala",
+      ref: "session_request:req_123",
+      key: "event:001:session_response:a1b2",
+      status: "fulfilled",
+    });
+
+    expect(turn).not.toBeNull();
+    expect(turn.content).toContain("Review the projects folder");
+    expect(turn.content).toContain("fulfilled");
+    expect(turn.content).toContain("Reviewed the Akash projects");
   });
 
   it("ingestInternal returns null for unknown contact", async () => {

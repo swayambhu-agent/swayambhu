@@ -12,14 +12,16 @@ export const meta = {
 export async function execute({ summary, kv, emitEvent, _chatContext }) {
   if (!_chatContext) return { error: "trigger_session can only be called from chat" };
 
-  const { channel, userId, contact, convKey, chatConfig } = _chatContext;
+  const { userId, contact, convKey, chatConfig } = _chatContext;
+  const contactSlug = contact?.id || userId;
 
   // Create session_request KV key — source of truth
   const id = `req_${Date.now()}`;
   const request = {
     id,
-    contact: userId,
+    contact: contactSlug,
     contact_name: contact?.name || userId,
+    platform_user_id: userId,
     summary: summary || "(no summary)",
     status: "pending",
     created_at: new Date().toISOString(),
@@ -33,7 +35,7 @@ export async function execute({ summary, kv, emitEvent, _chatContext }) {
 
   // Emit event — signal for sessionTrigger handler
   await emitEvent("session_request", {
-    contact: userId,
+    contact: contactSlug,
     ref: `session_request:${id}`,
   });
 

@@ -2,6 +2,13 @@
 
 Date: 2026-04-06
 
+Superseded as the top-level framework spec by:
+
+- `docs/superpowers/specs/2026-04-07-cognitive-framework-v2.md`
+
+This document remains useful for learned-model direction, but its flat ontology
+assumptions are no longer the active framework.
+
 ## Purpose
 
 This document specifies the end-state cognitive model architecture for

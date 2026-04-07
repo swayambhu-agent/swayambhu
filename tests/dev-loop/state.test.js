@@ -14,7 +14,7 @@ import {
   STATE_DIR,
 } from "../../scripts/dev-loop/state.mjs";
 
-const TEST_DIR = join(STATE_DIR, "../dev-loop-test");
+const TEST_DIR = "/tmp/dev-loop-state-test";
 
 beforeEach(async () => {
   await rm(TEST_DIR, { recursive: true, force: true });
@@ -160,7 +160,8 @@ describe("saveRun", () => {
 // ── STATE_DIR ────────────────────────────────────────────
 
 describe("STATE_DIR", () => {
-  it("points to .swayambhu/dev-loop", () => {
-    expect(STATE_DIR).toMatch(/\.swayambhu\/dev-loop$/);
+  it("defaults to the external dev-loop directory", () => {
+    expect(STATE_DIR).toMatch(/\/dev-loop$/);
+    expect(STATE_DIR).not.toContain("/repo/");
   });
 });

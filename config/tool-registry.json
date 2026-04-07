@@ -102,6 +102,18 @@
       }
     },
     {
+      "name": "update_request",
+      "description": "Update the status of a pending session request and emit a response signal for communication delivery.",
+      "input": {
+        "request_id": "required — Request ID without the session_request: prefix",
+        "status": "required — pending|fulfilled|rejected",
+        "note": "optional — Short status note or explanation",
+        "result": "optional — Short result summary for the patron",
+        "error": "optional — Short failure explanation",
+        "next_session": "optional — ISO timestamp for the next planned work session"
+      }
+    },
+    {
       "name": "google_docs",
       "description": "Create or update a Google Doc. Uses existing Gmail OAuth credentials (drive.file scope). Returns a shareable doc URL.",
       "input": {

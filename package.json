@@ -5,10 +5,12 @@
   "scripts": {
     "test": "vitest run",
     "build:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --minify && npx @tailwindcss/cli -i site/patron/src/input.css -o site/patron/app.css --minify",
-    "watch:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --watch"
+    "watch:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --watch",
+    "ui:review": "node scripts/ui-review.mjs"
   },
   "devDependencies": {
     "ethers": "^6.16.0",
+    "playwright": "^1.59.1",
     "vitest": "^3.0.0"
   },
   "dependencies": {

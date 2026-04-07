@@ -35,6 +35,26 @@ function getSourcePrinciples(desires, key) {
   return Array.isArray(principles) && principles.length > 0 ? principles : [];
 }
 
+function extractPlanGuidance(plan = {}) {
+  const legacyReliesOn = Array.isArray(plan?.relies_on)
+    ? plan.relies_on.filter(key => typeof key === "string")
+    : [];
+
+  const servedDesires = Array.isArray(plan?.serves_desires)
+    ? plan.serves_desires.filter(key => typeof key === "string" && key.startsWith("desire:"))
+    : legacyReliesOn.filter(key => key.startsWith("desire:"));
+
+  const followedTactics = Array.isArray(plan?.follows_tactics)
+    ? plan.follows_tactics.filter(key => typeof key === "string" && key.startsWith("tactic:"))
+    : legacyReliesOn.filter(key => key.startsWith("tactic:"));
+
+  const guidingPatterns = Array.isArray(plan?.uses_patterns)
+    ? plan.uses_patterns.filter(key => typeof key === "string" && key.startsWith("pattern:"))
+    : legacyReliesOn.filter(key => key.startsWith("pattern:"));
+
+  return { servedDesires, followedTactics, guidingPatterns };
+}
+
 function computeDesireAxis(alpha, desires) {
   const active = Object.entries(alpha).filter(([, value]) => typeof value === "number" && value !== 0);
   if (active.length === 0) return 0;
@@ -58,21 +78,16 @@ function computeDesireAxis(alpha, desires) {
   return Math.sqrt(numerator / denominator);
 }
 
-function computeMetrics(classified, extras, desires) {
-  let sigma = 0;
+function computeMetrics(classified, extras, desires, options = {}) {
+  let sigma = typeof options.baseSigma === "number" ? options.baseSigma : 0;
   const patternScores = {};
-  const alpha = {};
+  const alpha = { ...(options.desireAlpha || {}) };
 
   for (const c of classified) {
     if (c.type === "pattern") {
       const surprise = c.surprise || 0;
       patternScores[c.id] = { direction: c.direction, surprise };
       if (surprise > sigma) sigma = surprise;
-    }
-    if (c.type === "desire") {
-      if (c.direction === "entailment") alpha[c.id] = c.confidence || 0;
-      else if (c.direction === "contradiction") alpha[c.id] = -(c.confidence || 0);
-      else alpha[c.id] = 0;
     }
   }
 
@@ -96,6 +111,10 @@ async function classifyWithLLM(K, pairs, outcomeText, signal) {
 Outcome: "${outcomeText}"
 Statements: [${pairs.map(p => `{"id":"${p.id}","text":"${p.text}"}`).join(",")}]
 For each: classify as entailment/contradiction/neutral + confidence 0-1.
+Important: many statements describe conditional patterns ("when X happens, Y occurs").
+If the outcome does not mention the triggering condition at all, classify as NEUTRAL —
+absence of the trigger is not a contradiction. Only classify as contradiction when the
+trigger IS present but the expected outcome did NOT occur.
 Respond with ONLY a JSON array: [{"id":"...","direction":"...","confidence":0.0-1.0}]`;
 
   const response = await K.callLLM({
@@ -123,6 +142,55 @@ Respond with ONLY a JSON array: [{"id":"...","direction":"...","confidence":0.0-
   }).filter(Boolean);
 }
 
+async function classifyPlanProgress(K, ledger, outcomeText, config, signal) {
+  const successText = ledger?.plan?.success;
+  if (!successText) {
+    return { direction: "neutral", confidence: 0, source: "none" };
+  }
+
+  try {
+    const nliResp = await callInference(config.url, config.secret, "/nli", {
+      pairs: [{ id: "__plan_success__", premise: successText, hypothesis: outcomeText }],
+    }, signal);
+    const result = nliResp.results?.find(r => r.id === "__plan_success__") || nliResp.results?.[0];
+    if (result) {
+      const maxScore = Math.max(result.scores.entailment, result.scores.contradiction, result.scores.neutral);
+      if (maxScore >= config.ambiguity_threshold) {
+        return {
+          direction: result.label,
+          confidence: result.scores[result.label],
+          source: "nli",
+        };
+      }
+    }
+  } catch {}
+
+  try {
+    const llmClassified = await classifyWithLLM(K, [{
+      id: "__plan_success__",
+      type: "plan_success",
+      text: successText,
+    }], outcomeText, signal);
+    if (llmClassified[0]) {
+      return {
+        direction: llmClassified[0].direction,
+        confidence: llmClassified[0].confidence || 0,
+        source: "llm",
+      };
+    }
+  } catch {}
+
+  return { direction: "neutral", confidence: 0, source: "degraded" };
+}
+
+function computeDesireAlpha(servedDesires, progress) {
+  if (!Array.isArray(servedDesires) || servedDesires.length === 0) return {};
+  if (progress?.direction !== "entailment") return {};
+  const confidence = progress?.confidence || 0;
+  if (confidence <= 0) return {};
+  return Object.fromEntries(servedDesires.map(key => [key, confidence]));
+}
+
 // ── Main pipeline ──────────────────────────────────────
 
 export async function evaluateAction(K, ledger, desires, patterns, config, signal) {
@@ -130,12 +198,15 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
     tool: tc.tool,
     ok: tc.ok,
   }));
+  const { servedDesires, followedTactics, guidingPatterns } = extractPlanGuidance(ledger.plan || {});
 
   const baseResult = {
     eval_method: "pipeline",
     tool_outcomes: toolOutcomes,
     plan_success_criteria: ledger.plan.success,
-    patterns_relied_on: ledger.plan.relies_on || [],
+    served_desires: servedDesires,
+    followed_tactics: followedTactics,
+    patterns_relied_on: guidingPatterns,
   };
 
   const desireEntries = Object.entries(desires);
@@ -152,7 +223,7 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
   // want. With no desires there is no vector to measure against — affinity
   // is genuinely zero, not max. The surprise axis alone drives salience
   // during bootstrap.
-  if (patternEntries.length === 0) {
+  if (patternEntries.length === 0 && desireEntries.length === 0) {
     return {
       sigma: 1,
       alpha: {},
@@ -165,15 +236,6 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
 
   // Build pairs
   const pairs = [];
-  for (const [key, d] of desireEntries) {
-    pairs.push({
-      id: key,
-      type: "desire",
-      slug: d.slug,
-      text: d.description,
-      embedding: d._embedding || null,
-    });
-  }
   for (const [key, s] of patternEntries) {
     pairs.push({
       id: key,
@@ -185,18 +247,25 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
   }
 
   const outcomeText = extractOutcomeText(ledger);
+  const progress = servedDesires.length > 0
+    ? await classifyPlanProgress(K, ledger, outcomeText, config, signal)
+    : { direction: "neutral", confidence: 0, source: "none" };
+  const desireAlpha = computeDesireAlpha(servedDesires, progress);
 
   try {
     // ── Tier 1: Embedding relevance filter ──
-    const embedResp = await callInference(config.url, config.secret, "/embed", {
-      texts: [outcomeText],
-    }, signal);
-    const outcomeEmb = embedResp.embeddings[0];
+    let relevant = pairs;
+    if (pairs.length > 0) {
+      const embedResp = await callInference(config.url, config.secret, "/embed", {
+        texts: [outcomeText],
+      }, signal);
+      const outcomeEmb = embedResp.embeddings[0];
 
-    const relevant = pairs.filter(p => {
-      if (!p.embedding) return true;
-      return cosineSimilarity(outcomeEmb, p.embedding) >= config.relevance_threshold;
-    });
+      relevant = pairs.filter(p => {
+        if (!p.embedding) return true;
+        return cosineSimilarity(outcomeEmb, p.embedding) >= config.relevance_threshold;
+      });
+    }
 
     // If nothing relevant after filtering, all pairs are classified as neutral
     if (relevant.length === 0) {
@@ -206,7 +275,15 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
         confidence: 0,
         surprise: 0,
       }));
-      return computeMetrics(neutralClassified, baseResult, desires);
+      return computeMetrics(
+        neutralClassified,
+        baseResult,
+        desires,
+        {
+          baseSigma: patternEntries.length === 0 ? 1 : 0,
+          desireAlpha,
+        },
+      );
     }
 
     // ── Tier 2: NLI classification ──
@@ -249,13 +326,31 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
     }));
 
     const allClassified = [...resolved, ...llmClassified, ...filteredOut];
-    return computeMetrics(allClassified, baseResult, desires);
+    return computeMetrics(
+      allClassified,
+      baseResult,
+      desires,
+      {
+        baseSigma: patternEntries.length === 0 ? 1 : 0,
+        desireAlpha,
+      },
+    );
 
   } catch (_err) {
     // ── Full LLM fallback ──
     try {
-      const llmClassified = await classifyWithLLM(K, pairs, outcomeText, signal);
-      return computeMetrics(llmClassified, { ...baseResult, eval_method: "llm_fallback" }, desires);
+      const llmClassified = pairs.length > 0
+        ? await classifyWithLLM(K, pairs, outcomeText, signal)
+        : [];
+      return computeMetrics(
+        llmClassified,
+        { ...baseResult, eval_method: "llm_fallback" },
+        desires,
+        {
+          baseSigma: patternEntries.length === 0 ? 1 : 0,
+          desireAlpha,
+        },
+      );
     } catch (_fallbackErr) {
       // Degraded: return zeros
       return {

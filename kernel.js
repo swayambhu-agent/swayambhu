@@ -49,6 +49,8 @@ class Kernel {
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
     this.touchedKeys = new Set();
     this.pulseCounter = 0;
+    this.toolProfile = env.SWAYAMBHU_LAB_PROFILE || null;
+    this._toolDenySet = null;
   }
 
   // Write tiers enforce trust boundaries:
@@ -71,6 +73,45 @@ class Kernel {
   };
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
+
+  parseToolList(value) {
+    return new Set(
+      String(value || "")
+        .split(",")
+        .map(item => item.trim())
+        .filter(Boolean),
+    );
+  }
+
+  getDeniedTools() {
+    if (this._toolDenySet) return this._toolDenySet;
+
+    const denied = this.parseToolList(this.env.SWAYAMBHU_TOOL_DENYLIST);
+    if (this.toolProfile === "static" || this.toolProfile === "bounded_continuation") {
+      const registryTools = this.toolRegistry?.tools || [];
+      for (const tool of registryTools) {
+        const meta = this.TOOLS?.[tool.name]?.meta || {};
+        if (meta.communication) denied.add(tool.name);
+      }
+      for (const toolName of ["request_message", "computer", "start_job", "google_docs"]) {
+        denied.add(toolName);
+      }
+    }
+
+    this._toolDenySet = denied;
+    return denied;
+  }
+
+  isToolDenied(name) {
+    return this.getDeniedTools().has(name);
+  }
+
+  getToolBlockReason(name) {
+    if (this.toolProfile) {
+      return `Tool "${name}" is unavailable in ${this.toolProfile} profile`;
+    }
+    return `Tool "${name}" is disabled by policy`;
+  }
 
   // ── Key tier helpers (instance methods — use loaded tiers from KV) ──
 
@@ -473,7 +514,7 @@ class Kernel {
       // Agent loop
       runAgentTurn: async (opts) => kernel.runAgentTurn(opts),
       runAgentLoop: async (opts) => kernel.runAgentLoop(opts),
-      executeToolCall: async (tc) => kernel.executeToolCall(tc),
+      executeToolCall: async (tc, extraArgs) => kernel.executeToolCall(tc, extraArgs),
       buildToolDefinitions: async (extra) => kernel.buildToolDefinitions(extra),
       callHook: async (name, ctx) => kernel.callHook(name, ctx),
       executeAction: async (step) => kernel.executeAction(step),
@@ -575,6 +616,11 @@ class Kernel {
 
   async kvWriteGated(op, context) {
     const key = op.key;
+
+    // Reject malformed pattern keys — LLM output sometimes uses slashes instead of colons
+    if (key.startsWith('pattern:') && key.includes('/')) {
+      return { ok: false, error: `Invalid pattern key format: ${key} — use colons, not slashes` };
+    }
 
     // 1. Always blocked — immutable keys
     if (this.isImmutableKey(key)) {
@@ -1185,18 +1231,31 @@ class Kernel {
   }
 
   async checkBalance(args) {
-    const [providers, wallets] = await Promise.all([
+    // State-lab branches can pin visible balances in KV so replayed/A-B
+    // continuations see the same budget signals as the original branch point.
+    // This is experiment plumbing, not a kernel safety policy.
+    const [providers, wallets, overrides] = await Promise.all([
       this.kvGet("providers"),
       this.kvGet("wallets"),
+      this.kvGet("kernel:balance_overrides"),
     ]);
 
     const results = { providers: {}, wallets: {} };
     const scopeFilter = args?.scope;
+    const providerOverrides = overrides?.providers || {};
+    const walletOverrides = overrides?.wallets || {};
 
     for (const [name, config] of Object.entries(providers || {})) {
       if (!config.adapter) continue;
       const scope = config.scope || "general";
       if (scopeFilter && scope !== scopeFilter) continue;
+      if (providerOverrides[name]) {
+        results.providers[name] = {
+          ...providerOverrides[name],
+          scope: providerOverrides[name].scope || scope,
+        };
+        continue;
+      }
       try {
         const val = await this.executeAdapter(config.adapter, {}, await this._resolveSecretOverrides(config));
         results.providers[name] = { balance: val, scope };
@@ -1209,6 +1268,13 @@ class Kernel {
       if (!config.adapter) continue;
       const scope = config.scope || "general";
       if (scopeFilter && scope !== scopeFilter) continue;
+      if (walletOverrides[name]) {
+        results.wallets[name] = {
+          ...walletOverrides[name],
+          scope: walletOverrides[name].scope || scope,
+        };
+        continue;
+      }
       try {
         const val = await this.executeAdapter(config.adapter, {}, await this._resolveSecretOverrides(config));
         results.wallets[name] = { balance: val, scope };
@@ -1637,19 +1703,21 @@ class Kernel {
 
   buildToolDefinitions(extraTools = []) {
     const registry = this.toolRegistry || { tools: [] };
-    const defs = registry.tools.map(t => ({
-      type: 'function',
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: {
-          type: 'object',
-          properties: Object.fromEntries(
-            Object.entries(t.input || {}).map(([k, v]) => [k, { type: 'string', description: String(v) }])
-          ),
+    const defs = registry.tools
+      .filter(t => !this.isToolDenied(t.name))
+      .map(t => ({
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: {
+            type: 'object',
+            properties: Object.fromEntries(
+              Object.entries(t.input || {}).map(([k, v]) => [k, { type: 'string', description: String(v) }])
+            ),
+          },
         },
-      },
-    }));
+      }));
 
 
     // Built-in: verify patron identity via Ed25519 signature
@@ -1669,10 +1737,11 @@ class Kernel {
       },
     });
 
-    return [...defs, ...extraTools];
+    const filteredExtraTools = extraTools.filter((tool) => !this.isToolDenied(tool?.function?.name));
+    return [...defs, ...filteredExtraTools];
   }
 
-  async executeToolCall(toolCall) {
+  async executeToolCall(toolCall, extraArgs = {}) {
     const name = toolCall.function.name;
     let args;
     try {
@@ -1683,12 +1752,22 @@ class Kernel {
       return { error: `Invalid JSON in tool arguments for ${name}` };
     }
 
+    if (extraArgs && typeof extraArgs === 'object') {
+      args = { ...args, ...extraArgs };
+    }
+
     if (name === 'verify_patron') {
       return this.verifyPatron(args);
     }
 
     if (name === 'check_balance') {
       return this.checkBalance(args);
+    }
+
+    if (this.isToolDenied(name)) {
+      const error = this.getToolBlockReason(name);
+      await this.karmaRecord({ event: "tool_blocked_by_policy", tool: name, profile: this.toolProfile || null });
+      return { error };
     }
 
     // ── Load tool grants (for inbound gate) ──
