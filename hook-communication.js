@@ -1,7 +1,9 @@
 // Swayambhu Communication — unified turn processor.
 // All communication flows through runTurn: one brain, one state, one prompt.
 // Ingress normalizers (ingestInbound, ingestInternal) create CommTurns.
-// The scheduled tick is the single writer — fetch only writes events.
+// Normal path: the scheduled tick is the main writer.
+// Exception: when a long-running session is already holding the execution lock,
+// fetch may use a narrow inbound fast-path so chat stays responsive.
 
 // ── LLM tools for communication ───────────────────────
 
@@ -161,6 +163,17 @@ function buildQueuedWorkAcknowledgement() {
   return "Got it. I'm taking this on and will follow up when I have something concrete.";
 }
 
+function isTrivialAcknowledgement(text) {
+  const normalized = String(text || "")
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, " ")
+    .trim();
+  if (!normalized) return false;
+  if (normalized.length > 40) return false;
+
+  return /^(ok|okay|ok great|great|got it|sounds good|all good|perfect|nice|cool|thanks|thank you|thankyou|awesome|sure|yep|yes|fine)$/.test(normalized);
+}
+
 function parseToolArgs(rawArgs) {
   try {
     return JSON.parse(rawArgs || "{}");
@@ -169,11 +182,8 @@ function parseToolArgs(rawArgs) {
   }
 }
 
-// ── runTurn: the unified conversation processor ───────
-
-export async function runTurn(K, conversationId, turns) {
-  // 1. Load conversation state
-  let conv = await K.kvGet(conversationId) || {
+function makeEmptyConversation() {
+  return {
     messages: [],
     karma: [],
     inbound_cost: 0,
@@ -181,6 +191,77 @@ export async function runTurn(K, conversationId, turns) {
     created_at: new Date().toISOString(),
     turn_count: 0,
   };
+}
+
+function appendInboundTurns(conv, inboundTurns) {
+  for (const turn of inboundTurns) {
+    conv.messages.push({
+      role: "user",
+      content: turn.content,
+      userId: turn.metadata?.userId,
+      ts: turn.metadata?.sentTs
+        ? new Date(parseFloat(turn.metadata.sentTs) * 1000).toISOString()
+        : new Date().toISOString(),
+      sentTs: turn.metadata?.sentTs,
+    });
+  }
+}
+
+async function persistConversationState(K, conversationId, conv, replyTarget, maxMessages) {
+  conv.reply_target = replyTarget;
+  conv.turn_count++;
+  conv.last_activity = new Date().toISOString();
+  if (conv.messages.length > maxMessages) {
+    conv.messages = trimByTurns(conv.messages, maxMessages);
+  }
+  await K.kvWriteSafe(conversationId, conv);
+}
+
+export async function trySuppressTrivialAcknowledgement(K, conversationId, turns) {
+  const inboundTurns = turns.filter((turn) => turn.source === "inbound");
+  if (inboundTurns.length !== 1 || turns.some((turn) => turn.source !== "inbound")) {
+    return { used: false };
+  }
+
+  const defaults = await K.getDefaults();
+  const chatDefaults = defaults?.chat || {};
+  const conv = await K.kvGet(conversationId) || makeEmptyConversation();
+  const contact = turns[0]?.reply_target?.platform
+    ? await K.resolveContact(turns[0].reply_target.platform, turns[0].reply_target.channel)
+    : null;
+  const relatedRequests = await loadConversationRequests(K, conversationId, contact);
+  const hasPendingRequest = relatedRequests.some((request) => request.status === "pending");
+
+  if (!hasPendingRequest || !isTrivialAcknowledgement(inboundTurns[0]?.content)) {
+    return { used: false };
+  }
+
+  appendInboundTurns(conv, inboundTurns);
+  await persistConversationState(
+    K,
+    conversationId,
+    conv,
+    turns[0].reply_target,
+    chatDefaults.max_history_messages || 40,
+  );
+
+  await K.karmaRecord({
+    event: "comms_discarded",
+    conversation: conversationId,
+    mode: "inbound",
+    reason: "acknowledgement_with_pending_request",
+    request_queued: false,
+    request_context_count: relatedRequests.length,
+  });
+
+  return { used: true };
+}
+
+// ── runTurn: the unified conversation processor ───────
+
+export async function runTurn(K, conversationId, turns) {
+  // 1. Load conversation state
+  let conv = await K.kvGet(conversationId) || makeEmptyConversation();
   if (!conv.karma) conv.karma = [];
   if (conv.inbound_cost === undefined) conv.inbound_cost = conv.total_cost || 0;
   if (conv.internal_cost === undefined) conv.internal_cost = 0;
@@ -233,17 +314,9 @@ export async function runTurn(K, conversationId, turns) {
 
   // Append inbound turns to message history
   const inboundTurns = sorted.filter(t => t.source === "inbound");
-  for (const turn of inboundTurns) {
-    conv.messages.push({
-      role: "user",
-      content: turn.content,
-      userId: turn.metadata?.userId,
-      ts: turn.metadata?.sentTs
-        ? new Date(parseFloat(turn.metadata.sentTs) * 1000).toISOString()
-        : new Date().toISOString(),
-      sentTs: turn.metadata?.sentTs,
-    });
-  }
+  appendInboundTurns(conv, inboundTurns);
+
+  const hasPendingRequest = relatedRequests.some((request) => request.status === "pending");
 
   // 5. Build tools
   const tools = hasInbound
@@ -256,7 +329,14 @@ export async function runTurn(K, conversationId, turns) {
   let outcome = null;
   let requestQueued = false;
 
-  for (let i = 0; i < maxRounds; i++) {
+  if (hasInbound
+    && inboundTurns.length === 1
+    && hasPendingRequest
+    && isTrivialAcknowledgement(inboundTurns[0]?.content)) {
+    outcome = { action: "discarded", reason: "acknowledgement_with_pending_request" };
+  }
+
+  for (let i = 0; i < maxRounds && !outcome; i++) {
     const response = await K.callLLM({
       model,
       effort: chatDefaults.effort || "low",
@@ -392,14 +472,13 @@ export async function runTurn(K, conversationId, turns) {
   }
 
   // 8. Persist state
-  conv.reply_target = turns[0].reply_target; // always update last-known reply target
-  conv.turn_count++;
-  conv.last_activity = new Date().toISOString();
-  const maxMsgs = chatDefaults.max_history_messages || 40;
-  if (conv.messages.length > maxMsgs) {
-    conv.messages = trimByTurns(conv.messages, maxMsgs);
-  }
-  await K.kvWriteSafe(conversationId, conv);
+  await persistConversationState(
+    K,
+    conversationId,
+    conv,
+    turns[0].reply_target,
+    chatDefaults.max_history_messages || 40,
+  );
 
   return outcome;
 }

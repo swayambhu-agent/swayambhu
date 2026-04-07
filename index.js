@@ -4,7 +4,7 @@
 // In local dev, this is a static hand-written file importing from disk.
 
 import { Kernel } from './kernel.js';
-import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox } from './hook-communication.js';
+import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox, trySuppressTrivialAcknowledgement } from './hook-communication.js';
 
 // Hook modules (mutable policy — agent can propose changes)
 import * as session from './userspace.js';
@@ -230,6 +230,25 @@ async function advanceSessionSchedule(env, defaults, advanceSeconds) {
   }
 }
 
+async function tryInboundFastPath(env, ctx, commTurn) {
+  const active = await env.KV.get("kernel:active_execution", "json");
+  if (!active?.started_at) return { used: false };
+
+  try {
+    const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, mode: "chat" });
+    await kernel.loadEagerConfig();
+    const K = kernel.buildKernelInterface();
+    const result = await trySuppressTrivialAcknowledgement(K, commTurn.conversation_id, [commTurn]);
+    if (result.used) {
+      return { used: true };
+    }
+  } catch {
+    // Fall through to the durable event path on any fast-path failure.
+  }
+
+  return { used: false };
+}
+
 // ── Entry points ──────────────────────────────────────────────
 
 export default {
@@ -422,6 +441,12 @@ export default {
     const ts = Date.now().toString().padStart(15, '0');
     const eventKey = `event:${ts}:inbound_message:${nonce}`;
     const commTurn = ingestInbound(channel, inbound);
+
+    const fastPath = await tryInboundFastPath(env, ctx, commTurn);
+    if (fastPath.used) {
+      return new Response("OK", { status: 200 });
+    }
+
     await env.KV.put(eventKey, JSON.stringify({
       type: "inbound_message",
       ...commTurn,

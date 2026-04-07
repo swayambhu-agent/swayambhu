@@ -192,6 +192,29 @@ describe("runTurn", () => {
     expect(toolNames).toEqual(["reply", "clarify", "discard", "trigger_session"]);
   });
 
+  it("suppresses trivial acknowledgements when related work is already pending", async () => {
+    await K.kvWriteSafe("session_request:req_123", {
+      id: "req_123",
+      contact: "swami_kevala",
+      summary: "Investigate the Akash project",
+      status: "pending",
+      updated_at: "2026-04-07T12:00:00.000Z",
+      ref: "chat:slack:U084ASKBXB7",
+    });
+    K.resolveContact = vi.fn(async () => ({
+      id: "swami_kevala",
+      name: "Swami Kevala",
+      relationship: "patron",
+    }));
+
+    const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("ok great")]);
+
+    expect(result.action).toBe("discarded");
+    expect(result.reason).toBe("acknowledgement_with_pending_request");
+    expect(K.callLLM).not.toHaveBeenCalled();
+    expect(K.executeAdapter).not.toHaveBeenCalled();
+  });
+
   it("executes trigger_session through the kernel tool path and auto-acknowledges", async () => {
     K.callLLM = vi.fn().mockResolvedValueOnce(makeLLMResponse(null, [
       { id: "tc_1", function: { name: "trigger_session", arguments: '{"summary":"Research the Akash projects folder"}' } },
