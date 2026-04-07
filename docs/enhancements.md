@@ -50,6 +50,25 @@ Tracked ideas for future improvement. Not prioritized — just captured.
 
 - **KV-based bug reporting**: The agent saved its bug report to a file on the akash server but not to KV. Future sessions and DR couldn't see the analysis. A `note:*` KV prefix for agent-written observations would persist findings across sessions and make them visible in the dashboard. Low friction (agent-tier write), searchable, and DR-accessible.
 
+## Communication / Work Handoff
+
+- **`request_candidate` as a pre-handoff safety layer**: After the comms/session seam is repaired, consider adding a lightweight `request_candidate:*` layer for substantive inbound patron messages. The idea is not to replace `session_request:*`, but to make it harder for actionable human asks to vanish when chat makes the wrong choice. Flow:
+  - inbound patron turn creates a cheap candidate record tied to the conversation
+  - chat can then do one of three things:
+    - dismiss it as conversation-only
+    - ask for clarification
+    - promote it to a real `session_request:*`
+  - unresolved candidates can be surfaced mechanically for inspection or expiry
+  
+  Why this may be worth adding later:
+  - preserves the comms/session boundary without requiring chat to be perfect
+  - makes inbound work-bearing turns auditable even before full handoff
+  - gives future DR-2/userspace-review a better substrate for detecting chat/session seam failures
+  
+  Why this should stay an enhancement for now:
+  - the immediate fix is still to enforce the existing seam cleanly in code
+  - adding candidates too early risks introducing another half-used layer before `session_request:*` is fully reliable
+
 ## Cognitive Architecture
 
 - **Multi-session strategy layer**: The current architecture is session-oriented — each tick plans one action with no memory of longer-term goals. Tactics + DR ideas provide session-to-session continuity, but there's no concept of "I'm working on a multi-session project" or "this week I want to accomplish X through steps A, B, C." Defer until the agent has 20-30 sessions of real experience with tactics + ideas. Watch for these failure signals: abandoned long-running work, repeated context loss across sessions, inability to sequence related actions, or thrashing between unrelated activities. If those appear, design a lightweight strategy layer (possibly just a `current_objective` field in `last_reflect` plus an "unfinished work" queue). Let usage reveal the right mechanism rather than guessing.

@@ -95,38 +95,48 @@ const HOOKS = {
 
         // Run each conversation
         for (const [convId, turns] of Object.entries(byConv)) {
+          const inboundTurns = turns.filter((turn) => turn.source === "inbound");
+          const internalTurns = turns.filter((turn) => turn.source === "internal");
+          const batches = inboundTurns.length > 0
+            ? [inboundTurns]
+            : [internalTurns];
+
           try {
-            // Claim all events for this batch
-            const claimed = [];
-            for (const t of turns) {
-              if (t.idempotency_key) {
-                const ok = await K.claimEvent(t.idempotency_key, await K.getExecutionId());
-                if (ok) claimed.push(t);
-              } else {
-                claimed.push(t);
+            for (const batch of batches) {
+              // Claim only the selected events for this batch. If a live inbound
+              // message is present, leave internal updates unclaimed so they can
+              // be reconsidered on a later tick instead of distorting inbound triage.
+              const claimed = [];
+              for (const t of batch) {
+                if (t.idempotency_key) {
+                  const ok = await K.claimEvent(t.idempotency_key, await K.getExecutionId());
+                  if (ok) claimed.push(t);
+                } else {
+                  claimed.push(t);
+                }
               }
-            }
-            if (claimed.length === 0) continue;
+              if (claimed.length === 0) continue;
 
-            const result = await runTurn(K, convId, claimed);
+              const result = await runTurn(K, convId, claimed);
 
-            // Event lifecycle based on outcome
-            for (const t of claimed) {
-              if (!t.idempotency_key) continue;
-              if (result.action === "sent" || result.action === "discarded") {
-                await K.deleteEvent(t.idempotency_key);
-              } else if (result.action === "held") {
-                await createOutboxItem(K, convId, t.content, result.reason, result.release_after, [t.idempotency_key]);
-                await K.deleteEvent(t.idempotency_key);
-              } else {
-                // error — release claim for retry
-                await K.releaseEvent(t.idempotency_key);
+              // Event lifecycle based on outcome
+              for (const t of claimed) {
+                if (!t.idempotency_key) continue;
+                if (result.action === "sent" || result.action === "discarded") {
+                  await K.deleteEvent(t.idempotency_key);
+                } else if (result.action === "held") {
+                  await createOutboxItem(K, convId, t.content, result.reason, result.release_after, [t.idempotency_key]);
+                  await K.deleteEvent(t.idempotency_key);
+                } else {
+                  // error — release claim for retry
+                  await K.releaseEvent(t.idempotency_key);
+                }
               }
             }
           } catch (err) {
             await K.karmaRecord({ event: "comms_error", conversation: convId, error: err.message });
             // Release claims on error
-            for (const t of turns) {
+            for (const t of [...inboundTurns, ...internalTurns]) {
               if (t.idempotency_key) {
                 try { await K.releaseEvent(t.idempotency_key); } catch {}
               }

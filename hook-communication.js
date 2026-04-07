@@ -18,6 +18,32 @@ const SEND_TOOL = {
   },
 };
 
+const REPLY_TOOL = {
+  type: "function",
+  function: {
+    name: "reply",
+    description: "Reply conversationally to the contact without accepting or queueing new work.",
+    parameters: {
+      type: "object",
+      properties: { message: { type: "string", description: "Message to send" } },
+      required: ["message"],
+    },
+  },
+};
+
+const CLARIFY_TOOL = {
+  type: "function",
+  function: {
+    name: "clarify",
+    description: "Ask a clarifying question needed before work can be queued or answered well.",
+    parameters: {
+      type: "object",
+      properties: { question: { type: "string", description: "Clarifying question to ask" } },
+      required: ["question"],
+    },
+  },
+};
+
 const HOLD_TOOL = {
   type: "function",
   function: {
@@ -93,6 +119,60 @@ const TRIGGER_SESSION_TOOL = {
   },
 };
 
+async function loadConversationRequests(K, conversationId, contact) {
+  const list = await K.kvList({ prefix: "session_request:" });
+  const requests = [];
+
+  for (const entry of list.keys) {
+    const request = await K.kvGet(entry.name);
+    if (!request) continue;
+    if (request.ref !== conversationId && request.contact !== contact?.id) continue;
+
+    requests.push({
+      id: request.id,
+      summary: request.summary,
+      status: request.status,
+      updated_at: request.updated_at,
+      note: request.note || null,
+      result: request.result || null,
+      error: request.error || null,
+      next_session: request.next_session || null,
+    });
+  }
+
+  requests.sort((a, b) =>
+    new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime(),
+  );
+
+  return requests.slice(0, 5);
+}
+
+function buildRequestStatusBlock(requests) {
+  if (!requests?.length) return "";
+  return "\n\n[REQUEST STATUS]\n"
+    + requests.map((request) => {
+      const detail = request.result || request.note || request.error || "";
+      const nextSession = request.next_session ? ` Next session: ${request.next_session}.` : "";
+      return `- ${request.id} — ${request.status}: ${request.summary}${detail ? ` (${detail})` : ""}.${nextSession}`;
+    }).join("\n");
+}
+
+function buildQueuedWorkAcknowledgement(summary) {
+  const cleaned = String(summary || "").trim();
+  if (!cleaned) {
+    return "Got it. I've queued that for my next work session and will follow up when I have something concrete.";
+  }
+  return `Got it. I've queued this for my next work session: ${cleaned}. I'll follow up when I have something concrete.`;
+}
+
+function parseToolArgs(rawArgs) {
+  try {
+    return JSON.parse(rawArgs || "{}");
+  } catch {
+    return {};
+  }
+}
+
 // ── runTurn: the unified conversation processor ───────
 
 export async function runTurn(K, conversationId, turns) {
@@ -137,6 +217,13 @@ export async function runTurn(K, conversationId, turns) {
     ? await K.resolveContact(turns[0].reply_target.platform, turns[0].reply_target.channel)
     : null;
   const contactContext = contact ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}` : "";
+  const relatedRequests = hasInbound
+    ? await loadConversationRequests(K, conversationId, contact)
+    : [];
+  const requestStatusBlock = hasInbound ? buildRequestStatusBlock(relatedRequests) : "";
+  const modeInstruction = hasInbound
+    ? "\n\n[TURN MODE]\nYou are handling a live inbound human message. This is triage, not execution. Do not inspect KV or perform work inside chat. If the contact is asking for substantive work, use trigger_session. If more detail is needed before queuing work, use clarify. If the message is purely conversational or status-related, use reply."
+    : "\n\n[TURN MODE]\nYou are handling internal agent updates for an existing conversation. You may inspect lightweight request state and decide whether to send, hold, or discard.";
 
   // Render internal turns as agent context block
   const internalTurns = sorted.filter(t => t.source === "internal");
@@ -146,7 +233,7 @@ export async function runTurn(K, conversationId, turns) {
       ).join("\n") + "\n\nDecide whether to send, hold, or discard each update. Use the send tool to message the contact, hold to defer, or discard to drop."
     : "";
 
-  const systemPrompt = (chatPrompt + contactContext + agentUpdates).trim();
+  const systemPrompt = (chatPrompt + contactContext + requestStatusBlock + modeInstruction + agentUpdates).trim();
 
   // Append inbound turns to message history
   const inboundTurns = sorted.filter(t => t.source === "inbound");
@@ -163,13 +250,15 @@ export async function runTurn(K, conversationId, turns) {
   }
 
   // 5. Build tools
-  const tools = [SEND_TOOL, HOLD_TOOL, DISCARD_TOOL, KV_QUERY_TOOL, KV_MANIFEST_TOOL];
-  if (hasInbound) tools.push(TRIGGER_SESSION_TOOL);
+  const tools = hasInbound
+    ? [REPLY_TOOL, CLARIFY_TOOL, DISCARD_TOOL, TRIGGER_SESSION_TOOL]
+    : [SEND_TOOL, HOLD_TOOL, DISCARD_TOOL, KV_QUERY_TOOL, KV_MANIFEST_TOOL];
 
   // 6. Call LLM (with tool loop for kv_query/kv_manifest)
   const model = await K.resolveModel(chatDefaults.model || defaults?.act?.model || "sonnet");
-  const maxRounds = 3;
+  const maxRounds = hasInbound ? 2 : 3;
   let outcome = null;
+  let requestQueued = false;
 
   for (let i = 0; i < maxRounds; i++) {
     const response = await K.callLLM({
@@ -192,10 +281,18 @@ export async function runTurn(K, conversationId, turns) {
     // Process tool calls
     const tc = response.toolCalls[0];
     const name = tc.function?.name;
-    const args = JSON.parse(tc.function?.arguments || "{}");
+    const args = parseToolArgs(tc.function?.arguments);
 
+    if (name === "reply") {
+      outcome = { action: "sent", message: args.message, reason: "reply" };
+      break;
+    }
+    if (name === "clarify") {
+      outcome = { action: "sent", message: args.question, reason: "clarify" };
+      break;
+    }
     if (name === "send") {
-      outcome = { action: "sent", message: args.message };
+      outcome = { action: "sent", message: args.message, reason: "send" };
       break;
     }
     if (name === "hold") {
@@ -221,22 +318,55 @@ export async function runTurn(K, conversationId, turns) {
       convKey: conversationId,
       chatConfig: chatDefaults,
     };
-    const results = await Promise.all(
-      response.toolCalls.map(async (tc2) => {
-        const extraArgs = tc2.function?.name === "trigger_session"
-          ? { _chatContext: chatContext }
-          : undefined;
-        return K.executeToolCall(tc2, extraArgs).catch(err => ({ error: err.message }));
-      })
-    );
+    const results = [];
+    const executedToolCalls = [];
+    for (const tc2 of response.toolCalls) {
+      executedToolCalls.push(tc2);
+      const extraArgs = tc2.function?.name === "trigger_session"
+        ? { _chatContext: chatContext }
+        : undefined;
+      const result = await K.executeToolCall(tc2, extraArgs).catch(err => ({ error: err.message }));
+      results.push(result);
 
-    for (let j = 0; j < response.toolCalls.length; j++) {
+      if (tc2.function?.name === "trigger_session" && !result?.error) {
+        const tc2Args = parseToolArgs(tc2.function?.arguments);
+        requestQueued = true;
+        await K.karmaRecord({
+          event: "comms_request_queued",
+          conversation: conversationId,
+          summary: tc2Args.summary || null,
+        });
+        outcome = {
+          action: "sent",
+          message: buildQueuedWorkAcknowledgement(tc2Args.summary),
+          reason: "request_queued",
+        };
+        break;
+      }
+      if (tc2.function?.name === "trigger_session" && result?.error) {
+        await K.karmaRecord({
+          event: "comms_trigger_session_failed",
+          conversation: conversationId,
+          error: result.error,
+        });
+        outcome = {
+          action: "sent",
+          message: "I couldn't queue that just now. Please try again shortly.",
+          reason: "request_queue_failed",
+        };
+        break;
+      }
+    }
+
+    for (let j = 0; j < executedToolCalls.length; j++) {
       conv.messages.push({
         role: "tool",
-        tool_call_id: response.toolCalls[j].id,
+        tool_call_id: executedToolCalls[j].id,
         content: JSON.stringify(results[j]),
       });
     }
+
+    if (outcome) break;
   }
 
   if (!outcome) {
@@ -258,7 +388,10 @@ export async function runTurn(K, conversationId, turns) {
     await K.karmaRecord({
       event: outcome.action === "sent" ? "comms_sent" : "comms_discarded",
       conversation: conversationId,
+      mode: hasInbound ? "inbound" : "internal",
       reason: outcome.reason,
+      request_queued: requestQueued,
+      request_context_count: relatedRequests.length,
     });
   }
 
