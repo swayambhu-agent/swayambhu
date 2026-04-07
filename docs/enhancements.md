@@ -52,8 +52,8 @@ Tracked ideas for future improvement. Not prioritized — just captured.
 
 ## Communication / Work Handoff
 
-- **`request_candidate` as a pre-handoff safety layer**: After the comms/session seam is repaired, consider adding a lightweight `request_candidate:*` layer for substantive inbound patron messages. The idea is not to replace `session_request:*`, but to make it harder for actionable human asks to vanish when chat makes the wrong choice. Flow:
-  - inbound patron turn creates a cheap candidate record tied to the conversation
+- **`request_candidate` as a pre-handoff safety layer**: After the comms/session seam is repaired, consider adding a lightweight `request_candidate:*` layer for substantive inbound human/contact messages. The idea is not to replace `session_request:*`, but to make it harder for actionable asks to vanish when chat makes the wrong choice. Flow:
+  - inbound human turn creates a cheap candidate record tied to the conversation
   - chat can then do one of three things:
     - dismiss it as conversation-only
     - ask for clarification
@@ -68,6 +68,8 @@ Tracked ideas for future improvement. Not prioritized — just captured.
   Why this should stay an enhancement for now:
   - the immediate fix is still to enforce the existing seam cleanly in code
   - adding candidates too early risks introducing another half-used layer before `session_request:*` is fully reliable
+
+- **Generic work-request contract**: Treat `session_request:*` as the current durable work-contract seam, not a patron-only queue. Requests may originate from any approved contact, and the record shape should also be able to represent self-originated work later via a generic `source` / `requester` object rather than another parallel queue.
 
 ## Cognitive Architecture
 

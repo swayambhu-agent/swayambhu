@@ -220,14 +220,14 @@ Kernel/runtime responsibility:
 Userspace responsibility:
 
 - decide what to do with them
-- decide urgency and patron-facing messaging
+- decide urgency and requester-facing messaging
 
 Do not put policy like "escalate aggressively after N hours" into the
 kernel.
 
 ### Stage 5. Fix follow-up message semantics
 
-Goal: subsequent patron messages on the same thread do not vanish into
+Goal: subsequent contact messages on the same thread do not vanish into
 conversation state while a request is still pending.
 
 Changes:
@@ -243,7 +243,7 @@ Changes:
   - otherwise create a new request only if the comms model calls
     `trigger_session`
 
-This preserves the comms/session split while preventing patron replies
+This preserves the comms/session split while preventing follow-up replies
 from becoming invisible to pending work.
 
 ### Stage 6. Tighten request lifecycle shape
@@ -271,7 +271,7 @@ V1.1 optional lifecycle additions after the repair lands:
 - `history`
 - `assigned_executor`
 - `last_session_id`
-- `waiting_on_patron`
+- `waiting_on_requester`
 
 Do not expand the schema prematurely before the basic loop works.
 
@@ -320,7 +320,7 @@ Tasks:
 
 - make comms read request updates from durable state
 - handle pending/fulfilled/rejected naturally
-- handle patron follow-up messages against pending requests
+- handle follow-up messages against pending requests
 - remove any remaining assumption that inbound event persistence is the
   source of truth for work state
 
@@ -364,8 +364,8 @@ Tasks:
 
 - `session_response` causes comms to read the durable request state and
   render a natural message
-- patron asks for status and comms answers from request state
-- patron follow-up on pending request attaches to the right request in v1
+- requester asks for status and comms answers from request state
+- follow-up on pending request attaches to the right request in v1
 
 ### Regression tests
 
@@ -389,13 +389,13 @@ regressions.
 
 ## Success Criteria
 
-- patron actionable messages reliably create durable request records
+- actionable contact messages reliably create durable request records
 - comms never directly imports request tools to execute them
 - sessions see pending requests from durable state
 - request state is updated after work
 - communication of results comes from durable request state
 - stale requests cannot silently disappear
-- follow-up patron replies on pending work are visible to the system
+- follow-up replies on pending work are visible to the system
 
 ## Deferred Question
 

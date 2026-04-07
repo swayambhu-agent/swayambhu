@@ -1,3 +1,5 @@
+import { resolveRequestContact } from "./lib/session-requests.js";
+
 // Swayambhu Communication — unified turn processor.
 // All communication flows through runTurn: one brain, one state, one prompt.
 // Ingress normalizers (ingestInbound, ingestInternal) create CommTurns.
@@ -124,11 +126,13 @@ const TRIGGER_SESSION_TOOL = {
 async function loadConversationRequests(K, conversationId, contact) {
   const list = await K.kvList({ prefix: "session_request:" });
   const requests = [];
+  const contactId = contact?.id || null;
 
   for (const entry of list.keys) {
     const request = await K.kvGet(entry.name);
     if (!request) continue;
-    if (request.ref !== conversationId && request.contact !== contact?.id) continue;
+    const requestContact = resolveRequestContact(request);
+    if (request.ref !== conversationId && requestContact !== contactId) continue;
 
     requests.push({
       id: request.id,
@@ -508,7 +512,7 @@ export async function ingestInternal(K, event) {
   if (event.ref?.startsWith("session_request:")) {
     const request = await K.kvGet(event.ref);
     if (request) {
-      contactSlug = contactSlug || request.contact;
+      contactSlug = contactSlug || resolveRequestContact(request);
       const result = request.result ? ` Result: ${request.result}` : "";
       const note = request.note ? ` Note: ${request.note}` : "";
       const error = request.error ? ` Error: ${request.error}` : "";

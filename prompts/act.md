@@ -22,7 +22,7 @@ of those requests, call `update_request` before finishing:
 - `rejected` when it cannot be completed
 
 Use a short `note` or `result` so communication can report status back
-to the patron.
+to the requester when appropriate.
 
 ## Your skills
 

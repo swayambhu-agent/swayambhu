@@ -383,7 +383,7 @@ The comms/session seam repair plan is:
 
 - [2026-04-07-comms-session-seam-repair-plan.md](/home/swami/swayambhu/repo/docs/superpowers/plans/2026-04-07-comms-session-seam-repair-plan.md)
 
-This is the current `#1` implementation priority because patron messages and
+This is the current `#1` implementation priority because inbound messages and
 durable request tracking are part of the live behavioral substrate. Leaving the
 request seam broken would pollute both the runtime behavior and the corpus we
 use to judge later cognitive changes.
@@ -416,7 +416,7 @@ Required outcomes:
 3. sessions can write durable request updates and emit `session_response`.
 4. stale or unaddressed requests are surfaced mechanically instead of
    disappearing.
-5. comms renders patron-facing updates from durable request state, not
+5. comms renders requester-facing updates from durable request state, not
    ephemeral inbound evidence.
 
 Do this before Bite 1.

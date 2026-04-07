@@ -271,6 +271,39 @@ describe("runTurn", () => {
 
     await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Any update?")]);
   });
+
+  it("ingestInternal resolves request contact via requester fallback", async () => {
+    await K.kvWriteSafe("session_request:req_456", {
+      id: "req_456",
+      source: "contact",
+      requester: {
+        type: "contact",
+        id: "swami_kevala",
+        name: "Swami Kevala",
+        platform_user_id: "U084ASKBXB7",
+      },
+      contact: null,
+      summary: "Check the shared repo",
+      status: "fulfilled",
+      ref: "chat:slack:U084ASKBXB7",
+      result: "Reviewed the repo and noted the next step.",
+    });
+    await K.kvWriteSafe("conversation_index:swami_kevala", "chat:slack:U084ASKBXB7");
+
+    const turn = await ingestInternal(K, {
+      type: "session_response",
+      ref: "session_request:req_456",
+      contact: null,
+      status: "fulfilled",
+    });
+
+    expect(turn).toEqual(expect.objectContaining({
+      conversation_id: "chat:slack:U084ASKBXB7",
+      source: "internal",
+    }));
+    expect(turn.content).toContain("Check the shared repo");
+    expect(turn.content).toContain("fulfilled");
+  });
 });
 
 describe("handleCommand", () => {

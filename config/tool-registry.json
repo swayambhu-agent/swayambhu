@@ -119,7 +119,7 @@
         "request_id": "required — Request ID without the session_request: prefix",
         "status": "required — pending|fulfilled|rejected",
         "note": "optional — Short status note or explanation",
-        "result": "optional — Short result summary for the patron",
+        "result": "optional — Short result summary for the requester",
         "error": "optional — Short failure explanation",
         "next_session": "optional — ISO timestamp for the next planned work session"
       }

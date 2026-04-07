@@ -22,6 +22,7 @@ import * as send_whatsapp from "../tools/send_whatsapp.js";
 import * as google_docs from "../tools/google_docs.js";
 import * as gnanetra from "../tools/gnanetra.js";
 import * as request_message from "../tools/request_message.js";
+import * as trigger_session from "../tools/trigger_session.js";
 import * as update_request from "../tools/update_request.js";
 
 // ── Channel modules ─────────────────────────────────────────
@@ -119,7 +120,7 @@ const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
   start_job, collect_jobs, delegate_task, send_whatsapp, google_docs, gnanetra, request_message,
-  update_request,
+  trigger_session, update_request,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail, compute };
@@ -2364,6 +2365,13 @@ describe("update_request", () => {
     const kv = mockKV({
       "session_request:req_1": JSON.stringify({
         id: "req_1",
+        source: "contact",
+        requester: {
+          type: "contact",
+          id: "swami_kevala",
+          name: "Swami Kevala",
+          platform_user_id: "U084ASKBXB7",
+        },
         contact: "swami_kevala",
         summary: "Review the Akash projects folder",
         status: "pending",
@@ -2394,8 +2402,110 @@ describe("update_request", () => {
     );
     expect(emitEvent).toHaveBeenCalledWith("session_response", {
       contact: "swami_kevala",
+      requester: {
+        type: "contact",
+        id: "swami_kevala",
+        name: "Swami Kevala",
+        platform_user_id: "U084ASKBXB7",
+      },
       ref: "session_request:req_1",
       status: "fulfilled",
     });
+  });
+
+  it("supports self-originated requests without requiring a contact", async () => {
+    const kv = mockKV({
+      "session_request:req_self": JSON.stringify({
+        id: "req_self",
+        source: "self",
+        requester: {
+          type: "self",
+          id: "self",
+          name: "Swayambhu",
+          platform_user_id: null,
+        },
+        contact: null,
+        summary: "Investigate a userspace inconsistency",
+        status: "pending",
+        created_at: "2026-04-07T00:00:00.000Z",
+        updated_at: "2026-04-07T00:00:00.000Z",
+        ref: null,
+        result: null,
+        error: null,
+        next_session: null,
+      }),
+    });
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
+
+    const result = await update_request.execute({
+      request_id: "req_self",
+      status: "fulfilled",
+      result: "Verified the inconsistency and wrote down the next step.",
+      kv,
+      emitEvent,
+    });
+
+    expect(result).toEqual({ ok: true, request_id: "req_self", status: "fulfilled" });
+    expect(emitEvent).toHaveBeenCalledWith("session_response", {
+      contact: null,
+      requester: {
+        type: "self",
+        id: "self",
+        name: "Swayambhu",
+        platform_user_id: null,
+      },
+      ref: "session_request:req_self",
+      status: "fulfilled",
+    });
+  });
+});
+
+describe("trigger_session", () => {
+  it("creates a generic contact-originated work request shape", async () => {
+    const kv = mockKV({
+      session_schedule: JSON.stringify({
+        next_session_after: "2099-01-01T00:00:00.000Z",
+      }),
+    });
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
+
+    const result = await trigger_session.execute({
+      summary: "Review the shared project repo",
+      kv,
+      emitEvent,
+      _chatContext: {
+        userId: "U084ASKBXB7",
+        contact: { id: "swami_kevala", name: "Swami Kevala" },
+        convKey: "chat:slack:U084ASKBXB7",
+        chatConfig: { session_advance_seconds: 30 },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    const request = await kv.get(`session_request:${result.request_id}`);
+    expect(request).toEqual(expect.objectContaining({
+      id: result.request_id,
+      source: "contact",
+      requester: {
+        type: "contact",
+        id: "swami_kevala",
+        name: "Swami Kevala",
+        platform_user_id: "U084ASKBXB7",
+      },
+      contact: "swami_kevala",
+      contact_name: "Swami Kevala",
+      ref: "chat:slack:U084ASKBXB7",
+      status: "pending",
+    }));
+    expect(emitEvent).toHaveBeenCalledWith("session_request", expect.objectContaining({
+      contact: "swami_kevala",
+      requester: {
+        type: "contact",
+        id: "swami_kevala",
+        name: "Swami Kevala",
+        platform_user_id: "U084ASKBXB7",
+      },
+      ref: `session_request:${result.request_id}`,
+    }));
   });
 });
