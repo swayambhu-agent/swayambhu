@@ -2099,30 +2099,24 @@ describe("delegate_task", () => {
       context_keys: [],
     });
     expect(launchSpy.mock.calls[0][0].prompt).toContain('"status": "completed | blocked | needs_follow_up"');
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      job_id: "j_test",
+      delegated: true,
+      result: null,
+      note: expect.stringContaining("Task launched asynchronously"),
+    }));
     launchSpy.mockRestore();
   });
 
-  it("can wait for completion and return the parsed job result", async () => {
+  it("ignores wait_seconds and returns immediately after launch", async () => {
     const launchSpy = vi.spyOn(start_job, "execute").mockResolvedValue({
       ok: true,
       job_id: "j_wait",
       workdir: "/tmp/jobs/j_wait",
       pid: 456,
     });
-    const collectSpy = vi.spyOn(collect_jobs, "execute").mockResolvedValue({
-      ok: true,
-      completed: [{ job_id: "j_wait", result_key: "job_result:j_wait" }],
-      still_running: [],
-      failed: [],
-      expired: [],
-    });
-    const kv = mockKV({
-      "job_result:j_wait": JSON.stringify({
-        job_id: "j_wait",
-        type: "subagent_task",
-        result: { status: "completed", summary: "Made a useful change" },
-      }),
-    });
+    const collectSpy = vi.spyOn(collect_jobs, "execute");
 
     const result = await delegate_task.execute({
       objective: "Implement one improvement",
@@ -2131,12 +2125,17 @@ describe("delegate_task", () => {
       provider: {},
       secrets: {},
       fetch: vi.fn(),
-      kv,
+      kv: mockKV(),
       config: {},
     });
 
-    expect(collectSpy).toHaveBeenCalledOnce();
-    expect(result.result).toEqual({ status: "completed", summary: "Made a useful change" });
+    expect(collectSpy).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      job_id: "j_wait",
+      delegated: true,
+      result: null,
+    }));
 
     launchSpy.mockRestore();
     collectSpy.mockRestore();

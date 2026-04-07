@@ -24,7 +24,9 @@ there is a live actionable contract in [PENDING REQUESTS].
 
 For multi-step repo work or bounded autonomous investigation, prefer
 plans that use `delegate_task` rather than chaining many raw `computer`
-commands.
+commands. Treat `delegate_task` as asynchronous: success is that the
+task is launched cleanly with the right objective and directory, not
+that the subagent fully finishes inside the same act cycle.
 
 ## Output
 

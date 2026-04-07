@@ -950,6 +950,190 @@ describe("executeAction", () => {
     await expect(kernel.executeAction({ tool: "nonexistent", input: {}, id: "tc1" }))
       .rejects.toThrow("Unknown tool: nonexistent");
   });
+
+  it("passes an abortable signal into tools", async () => {
+    let seenSignal = null;
+    const executeFn = vi.fn(async ({ signal }) => {
+      seenSignal = signal;
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        probe: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAction({ tool: "probe", input: {}, id: "tc1" });
+
+    expect(result).toEqual({ ok: true });
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(seenSignal.aborted).toBe(false);
+  });
+
+  it("times out long-running tools using meta.timeout_ms", async () => {
+    const executeFn = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        sleeper: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 10 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    await expect(kernel.executeAction({ tool: "sleeper", input: {}, id: "tc1" }))
+      .rejects.toThrow("Tool sleeper timed out after 10ms");
+  });
+
+  it("propagates session abort into the tool signal", async () => {
+    let ready;
+    const readyPromise = new Promise((resolve) => { ready = resolve; });
+    const executeFn = vi.fn(async ({ signal }) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      ready();
+    }));
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        waiter: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.sessionAbortController = new AbortController();
+
+    const pending = kernel.executeAction({ tool: "waiter", input: {}, id: "tc1" });
+    await readyPromise;
+    kernel.sessionAbortController.abort(new DOMException("Aborted", "AbortError"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("passes the tool signal through ctx.fetch by default", async () => {
+    const executeFn = vi.fn(async ({ fetch }) => {
+      await fetch("https://example.test/tool");
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        fetcher: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (_input, init = {}) => ({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => ({ ok: true, signal_present: !!init.signal }),
+    }));
+
+    try {
+      const result = await kernel.executeAction({ tool: "fetcher", input: {}, id: "tc1" });
+      expect(result).toEqual({ ok: true });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://example.test/tool",
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+        }),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("combines a tool-provided fetch signal with the kernel tool signal", async () => {
+    const localController = new AbortController();
+    const executeFn = vi.fn(async ({ fetch }) => {
+      await fetch("https://example.test/tool", { signal: localController.signal });
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        fetcher: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (_input, init = {}) => ({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => ({ ok: true, signal_present: !!init.signal }),
+    }));
+
+    try {
+      const result = await kernel.executeAction({ tool: "fetcher", input: {}, id: "tc1" });
+      expect(result).toEqual({ ok: true });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://example.test/tool",
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+        }),
+      );
+      expect(globalThis.fetch.mock.calls[0][1].signal).not.toBe(localController.signal);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("falls back to manual signal composition when AbortSignal.any is unavailable", async () => {
+    const localController = new AbortController();
+    let mergedSignal = null;
+    const executeFn = vi.fn(async ({ fetch }) => {
+      await fetch("https://example.test/tool", { signal: localController.signal });
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        fetcher: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    const originalAny = AbortSignal.any;
+    Object.defineProperty(AbortSignal, "any", { value: undefined, configurable: true });
+    globalThis.fetch = vi.fn(async (_input, init = {}) => {
+      mergedSignal = init.signal;
+      return {
+        ok: true,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ ok: true }),
+      };
+    });
+
+    try {
+      const result = await kernel.executeAction({ tool: "fetcher", input: {}, id: "tc1" });
+      expect(result).toEqual({ ok: true });
+      expect(mergedSignal).toBeInstanceOf(AbortSignal);
+      expect(mergedSignal).not.toBe(localController.signal);
+      localController.abort(new DOMException("Aborted", "AbortError"));
+      expect(mergedSignal.aborted).toBe(true);
+    } finally {
+      Object.defineProperty(AbortSignal, "any", { value: originalAny, configurable: true });
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("still passes a signal when timeout_ms is omitted", async () => {
+    let seenSignal = null;
+    const executeFn = vi.fn(async ({ signal }) => {
+      seenSignal = signal;
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        plain: { execute: executeFn, meta: { kv_access: "none" } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAction({ tool: "plain", input: {}, id: "tc1" });
+
+    expect(result).toEqual({ ok: true });
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 // ── 7. callLLM budget enforcement ──────────────────────────

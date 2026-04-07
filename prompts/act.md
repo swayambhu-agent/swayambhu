@@ -41,7 +41,11 @@ For multi-step autonomous work in a repo or directory — research,
 implementation, investigation, structured writing, or code review —
 prefer `delegate_task` over raw `computer` commands. Use `computer`
 for short bounded shell probes or when you need a very specific
-one-shot command that does not justify delegation.
+one-shot command that does not justify delegation. `delegate_task`
+launches asynchronous background work: do not wait inline for the
+subagent to finish inside this act session. Launch it, then use
+`update_request` with a `pending` note if the work contract should
+stay open until the result returns.
 
 ## Your patterns
 

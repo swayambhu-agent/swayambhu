@@ -1370,7 +1370,42 @@ class Kernel {
 
   // Execute tool function directly (no isolate)
   async _executeTool(toolName, moduleCode, meta, ctx) {
-    ctx.fetch = (...args) => fetch(...args);
+    const timeoutMs = Number.isFinite(Number(meta?.timeout_ms)) ? Number(meta.timeout_ms) : 0;
+    const toolController = new AbortController();
+    let timeoutId = null;
+    let sessionAbortListener = null;
+
+    const sessionSignal = this.sessionAbortController?.signal || null;
+    if (sessionSignal) {
+      if (sessionSignal.aborted) {
+        toolController.abort(sessionSignal.reason);
+      } else {
+        sessionAbortListener = () => toolController.abort(sessionSignal.reason);
+        sessionSignal.addEventListener("abort", sessionAbortListener, { once: true });
+      }
+    }
+
+    ctx.signal = toolController.signal;
+    const mergeSignals = (primary, fallback) => {
+      if (!primary) return fallback;
+      if (!fallback) return primary;
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any([primary, fallback]);
+      }
+      const merged = new AbortController();
+      const forwardAbort = (signal) => {
+        if (!merged.signal.aborted) merged.abort(signal.reason);
+      };
+      if (primary.aborted) forwardAbort(primary);
+      else primary.addEventListener("abort", () => forwardAbort(primary), { once: true });
+      if (fallback.aborted) forwardAbort(fallback);
+      else fallback.addEventListener("abort", () => forwardAbort(fallback), { once: true });
+      return merged.signal;
+    };
+    ctx.fetch = (input, init = {}) => fetch(input, {
+      ...init,
+      signal: mergeSignals(init.signal, toolController.signal),
+    });
 
     if (meta.kv_access && meta.kv_access !== "none") {
       ctx.kv = this._buildScopedKV(toolName, meta.kv_access, meta.kv_write_prefixes);
@@ -1396,7 +1431,29 @@ class Kernel {
 
     const fn = this.TOOLS[toolName].execute || this.TOOLS[toolName].call || this.TOOLS[toolName].check;
     if (!fn) throw new Error(`Tool ${toolName} has no callable function`);
-    return fn(ctx);
+
+    const toolPromise = Promise.resolve().then(() => fn(ctx));
+    void toolPromise.catch(() => {});
+    let timeoutPromise = null;
+    if (timeoutMs > 0) {
+      timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          toolController.abort(new Error(`Tool ${toolName} timed out after ${timeoutMs}ms`));
+          reject(new Error(`Tool ${toolName} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      });
+    }
+
+    try {
+      return await (timeoutPromise
+        ? Promise.race([toolPromise, timeoutPromise])
+        : toolPromise);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (sessionSignal && sessionAbortListener) {
+        sessionSignal.removeEventListener("abort", sessionAbortListener);
+      }
+    }
   }
 
   async buildToolContext(toolName, meta, input) {

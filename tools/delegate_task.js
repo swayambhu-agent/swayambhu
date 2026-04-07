@@ -1,11 +1,10 @@
 import * as start_job from './start_job.js';
-import * as collect_jobs from './collect_jobs.js';
 
 export const meta = {
   secrets: ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "COMPUTER_API_KEY"],
   kv_access: "read_all",
-  kv_write_prefixes: ["job:", "job_result:"],
-  timeout_ms: 60000,
+  kv_write_prefixes: ["job:"],
+  timeout_ms: 30000,
   provider: "compute",
 };
 
@@ -39,7 +38,6 @@ export async function execute(args) {
     objective,
     cwd,
     subagent = "codex",
-    wait_seconds,
     context,
     provider,
     secrets,
@@ -65,31 +63,12 @@ export async function execute(args) {
     config,
   });
 
-  if (!launch?.ok || !wait_seconds) return launch;
-
-  const poll = await collect_jobs.execute({
-    job_id: launch.job_id,
-    wait_seconds,
-    provider,
-    secrets,
-    fetch,
-    kv,
-    config,
-  });
-
-  if (!poll?.ok) {
-    return {
-      ...launch,
-      poll,
-    };
-  }
-
-  const completion = poll.completed?.find((item) => item.job_id === launch.job_id);
-  const resultRecord = completion?.result_key ? await kv.get(completion.result_key) : null;
+  if (!launch?.ok) return launch;
 
   return {
     ...launch,
-    poll,
-    result: resultRecord?.result || null,
+    delegated: true,
+    result: null,
+    note: "Task launched asynchronously. Await job_complete or use collect_jobs in a later session if needed.",
   };
 }
