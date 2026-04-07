@@ -7,6 +7,8 @@ import { resolveRequestContact } from "./lib/session-requests.js";
 // Exception: when a long-running session is already holding the execution lock,
 // fetch may use a narrow inbound fast-path so chat stays responsive.
 
+const DEFAULT_INTERNAL_OUTBOX_RETRY_SECONDS = 300;
+
 // ── LLM tools for communication ───────────────────────
 
 const SEND_TOOL = {
@@ -197,6 +199,15 @@ function makeEmptyConversation() {
   };
 }
 
+function buildInternalDecisionPrompt(turns = []) {
+  if (!turns.length) {
+    return "Review the agent updates above. Use kv_query or kv_manifest if needed, then choose exactly one delivery tool: send, hold, or discard.";
+  }
+  const intents = [...new Set(turns.map((turn) => turn.intent).filter(Boolean))];
+  const intentText = intents.length ? ` Intent hints: ${intents.join(", ")}.` : "";
+  return `Review the agent updates above. Use kv_query or kv_manifest if needed, then choose exactly one delivery tool: send, hold, or discard.${intentText}`;
+}
+
 function appendInboundTurns(conv, inboundTurns) {
   for (const turn of inboundTurns) {
     conv.messages.push({
@@ -321,7 +332,6 @@ export async function runTurn(K, conversationId, turns) {
   appendInboundTurns(conv, inboundTurns);
 
   const hasPendingRequest = relatedRequests.some((request) => request.status === "pending");
-
   // 5. Build tools
   const tools = hasInbound
     ? [REPLY_TOOL, CLARIFY_TOOL, DISCARD_TOOL, TRIGGER_SESSION_TOOL]
@@ -341,20 +351,29 @@ export async function runTurn(K, conversationId, turns) {
   }
 
   for (let i = 0; i < maxRounds && !outcome; i++) {
+    const llmMessages = hasInbound
+      ? conv.messages
+      : [...conv.messages, { role: "user", content: buildInternalDecisionPrompt(internalTurns) }];
     const response = await K.callLLM({
       model,
       effort: chatDefaults.effort || "low",
       maxTokens: chatDefaults.max_output_tokens || 1000,
       systemPrompt,
-      messages: conv.messages,
+      messages: llmMessages,
       tools,
       step: `comms_${conv.turn_count}_r${i}`,
     });
     conv[costKey] += response.cost || 0;
 
     if (!response.toolCalls?.length) {
-      // No tool call — default to hold (safer than send)
-      outcome = { action: "held", reason: "no explicit send/hold/discard tool call" };
+      outcome = hasInbound
+        ? { action: "held", reason: "no explicit send/hold/discard tool call" }
+        : {
+            action: "held",
+            reason: "no explicit send/hold/discard tool call",
+            hold_mode: "retry",
+            retry_after_seconds: chatDefaults.internal_outbox_retry_seconds || DEFAULT_INTERNAL_OUTBOX_RETRY_SECONDS,
+          };
       break;
     }
 
@@ -376,7 +395,12 @@ export async function runTurn(K, conversationId, turns) {
       break;
     }
     if (name === "hold") {
-      outcome = { action: "held", reason: args.reason, release_after: args.release_after || null };
+      outcome = {
+        action: "held",
+        reason: args.reason,
+        release_after: args.release_after || null,
+        hold_mode: args.release_after ? "scheduled" : "manual",
+      };
       break;
     }
     if (name === "discard") {
@@ -450,7 +474,14 @@ export async function runTurn(K, conversationId, turns) {
   }
 
   if (!outcome) {
-    outcome = { action: "held", reason: "tool rounds exhausted without outcome" };
+    outcome = hasInbound
+      ? { action: "held", reason: "tool rounds exhausted without outcome" }
+      : {
+          action: "held",
+          reason: "tool rounds exhausted without outcome",
+          hold_mode: "retry",
+          retry_after_seconds: chatDefaults.internal_outbox_retry_seconds || DEFAULT_INTERNAL_OUTBOX_RETRY_SECONDS,
+        };
   }
 
   // 7. Execute outcome
@@ -564,20 +595,57 @@ export async function ingestInternal(K, event) {
 
 // ── Outbox helpers ────────────────────────────────────
 
-export async function createOutboxItem(K, conversationId, content, reason, releaseAfter, sourceEventKeys) {
+export async function createOutboxItem(K, conversationId, content, reason, releaseAfter, sourceEventKeys, options = {}) {
   const id = `ob_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const holdMode = options.hold_mode || (releaseAfter ? "scheduled" : "manual");
+  const retryAfterSeconds = Number.isFinite(Number(options.retry_after_seconds))
+    ? Number(options.retry_after_seconds)
+    : null;
+  const resolvedReleaseAfter = releaseAfter
+    || (holdMode === "retry"
+      ? new Date(Date.now() + (retryAfterSeconds || DEFAULT_INTERNAL_OUTBOX_RETRY_SECONDS) * 1000).toISOString()
+      : null);
   const item = {
     id,
     conversation_id: conversationId,
     content,
     hold_reason: reason,
-    release_after: releaseAfter || null,
+    release_after: resolvedReleaseAfter,
+    hold_mode: holdMode,
+    retry_after_seconds: holdMode === "retry"
+      ? (retryAfterSeconds || DEFAULT_INTERNAL_OUTBOX_RETRY_SECONDS)
+      : null,
     source_event_keys: sourceEventKeys || [],
     created_at: new Date().toISOString(),
     attempts: 0,
   };
   await K.kvWriteSafe(`outbox:${conversationId}:${id}`, item);
   return item;
+}
+
+export function advanceOutboxItemForRetry(item, now = new Date()) {
+  const attempts = (item?.attempts || 0) + 1;
+  const next = { ...item, attempts };
+  if (next.hold_mode === "retry" || next.hold_mode === "scheduled") {
+    const retrySeconds = next.retry_after_seconds || DEFAULT_INTERNAL_OUTBOX_RETRY_SECONDS;
+    next.release_after = new Date(now.getTime() + retrySeconds * 1000).toISOString();
+  }
+  return next;
+}
+
+export function settleOutboxAttempt(item, result = null, now = new Date()) {
+  if (result?.action === "sent" || result?.action === "discarded") {
+    return { outcome: "delete" };
+  }
+  if (item?.hold_mode === "manual") {
+    return { outcome: "keep", item };
+  }
+
+  const nextItem = advanceOutboxItemForRetry(item, now);
+  if (nextItem.attempts >= 3) {
+    return { outcome: "dead_letter", item: nextItem };
+  }
+  return { outcome: "rewrite", item: nextItem };
 }
 
 export async function checkOutbox(K) {

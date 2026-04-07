@@ -4,7 +4,7 @@
 // In local dev, this is a static hand-written file importing from disk.
 
 import { Kernel } from './kernel.js';
-import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox, trySuppressTrivialAcknowledgement } from './hook-communication.js';
+import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox, trySuppressTrivialAcknowledgement, settleOutboxAttempt } from './hook-communication.js';
 
 // Hook modules (mutable policy — agent can propose changes)
 import * as session from './userspace.js';
@@ -126,7 +126,18 @@ const HOOKS = {
                 if (result.action === "sent" || result.action === "discarded") {
                   await K.deleteEvent(t.idempotency_key);
                 } else if (result.action === "held") {
-                  await createOutboxItem(K, convId, t.content, result.reason, result.release_after, [t.idempotency_key]);
+                  await createOutboxItem(
+                    K,
+                    convId,
+                    t.content,
+                    result.reason,
+                    result.release_after,
+                    [t.idempotency_key],
+                    {
+                      hold_mode: result.hold_mode,
+                      retry_after_seconds: result.retry_after_seconds,
+                    },
+                  );
                   await K.deleteEvent(t.idempotency_key);
                 } else {
                   // error — release claim for retry
@@ -169,20 +180,24 @@ const HOOKS = {
             }
 
             const result = await runTurn(K, item.conversation_id, [turn]);
-            if (result.action === "sent" || result.action === "discarded") {
+            const settlement = settleOutboxAttempt(item, result);
+            if (settlement.outcome === "delete") {
               await K.kvDeleteSafe(item.key);
-            } else {
-              // Still held or error — increment attempts
-              item.attempts = (item.attempts || 0) + 1;
-              if (item.attempts >= 3) {
-                await K.kvDeleteSafe(item.key);
-                await K.karmaRecord({ event: "outbox_dead_lettered", id: item.id });
-              } else {
-                await K.kvWriteSafe(item.key, item);
-              }
+            } else if (settlement.outcome === "dead_letter") {
+              await K.kvDeleteSafe(item.key);
+              await K.karmaRecord({ event: "outbox_dead_lettered", id: item.id });
+            } else if (settlement.outcome === "rewrite") {
+              await K.kvWriteSafe(item.key, settlement.item);
             }
           } catch (err) {
             await K.karmaRecord({ event: "outbox_error", id: item.id, error: err.message });
+            const settlement = settleOutboxAttempt(item);
+            if (settlement.outcome === "dead_letter") {
+              await K.kvDeleteSafe(item.key);
+              await K.karmaRecord({ event: "outbox_dead_lettered", id: item.id });
+            } else if (settlement.outcome === "rewrite") {
+              await K.kvWriteSafe(item.key, settlement.item);
+            }
           }
         }
       },
