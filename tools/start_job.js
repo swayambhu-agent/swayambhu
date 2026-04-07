@@ -170,7 +170,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     }, null, 2)}\nSETTINGS_EOF`,
   ] : [];
 
-  const exitCodePath = type === "custom"
+  const exitCodePath = (type === "custom" || type === "subagent_task")
     ? `'${esc(workdir)}/exit_code'`
     : "exit_code";
   const callbackLine = callbackUrl && callbackSecret

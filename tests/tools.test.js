@@ -1917,6 +1917,7 @@ describe("start_job", () => {
     expect(innerScript).toContain("codex exec - < '/tmp/jobs/");
     expect(innerScript).toContain("--output-last-message '/tmp/jobs/");
     expect(innerScript).toContain("--model 'gpt-5.4'");
+    expect(innerScript).toMatch(/echo \$EXIT > '\/tmp\/jobs\/[^']+\/exit_code'/);
 
     const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
     const record = JSON.parse(kv._store.get(jobKey));
@@ -1951,6 +1952,7 @@ describe("start_job", () => {
     expect(innerScript).toContain("cd '/home/swami/fano/repo' || exit 1");
     expect(innerScript).toContain("claude -p \"$(cat '/tmp/jobs/");
     expect(innerScript).toContain("--output-format json --dangerously-skip-permissions --model 'opus'");
+    expect(innerScript).toMatch(/echo \$EXIT > '\/tmp\/jobs\/[^']+\/exit_code'/);
   });
 
   it("rejects invalid cwd for subagent_task", async () => {
