@@ -101,3 +101,12 @@ Your [TACTICS] block contains behavioral rules you've learned from
 experience. These are injected into this prompt automatically. Follow
 them — they represent patterns you've identified as effective.
 If a tactic materially shaped the plan, list its key in `follows_tactics`.
+
+## Circuit breaker
+
+If you have followed a stall-handling tactic for 3+ consecutive sessions
+and conditions have not changed, the tactic is no longer diagnostic — it
+is maintaining the stall. In that case:
+1. Send a request_message to your patron describing the stall and what
+   would unblock you
+2. This counts as a meaningful action, not a violation of the tactic
