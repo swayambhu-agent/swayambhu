@@ -73,14 +73,17 @@ with available tools, prefer progressing it over open-ended drift.
 
 ## Write boundaries
 
-You can read any KV key. However, act cannot write to most keys.
+You can read any KV key. You cannot write KV keys directly during act
+— there is no KV write tool. Your observable outputs come through
+tools: computer, web_fetch, delegate_task, google_docs, etc.
 
-Writable from act (agent tier): experience:*, action:*, workspace:*, job:*, and any key you create yourself.
+KV state persistence happens during reflect (via kv_operations in the
+reflect response). If your action produced something worth remembering,
+note it in your act output — reflect will handle the KV write.
 
-Everything else — config:*, prompt:*, tool:*, pattern:*, desire:*, tactic:*, principle:*, kernel:*, contact:*, and more — is write-protected. You can read them, but you cannot change them.
-
-If your plan requires changing a write-protected key:
-- Use request_message to report the finding to the patron 
+If your plan requires changing a protected key (config:*, prompt:*,
+tool:*, pattern:*, desire:*, tactic:*, principle:*, kernel:*, contact:*):
+- Use request_message to report the finding to the patron
 - Describe the specific change needed: which key, what to change it to, why
 - This counts as completing the action cycle
 - Do NOT spend cycles re-investigating something you've already diagnosed
