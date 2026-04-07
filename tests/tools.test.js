@@ -2197,6 +2197,83 @@ describe("collect_jobs", () => {
     expect(result.still_running[0].job_id).toBe("j1");
   });
 
+  it("hydrates missing job_result for callback-completed jobs", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1",
+        type: "subagent_task",
+        status: "completed",
+        created_at: new Date().toISOString(),
+        workdir: "/tmp/jobs/j1",
+        config: { ttl_minutes: 120 },
+      }),
+    });
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        if (command.includes("output.json")) {
+          return {
+            ok: true,
+            output: [{
+              data: JSON.stringify({
+                type: "result",
+                result: JSON.stringify({ status: "completed", summary: "Made a useful improvement" }),
+              }),
+            }],
+          };
+        }
+        return { ok: true, output: [] };
+      }),
+    };
+
+    const result = await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
+
+    expect(result.completed).toEqual([{ job_id: "j1", type: "subagent_task", result_key: "job_result:j1" }]);
+    expect(JSON.parse(kv._store.get("job_result:j1"))).toEqual({
+      job_id: "j1",
+      type: "subagent_task",
+      result: { status: "completed", summary: "Made a useful improvement" },
+      meta: {
+        session_id: null,
+        total_cost_usd: null,
+        usage: null,
+        stop_reason: null,
+        duration_ms: null,
+      },
+    });
+    expect(JSON.parse(kv._store.get("job:j1")).result_key).toBe("job_result:j1");
+  });
+
+  it("retries hydration for callback-completed jobs when output fetch fails", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1",
+        type: "subagent_task",
+        status: "completed",
+        created_at: new Date().toISOString(),
+        workdir: "/tmp/jobs/j1",
+        config: { ttl_minutes: 120 },
+      }),
+    });
+    const provider = {
+      call: vi.fn(async () => ({ ok: false, error: "compute unreachable" })),
+    };
+
+    const result = await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
+
+    expect(result.completed).toEqual([]);
+    expect(result.still_running).toEqual([{
+      job_id: "j1",
+      type: "subagent_task",
+      hydration_error: "compute unreachable",
+      result_pending: true,
+    }]);
+    expect(kv._store.has("job_result:j1")).toBe(false);
+    expect(JSON.parse(kv._store.get("job:j1"))).toEqual(expect.objectContaining({
+      id: "j1",
+      status: "completed",
+    }));
+  });
+
   it("expires jobs past TTL", async () => {
     const kv = mockKV({
       "job:j1": JSON.stringify({
