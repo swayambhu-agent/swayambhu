@@ -1733,7 +1733,7 @@ describe("start_job", () => {
       prompt: "test",
       context_keys: [],
       provider, secrets, fetch: vi.fn(), kv,
-      config: { jobs: { ...config.jobs, runner: "claude", runner_model: "opus" } },
+      config: { jobs: { ...config.jobs, runner: "claude", cc_model: "opus" } },
     });
 
     expect(result.ok).toBe(true);
@@ -1742,6 +1742,36 @@ describe("start_job", () => {
     expect(innerScript).toContain("claude -p \"$(cat prompt.txt)\" --output-format json --model 'opus'");
     expect(innerScript).toContain("mkdir -p '/tmp/jobs/");
     expect(innerScript).toContain(".claude/settings.json");
+  });
+
+  it("uses cc_model for Claude cc_analysis even when runner_model is also set", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner: "claude", runner_model: "gpt-5.4", cc_model: "opus" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("--model 'opus'");
+    expect(innerScript).not.toContain("--model 'gpt-5.4'");
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.config.model).toBe("opus");
   });
 
   it("injects path_dirs into inner script", async () => {
@@ -1928,6 +1958,7 @@ describe("start_job", () => {
 
   it("supports subagent_task jobs via Claude Code", async () => {
     let capturedCommand;
+    const kv = mockKV();
     const provider = {
       upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
@@ -1942,8 +1973,8 @@ describe("start_job", () => {
       context_keys: [],
       cwd: "/home/swami/fano/repo",
       subagent: "claude-code",
-      provider, secrets, fetch: vi.fn(), kv: mockKV(),
-      config: { jobs: { ...config.jobs, runner_model: "opus" } },
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner_model: "gpt-5.4", cc_model: "opus" } },
     });
 
     expect(result.ok).toBe(true);
@@ -1953,6 +1984,50 @@ describe("start_job", () => {
     expect(innerScript).toContain("claude -p \"$(cat '/tmp/jobs/");
     expect(innerScript).toContain("--output-format json --dangerously-skip-permissions --model 'opus'");
     expect(innerScript).toMatch(/echo \$EXIT > '\/tmp\/jobs\/[^']+\/exit_code'/);
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.config.model).toBe("opus");
+  });
+
+  it("uses runner-specific models for delegated subagents", async () => {
+    let codexCommand;
+    let claudeCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        if (!codexCommand) codexCommand = command;
+        else claudeCommand = command;
+        return { ok: true, output: [{ data: "24680\r\n" }] };
+      }),
+    };
+
+    await start_job.execute({
+      type: "subagent_task",
+      prompt: "Use codex",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "codex",
+      provider, secrets, fetch: vi.fn(), kv: mockKV(),
+      config: { jobs: { ...config.jobs, runner_model: "gpt-5.4", cc_model: "opus" } },
+    });
+
+    await start_job.execute({
+      type: "subagent_task",
+      prompt: "Use claude",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "claude-code",
+      provider, secrets, fetch: vi.fn(), kv: mockKV(),
+      config: { jobs: { ...config.jobs, runner_model: "gpt-5.4", cc_model: "opus" } },
+    });
+
+    const codexScript = Buffer.from(codexCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/)[1], 'base64').toString('utf8');
+    const claudeScript = Buffer.from(claudeCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/)[1], 'base64').toString('utf8');
+
+    expect(codexScript).toContain("--model 'gpt-5.4'");
+    expect(claudeScript).toContain("--model 'opus'");
+    expect(claudeScript).not.toContain("--model 'gpt-5.4'");
   });
 
   it("rejects invalid cwd for subagent_task", async () => {

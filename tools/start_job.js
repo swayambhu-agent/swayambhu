@@ -13,6 +13,12 @@ export const meta = {
   provider: "compute",
 };
 
+function resolveRunnerModel(runner, jobs = {}) {
+  if (runner === "codex") return jobs.runner_model || jobs.cc_model || "";
+  if (runner === "claude" || runner === "claude-code") return jobs.cc_model || jobs.runner_model || "";
+  return jobs.runner_model || jobs.cc_model || "";
+}
+
 export async function execute({ type, prompt, context_keys, include_code, command, provider, secrets, fetch, kv, config, cwd, subagent = "codex" }) {
   if (!type) return { ok: false, error: "type is required (cc_analysis | subagent_task | custom)" };
   if (!prompt && type !== "custom") return { ok: false, error: "prompt is required" };
@@ -103,7 +109,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   let ccRunner = null;
   if (type === "cc_analysis") {
     ccRunner = jobs.runner || "codex";
-    const model = jobs.runner_model || jobs.cc_model || "";
+    const model = resolveRunnerModel(ccRunner, jobs);
     const modelFlag = model ? ` --model '${esc(model)}'` : "";
     if (ccRunner === "codex") {
       jobCommand = `codex exec - --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox --output-last-message output.json --color never${modelFlag}`;
@@ -118,7 +124,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
       return { ok: false, error: `Invalid cwd for subagent_task: ${cwd}` };
     }
     ccRunner = subagent;
-    const model = jobs.runner_model || jobs.cc_model || "";
+    const model = resolveRunnerModel(ccRunner, jobs);
     const modelFlag = model ? ` --model '${esc(model)}'` : "";
     if (ccRunner === "codex") {
       jobCommand = `cd '${esc(cwd)}' || exit 1\ncodex exec - < '${esc(`${baseDir}/${jobId}/prompt.txt`)}' --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox --output-last-message '${esc(`${baseDir}/${jobId}/output.json`)}' --color never${modelFlag} > '${esc(`${baseDir}/${jobId}/stdout.log`)}' 2> '${esc(`${baseDir}/${jobId}/stderr.log`)}'`;
@@ -236,7 +242,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
       prompt_summary: (prompt || command || '').slice(0, 200),
       context_keys: context_keys || [],
       ttl_minutes: ttlMinutes,
-      ...(ccRunner ? { runner: ccRunner, model: jobs.runner_model || jobs.cc_model || null } : {}),
+      ...(ccRunner ? { runner: ccRunner, model: resolveRunnerModel(ccRunner, jobs) || null } : {}),
       ...(type === "subagent_task" ? { cwd, subagent: ccRunner } : {}),
     },
     ...(callbackSecret ? { callback_secret: callbackSecret, callback_url: callbackUrl } : {}),
