@@ -157,12 +157,8 @@ function buildRequestStatusBlock(requests) {
     }).join("\n");
 }
 
-function buildQueuedWorkAcknowledgement(summary) {
-  const cleaned = String(summary || "").trim();
-  if (!cleaned) {
-    return "Got it. I've queued that for my next work session and will follow up when I have something concrete.";
-  }
-  return `Got it. I've queued this for my next work session: ${cleaned}. I'll follow up when I have something concrete.`;
+function buildQueuedWorkAcknowledgement() {
+  return "Got it. I'm taking this on and will follow up when I have something concrete.";
 }
 
 function parseToolArgs(rawArgs) {

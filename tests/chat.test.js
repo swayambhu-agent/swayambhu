@@ -201,7 +201,7 @@ describe("runTurn", () => {
     const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Look into my projects folder")]);
 
     expect(result.action).toBe("sent");
-    expect(result.message).toContain("queued this for my next work session");
+    expect(result.message).toBe("Got it. I'm taking this on and will follow up when I have something concrete.");
     expect(K.executeToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         function: expect.objectContaining({ name: "trigger_session" }),
@@ -214,7 +214,7 @@ describe("runTurn", () => {
       }),
     );
     expect(K.executeAdapter).toHaveBeenCalledWith("slack", {
-      text: expect.stringContaining("Research the Akash projects folder"),
+      text: "Got it. I'm taking this on and will follow up when I have something concrete.",
       channel: "U084ASKBXB7",
     });
     expect(K.callLLM).toHaveBeenCalledTimes(1);
