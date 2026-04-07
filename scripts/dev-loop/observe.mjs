@@ -5,11 +5,12 @@
 import { execSync, spawn } from "child_process";
 import { join } from "path";
 import { saveRun } from "./state.mjs";
-import { restartServices } from "./services.mjs";
+import { getDefaultServiceUrls, restartServices } from "./services.mjs";
 
 const ROOT = join(import.meta.dirname, "../..");
-const KERNEL_URL = process.env.SWAYAMBHU_KERNEL_URL || "http://localhost:8787";
-const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || "http://localhost:8790";
+const DEFAULT_URLS = getDefaultServiceUrls();
+const KERNEL_URL = process.env.SWAYAMBHU_KERNEL_URL || DEFAULT_URLS.kernelUrl;
+const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || DEFAULT_URLS.dashboardUrl;
 const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test";
 const OBSERVE_TIMEOUT_MS = 900_000; // 15 minutes
 const POLL_INTERVAL_MS = 10_000;

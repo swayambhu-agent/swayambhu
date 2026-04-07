@@ -1763,6 +1763,7 @@ const BUCKET_MAP = [
   [['session_counter', 'cache:session_ids'], 'sessions'],
   [['action:'], 'sessions'],
   [['karma:'], 'sessions'],
+  [['session_request:'], 'requests'],
   [['desire:', 'pattern:', 'experience:', 'tactic:'], 'mind'],
   [['dr:', 'reflect:', 'last_reflect'], 'reflections'],
   [['chat:', 'outbox:', 'conversation_index:'], 'chats'],

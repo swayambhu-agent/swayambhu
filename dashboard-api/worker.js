@@ -99,6 +99,22 @@ function buildOperatorOutputsFromKarma(drKarma = []) {
   return { sOutput, dOutput };
 }
 
+function requestStatusRank(status) {
+  return ({ pending: 0, fulfilled: 1, rejected: 2 }[status] ?? 9);
+}
+
+async function resolveRequesterName(env, request) {
+  const directName = request?.requester?.name || request?.contact_name;
+  if (directName) return directName;
+  const contactId = request?.requester?.type === "contact" ? request?.requester?.id : request?.contact;
+  if (!contactId) return null;
+  try {
+    const contact = await env.KV.get(`contact:${contactId}`, "json");
+    if (contact?.name) return contact.name;
+  } catch {}
+  return contactId;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -390,6 +406,50 @@ export default {
       sessions.sort((a, b) => a.id.localeCompare(b.id));
 
       return json({ sessions });
+    }
+
+    // GET /requests — durable work request list + status summary
+    if (path === "/requests") {
+      const requestKeys = await kvListAll(env.KV, { prefix: "session_request:" });
+      const requests = await Promise.all(
+        requestKeys.map(async (k) => {
+          const value = await env.KV.get(k.name, "json");
+          if (!value) return null;
+          return {
+            key: k.name,
+            id: value.id || k.name.replace("session_request:", ""),
+            source: value.source || null,
+            status: value.status || "pending",
+            summary: value.summary || "",
+            note: value.note || null,
+            result: value.result || null,
+            error: value.error || null,
+            ref: value.ref || null,
+            next_session: value.next_session || null,
+            requester: value.requester || null,
+            requester_name: await resolveRequesterName(env, value),
+            created_at: value.created_at || null,
+            updated_at: value.updated_at || value.created_at || null,
+          };
+        }),
+      );
+
+      const filtered = requests
+        .filter(Boolean)
+        .sort((a, b) => {
+          const rankDiff = requestStatusRank(a.status) - requestStatusRank(b.status);
+          if (rankDiff !== 0) return rankDiff;
+          return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+        });
+
+      const summary = {
+        total: filtered.length,
+        pending: filtered.filter((item) => item.status === "pending").length,
+        fulfilled: filtered.filter((item) => item.status === "fulfilled").length,
+        rejected: filtered.filter((item) => item.status === "rejected").length,
+      };
+
+      return json({ summary, requests: filtered });
     }
 
     // ── Chat helpers ──────────────────────────────────────────

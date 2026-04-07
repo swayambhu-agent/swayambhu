@@ -9,6 +9,7 @@ import { cp, mkdir, readFile, writeFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { STATE_DIR } from './state.mjs';
+import { getDefaultServiceUrls } from './services.mjs';
 import { parseJobOutput } from '../../lib/parse-job-output.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -33,7 +34,8 @@ if (existsSync(envPath)) {
   }
 }
 
-const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || 'http://localhost:8790';
+const DEFAULT_URLS = getDefaultServiceUrls();
+const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || DEFAULT_URLS.dashboardUrl;
 const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || 'test';
 const DEFAULT_REASONING_DIR = process.env.SWAYAMBHU_DR_COMPARE_REASONING_DIR || join(STATE_DIR, 'reasoning');
 const DEFAULT_CLAUDE_MODEL = process.env.SWAYAMBHU_DR_COMPARE_CLAUDE_MODEL || 'opus';

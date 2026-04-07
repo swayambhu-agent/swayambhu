@@ -3,9 +3,11 @@
 
 import { readFile } from "fs/promises";
 import { join } from "path";
+import { getDefaultServiceUrls } from "./services.mjs";
 
 const RUBRIC_PATH = join(import.meta.dirname, "rubric.json");
-const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || "http://localhost:8790";
+const DEFAULT_URLS = getDefaultServiceUrls();
+const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || DEFAULT_URLS.dashboardUrl;
 const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test";
 
 let _rubricCache = null;

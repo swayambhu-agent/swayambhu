@@ -168,4 +168,55 @@ describe("dashboard API", () => {
       deep_reflect_generation: 1,
     });
   });
+
+  it("/requests returns durable request summary sorted by status then recency", async () => {
+    const env = makeEnv({
+      "contact:swk": { name: "Swami Kevala" },
+      "session_request:req_pending": {
+        id: "req_pending",
+        status: "pending",
+        summary: "Inspect the repo for the next improvement",
+        note: "Waiting on delegated task",
+        requester: { type: "contact", id: "swk" },
+        created_at: "2026-04-07T18:00:00.000Z",
+        updated_at: "2026-04-07T18:30:00.000Z",
+        ref: "chat:slack:U123",
+      },
+      "session_request:req_done": {
+        id: "req_done",
+        status: "fulfilled",
+        summary: "Report back with one concrete finding",
+        result: "Found a serialization simplification",
+        requester: { type: "self", id: "self" },
+        created_at: "2026-04-07T17:00:00.000Z",
+        updated_at: "2026-04-07T18:45:00.000Z",
+      },
+      "session_request:req_rejected": {
+        id: "req_rejected",
+        status: "rejected",
+        summary: "Attempt unreachable host",
+        error: "ssh timeout",
+        created_at: "2026-04-07T16:00:00.000Z",
+        updated_at: "2026-04-07T18:10:00.000Z",
+      },
+    });
+
+    const body = await fetchJson("/requests", env);
+    expect(body.summary).toEqual({
+      total: 3,
+      pending: 1,
+      fulfilled: 1,
+      rejected: 1,
+    });
+    expect(body.requests.map((item) => item.id)).toEqual([
+      "req_pending",
+      "req_done",
+      "req_rejected",
+    ]);
+    expect(body.requests[0]).toMatchObject({
+      requester_name: "Swami Kevala",
+      note: "Waiting on delegated task",
+      ref: "chat:slack:U123",
+    });
+  });
 });

@@ -32,6 +32,7 @@ import { spawn, execSync, execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { collectReasoningArtifacts, writeReasoningArtifacts } from "../../lib/reasoning.js";
+import { getDefaultServiceUrls } from './services.mjs';
 
 // Load .env so comms (Slack/email) work without manual `source .env`
 const __root = join(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -68,7 +69,8 @@ const ANALYSIS_EVERY = readNumericArg(args, '--analysis-every', 1);
 const HEARTBEAT_EVERY = readNumericArg(args, '--heartbeat-every', 10);
 const MAX_CYCLES = readNumericArg(args, '--max-cycles', null);
 const NOTIFY_MODE = readStringArg(args, '--notify', 'all');
-const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || 'http://localhost:8790';
+const DEFAULT_URLS = getDefaultServiceUrls();
+const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || DEFAULT_URLS.dashboardUrl;
 const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || 'test';
 
 function readNumericArg(argv, flag, defaultValue) {

@@ -11,7 +11,8 @@ import { STATE_DIR } from "./state.mjs";
 const REPO_ROOT = join(import.meta.dirname, "../..");
 const DEFAULT_STATE_LAB_DIR = process.env.SWAYAMBHU_STATE_LAB_DIR || "/home/swami/swayambhu/state-lab";
 const ACTIVE_UI_PATH = join(DEFAULT_STATE_LAB_DIR, "active-ui.json");
-const DEFAULT_SERVICE_MODE = process.env.SWAYAMBHU_DEV_LOOP_SERVICE_MODE || "default";
+const DEFAULT_SERVICE_MODE = process.env.SWAYAMBHU_DEV_LOOP_SERVICE_MODE
+  || (existsSync(ACTIVE_UI_PATH) ? "state_lab_active" : "default");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -126,4 +127,12 @@ export function getServiceMode() {
 
 export function getActiveServiceConfig() {
   return resolveServiceConfig();
+}
+
+export function getDefaultServiceUrls() {
+  const config = resolveServiceConfig();
+  return {
+    kernelUrl: `http://localhost:${config.kernelPort}`,
+    dashboardUrl: `http://localhost:${config.dashboardPort}`,
+  };
 }

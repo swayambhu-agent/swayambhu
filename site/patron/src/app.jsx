@@ -10,12 +10,14 @@ import ContactsTab from './components/ContactsTab.jsx';
 import KVExplorerTab from './components/KVExplorerTab.jsx';
 import MutationsTab from './components/MutationsTab.jsx';
 import DirectMessageBar from './components/DirectMessageBar.jsx';
+import RequestsTab from './components/RequestsTab.jsx';
 
 export default function App() {
   const [patronKey, setPatronKey] = useState(() => sessionStorage.getItem('patronKey'));
   const [health, setHealth] = useState(null);
   const [mindCounts, setMindCounts] = useState(null);
   const [balances, setBalances] = useState(null);
+  const [requestSummary, setRequestSummary] = useState(null);
   const [countdown, setCountdown] = useState(null);
   const [activeTab, setActiveTab] = useState('timeline');
   const [selectedEntry, setSelectedEntry] = useState(null);
@@ -38,6 +40,7 @@ export default function App() {
     setPatronKey(null);
     setHealth(null);
     setBalances(null);
+    setRequestSummary(null);
   };
 
   // Load health + balances on auth, poll every 10s
@@ -82,12 +85,20 @@ export default function App() {
     } catch {}
   }, [patronKey]);
 
+  const loadRequestSummary = useCallback(async () => {
+    try {
+      const d = await api('/requests', patronKey);
+      setRequestSummary(d.summary || null);
+    } catch {}
+  }, [patronKey]);
+
   // ── Heartbeat: single poll loop replaces all per-tab intervals ──
   const lastPulseN = useRef(-1);
   const inflightRef = useRef({});
   const [sessionsRev, setSessionsRev] = useState(0);
   const [chatsRev, setChatsRev] = useState(0);
   const [reflectionsRev, setReflectionsRev] = useState(0);
+  const [requestsRev, setRequestsRev] = useState(0);
 
   useEffect(() => {
     if (!patronKey) return;
@@ -95,6 +106,7 @@ export default function App() {
     // Load initial data on mount
     loadHealth();
     loadMindCounts();
+    loadRequestSummary();
 
     function getInterval() {
       if (document.hidden) return HB_HIDDEN;
@@ -120,6 +132,10 @@ export default function App() {
         if (changed.has("mind"))         guard("mind", loadMindCounts);
         if (changed.has("reflections"))  setReflectionsRev(r => r + 1);
         if (changed.has("chats"))        setChatsRev(r => r + 1);
+        if (changed.has("requests"))     {
+          setRequestsRev(r => r + 1);
+          guard("requests", loadRequestSummary);
+        }
       } catch {}
     }
 
@@ -135,7 +151,7 @@ export default function App() {
       clearInterval(intervalId);
       document.removeEventListener("visibilitychange", onVisChange);
     };
-  }, [patronKey, loadHealth, loadMindCounts]);
+  }, [patronKey, loadHealth, loadMindCounts, loadRequestSummary]);
 
   // Countdown timer for next session
   useEffect(() => {
@@ -159,6 +175,7 @@ export default function App() {
 
   const tabs = [
     { id: 'timeline', label: 'Runs' },
+    { id: 'requests', label: 'Requests' },
     { id: 'chat', label: 'Chat' },
     { id: 'contacts', label: 'Contacts' },
     { id: 'kv', label: 'Index' },
@@ -206,6 +223,16 @@ export default function App() {
               title={`${mindCounts.patterns} patterns, ${mindCounts.desires} desires, ${mindCounts.experiences} experiences — ${mindCounts.sessionsSinceDr} sessions since last DR`}
             >
               DR:{mindCounts.sessionsSinceDr}
+            </button>
+          )}
+          {requestSummary && (
+            <button
+              type="button"
+              className="cursor-pointer rounded-full border border-amber-900/70 bg-amber-950/20 px-2.5 py-1 text-[11px] text-amber-300 transition hover:border-amber-700 hover:text-amber-200"
+              onClick={() => setActiveTab('requests')}
+              title={`${requestSummary.pending} pending, ${requestSummary.fulfilled} fulfilled, ${requestSummary.rejected} rejected`}
+            >
+              Requests:{requestSummary.pending}
             </button>
           )}
         </div>
@@ -273,6 +300,9 @@ export default function App() {
         </div>
         <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', width: '100%', height: '100%' }}>
           <ChatTab patronKey={patronKey} chatsRev={chatsRev} />
+        </div>
+        <div style={{ display: activeTab === 'requests' ? 'flex' : 'none', width: '100%', height: '100%' }}>
+          <RequestsTab patronKey={patronKey} requestsRev={requestsRev} />
         </div>
         <div style={{ display: activeTab === 'contacts' ? 'flex' : 'none', width: '100%', height: '100%' }}>
           <ContactsTab patronKey={patronKey} />
