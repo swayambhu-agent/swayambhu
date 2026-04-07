@@ -2308,7 +2308,7 @@ describe("update_request", () => {
       emitEvent,
     });
 
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ ok: true, request_id: "req_1", status: "fulfilled" });
     expect(await kv.get("session_request:req_1")).toEqual(
       expect.objectContaining({
         status: "fulfilled",

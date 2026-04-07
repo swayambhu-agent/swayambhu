@@ -8,6 +8,7 @@ import { updatePatternStrength, callInference, embeddingCacheKey, cosineSimilari
 import { renderActPrompt, buildToolSet, formatDesires, formatCircumstances, deriveDebugMode, buildDebugModeNote } from './act.js';
 import { executeReflect } from './reflect.js';
 import { parseJobOutput } from './lib/parse-job-output.js';
+import { applyRequestUpdate, SESSION_REQUEST_STATUSES } from './lib/session-requests.js';
 import { writeReasoningArtifacts } from "./lib/reasoning.js";
 
 // ── Snapshot loaders ────────────────────────────────────────
@@ -183,6 +184,169 @@ function buildPlannerCircumstances(events, balances, crashData, pendingRequests,
   if (capacity) circumstances.capacity = capacity;
   if (wake) circumstances.wake = wake;
   return circumstances;
+}
+
+function selectRequestsForAutoReconcile(pendingRequests = [], respondedRequestIds = new Set()) {
+  const unresolved = pendingRequests.filter((request) => !respondedRequestIds.has(request.id));
+  if (unresolved.length === 0) return [];
+
+  const eventDriven = unresolved.filter((request) => request.from_event);
+  if (eventDriven.length > 0) return eventDriven;
+  if (unresolved.length === 1) return unresolved;
+  return [];
+}
+
+function buildMechanicalRequestFallback({ review, ledger }) {
+  const accomplished = typeof review?.accomplished === "string" ? review.accomplished.trim() : "";
+  const nextGap = typeof review?.next_gap === "string" ? review.next_gap.trim() : "";
+  const finding = Array.isArray(review?.key_findings)
+    ? review.key_findings.find((item) => typeof item === "string" && item.trim())
+    : "";
+  const finalText = typeof ledger?.final_text === "string" ? ledger.final_text.trim() : "";
+
+  const parts = [accomplished || finalText || "Work progressed on the request."];
+  if (finding) parts.push(`Key finding: ${finding}`);
+  if (nextGap) parts.push(`Remaining gap: ${nextGap}`);
+
+  return parts.join(" ").trim().slice(0, 1000);
+}
+
+async function autoReconcileRequests(K, {
+  pendingRequests,
+  respondedRequestIds,
+  plan,
+  ledger,
+  review,
+  defaults,
+  signal,
+}) {
+  const scope = selectRequestsForAutoReconcile(pendingRequests, respondedRequestIds);
+  if (scope.length === 0) return [];
+
+  const progressObserved = !!(
+    ledger?.tool_calls?.length
+    || (typeof ledger?.final_text === "string" && ledger.final_text.trim())
+    || (typeof review?.accomplished === "string" && review.accomplished.trim())
+  );
+  if (!progressObserved) return [];
+
+  const model = await K.resolveModel(
+    defaults?.chat?.model
+      || defaults?.reflect?.model
+      || defaults?.act?.model
+      || "sonnet"
+  );
+
+  const requestSummaries = scope.map((request) => ({
+    id: request.id,
+    summary: request.summary,
+    status: request.status,
+    stale: request.stale || false,
+    from_event: request.from_event || false,
+  }));
+  const ledgerSummary = {
+    action: plan?.action || null,
+    success: plan?.success || null,
+    serves_desires: plan?.serves_desires || [],
+    tool_calls: (ledger?.tool_calls || []).map((call) => ({
+      tool: call.tool,
+      ok: call.ok,
+      output_preview: typeof call.output === "string"
+        ? call.output.slice(0, 240)
+        : JSON.stringify(call.output || {}).slice(0, 240),
+    })),
+    final_text: ledger?.final_text || null,
+  };
+  const reviewSummary = review ? {
+    accomplished: review.accomplished || null,
+    key_findings: review.key_findings || [],
+    next_gap: review.next_gap ?? null,
+    assessment: review.assessment || null,
+  } : null;
+
+  const systemPrompt = [
+    "You reconcile durable work requests after an act session.",
+    "Decide whether each request is now fulfilled, still pending, or rejected.",
+    "Be conservative about rejection. Use fulfilled when the requester-facing ask appears satisfied even if optional follow-up ideas remain.",
+    "Return JSON only: {\"updates\":[{\"request_id\":\"...\",\"status\":\"fulfilled|pending|rejected\",\"result\":\"... optional ...\",\"note\":\"... optional ...\"}]}",
+    "If status is fulfilled, prefer result over note.",
+    "If status is pending, prefer note over result.",
+    "Keep result/note concise and requester-facing. Do not mention internal prompts or tool names unless useful.",
+  ].join("\n");
+
+  let parsed = null;
+  try {
+    const response = await K.callLLM({
+      model,
+      effort: defaults?.chat?.effort || "low",
+      maxTokens: Math.min(defaults?.chat?.max_output_tokens || 1000, 800),
+      systemPrompt,
+      messages: [{
+        role: "user",
+        content: JSON.stringify({
+          requests: requestSummaries,
+          ledger: ledgerSummary,
+          review: reviewSummary,
+        }, null, 2),
+      }],
+      tools: [],
+      step: "request_reconcile",
+      signal,
+      json: true,
+    });
+    parsed = response.parsed;
+  } catch (err) {
+    if (err?.name !== "AbortError") {
+      await K.karmaRecord({ event: "request_reconcile_failed", error: err.message });
+    }
+  }
+
+  const updates = Array.isArray(parsed?.updates) ? parsed.updates : [];
+  const applied = [];
+
+  for (const request of scope) {
+    const modelUpdate = updates.find((update) => update?.request_id === request.id);
+    const status = SESSION_REQUEST_STATUSES.has(modelUpdate?.status)
+      ? modelUpdate.status
+      : "pending";
+    const fallback = buildMechanicalRequestFallback({ review, ledger });
+    const result = typeof modelUpdate?.result === "string" && modelUpdate.result.trim()
+      ? modelUpdate.result.trim().slice(0, 1000)
+      : status === "fulfilled"
+        ? fallback
+        : undefined;
+    const note = typeof modelUpdate?.note === "string" && modelUpdate.note.trim()
+      ? modelUpdate.note.trim().slice(0, 1000)
+      : status === "pending"
+        ? fallback
+        : undefined;
+
+    const outcome = await applyRequestUpdate({
+      requestKey: request.key,
+      existing: request,
+      status,
+      note,
+      result,
+      kv: {
+        put: async (key, value) => K.kvWriteSafe(key, value, { unprotected: true }),
+      },
+      emitEvent: K.emitEvent.bind(K),
+    });
+
+    if (outcome.ok) {
+      respondedRequestIds.add(request.id);
+      applied.push({ request_id: request.id, status });
+    }
+  }
+
+  if (applied.length > 0) {
+    await K.karmaRecord({
+      event: "requests_auto_reconciled",
+      updates: applied,
+    });
+  }
+
+  return applied;
 }
 
 // ── Embedding cache helper ───────────────────────────────────
@@ -1121,6 +1285,18 @@ async function actCycle(K, { crashData, balances, events }) {
 
       // 6f. Memory writes
       await writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+
+      if (pendingRequests.length) {
+        await autoReconcileRequests(K, {
+          pendingRequests,
+          respondedRequestIds,
+          plan,
+          ledger,
+          review,
+          defaults,
+          signal: cycleAbortController.signal,
+        });
+      }
 
       cyclesRun++;
 

@@ -189,6 +189,102 @@ describe("session with empty desires", () => {
     );
   });
 
+  it("auto-reconciles an unambiguously handled pending request when act forgets update_request", async () => {
+    K = makeMockK({
+      "session_request:req_1": {
+        id: "req_1",
+        contact: "swami_kevala",
+        summary: "Inspect the repo and make one meaningful improvement",
+        status: "pending",
+        created_at: "2026-04-07T00:00:00.000Z",
+        updated_at: "2026-04-07T00:00:00.000Z",
+        ref: "chat:slack:U084ASKBXB7",
+        result: null,
+        error: null,
+        next_session: null,
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        chat: { model: "test-model", effort: "low", max_output_tokens: 400 },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+
+    K.callLLM = vi.fn(async (opts) => {
+      if (opts.step === "plan") {
+        return llmResp(JSON.stringify({
+          action: "inspect_repo",
+          success: "one meaningful repo improvement is completed",
+          serves_desires: [],
+          follows_tactics: [],
+          defer_if: [],
+        }))(opts);
+      }
+      if (opts.step === "review") {
+        return llmResp(JSON.stringify({
+          assessment: "success",
+          accomplished: "Implemented one concrete repository improvement and verified it.",
+          key_findings: ["The repo had an obvious quality issue that was fixed."],
+          next_gap: null,
+          narrative: "The requested improvement was completed.",
+        }))(opts);
+      }
+      if (opts.step === "request_reconcile") {
+        return llmResp(JSON.stringify({
+          updates: [{
+            request_id: "req_1",
+            status: "fulfilled",
+            result: "I completed one concrete improvement in the repo and verified the change.",
+          }],
+        }))(opts);
+      }
+      return llmResp("{}")(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Implemented the improvement." });
+      return { response: { content: "Implemented the improvement.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{ type: "session_request", ref: "session_request:req_1" }],
+      schedule: {},
+    });
+
+    expect(await K.kvGet("session_request:req_1")).toEqual(
+      expect.objectContaining({
+        status: "fulfilled",
+        result: "I completed one concrete improvement in the repo and verified the change.",
+      }),
+    );
+    expect(K.emitEvent).toHaveBeenCalledWith(
+      "session_response",
+      expect.objectContaining({
+        contact: "swami_kevala",
+        ref: "session_request:req_1",
+        status: "fulfilled",
+      }),
+    );
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "requests_auto_reconciled",
+        updates: [{ request_id: "req_1", status: "fulfilled" }],
+      }),
+    );
+    expect(K.karmaRecord).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "unaddressed_requests",
+        request_ids: ["req_1"],
+      }),
+    );
+  });
+
   it("wakes the first desire-driven session immediately after bootstrap DR applies", async () => {
     vi.useFakeTimers();
     const now = new Date("2026-04-06T12:00:00.000Z");
