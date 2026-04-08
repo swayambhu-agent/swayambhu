@@ -58,11 +58,13 @@ function resolveServiceConfig() {
 function spawnManagedStart(config, { resetAllState = false } = {}) {
   const logFd = openSync(config.logPath, "a");
   const commonEnv = { ...process.env };
+  const jobsBaseUrlOverride = process.env.SWAYAMBHU_DEV_LOOP_JOBS_BASE_URL;
   let child;
 
   if (config.mode === "state_lab_active") {
     const args = ["scripts/state-lab.mjs", "start", config.branch, "--no-governor"];
     if (resetAllState) args.push("--reset-all-state", "--yes");
+    if (resetAllState && jobsBaseUrlOverride) args.push("--set", `jobs.base_url=${jobsBaseUrlOverride}`);
     child = spawn("node", args, {
       cwd: REPO_ROOT,
       env: commonEnv,
@@ -72,6 +74,7 @@ function spawnManagedStart(config, { resetAllState = false } = {}) {
   } else {
     const args = ["scripts/start.sh", "--no-governor"];
     if (resetAllState) args.push("--reset-all-state", "--yes");
+    if (resetAllState && jobsBaseUrlOverride) args.push("--set", `jobs.base_url=${jobsBaseUrlOverride}`);
     child = spawn("bash", args, {
       cwd: REPO_ROOT,
       env: commonEnv,

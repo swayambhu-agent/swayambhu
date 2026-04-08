@@ -234,6 +234,18 @@ describe("computer", () => {
     expect(f.mock.calls[0][0]).toContain("wait=120");
   });
 
+  it("uses config.jobs.base_url when provided", async () => {
+    const f = mockFetch({ status: "completed", exit_code: 0, output: "", id: "p2" });
+    await computer.execute({
+      command: "pwd",
+      secrets,
+      fetch: f,
+      provider: compute,
+      config: { jobs: { base_url: "http://127.0.0.1:8080" } },
+    });
+    expect(f.mock.calls[0][0]).toContain("http://127.0.0.1:8080/execute?wait=60");
+  });
+
   it("returns error when command is missing", async () => {
     const result = await computer.execute({ secrets, fetch: vi.fn(), provider: compute });
     expect(result).toEqual({ ok: false, error: "command is required" });
