@@ -295,10 +295,23 @@ export async function evaluateAction(K, ledger, desires, patterns, config, signa
     const resolved = [];
     const ambiguous = [];
 
+    // DeBERTa NLI misclassifies conditional patterns ("when X, Y") as contradictions
+    // because it lacks nuance for conditional logic. Escalate these to LLM (Tier 3).
+    const CONDITIONAL_MARKERS = /\b(when|if|while|after|during|unless)\b/i;
+    const HIGH_CONTRADICTION_THRESHOLD = 0.8;
+
     for (const r of nliResp.results) {
       const pair = pairMap[r.id];
       if (!pair) continue;
       const maxScore = Math.max(r.scores.entailment, r.scores.contradiction, r.scores.neutral);
+
+      if (r.label === 'contradiction'
+          && r.scores.contradiction >= HIGH_CONTRADICTION_THRESHOLD
+          && CONDITIONAL_MARKERS.test(pair.text)) {
+        ambiguous.push(pair);
+        continue;
+      }
+
       if (maxScore >= config.ambiguity_threshold) {
         resolved.push({
           ...pair,
