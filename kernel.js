@@ -1359,6 +1359,12 @@ class Kernel {
     return resolved;
   }
 
+  async _resolveLLMSecret(name) {
+    if (this.env[name] !== undefined) return this.env[name];
+    const value = await this.kvGet(`secret:${name}`);
+    return value !== null ? value : undefined;
+  }
+
   // Load tool module from statically compiled TOOLS
   async _loadTool(toolName) {
     const mod = this.TOOLS[toolName];
@@ -1669,7 +1675,8 @@ class Kernel {
 
       const secrets = {};
       for (const name of (mod.meta?.secrets || [])) {
-        if (this.env[name] !== undefined) secrets[name] = this.env[name];
+        const value = await this._resolveLLMSecret(name);
+        if (value !== undefined) secrets[name] = value;
       }
 
       const result = await fn({
@@ -1723,12 +1730,14 @@ class Kernel {
     }
     const timeout = setTimeout(() => controller.abort(), 60_000);
     let resp, data;
+    const openRouterApiKey = await this._resolveLLMSecret("OPENROUTER_API_KEY");
+    if (!openRouterApiKey) throw new Error("Missing OPENROUTER_API_KEY in env or KV");
     try {
       resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         signal: controller.signal,
         headers: {
-          "Authorization": `Bearer ${this.env.OPENROUTER_API_KEY}`,
+          "Authorization": `Bearer ${openRouterApiKey || ""}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(body),

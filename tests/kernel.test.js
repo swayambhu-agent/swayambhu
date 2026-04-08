@@ -433,6 +433,35 @@ describe("callWithCascade", () => {
     );
   });
 
+  it("uses a KV-backed LLM secret when env is missing", async () => {
+    const mockCall = vi.fn(async () => ({
+      content: "provider response",
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    }));
+    const { kernel } = makeKernel({
+      "secret:OPENROUTER_API_KEY": JSON.stringify("kv-test-key"),
+    }, {
+      PROVIDERS: {
+        'provider:llm': { call: mockCall, meta: { secrets: ["OPENROUTER_API_KEY"] } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.callWithCascade({
+      model: "test-model",
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 100,
+    }, "test_step");
+
+    expect(result.ok).toBe(true);
+    expect(result.tier).toBe("compiled");
+    expect(mockCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secrets: { OPENROUTER_API_KEY: "kv-test-key" },
+      })
+    );
+  });
+
   it("passes the same signal to the compiled provider", async () => {
     const mockCall = vi.fn(async ({ signal, fetch }) => {
       await fetch("https://provider.test");
@@ -516,10 +545,15 @@ describe("callWithCascade", () => {
 
   it("lets the hardcoded fallback abort on the parent signal", async () => {
     const { kernel } = makeKernel();
+    kernel.env.OPENROUTER_API_KEY = "test-key";
     const originalFetch = globalThis.fetch;
     const controller = new AbortController();
     const abortError = new DOMException("Aborted", "AbortError");
     globalThis.fetch = vi.fn((_input, init = {}) => new Promise((_, reject) => {
+      if (init.signal.aborted) {
+        reject(abortError);
+        return;
+      }
       init.signal.addEventListener("abort", () => reject(abortError), { once: true });
     }));
 
@@ -565,6 +599,46 @@ describe("callWithCascade", () => {
       expect(result.ok).toBe(true);
       expect(result.tier).toBe("hardcoded");
       expect(result.content).toBe("fallback ok");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("uses a KV-backed LLM secret in the hardcoded fallback when env is missing", async () => {
+    const { kernel } = makeKernel({
+      "secret:OPENROUTER_API_KEY": JSON.stringify("kv-test-key"),
+    }, {
+      PROVIDERS: {
+        'provider:llm': { call: vi.fn(async () => { throw new Error("broken"); }), meta: {} },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "fallback ok", tool_calls: null } }],
+        usage: { prompt_tokens: 5, completion_tokens: 3 },
+      }),
+    }));
+    try {
+      const result = await kernel.callWithCascade({
+        model: "test-model",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+      }, "test_step");
+
+      expect(result.ok).toBe(true);
+      expect(result.tier).toBe("hardcoded");
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://openrouter.ai/api/v1/chat/completions",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer kv-test-key",
+          }),
+        }),
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }

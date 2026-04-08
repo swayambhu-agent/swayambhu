@@ -244,6 +244,9 @@ await put("dr:state:1", {
 
 console.log("--- Secrets ---");
 await put("secret:inference", "test-secret", "text", "Shared auth token for inference server (local dev)");
+if (process.env.OPENROUTER_API_KEY) {
+  await put("secret:OPENROUTER_API_KEY", process.env.OPENROUTER_API_KEY, "text", "OpenRouter API key for local offline runs");
+}
 
 // ── Skills (from skills/*.json + skills/*.md) ─────────────────
 

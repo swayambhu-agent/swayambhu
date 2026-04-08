@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start Swayambhu dev environment.
-# Usage: source .env && bash scripts/start.sh [options]
+# Usage: bash scripts/start.sh [options]
 #
 # Options:
 #   --trigger               Trigger a session after services are ready
@@ -26,6 +26,13 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
 
 STATE_DIR="${SWAYAMBHU_PERSIST_DIR:-.wrangler/shared-state}"
 STATE_DIR="$(realpath -m "$STATE_DIR")"
