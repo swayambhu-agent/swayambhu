@@ -27,10 +27,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [[ -f .env ]]; then
+ENV_FILE="${SWAYAMBHU_ENV_FILE:-.env}"
+if [[ ! -f "$ENV_FILE" ]]; then
+  GIT_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$GIT_COMMON_DIR" ]]; then
+    SHARED_ENV_FILE="$(dirname "$GIT_COMMON_DIR")/.env"
+    if [[ -f "$SHARED_ENV_FILE" ]]; then
+      ENV_FILE="$SHARED_ENV_FILE"
+    fi
+  fi
+fi
+
+if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1091
-  source .env
+  source "$ENV_FILE"
   set +a
 fi
 
