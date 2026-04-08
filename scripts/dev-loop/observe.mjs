@@ -100,6 +100,8 @@ export async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_M
   } = deps;
   const deadline = Date.now() + timeoutMs;
   const beforeSet = new Set(beforeIds);
+  const beforeExecutions = await readLastExecutionsFn();
+  const beforeExecutionSet = new Set(beforeExecutions.map((execution) => execution.id));
 
   // Phase 1: poll cache:session_ids for a new session ID (session started)
   let newId = null;
@@ -109,6 +111,14 @@ export async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_M
     if (newId) {
       stdout.write("\n");
       log(`[OBSERVE] Session started: ${newId}`);
+      break;
+    }
+    const executions = await readLastExecutionsFn();
+    const execution = executions.find((entry) => !beforeExecutionSet.has(entry.id));
+    if (execution) {
+      newId = execution.id;
+      stdout.write("\n");
+      log(`[OBSERVE] Execution started without session cache entry: ${newId}`);
       break;
     }
     const elapsedSec = Math.round((timeoutMs - (deadline - Date.now())) / 1000);
