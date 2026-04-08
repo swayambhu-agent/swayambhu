@@ -339,4 +339,101 @@ describe("inbound fast path", () => {
     expect(karma.some((entry) => entry.event === "comms_inbound_event_settled_after_immediate_triage")).toBe(false);
     expect(karma.some((entry) => entry.event === "deferred_processor_error")).toBe(false);
   });
+
+  it("delivers fulfilled request follow-ups through deferred comms", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true }),
+    }));
+    globalThis.fetch = fetchMock;
+
+    const llmSpy = vi.spyOn(Kernel.prototype, "callLLM").mockResolvedValue({
+      content: null,
+      cost: 0.001,
+      usage: {},
+      toolCalls: [
+        {
+          id: "tc_send_1",
+          function: {
+            name: "send",
+            arguments: JSON.stringify({ message: "I reviewed the repo and completed the requested improvement." }),
+          },
+        },
+      ],
+    });
+    const tickSpy = vi.spyOn(userspace, "run").mockResolvedValue();
+
+    const env = makeEnv({
+      "config:defaults": {
+        chat: {
+          model: "sonnet",
+          effort: "low",
+          max_cost_per_conversation: 0.5,
+          max_output_tokens: 1000,
+          max_history_messages: 40,
+        },
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model", max_output_tokens: 1000 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
+        schedule: { interval_seconds: 21600 },
+        execution: { max_steps: { act: 1, reflect: 1, deep_reflect: 1 } },
+      },
+      "config:event_handlers": {
+        handlers: {},
+        deferred: { session_response: ["comms"] },
+      },
+      "chat:slack:U123": {
+        id: "chat:slack:U123",
+        reply_target: { platform: "slack", channel: "U123", thread_ts: null },
+        messages: [
+          { role: "user", content: "Please review the repo.", ts: "2026-04-08T09:00:00.000Z" },
+        ],
+      },
+      "conversation_index:swami_kevala": "chat:slack:U123",
+      "session_request:req_123": {
+        id: "req_123",
+        contact: "swami_kevala",
+        summary: "Review the repo and make one meaningful improvement",
+        status: "fulfilled",
+        result: "I reviewed the repo and completed the requested improvement.",
+        updated_at: "2026-04-08T10:00:00.000Z",
+        ref: "chat:slack:U123",
+      },
+      "event:000000000000003:session_response:test": {
+        type: "session_response",
+        key: "event:000000000000003:session_response:test",
+        idempotency_key: "event:000000000000003:session_response:test",
+        ref: "session_request:req_123",
+        contact: "swami_kevala",
+        status: "fulfilled",
+        timestamp: "2026-04-08T10:00:01.000Z",
+      },
+    });
+
+    try {
+      await worker.scheduled({}, env, { waitUntil() {} });
+    } finally {
+      llmSpy.mockRestore();
+      tickSpy.mockRestore();
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(env.KV._store.has("event:000000000000003:session_response:test")).toBe(false);
+
+    const conv = JSON.parse(env.KV._store.get("chat:slack:U123"));
+    expect(conv.messages.at(-1)).toEqual(
+      expect.objectContaining({
+        role: "assistant",
+        content: "I reviewed the repo and completed the requested improvement.",
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://slack.com/api/chat.postMessage",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
 });
