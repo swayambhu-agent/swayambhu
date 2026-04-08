@@ -76,7 +76,7 @@ describe("runTurn", () => {
 
     expect(result.action).toBe("sent");
     expect(result.reason).toBe("request_queued");
-    expect(result.message).toBe("I received your message and will follow up shortly.");
+    expect(result.message).toBe("Got it. I'm taking this on and will follow up when I have something concrete.");
     expect(K.executeToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         function: expect.objectContaining({ name: "trigger_session" }),
@@ -233,14 +233,14 @@ describe("runTurn", () => {
     expect(K.executeAdapter).not.toHaveBeenCalled();
   });
 
-  it("executes trigger_session through the kernel tool path and auto-acknowledges", async () => {
-    K.callLLM = vi.fn().mockResolvedValueOnce(makeLLMResponse('{"action":"queue_work","summary":"Research the Akash projects folder"}'));
+  it("executes trigger_session through the kernel tool path and uses the model-provided acknowledgement", async () => {
+    K.callLLM = vi.fn().mockResolvedValueOnce(makeLLMResponse('{"action":"queue_work","summary":"Research the Akash projects folder","ack":"I’ll look through your projects folder and report back with what stands out."}'));
     K.executeToolCall = vi.fn(async () => ({ ok: true, request_id: "req_1" }));
 
     const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Look into my projects folder")]);
 
     expect(result.action).toBe("sent");
-    expect(result.message).toBe("Got it. I'm taking this on and will follow up when I have something concrete.");
+    expect(result.message).toBe("I’ll look through your projects folder and report back with what stands out.");
     expect(K.executeToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         function: expect.objectContaining({ name: "trigger_session" }),
@@ -253,10 +253,24 @@ describe("runTurn", () => {
       }),
     );
     expect(K.executeAdapter).toHaveBeenCalledWith("slack", {
-      text: "Got it. I'm taking this on and will follow up when I have something concrete.",
+      text: "I’ll look through your projects folder and report back with what stands out.",
       channel: "U084ASKBXB7",
     });
     expect(K.callLLM).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries inbound triage when queue_work omits the acknowledgement", async () => {
+    K.callLLM = vi.fn()
+      .mockResolvedValueOnce(makeLLMResponse('{"action":"queue_work","summary":"Research the Akash projects folder"}'))
+      .mockResolvedValueOnce(makeLLMResponse('{"action":"queue_work","summary":"Research the Akash projects folder","ack":"I’ll dig into your projects folder and come back with a clear next step."}'));
+    K.executeToolCall = vi.fn(async () => ({ ok: true, request_id: "req_retry" }));
+
+    const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Look into my projects folder")]);
+
+    expect(result.action).toBe("sent");
+    expect(result.message).toBe("I’ll dig into your projects folder and come back with a clear next step.");
+    expect(K.callLLM).toHaveBeenCalledTimes(2);
+    expect(K.executeToolCall).toHaveBeenCalledTimes(1);
   });
 
   it("injects related request status into inbound system prompt", async () => {

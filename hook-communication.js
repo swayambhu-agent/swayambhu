@@ -165,8 +165,19 @@ function buildRequestStatusBlock(requests) {
     }).join("\n");
 }
 
-function buildQueuedWorkAcknowledgement() {
-  return "Got it. I'm taking this on and will follow up when I have something concrete.";
+function buildQueuedWorkAcknowledgement(summary) {
+  const generic = "Got it. I'm taking this on and will follow up when I have something concrete.";
+  const cleaned = String(summary || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[.?!]+$/g, "")
+    .replace(/\bmy\b/gi, "your");
+  if (!cleaned || cleaned.length > 120) return generic;
+  if (!/^(research|review|investigate|inspect|explore|check|look|trace|analy[sz]e|audit|map|summari[sz]e|dig|read|work through|go through|find out|understand|follow up on|see what|take forward)\b/i.test(cleaned)) {
+    return generic;
+  }
+  const normalized = cleaned[0].toLowerCase() + cleaned.slice(1);
+  return `I’m taking this on and will follow up once I’ve had a chance to ${normalized}.`;
 }
 
 function isTrivialAcknowledgement(text) {
@@ -276,8 +287,8 @@ function normalizeInboundDecision(decision, fallbackSummary) {
       : fallbackSummary;
     const ack = typeof decision?.ack === "string" && decision.ack.trim()
       ? decision.ack.trim()
-      : buildQueuedWorkAcknowledgement();
-    if (summary) return { action: "queue_work", summary, ack, reason: "request_queued" };
+      : "";
+    if (summary && ack) return { action: "queue_work", summary, ack, reason: "request_queued" };
   }
   if (action === "discard") {
     return {
@@ -299,7 +310,7 @@ function fallbackQueueDecision(turns) {
   return {
     action: "queue_work",
     summary,
-    ack: "I received your message and will follow up shortly.",
+    ack: buildQueuedWorkAcknowledgement(summary),
     reason: "triage_fallback_queue",
   };
 }
@@ -328,7 +339,7 @@ async function runInboundTurn(K, conversationId, turns) {
   const chatPrompt = await K.kvGet("prompt:communication") || "You are in a live communication session. Respond conversationally.";
   const contactContext = contact ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}` : "";
   const modeInstruction = "\n\n[TURN MODE]\nYou are handling a live inbound human message. Chat is triage, not execution. Decide whether to reply conversationally, ask a clarifying question, queue substantive work for the work/session layer, or discard.";
-  const outputInstruction = "\n\n[OUTPUT]\nRespond with ONLY valid JSON in this shape:\n{\"action\":\"reply|clarify|queue_work|discard\",\"message\":\"...\",\"summary\":\"...\",\"ack\":\"...\",\"reason\":\"...\"}\nRules:\n- Use `reply` for direct conversational answers that do not accept work.\n- Use `clarify` when missing detail is needed before work can be queued or answered well.\n- Use `queue_work` when the contact is asking for substantive work. Provide a concise `summary` for the work contract. Optionally include `ack` for the human-facing acknowledgement.\n- Use `discard` only for true no-op acknowledgements or messages that need no reply.\n- Never expose internal mechanics.";
+  const outputInstruction = "\n\n[OUTPUT]\nRespond with ONLY valid JSON in this shape:\n{\"action\":\"reply|clarify|queue_work|discard\",\"message\":\"...\",\"summary\":\"...\",\"ack\":\"...\",\"reason\":\"...\"}\nRules:\n- Use `reply` for direct conversational answers that do not accept work.\n- Use `clarify` when missing detail is needed before work can be queued or answered well.\n- Use `queue_work` when the contact is asking for substantive work. Provide both a concise `summary` for the work contract and a short natural `ack` for the human.\n- The `ack` should sound context-aware and conversational, not templated. Do not expose internal mechanics.\n- Use `discard` only for true no-op acknowledgements or messages that need no reply.\n- Never expose internal mechanics.";
   const systemPrompt = (chatPrompt + contactContext + requestStatusBlock + modeInstruction + outputInstruction).trim();
 
   let outcome = null;
@@ -417,7 +428,7 @@ async function runInboundTurn(K, conversationId, turns) {
         });
         outcome = {
           action: "sent",
-          message: normalized.ack || buildQueuedWorkAcknowledgement(),
+          message: normalized.ack,
           reason: "request_queued",
         };
       }

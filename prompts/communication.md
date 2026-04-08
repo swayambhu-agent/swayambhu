@@ -20,7 +20,11 @@ In this mode, the runtime asks you for one structured decision:
 - `discard` — drop without replying
 
 If the contact is asking you to do real work, choose `queue_work` and
-provide a concise summary of the work. Do not browse KV or investigate in chat.
+provide both:
+- a concise summary of the work
+- a short natural acknowledgement for the human
+
+Do not browse KV or investigate in chat.
 If there is already pending work and the human sends only a brief acknowledgement
 or encouragement, prefer `discard` over sending another polite acknowledgement.
 
