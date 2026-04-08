@@ -35,6 +35,12 @@ console.log("=== Seeding local KV ===\n");
 
 console.log("--- Config ---");
 
+const defaultsConfig = readJSON("config/defaults.json");
+if (process.env.SWAYAMBHU_DEV_LOOP_JOBS_BASE_URL) {
+  defaultsConfig.jobs = defaultsConfig.jobs || {};
+  defaultsConfig.jobs.base_url = process.env.SWAYAMBHU_DEV_LOOP_JOBS_BASE_URL;
+}
+
 const configMap = {
   "config:defaults":            "config/defaults.json",
   "config:models":              "config/models.json",
@@ -46,7 +52,8 @@ const configMap = {
 };
 
 for (const [key, file] of Object.entries(configMap)) {
-  await put(key, readJSON(file), "json", file);
+  const value = key === "config:defaults" ? defaultsConfig : readJSON(file);
+  await put(key, value, "json", file);
 }
 
 // Identity
@@ -228,7 +235,7 @@ for (const [key, value] of Object.entries(seedPatterns)) {
 console.log("--- Session Schedule ---");
 await put("session_schedule", {
   next_session_after: new Date(Date.now() - 1000).toISOString(),
-  interval_seconds: readJSON("config/defaults.json").schedule?.interval_seconds || 21600,
+  interval_seconds: defaultsConfig.schedule?.interval_seconds || 21600,
 }, "json", "Session schedule — seeded in the past for immediate first session");
 
 // ── DR lifecycle state ────────────────────────────────────────
