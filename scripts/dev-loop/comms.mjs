@@ -23,9 +23,15 @@ export function formatApprovalMessage({ id, summary, blastRadius, evidence, chal
 
 // Match both old format (devloop-...) and new short IDs (5 alphanum chars)
 const REPLY_RE = /^\s*(APPROVE|REJECT)\s+([\w-]+)(?:\s+(.+))?\s*$/i;
+const DEBUG_RE = /^\s*debug\s+([\s\S]+)$/i;
 
 export function parseReply(text) {
   if (!text) return null;
+  // Check for debug messages first
+  const debugMatch = text.match(DEBUG_RE);
+  if (debugMatch) {
+    return { action: "DEBUG", id: `debug-${Date.now()}`, message: debugMatch[1].trim(), source: "slack" };
+  }
   // Check each line — reply might be buried in an email thread
   for (const line of text.split("\n")) {
     const m = line.match(REPLY_RE);

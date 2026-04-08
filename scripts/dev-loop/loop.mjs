@@ -531,8 +531,65 @@ async function appendOvernightLog({
 
 // ── Approval processing ──────────────────────────────────
 
-async function processApprovals(state) {
+async function processDebugMessages(state) {
   const replies = await checkApprovals(state);
+  const debugMsgs = replies.filter(r => r.action === 'DEBUG');
+  if (!debugMsgs.length) return replies.filter(r => r.action !== 'DEBUG');
+
+  for (const msg of debugMsgs) {
+    console.log(`[DEBUG] Received: ${msg.message.slice(0, 100)}`);
+    state.processed_reply_ids.push(msg.id);
+
+    try {
+      // Spawn a quick CC process to answer the debug question
+      const debugPrompt = [
+        `The patron sent a debug message via Slack: "${msg.message}"`,
+        '',
+        `Answer concisely (under 200 words). You have access to:`,
+        `- KV state via dashboard API at http://localhost:8790 (header: X-Patron-Key: test)`,
+        `- Dev loop state at ${STATE_DIR}`,
+        `- Agent source code in the current directory`,
+        '',
+        `After answering, write ONLY your response text to stdout. No JSON wrapping.`,
+      ].join('\n');
+
+      const child = spawn('claude', [
+        '-p', debugPrompt,
+        '--dangerously-skip-permissions',
+        '--output-format', 'text',
+        '--no-session-persistence',
+        '--model', 'sonnet',
+      ], { cwd: __root, env: { ...process.env } });
+
+      let stdout = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      await new Promise(resolve => {
+        const timer = setTimeout(() => { child.kill('SIGTERM'); resolve(); }, 120_000);
+        child.on('close', () => { clearTimeout(timer); resolve(); });
+        child.on('error', () => { clearTimeout(timer); resolve(); });
+      });
+
+      const response = stdout.trim().slice(0, 2000) || '(no response generated)';
+      const slackDm = rubric.notifications?.slack_dm;
+      await sendSlack(`[DEBUG] ${response}`, slackDm ? { channel: slackDm } : undefined);
+      console.log(`[DEBUG] Response sent`);
+    } catch (e) {
+      console.log(`[DEBUG] Failed: ${e.message}`);
+    }
+  }
+
+  await saveState(STATE_DIR, state);
+  return replies.filter(r => r.action !== 'DEBUG');
+}
+
+async function processApprovals(state) {
+  // Process debug messages first, return remaining non-debug replies
+  let replies;
+  try {
+    replies = await processDebugMessages(state) || [];
+  } catch {
+    replies = await checkApprovals(state);
+  }
   if (!replies.length) return;
 
   const pending = await loadQueue(STATE_DIR, 'pending');

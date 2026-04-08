@@ -417,11 +417,14 @@ export default {
     const inbound = adapterMod.parseInbound(body);
     if (!inbound) return new Response("OK", { status: 200 });
 
-    // Filter out dev-loop approval replies — these are infrastructure, not agent inbound.
-    // Only filter short messages (under 50 chars) that look like bare approval commands.
-    // Longer messages are likely real conversations that happen to start with these words.
+    // Filter out dev-loop messages — these are infrastructure, not agent inbound.
+    // approve/reject: short approval commands for dev-loop proposals
+    // debug: messages addressed to the dev loop operator, not the agent
     if (inbound.text && inbound.text.trim().length < 50 &&
         /^\s*(approve|reject)\s+[a-z2-9]{5}\b/i.test(inbound.text)) {
+      return new Response("OK", { status: 200 });
+    }
+    if (inbound.text && /^\s*debug\b/i.test(inbound.text)) {
       return new Response("OK", { status: 200 });
     }
 
