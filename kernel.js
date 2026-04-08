@@ -1216,7 +1216,8 @@ class Kernel {
     // Providers inject secrets from their own meta.secrets, not from toolGrants
     const secrets = {};
     for (const name of (mod.meta?.secrets || [])) {
-      if (this.env[name] !== undefined) secrets[name] = this.env[name];
+      const value = await this._resolveSecretFromEnvOrKV(name);
+      if (value !== undefined) secrets[name] = value;
     }
     for (const name of (mod.meta?.kv_secrets || [])) {
       const val = await this.kvGet(`secret:${name}`);
@@ -1359,7 +1360,7 @@ class Kernel {
     return resolved;
   }
 
-  async _resolveLLMSecret(name) {
+  async _resolveSecretFromEnvOrKV(name) {
     if (this.env[name] !== undefined) return this.env[name];
     const value = await this.kvGet(`secret:${name}`);
     return value !== null ? value : undefined;
@@ -1470,9 +1471,8 @@ class Kernel {
     const grant = this.toolGrants?.[toolName];
     const allowedEnvSecrets = grant?.secrets || [];
     for (const secretName of allowedEnvSecrets) {
-      if (this.env[secretName] !== undefined) {
-        secrets[secretName] = this.env[secretName];
-      }
+      const value = await this._resolveSecretFromEnvOrKV(secretName);
+      if (value !== undefined) secrets[secretName] = value;
     }
     for (const secretName of (meta.kv_secrets || [])) {
       const val = await this.kvGet(`secret:${secretName}`);
@@ -1675,7 +1675,7 @@ class Kernel {
 
       const secrets = {};
       for (const name of (mod.meta?.secrets || [])) {
-        const value = await this._resolveLLMSecret(name);
+        const value = await this._resolveSecretFromEnvOrKV(name);
         if (value !== undefined) secrets[name] = value;
       }
 
@@ -1730,7 +1730,7 @@ class Kernel {
     }
     const timeout = setTimeout(() => controller.abort(), 60_000);
     let resp, data;
-    const openRouterApiKey = await this._resolveLLMSecret("OPENROUTER_API_KEY");
+    const openRouterApiKey = await this._resolveSecretFromEnvOrKV("OPENROUTER_API_KEY");
     if (!openRouterApiKey) throw new Error("Missing OPENROUTER_API_KEY in env or KV");
     try {
       resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {

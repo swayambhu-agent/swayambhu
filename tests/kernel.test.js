@@ -2487,6 +2487,40 @@ describe("executeAdapter contact safety", () => {
     expect(result).toEqual({ content: "response" });
     expect(llmAdapter.call).toHaveBeenCalled();
   });
+
+  it("uses KV-backed provider secrets when env is missing", async () => {
+    const llmAdapter = {
+      meta: { secrets: ["OPENROUTER_API_KEY"] },
+      call: vi.fn(async ({ secrets }) => ({ content: secrets.OPENROUTER_API_KEY })),
+    };
+    const { kernel } = makeKernel({
+      "secret:OPENROUTER_API_KEY": JSON.stringify("kv-test-key"),
+    }, { PROVIDERS: { "provider:llm": llmAdapter } });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAdapter("provider:llm", { model: "claude" });
+    expect(result).toEqual({ content: "kv-test-key" });
+    expect(llmAdapter.call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secrets: { OPENROUTER_API_KEY: "kv-test-key" },
+      }),
+    );
+  });
+});
+
+describe("buildToolContext", () => {
+  it("uses KV-backed granted secrets when env is missing", async () => {
+    const { kernel } = makeKernel({
+      "secret:COMPUTER_API_KEY": JSON.stringify("kv-compute-key"),
+    }, {
+      toolGrants: {
+        computer: { secrets: ["COMPUTER_API_KEY"] },
+      },
+    });
+
+    const ctx = await kernel.buildToolContext("computer", {}, { command: "pwd" });
+    expect(ctx.secrets).toEqual({ COMPUTER_API_KEY: "kv-compute-key" });
+  });
 });
 
 // ── Principles (generic, immutable) ────────────────────────
