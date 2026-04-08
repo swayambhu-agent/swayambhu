@@ -47,7 +47,7 @@ function makeAbortError() {
 }
 
 // ── Empty desires tests ─────────────────────────────────────
-// When d=∅, bootstrap is mechanical: no action without desire.
+// Before DR has applied, d=∅ stays mechanical: no action without desire.
 
 describe("session with empty desires", () => {
   let K;
@@ -185,6 +185,145 @@ describe("session with empty desires", () => {
       expect.objectContaining({
         event: "unaddressed_requests",
         request_ids: ["req_1"],
+      }),
+    );
+  });
+
+  it("runs planning after DR has applied even if desires are still empty", async () => {
+    K = makeMockK({
+      "dr:state:1": {
+        status: "idle",
+        generation: 1,
+        last_applied_session: 1,
+        consecutive_failures: 0,
+      },
+      session_schedule: {
+        next_session_after: new Date(Date.now() - 1000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 3,
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600, exploration_unlock_streak: 3 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      if (callCount === 1) {
+        return llmResp(JSON.stringify({
+          action: "inspect_workspace",
+          success: "one concrete workspace observation is recorded",
+          serves_desires: [],
+          follows_tactics: [],
+          defer_if: [],
+        }))(opts);
+      }
+      if (callCount === 2) {
+        return llmResp(JSON.stringify({
+          assessment: "success",
+          accomplished: "Completed one low-cost bootstrap probe.",
+          key_findings: ["Workspace is reachable and can be inspected."],
+          next_gap: null,
+          narrative: "A bounded bootstrap probe succeeded.",
+        }))(opts);
+      }
+      return llmResp(JSON.stringify({ no_action: true, reason: "done probing" }))(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Bootstrap probe completed." });
+      return { response: { content: "Bootstrap probe completed.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: { wallets: { base: { balance: 50, scope: "general" } } },
+      events: [],
+      schedule: {},
+    });
+
+    expect(K.callLLM).toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "plan_exploratory_without_desire",
+        no_action_streak: 3,
+      }),
+    );
+    expect(K.runAgentTurn).toHaveBeenCalled();
+  });
+
+  it("falls back to bootstrap no_action if post-DR planning still returns no usable plan", async () => {
+    K = makeMockK({
+      "dr:state:1": {
+        status: "idle",
+        generation: 1,
+        last_applied_session: 1,
+        consecutive_failures: 0,
+      },
+      session_schedule: {
+        next_session_after: new Date(Date.now() - 1000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 1,
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600, exploration_unlock_streak: 3 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+
+    K.callLLM = vi.fn(async (opts) => llmResp(JSON.stringify({
+      action: "inspect_workspace",
+      success: "one concrete workspace observation is recorded",
+      serves_desires: [],
+      follows_tactics: [],
+      defer_if: [],
+    }))(opts));
+
+    evaluateAction.mockResolvedValueOnce({
+      sigma: 1,
+      alpha: {},
+      salience: 0,
+      eval_method: "pipeline",
+      tool_outcomes: [],
+      plan_success_criteria: null,
+      patterns_relied_on: [],
+      pattern_scores: {},
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: { wallets: { base: { balance: 50, scope: "general" } } },
+      events: [],
+      schedule: {},
+    });
+
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "bootstrap_planner_fallback_no_action",
+        no_action_streak: 1,
+      }),
+    );
+    expect(K.kvWriteSafe).toHaveBeenCalledWith(
+      expect.stringMatching(/^action:/),
+      expect.objectContaining({
+        kind: "no_action",
+        plan: expect.objectContaining({ no_action: true }),
+      }),
+    );
+    expect(K.kvWriteSafe).toHaveBeenCalledWith(
+      expect.stringMatching(/^experience:/),
+      expect.objectContaining({
+        observation: expect.stringContaining("No action was taken."),
       }),
     );
   });

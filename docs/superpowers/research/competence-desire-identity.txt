@@ -1,0 +1,110 @@
+INPUT
+search_in
+edited
+search_queries
+["text:relationship between desire and competence","text:dangers of narrow identity","\"tweak competence\" w/5 desire","\"responsibility boundary\" | \"normative scope\""]
+OUTPUT
+--- SOURCE BEGIN ---
+ID: engc028336_0
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc028336_0
+TEXT: No one gets anywhere just because they desire it. People get somewhere because they acquire the necessary capability.
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc005247_0
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc005247_0
+TEXT: Don’t Polish, WC:471
+ Needs and Desires
+ Sadhguru
+ Questioner: Sadhguru, I am on spiritual path, Shouldn’t I still fulfill my needs and desires like food, sex, sleep?
+ Sadhguru: You are confusing basic requirements with dispensable desire. Food and sleep are basic requirements. You don’t desire them. When you are tired you sleep, when you are hungry you eat. These are required for your survival.
+ Discounting those two, let’s address the other desire that you mentioned: sexuality. Let’s look at it truthfully. Your desire is not for sex. One part of the fact is that your hormones have hijacked your intelligence. Another part is there is a lot of pleasure attached to sex. Yet another part is you are desperately trying to become one with somebody. But no matter how hard you try, sex does not work this way. You never become one with somebody by fusing your bodies. You will either realize this on your death bed, or you can realize it now and look for other ways that work.
+ Now, you may ask, “Oh, should I give this up?” There is no need to give up anything. As I said earlier, when you were a child, did you have some kind of a doll of your own? Let us say you had a teddy bear or a Barbie doll, or whatever, something that went all over the world with you. Now you had this teddy bear with you. At one point in your life this teddy bear was more important than your mother, your father, God, or all of them put together, yes? At a certain point in your life, at that time, suppose I had told you, “See, this teddy bear is just a bundle of cotton. What is the big deal? Let us throw this nonsense away.” Would you have listened? No way. But as you grew up and gathered more exposure into the ways of the world other things interested you more than your childhood doll, so much so that you probably don’t even know where it is lying now!
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc005290_0
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc005290_0
+TEXT: Q27, WC: 529
+ Personality is a limited identity
+ Sadhguru
+ Personality is a limited identity that you create for yourself, and a large part of it is an unconscious creation. Personality is essential a tool for survival in social situations. This is a wall of protection that you build for yourself, a face, or a façade that you create for yourself. This façade is useful to walk through the world. But at the same time, the walls that you built for self-protection are also the walls of self-imprisonment after a while. When you wish to open these walls but don’t know how, then the walls that you built for self-protection will slowly suffocate you to death – which is happening to people. 
+ If you can consciously put down your personality now for ten minutes, that means the next time when you pick it up, you can pick it up the way you want it. Suppose I drop my clothes, the next time I put something on, I can put on the clothes that I want. It gives me that freedom. Suppose the clothes were stuck to me, now I cannot take these clothes off or wear a new dress. 
+ So, if you can drop the personality down, now when you pick up the pieces, you will pick it up the way you want. You can very easily drop the things that you don’t want and take what you want and build new dimensions to it. Today, you want to be one kind of personality, you can be that. Tomorrow morning you want to be another, you can be that.  
+  
+ Actually, that is how a human being should be because for different dimensions of work and activity, you need a different type of personality. But now you are stuck with one kind of personality and this personality is constantly in friction with the rest of the world. All the friction in the world is two personalities clashing all the time. If you could only make your personality more malleable, more mouldable, now you could make anything out of it.
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc004898_0
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc004898_0
+TEXT: Keywords
+ Mukti/Liberation/Self Realisation, Seeking/Seeker- doubts/Quest, Desire/Need/Ambition/Greed
+ Word Count
+ 228
+ Editor
+ Sravanth  
+ Approver
+ Carina
+ Date of Approval
+ 22 Feb 2011
+ I-Match Tagged
+ N
+ Seeking is different from desiring
+ Sadhguru, Isha Foundation
+ Questioner: Can you please explain the difference between seeking and desiring, in terms of enlightenment or self-realization?
+ Sadhguru: When it comes to enlightenment, the distinction between seeking and desiring is very important in the sense that you can only desire that which you know. You cannot desire that which you do not know; though you do not have it, you still know it. But when you use the word ‘seeking,’ it always comes from ‘you do not know’ which is why you are seeking to know. Seeking comes from a certain state of innocence, a certain void from which you want to come out. 
+ Desiring comes with a foregone conclusion, ‘This is how it is going to be when I get it.’ You have already created the object and are trying to reach toward it. But with seeking, you have not created the object yet. You do not know what it is, you are just finding your way. It is a huge difference. If you have already created the object, it is something you have created and are trying to get. But seeking is just a searching – you do not know what it is, you are just seeking. 
+ If you desire, you have already made a conclusion about what it could be; and that conclusion isn't it. So when it comes to enlightenment, you can only seek. 
+ Sadhguru, a yogi, is a visionary, humanitarian and a prominent spiritual leader. An author, poet, and internationally-renowned speaker, Sadhguru’s wit and piercing logic provoke and widen our perception of life. 
+ www.ishafoundation.org
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc008300_3
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc008300_3
+TEXT: You are tweaking your desire without tweaking your competence, or you may be tweaking your confi... competence but it's coming behind the desire. No, you must just tweak your competence. What you can do may be beyond your desire or it may be little less than that, we don't know. But without tweaking your competence, you're trying to tweak your desire, which causes an unnecessary sense of stress when you do well. Look at (Laughs) the pain of that. You're... You are suffering your well-being. This cannot be excused because (Laughs) our well-being is coming at a great loss and pain to every other creature on the planet. And we are suffering it, simply because we are putting the cart before the horse.
+ Time 08:50 
+ So, you cannot do "being" in the end. Knowing... Doing, knowing and being - no, no, "being" first, how to be. If you don't know how to be, wherever we put you, you will suffer. If you know how to be, whether you work here in San Francisco or you have to work in the Mars, it doesn't matter. Wherever you are, you will know how to do. What will you do? You will function to the best of your intelligence and capability. That's all you can do. In our lives, if we do not do what we cannot do, it's not a (an?) issue. But if we do not do what we can do, we are a disastrous life. That's all we're trying to avoid, that we don't end up not being able to do what we can do. But once you create this unnecessary completely avoidable stress, that your desire is bigger than your competence... Without tweaking the competence, instead of focusing everything and tweaking the competence, we are tweaking the desire.
+ Now, you're creating a situation where there is stress. Stress means you're moving towards incompetence, not towards competence. Any machine on the planet will function at its best only when there is no sense of friction. The least amount of friction means that machine is the most efficient machine.
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc009073_5
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc009073_5
+TEXT: And if we don't cross this, well our intelligence can become our destruction. Our capabilities can become our destruction. Already it is in many ways because if you really look at it (Laughs) just see this - are educated people destroying the world or illiterate people destroying the world? Please see this. It is the educated people who are destroying this world, not illiterate people. It should be the other way around - those who are endowed with knowledge must be building this world, those who are ignorant must destroy the world. But unfortunately it is reverse because those who are educated have limited sense of identity, because of that destruction will happen.
+ Time 13:39 
+ Whether it is of nationality or race or religion or caste or creed or whatever, so it's important when we are talking about nurturing human potential, one fundamental factor is to ensure that human beings have a very large sense of identity, not narrow sense of identity because once they have that, they will become very destructive. This can be just personal identity, "This is me," (Knocks on chest) you know? "My identity is just myself," unfortunately this is being built around the world, "I believe in myself, this is me, I like this, l like that, I love this, I love that" - just about everything. When people say, "I love this kind of food, I love that ki..." see you liking and enjoying things is different, but you getting identified with this, is a problem because for small things... football teams, which football team I support (Laughs)! Not natio... nation or religion, football teams fight themselves to death! Simply because they are not identified with football, they are identified with a particular team. Otherwise whoever kicked the ball well you would have enjoyed it, like I do (Laughs). It doesn't matter which team, whoever kicks the ball really well, you will enjoy it. That's what needs to happen with life - it doesn't matter where you are, how you are, if your identity is not a very limited process then that is the most fundamental ambiance that is necessary to nurture human potential.
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc011712_2
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc011712_2
+TEXT: You are tweaking your desire without tweaking your competence or you may be tweaking your confi... competence but it's coming behind the desire. No, you must just tweak your competence. What you can do, may be beyond your desire or it may be little less than that, we don't know. But without tweaking your competence, you're trying to tweak your desire, which causes an unnecessary sense of stress when you do well. Look at (Laughs) the pain of that. You're... You are suffering your well-being. This cannot be excused because (Laughs) our well-being is coming at a great loss and pain to every other creature on the planet. And we are suffering it, simply because we are putting the cart before the horse.
+ Time 05:56 
+ So, you cannot do, being in the end. Knowing... Doing, knowing and being - no, no. Being first, how to be. If you don't know how to be, wherever we put you, you will suffer. If you know how to be, whether you work here in San Francisco or you have to work in the Mars, it doesn't matter. Wherever you are, you will know how to do. What will you do? You will function to the best of your intelligence and capability. That's all you can do. In our lives, if we do not do what we cannot do, it's not a issue; but if we do not do what we can do, we are a disastrous life. That's all we're trying to avoid, that we don't end up not being able to do what we can do. But once you create this unnecessary, completely avoidable stress, that your desire is bigger than your competence... Without tweaking the competence, instead of focusing everything and tweaking the competence, we are tweaking the desire.
+ Now, you're creating a situation where there is stress. Stress means you're moving towards incompetence, not towards competence. Any machine on the planet will function at its best only when there is no sense of friction. The least amount of friction means that machine is the most efficient machine.
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc004905_1
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc004905_1
+TEXT: Are our identities becoming an impediment or are our identities an empowerment – that is the question?
+  
+ Today, the way we are hugely empowered as super-human beings by science and technology, we could become a disaster in our search for wellbeing, unless we shift to a larger identity. A hundred years ago, probably a large part of the world had identities associated with their ethnicity. In the last hundred years, we have moved this to national identities. Today, it is an express need that people take on a much larger identity of being human, and if it is possible, of just being life. Just being human is not good enough because human life does not happen in isolation from the rest of life.
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc007878_1
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc007878_1
+TEXT: If I do something that's fanciful to me, then there'll (Laughs) be nobody behind because this is all about me. So, young leaders, the most important thing is that you don't tweak your desire in the name of ambition. You tweak your competence. If you keep on tweaking your camp... competence, depending upon the times in which we live, opportunities that come up in front of us, naturally you will fall into the rhythm of what is there. If you have an enormous competence, then I don't think the world can put you down. 
+ Time 03:18 
+ 
+ Notes: NULL
+--- SOURCE END ---
+
+--- SOURCE BEGIN ---
+ID: engc028705_0
+LINK: https://gnanetra.iyc.ishafoundation.org/search?sgcontent=yes&searchin=edited&sorting=none&searchterm=engc028705_0
+TEXT: The problem is just this that people have taken identities like this - somebody is an environmentalist, somebody is a politician, somebody is a spiritual person. I feel what we need is inclusive human beings
+--- SOURCE END ---

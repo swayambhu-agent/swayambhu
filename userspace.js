@@ -1195,9 +1195,20 @@ async function actCycle(K, { crashData, balances, events }) {
     }
 
     // 6b. Plan phase
-    const plan = (Object.keys(desires).length === 0 && pendingRequests.length === 0)
+    // After DR has successfully applied once, empty desires are no longer
+    // treated as a purely pre-bootstrap mechanical state.
+    const drHasBeenApplied = drState?.last_applied_session != null;
+    const emptyDesireBootstrap = Object.keys(desires).length === 0 && pendingRequests.length === 0;
+    let plan = (emptyDesireBootstrap && !drHasBeenApplied)
       ? deriveBootstrapNoActionPlan({ circumstances })
       : await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext, pendingRequests });
+    if (!plan && emptyDesireBootstrap && drHasBeenApplied) {
+      await K.karmaRecord({
+        event: "bootstrap_planner_fallback_no_action",
+        no_action_streak: circumstances?.no_action_streak || 0,
+      });
+      plan = deriveBootstrapNoActionPlan({ circumstances });
+    }
     if (!plan) break; // parse failure
     const cycleAbortController = new AbortController();
     const abortFromSession = () => cycleAbortController.abort(K.sessionAbortSignal?.reason);

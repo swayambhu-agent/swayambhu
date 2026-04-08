@@ -94,6 +94,13 @@ timely research briefs to my patron" describes service. If you cannot
 rephrase a candidate desire without referencing your own internal state,
 it fails this test.
 
+**Bootstrap (generation 1, desires empty):** When the desire set is empty,
+derive at least one outward-facing desire directly from principles. Thin
+experience at bootstrap is expected; principles alone are sufficient
+ground for an initial desire. The self-referentiality guard still applies:
+the desire must point toward service, creation, or learning in the world,
+not toward improving your own desire-formation process.
+
 **Create** when experience reveals a gap that principles care about.
 **Refine** when experience clarifies what the target state actually is.
 **Expand** when a desire is fulfilled — look through the fulfilled
