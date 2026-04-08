@@ -76,6 +76,14 @@ const HOOKS = {
         for (const ev of events) {
           let turn;
           if (ev.type === "inbound_message") {
+            if (ev.triage_attempted) {
+              const alreadyHandled = await conversationHasAssistantReplyAfter(K, ev.conversation_id, ev.timestamp);
+              if (alreadyHandled) {
+                if (ev.key) await K.deleteEvent(ev.key);
+                await K.karmaRecord({ event: "comms_inbound_event_settled_after_immediate_triage", conversation: ev.conversation_id });
+                continue;
+              }
+            }
             turn = ev; // Already a CommTurn shape from fetch
             // Ensure idempotency_key is set — fallback to ev.key if missing
             // (prevents re-drain if the event was created without one)
@@ -246,20 +254,49 @@ async function advanceSessionSchedule(env, defaults, advanceSeconds) {
   }
 }
 
-async function tryInboundFastPath(env, ctx, commTurn) {
+async function conversationHasAssistantReplyAfter(K, conversationId, eventTimestamp) {
+  const conv = await K.kvGet(conversationId);
+  if (!conv?.messages?.length) return false;
+  const eventTime = Date.parse(eventTimestamp || "");
+  if (!Number.isFinite(eventTime)) return false;
+  return conv.messages.some((message) =>
+    message?.role === "assistant"
+    && typeof message.content === "string"
+    && Number.isFinite(Date.parse(message.ts || ""))
+    && Date.parse(message.ts) >= eventTime,
+  );
+}
+
+async function tryInboundImmediatePath(env, ctx, eventKey, commTurn) {
   const active = await env.KV.get("kernel:active_execution", "json");
-  if (!active?.started_at) return { used: false };
 
   try {
     const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, mode: "chat" });
     await kernel.loadEagerConfig();
     const K = kernel.buildKernelInterface();
-    const result = await trySuppressTrivialAcknowledgement(K, commTurn.conversation_id, [commTurn]);
-    if (result.used) {
-      return { used: true };
+    if (active?.started_at) {
+      const result = await trySuppressTrivialAcknowledgement(K, commTurn.conversation_id, [commTurn]);
+      if (result.used) {
+        await env.KV.delete(eventKey);
+        return { used: true, action: "suppressed" };
+      }
+    }
+
+    const stored = await env.KV.get(eventKey, "json");
+    if (!stored) return { used: false };
+    await env.KV.put(eventKey, JSON.stringify({
+      ...stored,
+      triage_attempted: true,
+      triage_attempted_at: new Date().toISOString(),
+    }), { expirationTtl: 86400 });
+
+    const outcome = await runTurn(K, commTurn.conversation_id, [commTurn]);
+    if (outcome?.action === "sent" || outcome?.action === "discarded") {
+      await env.KV.delete(eventKey);
+      return { used: true, action: outcome.action };
     }
   } catch {
-    // Fall through to the durable event path on any fast-path failure.
+    // Fall through to the durable event path on any immediate-triage failure.
   }
 
   return { used: false };
@@ -455,35 +492,38 @@ export default {
       if (result) return new Response("OK", { status: 200 });
     }
 
-    // Write inbound event to KV — scheduler will process it
+    // Write inbound event first. Immediate triage settles it on success;
+    // the scheduler remains the crash-recovery backstop on failure.
     const nonce = Math.random().toString(36).slice(2, 6);
     const ts = Date.now().toString().padStart(15, '0');
     const eventKey = `event:${ts}:inbound_message:${nonce}`;
     const commTurn = ingestInbound(channel, inbound);
-
-    const fastPath = await tryInboundFastPath(env, ctx, commTurn);
-    if (fastPath.used) {
-      return new Response("OK", { status: 200 });
-    }
-
-    await env.KV.put(eventKey, JSON.stringify({
+    const eventPayload = {
       type: "inbound_message",
       ...commTurn,
       idempotency_key: eventKey,  // enables claim/delete in deferred comms processor
       timestamp: new Date().toISOString(),
-    }), { expirationTtl: 86400 });
+    };
+    await env.KV.put(eventKey, JSON.stringify(eventPayload), { expirationTtl: 86400 });
 
-    // Wake scheduler
-    const schedule = await env.KV.get("session_schedule", "json");
-    if (schedule?.next_session_after) {
-      const now = new Date().toISOString();
-      if (schedule.next_session_after > now) {
-        await env.KV.put("session_schedule", JSON.stringify({
-          ...schedule,
-          next_session_after: now,
-        }));
+    const processInbound = async () => {
+      const immediate = await tryInboundImmediatePath(env, ctx, eventKey, commTurn);
+      if (immediate.used) return;
+
+      const schedule = await env.KV.get("session_schedule", "json");
+      if (schedule?.next_session_after) {
+        const now = new Date().toISOString();
+        if (schedule.next_session_after > now) {
+          await env.KV.put("session_schedule", JSON.stringify({
+            ...schedule,
+            next_session_after: now,
+          }));
+        }
       }
-    }
+    };
+
+    if (ctx?.waitUntil) ctx.waitUntil(processInbound());
+    else await processInbound();
 
     return new Response("OK", { status: 200 });
   },

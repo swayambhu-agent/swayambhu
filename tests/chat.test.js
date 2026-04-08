@@ -55,10 +55,8 @@ describe("runTurn", () => {
     }));
   });
 
-  it("sends reply for inbound turn via send tool call", async () => {
-    K.callLLM = vi.fn(async () => makeLLMResponse(null, [
-      { id: "tc_1", function: { name: "reply", arguments: '{"message":"Hello back!"}' } },
-    ]));
+  it("sends reply for inbound turn via structured triage output", async () => {
+    K.callLLM = vi.fn(async () => makeLLMResponse('{"action":"reply","message":"Hello back!"}'));
 
     const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Hello")]);
 
@@ -70,13 +68,21 @@ describe("runTurn", () => {
     });
   });
 
-  it("holds on plain text response (no tool call)", async () => {
-    K.callLLM = vi.fn(async () => makeLLMResponse("Some text without tool call"));
+  it("falls back to queue_work acknowledgement when inbound triage output is invalid", async () => {
+    K.callLLM = vi.fn(async () => makeLLMResponse("Some text without valid JSON"));
+    K.executeToolCall = vi.fn(async () => ({ ok: true, request_id: "req_fallback" }));
 
     const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Hello")]);
 
-    expect(result.action).toBe("held");
-    expect(K.executeAdapter).not.toHaveBeenCalled();
+    expect(result.action).toBe("sent");
+    expect(result.reason).toBe("request_queued");
+    expect(result.message).toBe("I received your message and will follow up shortly.");
+    expect(K.executeToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        function: expect.objectContaining({ name: "trigger_session" }),
+      }),
+      expect.any(Object),
+    );
   });
 
   it("marks internal no-tool holds as retryable", async () => {
@@ -115,9 +121,7 @@ describe("runTurn", () => {
   });
 
   it("tracks inbound_cost and internal_cost separately", async () => {
-    K.callLLM = vi.fn(async () => makeLLMResponse(null, [
-      { id: "tc_1", function: { name: "reply", arguments: '{"message":"ok"}' } },
-    ]));
+    K.callLLM = vi.fn(async () => makeLLMResponse('{"action":"reply","message":"ok"}'));
 
     await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Hi")]);
     const conv1 = await K.kvGet("chat:slack:U084ASKBXB7");
@@ -155,9 +159,7 @@ describe("runTurn", () => {
   });
 
   it("persists conversation state after turn", async () => {
-    K.callLLM = vi.fn(async () => makeLLMResponse(null, [
-      { id: "tc_1", function: { name: "reply", arguments: '{"message":"Hi!"}' } },
-    ]));
+    K.callLLM = vi.fn(async () => makeLLMResponse('{"action":"reply","message":"Hi!"}'));
 
     await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Hello")]);
 
@@ -196,19 +198,16 @@ describe("runTurn", () => {
     }));
   });
 
-  it("uses strict triage tools for inbound batches", async () => {
+  it("uses structured inbound triage with no tool loop", async () => {
     let capturedTools;
     K.callLLM = vi.fn(async (opts) => {
       capturedTools = opts.tools;
-      return makeLLMResponse(null, [
-        { id: "tc_1", function: { name: "reply", arguments: '{"message":"Noted."}' } },
-      ]);
+      return makeLLMResponse('{"action":"reply","message":"Noted."}');
     });
 
     await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Hello")]);
 
-    const toolNames = capturedTools.map(t => t.function.name);
-    expect(toolNames).toEqual(["reply", "clarify", "discard", "trigger_session"]);
+    expect(capturedTools).toEqual([]);
   });
 
   it("suppresses trivial acknowledgements when related work is already pending", async () => {
@@ -235,9 +234,7 @@ describe("runTurn", () => {
   });
 
   it("executes trigger_session through the kernel tool path and auto-acknowledges", async () => {
-    K.callLLM = vi.fn().mockResolvedValueOnce(makeLLMResponse(null, [
-      { id: "tc_1", function: { name: "trigger_session", arguments: '{"summary":"Research the Akash projects folder"}' } },
-    ]));
+    K.callLLM = vi.fn().mockResolvedValueOnce(makeLLMResponse('{"action":"queue_work","summary":"Research the Akash projects folder"}'));
     K.executeToolCall = vi.fn(async () => ({ ok: true, request_id: "req_1" }));
 
     const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Look into my projects folder")]);
@@ -267,9 +264,7 @@ describe("runTurn", () => {
       expect(opts.systemPrompt).toContain("[REQUEST STATUS]");
       expect(opts.systemPrompt).toContain("req_123");
       expect(opts.systemPrompt).toContain("Investigate the Akash project");
-      return makeLLMResponse(null, [
-        { id: "tc_1", function: { name: "reply", arguments: '{"message":"I\'m waiting on that request."}' } },
-      ]);
+      return makeLLMResponse("{\"action\":\"reply\",\"message\":\"I'm waiting on that request.\"}");
     });
 
     await K.kvWriteSafe("session_request:req_123", {

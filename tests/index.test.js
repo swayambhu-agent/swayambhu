@@ -201,6 +201,7 @@ describe("inbound fast path", () => {
       SLACK_BOT_TOKEN: "xoxb-test",
     };
 
+    const waitUntilPromises = [];
     const response = await worker.fetch(
       new Request("http://localhost/channel/slack", {
         method: "POST",
@@ -212,14 +213,62 @@ describe("inbound fast path", () => {
         body,
       }),
       env,
-      { waitUntil() {} },
+      { waitUntil(promise) { waitUntilPromises.push(promise); } },
     );
 
     expect(response.status).toBe(200);
+    await Promise.all(waitUntilPromises);
     expect([...env.KV._store.keys()].filter((key) => key.startsWith("event:"))).toEqual([]);
 
     const conv = JSON.parse(env.KV._store.get("chat:slack:U123"));
     expect(conv.messages.at(-1).role).toBe("user");
     expect(conv.messages.at(-1).content).toBe("ok great");
+  });
+
+  it("settles triaged inbound events during deferred processing without crashing", async () => {
+    const eventTimestamp = "2026-04-08T10:00:00.000Z";
+    const env = makeEnv({
+      "config:defaults": {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model", max_output_tokens: 1000 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
+        schedule: { interval_seconds: 21600 },
+        execution: { max_steps: { act: 1, reflect: 1, deep_reflect: 1 } },
+      },
+      "config:event_handlers": {
+        handlers: {},
+        deferred: { inbound_message: ["comms"] },
+      },
+      "chat:slack:U123": {
+        id: "chat:slack:U123",
+        messages: [
+          { role: "user", content: "Look into the project", ts: eventTimestamp },
+          { role: "assistant", content: "I’m taking this on.", ts: "2026-04-08T10:00:05.000Z" },
+        ],
+      },
+      "event:000000000000001:inbound_message:test": {
+        type: "inbound_message",
+        key: "event:000000000000001:inbound_message:test",
+        idempotency_key: "event:000000000000001:inbound_message:test",
+        triage_attempted: true,
+        timestamp: eventTimestamp,
+        conversation_id: "chat:slack:U123",
+        reply_target: { platform: "slack", channel: "U123", thread_ts: null },
+        source: "inbound",
+        content: "Look into the project",
+        metadata: { sentTs: "1775576606.857549", userId: "U123" },
+      },
+    });
+
+    await worker.scheduled({}, env, { waitUntil() {} });
+
+    expect(env.KV._store.has("event:000000000000001:inbound_message:test")).toBe(false);
+
+    const executionHistory = JSON.parse(env.KV._store.get("kernel:last_executions"));
+    expect(executionHistory[0].outcome).toBe("clean");
+
+    const karma = JSON.parse(env.KV._store.get(`karma:${executionHistory[0].id}`));
+    expect(karma.some((entry) => entry.event === "comms_inbound_event_settled_after_immediate_triage")).toBe(true);
+    expect(karma.some((entry) => entry.event === "deferred_processor_error")).toBe(false);
   });
 });

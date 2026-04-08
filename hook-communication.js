@@ -209,7 +209,13 @@ function buildInternalDecisionPrompt(turns = []) {
 }
 
 function appendInboundTurns(conv, inboundTurns) {
-  for (const turn of inboundTurns) {
+  const ordered = [...inboundTurns].sort((a, b) => {
+    const aTs = Number.parseFloat(a?.metadata?.sentTs || "0");
+    const bTs = Number.parseFloat(b?.metadata?.sentTs || "0");
+    if (Number.isFinite(aTs) && Number.isFinite(bTs) && aTs !== bTs) return aTs - bTs;
+    return 0;
+  });
+  for (const turn of ordered) {
     conv.messages.push({
       role: "user",
       content: turn.content,
@@ -220,6 +226,236 @@ function appendInboundTurns(conv, inboundTurns) {
       sentTs: turn.metadata?.sentTs,
     });
   }
+}
+
+function buildInboundTranscript(conv) {
+  const candidates = (conv.messages || [])
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) =>
+      (message.role === "user" || message.role === "assistant")
+      && typeof message.content === "string"
+      && message.content.trim().length > 0,
+    );
+
+  candidates.sort((a, b) => {
+    const aTime = Date.parse(a.message.ts || "");
+    const bTime = Date.parse(b.message.ts || "");
+    const aHasTime = Number.isFinite(aTime);
+    const bHasTime = Number.isFinite(bTime);
+    if (aHasTime && bHasTime && aTime !== bTime) return aTime - bTime;
+    if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
+    return a.index - b.index;
+  });
+
+  return candidates.map(({ message }) => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
+function parseInboundDecision(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeInboundDecision(decision, fallbackSummary) {
+  const action = typeof decision?.action === "string" ? decision.action.trim() : "";
+  if (action === "reply" || action === "clarify") {
+    const message = typeof decision?.message === "string" ? decision.message.trim() : "";
+    if (message) return { action: "sent", message, reason: action };
+  }
+  if (action === "queue_work") {
+    const summary = typeof decision?.summary === "string" && decision.summary.trim()
+      ? decision.summary.trim()
+      : fallbackSummary;
+    const ack = typeof decision?.ack === "string" && decision.ack.trim()
+      ? decision.ack.trim()
+      : buildQueuedWorkAcknowledgement();
+    if (summary) return { action: "queue_work", summary, ack, reason: "request_queued" };
+  }
+  if (action === "discard") {
+    return {
+      action: "discarded",
+      reason: typeof decision?.reason === "string" && decision.reason.trim()
+        ? decision.reason.trim()
+        : "discarded_by_triage",
+    };
+  }
+  return null;
+}
+
+function fallbackQueueDecision(turns) {
+  const latest = [...turns]
+    .filter((turn) => turn.source === "inbound")
+    .at(-1);
+  const raw = (latest?.content || "").trim();
+  const summary = raw.length > 280 ? `${raw.slice(0, 277)}...` : raw || "(no summary)";
+  return {
+    action: "queue_work",
+    summary,
+    ack: "I received your message and will follow up shortly.",
+    reason: "triage_fallback_queue",
+  };
+}
+
+async function runInboundTurn(K, conversationId, turns) {
+  let conv = await K.kvGet(conversationId) || makeEmptyConversation();
+  if (conv.inbound_cost === undefined) conv.inbound_cost = conv.total_cost || 0;
+  if (conv.internal_cost === undefined) conv.internal_cost = 0;
+
+  const defaults = await K.getDefaults();
+  const chatDefaults = defaults?.chat || {};
+  const maxCost = chatDefaults.max_cost_per_conversation || 0.50;
+  if (conv.inbound_cost >= maxCost) {
+    return { action: "error", error: "budget_exhausted", retryable: false };
+  }
+
+  const inboundTurns = turns.filter((turn) => turn.source === "inbound");
+  const contact = turns[0]?.reply_target?.platform
+    ? await K.resolveContact(turns[0].reply_target.platform, turns[0].reply_target.channel)
+    : null;
+  const relatedRequests = await loadConversationRequests(K, conversationId, contact);
+  const hasPendingRequest = relatedRequests.some((request) => request.status === "pending");
+
+  appendInboundTurns(conv, inboundTurns);
+  const requestStatusBlock = buildRequestStatusBlock(relatedRequests);
+  const chatPrompt = await K.kvGet("prompt:communication") || "You are in a live communication session. Respond conversationally.";
+  const contactContext = contact ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}` : "";
+  const modeInstruction = "\n\n[TURN MODE]\nYou are handling a live inbound human message. Chat is triage, not execution. Decide whether to reply conversationally, ask a clarifying question, queue substantive work for the work/session layer, or discard.";
+  const outputInstruction = "\n\n[OUTPUT]\nRespond with ONLY valid JSON in this shape:\n{\"action\":\"reply|clarify|queue_work|discard\",\"message\":\"...\",\"summary\":\"...\",\"ack\":\"...\",\"reason\":\"...\"}\nRules:\n- Use `reply` for direct conversational answers that do not accept work.\n- Use `clarify` when missing detail is needed before work can be queued or answered well.\n- Use `queue_work` when the contact is asking for substantive work. Provide a concise `summary` for the work contract. Optionally include `ack` for the human-facing acknowledgement.\n- Use `discard` only for true no-op acknowledgements or messages that need no reply.\n- Never expose internal mechanics.";
+  const systemPrompt = (chatPrompt + contactContext + requestStatusBlock + modeInstruction + outputInstruction).trim();
+
+  let outcome = null;
+  let requestQueued = false;
+
+  if (inboundTurns.length === 1 && hasPendingRequest && isTrivialAcknowledgement(inboundTurns[0]?.content)) {
+    outcome = { action: "discarded", reason: "acknowledgement_with_pending_request" };
+  }
+
+  const model = await K.resolveModel(chatDefaults.model || defaults?.act?.model || "sonnet");
+  if (!outcome) {
+    const transcript = buildInboundTranscript(conv);
+    const response = await K.callLLM({
+      model,
+      effort: chatDefaults.effort || "low",
+      maxTokens: chatDefaults.max_output_tokens || 1000,
+      systemPrompt,
+      messages: transcript,
+      tools: [],
+      step: `comms_inbound_${conv.turn_count}_r0`,
+    });
+    conv.inbound_cost += response.cost || 0;
+
+    let normalized = normalizeInboundDecision(parseInboundDecision(response.content), fallbackQueueDecision(inboundTurns).summary);
+    if (!normalized) {
+      const retry = await K.callLLM({
+        model,
+        effort: chatDefaults.effort || "low",
+        maxTokens: chatDefaults.max_output_tokens || 1000,
+        systemPrompt,
+        messages: [
+          ...transcript,
+          { role: "assistant", content: response.content || "" },
+          { role: "user", content: "Respond again with ONLY valid JSON in the required shape." },
+        ],
+        tools: [],
+        step: `comms_inbound_${conv.turn_count}_r1`,
+      });
+      conv.inbound_cost += retry.cost || 0;
+      normalized = normalizeInboundDecision(parseInboundDecision(retry.content), fallbackQueueDecision(inboundTurns).summary);
+    }
+
+    if (!normalized) {
+      const fallback = fallbackQueueDecision(inboundTurns);
+      await K.karmaRecord({
+        event: "comms_inbound_triage_fallback",
+        conversation: conversationId,
+        fallback: fallback.action,
+      });
+      normalized = fallback;
+    }
+
+    if (normalized.action === "queue_work") {
+      const chatContext = {
+        channel: turns[0].reply_target?.platform,
+        userId: turns[0].metadata?.userId,
+        contact,
+        convKey: conversationId,
+        chatConfig: chatDefaults,
+      };
+      const tc = {
+        id: `tc_${Date.now()}`,
+        function: {
+          name: "trigger_session",
+          arguments: JSON.stringify({ summary: normalized.summary }),
+        },
+      };
+      const result = await K.executeToolCall(tc, { _chatContext: chatContext }).catch(err => ({ error: err.message }));
+      if (result?.error) {
+        await K.karmaRecord({
+          event: "comms_trigger_session_failed",
+          conversation: conversationId,
+          error: result.error,
+        });
+        outcome = {
+          action: "sent",
+          message: "I couldn't queue that just now. Please try again shortly.",
+          reason: "request_queue_failed",
+        };
+      } else {
+        requestQueued = true;
+        await K.karmaRecord({
+          event: "comms_request_queued",
+          conversation: conversationId,
+          summary: normalized.summary || null,
+        });
+        outcome = {
+          action: "sent",
+          message: normalized.ack || buildQueuedWorkAcknowledgement(),
+          reason: "request_queued",
+        };
+      }
+    } else {
+      outcome = normalized;
+    }
+  }
+
+  if (outcome.action === "sent") {
+    const replyTarget = turns[0].reply_target;
+    await K.executeAdapter(replyTarget.platform, {
+      text: outcome.message,
+      channel: replyTarget.channel,
+      thread_ts: replyTarget.thread_ts || undefined,
+    });
+    conv.messages.push({ role: "assistant", content: outcome.message, ts: new Date().toISOString() });
+  }
+
+  if (outcome.action === "sent" || outcome.action === "discarded") {
+    await K.karmaRecord({
+      event: outcome.action === "sent" ? "comms_sent" : "comms_discarded",
+      conversation: conversationId,
+      mode: "inbound",
+      reason: outcome.reason,
+      request_queued: requestQueued,
+      request_context_count: relatedRequests.length,
+    });
+  }
+
+  await persistConversationState(
+    K,
+    conversationId,
+    conv,
+    turns[0].reply_target,
+    chatDefaults.max_history_messages || 40,
+  );
+
+  return outcome;
 }
 
 async function persistConversationState(K, conversationId, conv, replyTarget, maxMessages) {
@@ -275,6 +511,12 @@ export async function trySuppressTrivialAcknowledgement(K, conversationId, turns
 // ── runTurn: the unified conversation processor ───────
 
 export async function runTurn(K, conversationId, turns) {
+  const hasInbound = turns.some(t => t.source === "inbound");
+  const hasInternal = turns.some(t => t.source === "internal");
+  if (hasInbound && !hasInternal) {
+    return runInboundTurn(K, conversationId, turns);
+  }
+
   // 1. Load conversation state
   let conv = await K.kvGet(conversationId) || makeEmptyConversation();
   if (!conv.karma) conv.karma = [];
@@ -286,8 +528,6 @@ export async function runTurn(K, conversationId, turns) {
   const chatDefaults = defaults?.chat || {};
 
   // Determine source type for this batch
-  const hasInbound = turns.some(t => t.source === "inbound");
-  const hasInternal = turns.some(t => t.source === "internal");
   const costKey = hasInbound ? "inbound_cost" : "internal_cost";
 
   // Budget check
