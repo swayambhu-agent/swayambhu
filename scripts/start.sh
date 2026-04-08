@@ -204,6 +204,15 @@ kill_stale_processes() {
     pkill -9 -f workerd 2>/dev/null || true
     pkill -f "dev-serve.mjs" 2>/dev/null || true
   fi
+
+  for port in "$KERNEL_PORT" "$DASHBOARD_PORT" "$SPA_PORT" "$DASHBOARD_INSPECTOR_PORT" "$GOVERNOR_PORT" "$GOVERNOR_INSPECTOR_PORT"; do
+    while read -r pid; do
+      [[ -z "$pid" ]] && continue
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -9 "$pid" 2>/dev/null || true
+    done < <(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  done
 }
 
 mkdir -p "$(dirname "$STATE_DIR")" "$(dirname "$PRE_TRIGGER_SNAPSHOT_DIR")"
