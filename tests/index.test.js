@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
 import worker from "../index.js";
+import { Kernel } from "../kernel.js";
+import * as userspace from "../userspace.js";
 import { makeKVStore } from "./helpers/mock-kv.js";
 
 function makeEnv(initial = {}) {
@@ -269,6 +271,72 @@ describe("inbound fast path", () => {
 
     const karma = JSON.parse(env.KV._store.get(`karma:${executionHistory[0].id}`));
     expect(karma.some((entry) => entry.event === "comms_inbound_event_settled_after_immediate_triage")).toBe(true);
+    expect(karma.some((entry) => entry.event === "deferred_processor_error")).toBe(false);
+  });
+
+  it("reprocesses triaged inbound events during deferred processing when no assistant reply exists yet", async () => {
+    const llmSpy = vi.spyOn(Kernel.prototype, "callLLM").mockResolvedValue({
+      content: '{"action":"discard","reason":"noop"}',
+      cost: 0.001,
+      toolCalls: null,
+      usage: {},
+    });
+    const tickSpy = vi.spyOn(userspace, "run").mockResolvedValue();
+
+    const eventTimestamp = "2026-04-08T10:00:00.000Z";
+    const env = makeEnv({
+      "config:defaults": {
+        chat: {
+          model: "sonnet",
+          effort: "low",
+          max_cost_per_conversation: 0.5,
+          max_output_tokens: 1000,
+          max_history_messages: 40,
+        },
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model", max_output_tokens: 1000 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
+        schedule: { interval_seconds: 21600 },
+        execution: { max_steps: { act: 1, reflect: 1, deep_reflect: 1 } },
+      },
+      "config:event_handlers": {
+        handlers: {},
+        deferred: { inbound_message: ["comms"] },
+      },
+      "chat:slack:U123": {
+        id: "chat:slack:U123",
+        messages: [
+          { role: "user", content: "Look into the project", ts: eventTimestamp },
+        ],
+      },
+      "event:000000000000002:inbound_message:test": {
+        type: "inbound_message",
+        key: "event:000000000000002:inbound_message:test",
+        idempotency_key: "event:000000000000002:inbound_message:test",
+        triage_attempted: true,
+        timestamp: eventTimestamp,
+        conversation_id: "chat:slack:U123",
+        reply_target: { platform: "slack", channel: "U123", thread_ts: null },
+        source: "inbound",
+        content: "Look into the project",
+        metadata: { sentTs: "1775576606.857549", userId: "U123" },
+      },
+    });
+
+    try {
+      await worker.scheduled({}, env, { waitUntil() {} });
+    } finally {
+      llmSpy.mockRestore();
+      tickSpy.mockRestore();
+    }
+
+    expect(env.KV._store.has("event:000000000000002:inbound_message:test")).toBe(false);
+
+    const executionHistory = JSON.parse(env.KV._store.get("kernel:last_executions"));
+    expect(executionHistory[0].outcome).toBe("clean");
+
+    const karma = JSON.parse(env.KV._store.get(`karma:${executionHistory[0].id}`));
+    expect(karma.some((entry) => entry.event === "comms_inbound_event_settled_after_immediate_triage")).toBe(false);
     expect(karma.some((entry) => entry.event === "deferred_processor_error")).toBe(false);
   });
 });

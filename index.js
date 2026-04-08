@@ -295,7 +295,17 @@ async function tryInboundImmediatePath(env, ctx, eventKey, commTurn) {
       await env.KV.delete(eventKey);
       return { used: true, action: outcome.action };
     }
-  } catch {
+  } catch (err) {
+    try {
+      const stored = await env.KV.get(eventKey, "json");
+      if (stored) {
+        await env.KV.put(eventKey, JSON.stringify({
+          ...stored,
+          triage_error: err?.message || String(err),
+          triage_error_at: new Date().toISOString(),
+        }), { expirationTtl: 86400 });
+      }
+    } catch {}
     // Fall through to the durable event path on any immediate-triage failure.
   }
 
