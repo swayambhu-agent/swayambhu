@@ -19,6 +19,15 @@ const kv = await getKV();
 
 let count = 0;
 
+function readBooleanEnv(name) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return null;
+  const normalized = String(raw).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`Invalid boolean for ${name}: ${raw}`);
+}
+
 async function put(key, value, format = "json", description) {
   const val = typeof value === "object" && format === "json"
     ? JSON.stringify(value)
@@ -39,6 +48,11 @@ const defaultsConfig = readJSON("config/defaults.json");
 if (process.env.SWAYAMBHU_DEV_LOOP_JOBS_BASE_URL) {
   defaultsConfig.jobs = defaultsConfig.jobs || {};
   defaultsConfig.jobs.base_url = process.env.SWAYAMBHU_DEV_LOOP_JOBS_BASE_URL;
+}
+const identityEnabledOverride = readBooleanEnv("SWAYAMBHU_IDENTITY_ENABLED");
+if (identityEnabledOverride !== null) {
+  defaultsConfig.identity = defaultsConfig.identity || {};
+  defaultsConfig.identity.enabled = identityEnabledOverride;
 }
 
 const configMap = {
@@ -77,7 +91,7 @@ await put("kernel:key_tiers", {
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
     "secret:*", "skill:*", "task:*",
     "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-    "desire:*", "pattern:*", "principle:*", "tactic:*",
+    "desire:*", "pattern:*", "principle:*", "tactic:*", "identification:*",
   ],
 }, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
 
@@ -109,7 +123,7 @@ await put("config:event_handlers", {
 // ── Providers (from providers/*.js) ───────────────────────────
 
 console.log("--- Providers ---");
-const providerFiles = ["llm", "llm_balance", "wallet_balance", "gmail", "compute"];
+const providerFiles = ["llm", "llm_balance", "wallet_balance", "gmail", "email-relay", "compute"];
 for (const name of providerFiles) {
   const mod = await importLocal(`providers/${name}.js`);
   await put(`provider:${name}:code`, read(`providers/${name}.js`), "text", `Provider source: ${name}`);

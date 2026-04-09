@@ -10,8 +10,11 @@ import {
   allocateBranchPorts,
   buildLabBranchName,
   buildStartEnv,
+  compareContinuationSummaries,
+  getContinuationConfig,
   resolveLabWorkspacePath,
   sanitizeName,
+  summarizeBatchSummary,
 } from "../scripts/state-lab.mjs";
 
 describe("state-lab helpers", () => {
@@ -113,5 +116,68 @@ describe("state-lab helpers", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("normalizes continuation config with safe defaults", () => {
+    expect(getContinuationConfig({})).toEqual({
+      enabled: false,
+      maxSessions: 1,
+      maxCashCost: null,
+    });
+    expect(getContinuationConfig({
+      continuation: {
+        enabled: true,
+        max_sessions: 5,
+        max_cash_cost: 0.75,
+      },
+    })).toEqual({
+      enabled: true,
+      maxSessions: 5,
+      maxCashCost: 0.75,
+    });
+  });
+
+  it("summarizes batch results for lab comparison", () => {
+    expect(summarizeBatchSummary(null)).toBeNull();
+    expect(summarizeBatchSummary({
+      cycles: 3,
+      totals: { total_issues: 4, meta_policy_notes_total: 1 },
+      remote_cleanup: { status: "ok" },
+      completed_at: "2026-04-09T00:00:00.000Z",
+    })).toEqual({
+      cycles: 3,
+      totals: { total_issues: 4, meta_policy_notes_total: 1 },
+      remote_cleanup: { status: "ok" },
+      completed_at: "2026-04-09T00:00:00.000Z",
+    });
+  });
+
+  it("computes candidate-minus-baseline deltas for continuation summaries", () => {
+    const comparison = compareContinuationSummaries(
+      {
+        cycles: 3,
+        totals: {
+          total_issues: 5,
+          tactic_smuggling: 2,
+          meta_policy_notes_total: 0,
+        },
+      },
+      {
+        cycles: 3,
+        totals: {
+          total_issues: 2,
+          tactic_smuggling: 0,
+          meta_policy_notes_total: 1,
+        },
+      },
+    );
+
+    expect(comparison.baseline.cycles).toBe(3);
+    expect(comparison.candidate.cycles).toBe(3);
+    expect(comparison.deltas).toEqual({
+      total_issues: -3,
+      tactic_smuggling: -2,
+      meta_policy_notes_total: 1,
+    });
   });
 });

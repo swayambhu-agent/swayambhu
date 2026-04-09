@@ -2,7 +2,7 @@
 // Pure functions (detectCompletion, chooseStrategy) are unit-testable.
 // runObserve orchestrates shell commands and is integration-tested only.
 
-import { execSync, spawn } from "child_process";
+import { execSync } from "child_process";
 import { join } from "path";
 import { saveRun } from "./state.mjs";
 import { getDefaultServiceUrls, restartServices } from "./services.mjs";
@@ -186,23 +186,19 @@ async function assertDashboardAvailable() {
   await fetchJson(`${DASHBOARD_URL}/health`, { timeoutMs: 10_000 });
 }
 
-function triggerRequest(spec) {
+async function triggerRequest(spec) {
   const method = spec?.method || "GET";
   const body = spec?.body ? JSON.stringify(spec.body) : null;
-  const child = spawn(process.execPath, [
-    "--input-type=module",
-    "-e",
-    `await fetch(${JSON.stringify(spec.url)}, ${JSON.stringify({
-      method,
-      headers: body ? { "Content-Type": "application/json" } : {},
-      body,
-    })});`,
-  ], {
-    cwd: ROOT,
-    detached: true,
-    stdio: "ignore",
+  const response = await fetch(spec.url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body,
+    signal: AbortSignal.timeout(30_000),
   });
-  child.unref();
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`wake trigger failed (${response.status}): ${text || response.statusText}`);
+  }
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -235,10 +231,10 @@ export async function runObserve({
     await assertDashboardAvailable();
     const beforeIds = await readSessionIds();
 
-    // /__wake runs the session asynchronously via the kernel fetch endpoint.
-    // Fire it in a detached child so observe can poll independently.
+    // /__wake returns immediately after queueing the execution, so a direct
+    // fetch is simpler and more reliable than a detached child process.
     console.log(`[OBSERVE] Triggering session (${beforeIds.length} sessions before)`);
-    triggerRequest(strategy.trigger);
+    await triggerRequest(strategy.trigger);
 
     // Poll until a new session ID appears in cache:session_ids (10 min timeout).
     // This only moves when the act lifecycle actually starts.

@@ -20,6 +20,22 @@ const MOCK_ANALYSIS = {
   dr_state: { status: 'idle' },
   tactics: { 'tactic:probe': { description: 'Probe for info' } },
   prompts: { 'prompt:deep_reflect': '# Deep reflect prompt' },
+  review_notes: {
+    'review_note:userspace_review:x_dr:d1:000:missing-meta-policy-surface': {
+      slug: 'missing-meta-policy-surface',
+      summary: 'Need a non-live meta-policy bucket.',
+      source_depth: 1,
+    },
+  },
+  reflections: {
+    'reflect:1:s_1': {
+      session_id: 's_1',
+      reflection: 'A structural issue was noticed.',
+      meta_policy_notes: [
+        { slug: 'missing-meta-policy-surface', summary: 'Need a non-live meta-policy bucket.' },
+      ],
+    },
+  },
   session_health: { sessions_since_reflect: 2 },
 };
 
@@ -124,9 +140,11 @@ describe('buildContextFromAnalysis', () => {
     expect(ctx.patterns).toEqual({});
     expect(ctx.experiences).toEqual({});
     expect(ctx.tactics).toEqual({});
+    expect(ctx.review_notes).toEqual({});
     expect(ctx.config).toEqual({ defaults: {}, models: {} });
     expect(ctx.prompts).toEqual({});
     expect(ctx.last_reflect).toBeNull();
+    expect(ctx.reflections).toEqual({});
     expect(ctx.dr_state).toBeNull();
     expect(ctx.session_health).toBeNull();
   });
@@ -142,7 +160,9 @@ describe('buildContextFromAnalysis', () => {
     expect(ctx.config.defaults).toEqual(MOCK_ANALYSIS.defaults);
     expect(ctx.config.models).toEqual(MOCK_ANALYSIS.models);
     expect(ctx.prompts).toEqual(MOCK_ANALYSIS.prompts);
+    expect(ctx.review_notes).toEqual(MOCK_ANALYSIS.review_notes);
     expect(ctx.last_reflect).toEqual(MOCK_ANALYSIS.last_reflect);
+    expect(ctx.reflections).toEqual(MOCK_ANALYSIS.reflections);
     expect(ctx.dr_state).toEqual(MOCK_ANALYSIS.dr_state);
     expect(ctx.karma).toEqual(MOCK_ANALYSIS.karma);
     expect(ctx.tactics).toEqual(MOCK_ANALYSIS.tactics);

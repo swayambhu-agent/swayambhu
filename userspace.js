@@ -10,6 +10,7 @@ import { executeReflect } from './reflect.js';
 import { parseJobOutput } from './lib/parse-job-output.js';
 import { applyRequestUpdate, SESSION_REQUEST_STATUSES } from './lib/session-requests.js';
 import { writeReasoningArtifacts } from "./lib/reasoning.js";
+import { normalizeMetaPolicyNotes, persistMetaPolicyNotes } from "./meta-policy.js";
 
 // ── Snapshot loaders ────────────────────────────────────────
 
@@ -31,6 +32,16 @@ async function loadPatterns(K) {
     if (val) patterns[entry.name] = val;
   }
   return patterns;
+}
+
+async function loadIdentifications(K) {
+  const list = await K.kvList({ prefix: "identification:" });
+  const identifications = {};
+  for (const entry of list.keys) {
+    const val = await K.kvGet(entry.name);
+    if (val) identifications[entry.name] = val;
+  }
+  return identifications;
 }
 
 async function loadPendingRequests(K, defaults, events = []) {
@@ -107,12 +118,125 @@ async function loadPlanVars(K, defaults, debugMode) {
 
 // ── Circumstances builder ───────────────────────────────────
 
-function buildCircumstances(events, balances, crashData, pendingRequests) {
+const PATH_MENTION_RE = /\/home\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*/g;
+
+function normalizeMentionedSurface(path) {
+  if (typeof path !== "string") return null;
+  const trimmed = path.trim().replace(/[),.;:'"`]+$/g, "");
+  if (!trimmed.startsWith("/home/")) return null;
+  const segments = trimmed.split("/").filter(Boolean);
+  if (segments.length < 2) return null;
+  return `/${segments.slice(0, Math.min(4, segments.length)).join("/")}`;
+}
+
+function collectEnvironmentSignalText({ priorActions, carryForwardItems, lastReflect, pendingRequests }) {
+  const parts = [];
+  for (const action of priorActions || []) {
+    parts.push(action?.action, action?.accomplished, action?.next_gap);
+    if (Array.isArray(action?.tools)) parts.push(...action.tools);
+    if (Array.isArray(action?.key_findings)) parts.push(...action.key_findings);
+  }
+  for (const item of carryForwardItems || []) {
+    parts.push(item?.item, item?.why, item?.result, item?.reason);
+  }
+  for (const request of pendingRequests || []) {
+    parts.push(request?.summary);
+  }
+  parts.push(
+    lastReflect?.session_summary,
+    lastReflect?.note_to_future_self,
+    lastReflect?.next_act_context?.reason,
+  );
+  return parts.filter(Boolean).join("\n");
+}
+
+function inferExploredSurfacePaths(roots, signals) {
+  if (!Array.isArray(roots) || roots.length === 0) return [];
+  const text = collectEnvironmentSignalText(signals);
+  if (!text) return [];
+
+  const matches = text.match(PATH_MENTION_RE) || [];
+  const surfaces = [];
+  for (const match of matches) {
+    const normalized = normalizeMentionedSurface(match);
+    if (!normalized) continue;
+    const covered = roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+    if (!covered) continue;
+    if (!surfaces.includes(normalized)) surfaces.push(normalized);
+    if (surfaces.length >= 8) break;
+  }
+  return surfaces;
+}
+
+function summarizeCarryForwardWaitState(carryForwardItems = []) {
+  const active = (carryForwardItems || []).filter(item => item?.status === "active");
+  if (active.length === 0) {
+    return {
+      active_item_count: 0,
+      waiting_item_count: 0,
+      all_active_items_waiting: false,
+    };
+  }
+
+  const waitish = active.filter((item) => {
+    const text = `${item?.item || ""} ${item?.why || ""} ${item?.result || ""}`.toLowerCase();
+    return /wait|waiting|callback|reply|response|completion|complete|status|pending|expiry|ttl/.test(text);
+  });
+
+  return {
+    active_item_count: active.length,
+    waiting_item_count: waitish.length,
+    all_active_items_waiting: waitish.length === active.length,
+  };
+}
+
+function buildEnvironmentContext(defaults, identifications, signals = {}) {
+  if (defaults?.identity?.enabled !== true) return null;
+  const workingBody = identifications?.["identification:working-body"]?.identification || null;
+  const roots = Array.isArray(defaults?.identity?.environment_roots)
+    ? defaults.identity.environment_roots.filter(Boolean).map(String)
+    : [];
+  const workingBodyPrefixes = Array.isArray(defaults?.identity?.working_body_prefixes)
+    ? defaults.identity.working_body_prefixes.filter(Boolean).map(String)
+    : [];
+  const exploredPaths = inferExploredSurfacePaths(roots, signals);
+  const waitState = summarizeCarryForwardWaitState(signals?.carryForwardItems || []);
+  return {
+    working_body: workingBody,
+    accessible_roots: roots,
+    working_body_prefixes: workingBodyPrefixes,
+    explored_paths: exploredPaths,
+    ...waitState,
+    reachable_surfaces: [
+      {
+        kind: "filesystem",
+        via: ["computer", "delegate_task"],
+        note: "Use bounded probes to inspect one adjacent external project or workspace surface at a time.",
+      },
+      {
+        kind: "inbox",
+        via: ["check_email", "request_message", "update_request"],
+        note: "Relevant when pending work continuity or new communication signals exist.",
+      },
+      {
+        kind: "documents",
+        via: ["google_docs"],
+        note: "Useful once a concrete deliverable already exists; not a first discovery surface.",
+      },
+    ],
+    probe_bias: "When no non-root identifications exist yet, prefer adjacent external work surfaces over KV, prompts, hooks, or kernel self-audit unless circumstances already indicate an internal failure or maintenance need.",
+    breadth_bias: "If current active work is blocked on callbacks, replies, or expiry, keep initiative alive by probing one adjacent unexplored surface before no_action or patron escalation.",
+    maintenance_bias: "When a root contains both the working-body subtree and other sibling projects or directories, treat the working-body subtree as maintenance-only unless there is an explicit maintenance need, request, or carry-forward item there.",
+  };
+}
+
+function buildCircumstances(events, balances, crashData, pendingRequests, environmentContext) {
   const circumstances = {};
   if (events?.length) circumstances.events = events;
   if (balances) circumstances.balances = balances;
   if (crashData) circumstances.crash = crashData;
   if (pendingRequests?.length) circumstances.pending_requests = pendingRequests;
+  if (environmentContext) circumstances.environment_context = environmentContext;
   return circumstances;
 }
 
@@ -176,8 +300,8 @@ function deriveCapacitySnapshot({ balances, defaults, sessionCost = 0 }) {
   };
 }
 
-function buildPlannerCircumstances(events, balances, crashData, pendingRequests, schedule, capacity, wake) {
-  const circumstances = buildCircumstances(events, balances, crashData, pendingRequests);
+function buildPlannerCircumstances(events, balances, crashData, pendingRequests, schedule, capacity, wake, environmentContext) {
+  const circumstances = buildCircumstances(events, balances, crashData, pendingRequests, environmentContext);
   if (typeof schedule?.no_action_streak === "number") {
     circumstances.no_action_streak = schedule.no_action_streak;
   }
@@ -384,15 +508,22 @@ async function cacheEmbeddings(K, entities, textField, model, config) {
   }
 }
 
+function deriveFallbackObservation(review, ledger) {
+  const explicitObservation = typeof review?.observation === "string" ? review.observation.trim() : "";
+  if (explicitObservation) return explicitObservation;
+  if (ledger?.plan?.no_action) return "No action was taken.";
+  const toolCount = Array.isArray(ledger?.tool_calls) ? ledger.tool_calls.length : 0;
+  if (toolCount > 0) {
+    return toolCount === 1 ? "One tool call was executed." : `${toolCount} tool calls were executed.`;
+  }
+  if (typeof ledger?.final_text === "string" && ledger.final_text.trim()) {
+    return "An action completed and produced a response.";
+  }
+  return "An action completed.";
+}
+
 function normalizeReview(review, ledger) {
-  const observation = String(
-    review?.observation
-    || review?.narrative
-    || review?.assessment
-    || ledger.final_text
-    || ledger.plan?.reason
-    || ""
-  );
+  const observation = deriveFallbackObservation(review, ledger);
 
   return {
     observation,
@@ -449,6 +580,61 @@ function derivePatternDelta(evalResult) {
   };
 }
 
+function deriveExperienceSupport({ ledger, evalResult, now }) {
+  const externalAnchorCount = Array.isArray(evalResult?.tool_outcomes) && evalResult.tool_outcomes.length > 0
+    ? evalResult.tool_outcomes.length
+    : (ledger?.tool_calls || []).filter(call => call?.ok).length;
+  const completion = ledger?.plan?.no_action
+    ? "no_action"
+    : ((ledger?.tool_calls || []).length > 0 || typeof ledger?.final_text === "string"
+      ? "full_cycle"
+      : "partial");
+  const selfGeneratedOnly = externalAnchorCount === 0;
+  const grounding = selfGeneratedOnly
+    ? (ledger?.plan?.no_action ? "internal_only" : "mixed")
+    : "external_event";
+
+  return {
+    grounding,
+    completion,
+    external_anchor_count: externalAnchorCount,
+    self_generated_only: selfGeneratedOnly,
+    recurrence_count: 1,
+    first_observed_at: now,
+    last_observed_at: now,
+  };
+}
+
+function mergeExperienceSupport(existingSupport = {}, nextSupport = {}, now) {
+  const groundingValues = [existingSupport.grounding, nextSupport.grounding];
+  const grounding = groundingValues.includes("external_event")
+    ? "external_event"
+    : groundingValues.includes("mixed")
+      ? "mixed"
+      : "internal_only";
+  const existingCompletion = existingSupport.completion || null;
+  const nextCompletion = nextSupport.completion || null;
+  const completion = [existingCompletion, nextCompletion].includes("full_cycle")
+    ? "full_cycle"
+    : [existingCompletion, nextCompletion].includes("no_action")
+      ? "no_action"
+      : nextCompletion || existingCompletion || "partial";
+
+  return {
+    grounding,
+    completion,
+    external_anchor_count: Math.max(
+      Number(existingSupport.external_anchor_count || 0),
+      Number(nextSupport.external_anchor_count || 0),
+    ),
+    self_generated_only: Boolean(existingSupport.self_generated_only ?? true)
+      && Boolean(nextSupport.self_generated_only ?? true),
+    recurrence_count: Number(existingSupport.recurrence_count || 1) + 1,
+    first_observed_at: existingSupport.first_observed_at || nextSupport.first_observed_at || now,
+    last_observed_at: now,
+  };
+}
+
 function deriveBootstrapNoActionPlan({ circumstances }) {
   let reason = "No active desires are present. Action is not warranted until experience seeds desire through reflection.";
 
@@ -462,9 +648,123 @@ function deriveBootstrapNoActionPlan({ circumstances }) {
   };
 }
 
+const PLANNER_CONTEXT_BLOCKED_PREFIXES = [
+  "reflect:",
+  "last_reflect",
+  "action:",
+  "experience:",
+  "pattern:",
+  "desire:",
+  "tactic:",
+  "principle:",
+];
+
+function isPlannerContinuityKeyAllowed(key) {
+  if (typeof key !== "string" || key.length === 0) return false;
+  return !PLANNER_CONTEXT_BLOCKED_PREFIXES.some(prefix =>
+    prefix.endsWith(":") ? key.startsWith(prefix) : key === prefix
+  );
+}
+
+function formatCarryForwardPlannerLine(item) {
+  const priority = item.priority ? `[${item.priority}] ` : "";
+  const desire = item.desire_key ? ` (supports ${item.desire_key})` : "";
+  const details = [];
+  if (item.blocked_on) details.push(`blocked_on=${item.blocked_on}`);
+  if (item.wake_condition) details.push(`wake_condition=${item.wake_condition}`);
+  const lastResult = item.last_result || item.result;
+  if (lastResult) details.push(`last_result=${lastResult}`);
+  return `- ${priority}${item.item}${desire}${details.length ? ` | ${details.join(" | ")}` : ""}`;
+}
+
+function formatIdentificationPlannerLine(key, value) {
+  const strength = typeof value?.strength === "number"
+    ? ` (strength ${value.strength.toFixed(2)})`
+    : "";
+  return `- ${key}: ${value?.identification || ""}${strength}`;
+}
+
+const IDENTIFICATION_STOPWORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "through", "into", "from",
+  "ongoing", "unfinished", "operational", "body", "mine", "care", "your",
+  "swayambhu", "within", "across", "surface", "surfaces", "continuity",
+  "legitimate", "boundary", "responsibility",
+]);
+
+function normalizeSurfaceText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractIdentificationTerms(key, record) {
+  const slugText = key.replace(/^identification:/, "").replace(/[-_:]+/g, " ");
+  const bodyText = typeof record?.identification === "string" ? record.identification : "";
+  const tokens = `${slugText} ${bodyText}`
+    .split(/[^a-zA-Z0-9]+/)
+    .map(token => token.toLowerCase())
+    .filter(token => token.length >= 4 && !IDENTIFICATION_STOPWORDS.has(token));
+  return [...new Set(tokens)];
+}
+
+function collectSessionSurfaceText({ ledger, reviewRecord, pendingRequests }) {
+  const parts = [
+    ledger?.plan?.action,
+    ledger?.plan?.success,
+    ledger?.plan?.reason,
+    ledger?.final_text,
+    reviewRecord?.observation,
+    reviewRecord?.assessment,
+    reviewRecord?.accomplished,
+    reviewRecord?.next_gap,
+    reviewRecord?.narrative,
+    ...(Array.isArray(reviewRecord?.key_findings) ? reviewRecord.key_findings : []),
+    ...(Array.isArray(pendingRequests) ? pendingRequests.map(request => request?.summary).filter(Boolean) : []),
+  ];
+  for (const call of ledger?.tool_calls || []) {
+    parts.push(call?.tool);
+    if (typeof call?.input === "string") parts.push(call.input);
+    else if (call?.input != null) parts.push(JSON.stringify(call.input));
+    if (typeof call?.output === "string") parts.push(call.output);
+    else if (call?.output != null) parts.push(JSON.stringify(call.output));
+  }
+  return normalizeSurfaceText(parts.filter(Boolean).join(" "));
+}
+
+function inferExercisedIdentificationKeys(identifications, context) {
+  const surfaceText = collectSessionSurfaceText(context);
+  if (!surfaceText) return [];
+
+  const matches = [];
+  const toolNames = new Set((context?.ledger?.tool_calls || []).map(call => call?.tool).filter(Boolean));
+  for (const [key, record] of Object.entries(identifications || {})) {
+    if (key === "identification:working-body") continue;
+    const terms = extractIdentificationTerms(key, record);
+    if (terms.length === 0) continue;
+    const hitCount = terms.filter(term => surfaceText.includes(term)).length;
+    const communicationLike = (
+      toolNames.has("request_message")
+      || toolNames.has("send_email")
+      || toolNames.has("send_slack")
+      || toolNames.has("send_whatsapp")
+    ) && terms.some(term => ["patron", "relationship", "follow", "followthrough", "promise", "continuity"].includes(term));
+    const workspaceLike = (
+      toolNames.has("computer")
+      || toolNames.has("delegate_task")
+      || toolNames.has("google_docs")
+    ) && terms.some(term => ["workspace", "repo", "docs", "document", "maintenance", "integrity"].includes(term));
+    if (hitCount >= 2 || communicationLike || workspaceLike) {
+      matches.push(key);
+    }
+  }
+  return matches;
+}
+
 // ── Plan phase ──────────────────────────────────────────────
 
-async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext, pendingRequests }) {
+async function planPhase(K, { desires, patterns, identifications, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext, pendingRequests }) {
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
   const debugMode = deriveDebugMode(defaults, { wake: circumstances?.wake });
@@ -484,6 +784,29 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
   const sections = [
     "[DESIRES]", formatDesires(desires), "",
   ];
+  const workingBody = defaults?.identity?.enabled === true
+    ? identifications?.["identification:working-body"]
+    : null;
+  if (workingBody?.identification) {
+    sections.push("[WORKING BODY]");
+    sections.push(`${workingBody.identification}`);
+    sections.push("Treat this as the operational body through which outward work can be discovered and acted upon, not as a target for self-audit.");
+    sections.push("");
+  }
+  let plannerIdentifications = [];
+  if (defaults?.identity?.enabled === true) {
+    plannerIdentifications = Object.entries(identifications || {})
+      .filter(([key]) => key !== "identification:working-body")
+      .sort(([, a], [, b]) => (Number(b?.strength || 0) - Number(a?.strength || 0)))
+      .slice(0, defaults?.identity?.max_planner_items || 5);
+  }
+  if (plannerIdentifications.length) {
+    sections.push("[IDENTIFICATIONS]", "(read-only boundaries of what is mine to care for; neither goals nor tactics)");
+    for (const [key, value] of plannerIdentifications) {
+      sections.push(formatIdentificationPlannerLine(key, value));
+    }
+    sections.push("");
+  }
   if (tactics.length) {
     sections.push("[TACTICS]");
     for (const t of tactics) {
@@ -492,17 +815,14 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
     sections.push("");
   }
   if (carryForwardItems?.length) {
-    sections.push("[CARRY-FORWARD]", "(plans from previous session — continue or re-evaluate; desires remain the authority)");
+    sections.push("[CARRY-FORWARD]", "(operational continuity only — use as facts or pending commitments, not as conclusions)");
     for (const item of carryForwardItems) {
-      const priority = item.priority ? `[${item.priority}] ` : "";
-      const why = item.why ? ` — ${item.why}` : "";
-      const desire = item.desire_key ? ` (supports ${item.desire_key})` : "";
-      sections.push(`- ${priority}${item.item}${why}${desire}`);
+      sections.push(formatCarryForwardPlannerLine(item));
     }
     sections.push("");
   }
   if (reflectLoadedContext && Object.keys(reflectLoadedContext).length) {
-    sections.push("[REFLECT-LOADED CONTEXT]", "(keys loaded per last session's next_act_context.load_keys)");
+    sections.push("[REFLECT-LOADED CONTEXT]", "(factual continuity keys only — reflective/self-interpretive keys are withheld)");
     for (const [key, val] of Object.entries(reflectLoadedContext)) {
       const display = typeof val === 'string' ? val : JSON.stringify(val);
       sections.push(`- ${key}: ${display.slice(0, 500)}`);
@@ -835,10 +1155,16 @@ async function reviewPhase(K, { ledger, evalResult, defaults, signal }) {
 
 // ── Memory writes ───────────────────────────────────────────
 
-async function writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber, cycle }) {
+async function writeMemory(K, { ledger, evalResult, review, desires, patterns, identifications, pendingRequests, inferenceConfig, executionId, sessionNumber, cycle }) {
   const now = new Date().toISOString();
   const cap = (s, n = 500) => s && s.length > n ? s.slice(0, n) + '…' : s;
   const reviewRecord = normalizeReview(review, ledger);
+  const exercisedIdentificationKeys = inferExercisedIdentificationKeys(identifications, {
+    ledger,
+    reviewRecord,
+    pendingRequests,
+  });
+  const identityEnabled = Object.keys(identifications || {}).length > 0;
 
   const salienceThreshold = 0.5;
   const rawSalience = evalResult.salience > 0
@@ -891,7 +1217,21 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
       followed_tactics: evalResult.followed_tactics || [],
     },
     review: reviewRecord,
+    ...(identityEnabled ? { exercised_identifications: exercisedIdentificationKeys } : {}),
   });
+
+  if (identityEnabled) {
+    const touched = new Set(exercisedIdentificationKeys);
+    if (identifications["identification:working-body"]) {
+      touched.add("identification:working-body");
+    }
+    for (const key of touched) {
+      const result = await K.updateIdentificationLastExercised?.(key, now);
+      if (result && !result.ok) {
+        await K.karmaRecord({ event: "identification_exercise_write_failed", key, error: result.error });
+      }
+    }
+  }
 
   // Pattern strength updates — skip for no_action cycles.
   // NLI classifies no-action text as contradicting descriptive patterns
@@ -915,7 +1255,7 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
     if (inferenceConfig) {
       try {
         const resp = await callInference(inferenceConfig.url, inferenceConfig.secret, '/embed', {
-          texts: [reviewRecord.observation || reviewRecord.narrative || ledger.final_text || '']
+          texts: [reviewRecord.observation]
         });
         embedding = resp.embeddings?.[0] || null;
       } catch (err) {
@@ -937,6 +1277,7 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
       pattern_delta: derivePatternDelta(evalResult),
       salience,
       embedding,
+      support: deriveExperienceSupport({ ledger, evalResult, now }),
       ...(reviewRecord.narrative ? { text_rendering: { narrative: reviewRecord.narrative } } : {}),
     };
     // Deduplicate near-identical experiences — decay salience for similar
@@ -947,15 +1288,31 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
       const recentList = await K.kvList({ prefix: "experience:", limit: 5 });
       const recentKeys = recentList.keys || [];
       let maxSim = 0;
+      let closestExperience = null;
+      let closestKey = null;
       for (const k of recentKeys) {
         const recentExp = await K.kvGet(k.name);
         if (recentExp?.embedding) {
           const sim = cosineSimilarity(embedding, recentExp.embedding);
-          if (sim > maxSim) maxSim = sim;
+          if (sim > maxSim) {
+            maxSim = sim;
+            closestExperience = recentExp;
+            closestKey = k.name;
+          }
         }
       }
-      if (maxSim > 0.95) {
-        await K.karmaRecord({ event: "experience_deduplicated", similarity: maxSim, salience });
+      if (maxSim > 0.95 && closestExperience && closestKey) {
+        const mergedSupport = mergeExperienceSupport(closestExperience.support, experienceRecord.support, now);
+        await K.kvWriteSafe(closestKey, {
+          ...closestExperience,
+          support: mergedSupport,
+        });
+        await K.karmaRecord({
+          event: "experience_recurrence_merged",
+          key: closestKey,
+          similarity: maxSim,
+          recurrence_count: mergedSupport.recurrence_count,
+        });
         return;
       }
       if (maxSim > 0.90) {
@@ -1003,10 +1360,19 @@ async function actCycle(K, { crashData, balances, events }) {
         action_ref: null,
         session_id: crashData.dead_execution_id,
         cycle: 0,
-        observation: `Session ${crashData.dead_execution_id} was killed after ${elapsed}s. ${llmCalls} LLM calls and ${toolCalls} tool calls ran. Last activity: ${lastStep}. Probable cause: execution time limit exceeded.`,
+        observation: `Session ${crashData.dead_execution_id} was killed after ${elapsed}s. ${llmCalls} LLM calls and ${toolCalls} tool calls ran. Last activity: ${lastStep}.`,
         desire_alignment: { top_positive: [], top_negative: [], affinity_magnitude: 0 },
         pattern_delta: { sigma: 1, scores: [] },
         salience: 1,
+        support: {
+          grounding: "external_event",
+          completion: "aborted",
+          external_anchor_count: toolCalls,
+          self_generated_only: false,
+          recurrence_count: 1,
+          first_observed_at: new Date().toISOString(),
+          last_observed_at: new Date().toISOString(),
+        },
         text_rendering: {
           narrative: `A session was killed before it could complete. The last activity was ${lastStep} after ${elapsed}s of execution. This crash should inform future tactic and configuration changes.`,
         },
@@ -1098,6 +1464,7 @@ async function actCycle(K, { crashData, balances, events }) {
 
   // 2. Snapshot desires and patterns
   let patterns = await loadPatterns(K);
+  const identifications = defaults?.identity?.enabled === true ? await loadIdentifications(K) : {};
 
   // 2c. Load carry-forward items from last session's reflect output
   const lastReflect = await K.kvGet("last_reflect");
@@ -1119,14 +1486,50 @@ async function actCycle(K, { crashData, balances, events }) {
     })
     .slice(0, 5);
 
+  // 2e. Load recent actions from KV for cross-session planner context
+  const actionKeys = await K.kvList({ prefix: "action:" });
+  const recentActionKeys = actionKeys.keys
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(-5);
+  const priorActions = [];
+  for (const ak of recentActionKeys) {
+    const rec = await K.kvGet(ak.name);
+    if (!rec) continue;
+    priorActions.push({
+      action: rec.plan?.action || rec.plan?.reason || "no_action",
+      tools: (rec.tool_calls || []).map(tc => tc.tool),
+      accomplished: rec.review?.accomplished || String(rec.review?.observation || rec.review?.narrative || "").slice(0, 150) || null,
+      key_findings: rec.review?.key_findings || null,
+      next_gap: rec.review?.next_gap || null,
+    });
+  }
+
+  const environmentContext = buildEnvironmentContext(defaults, identifications, {
+    priorActions,
+    carryForwardItems,
+    lastReflect,
+    pendingRequests,
+  });
+
   // 2d. Load keys requested by last reflect's next_act_context.load_keys
   const requestedLoadKeys = (lastReflect?.next_act_context?.load_keys || []).slice(0, 10);
   const alreadyLoaded = new Set([...Object.keys(desires), ...Object.keys(patterns)]);
   const reflectLoadedContext = {};
+  const blockedReflectLoadKeys = [];
   for (const key of requestedLoadKeys) {
     if (alreadyLoaded.has(key)) continue;
+    if (!isPlannerContinuityKeyAllowed(key)) {
+      blockedReflectLoadKeys.push(key);
+      continue;
+    }
     const val = await K.kvGet(key);
     if (val != null) reflectLoadedContext[key] = val;
+  }
+  if (blockedReflectLoadKeys.length) {
+    await K.karmaRecord({
+      event: "reflect_load_keys_blocked",
+      blocked_keys: blockedReflectLoadKeys,
+    });
   }
 
   // 2b. Cache embeddings for Tier 1 relevance filtering
@@ -1145,6 +1548,7 @@ async function actCycle(K, { crashData, balances, events }) {
     schedule,
     initialCapacity,
     wake,
+    environmentContext,
   );
 
   // 4. Build system prompt, tools, model
@@ -1157,24 +1561,6 @@ async function actCycle(K, { crashData, balances, events }) {
 
   // 5. Shared messages array
   const messages = [];
-
-  // 5b. Load recent actions from KV for cross-session planner context
-  const actionKeys = await K.kvList({ prefix: "action:" });
-  const recentActionKeys = actionKeys.keys
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .slice(-5);
-  const priorActions = [];
-  for (const ak of recentActionKeys) {
-    const rec = await K.kvGet(ak.name);
-    if (!rec) continue;
-    priorActions.push({
-      action: rec.plan?.action || rec.plan?.reason || "no_action",
-      tools: (rec.tool_calls || []).map(tc => tc.tool),
-      accomplished: rec.review?.accomplished || String(rec.review?.observation || rec.review?.narrative || "").slice(0, 150) || null,
-      key_findings: rec.review?.key_findings || null,
-      next_gap: rec.review?.next_gap || null,
-    });
-  }
 
   // 6. Main loop
   const maxCycles = 10;
@@ -1201,7 +1587,7 @@ async function actCycle(K, { crashData, balances, events }) {
     const emptyDesireBootstrap = Object.keys(desires).length === 0 && pendingRequests.length === 0;
     let plan = (emptyDesireBootstrap && !drHasBeenApplied)
       ? deriveBootstrapNoActionPlan({ circumstances })
-      : await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext, pendingRequests });
+      : await planPhase(K, { desires, patterns, identifications, circumstances, priorActions, defaults, modelsConfig, carryForwardItems, reflectLoadedContext, pendingRequests });
     if (!plan && emptyDesireBootstrap && drHasBeenApplied) {
       await K.karmaRecord({
         event: "bootstrap_planner_fallback_no_action",
@@ -1254,9 +1640,7 @@ async function actCycle(K, { crashData, balances, events }) {
         };
         const evalResult = await evaluateAction(K, noActionLedger, desires, patterns, inferenceConfig || {}, cycleAbortController.signal);
         const syntheticReview = {
-          observation: capacityRichNoAction
-            ? `No action was taken despite healthy available capacity after ${projectedNoActionStreak} consecutive idle sessions. Reason: ${plan.reason}`
-            : `No action was taken. Reason: ${plan.reason}`,
+          observation: "No changes in circumstances. No action taken.",
           assessment: "no_action",
           narrative: capacityRichNoAction
             ? `No action taken after ${projectedNoActionStreak} consecutive idle sessions despite healthy available capacity. Reason: ${plan.reason}`
@@ -1270,7 +1654,7 @@ async function actCycle(K, { crashData, balances, events }) {
           assessment: syntheticReview.assessment,
           cycle,
         });
-        await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+        await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, patterns, identifications, pendingRequests, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
         break;
       }
@@ -1295,7 +1679,7 @@ async function actCycle(K, { crashData, balances, events }) {
       const review = await reviewPhase(K, { ledger, evalResult, defaults, signal: cycleAbortController.signal });
 
       // 6f. Memory writes
-      await writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+      await writeMemory(K, { ledger, evalResult, review, desires, patterns, identifications, pendingRequests, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
       if (pendingRequests.length) {
         await autoReconcileRequests(K, {
@@ -1335,6 +1719,7 @@ async function actCycle(K, { crashData, balances, events }) {
         schedule,
         freshCapacity,
         wake,
+        environmentContext,
       );
       // Add recent tool outcomes
       if (ledger.tool_calls.length) {
@@ -1596,7 +1981,7 @@ async function dispatchDr(K, defaults) {
         // /home/swayambhu/reasoning/. Deep-reflect reads them directly;
         // they are not packed into the KV tarball context.
         context_keys: [
-          "pattern:*", "experience:*", "desire:*", "tactic:*",
+          "pattern:*", "experience:*", "desire:*", "tactic:*", "identification:*",
           "action:*", "principle:*",
           "config:defaults", "config:models", "config:model_capabilities",
           "config:tool_registry", "config:event_handlers",
@@ -1665,14 +2050,24 @@ async function pollJobResult(K, state, defaults) {
 
 export async function applyDrResults(K, state, output) {
   const executionId = await K.getExecutionId();
+  const metaPolicyNotes = normalizeMetaPolicyNotes(output.meta_policy_notes);
+  const defaults = typeof K.getDefaults === "function" ? await K.getDefaults() : {};
+  const identityEnabled = defaults?.identity?.enabled === true;
 
-  const ops = (output.kv_operations || []).filter(op =>
+  const candidateOps = output.kv_operations || [];
+  const ops = candidateOps.filter(op =>
     op.key?.startsWith("pattern:") || op.key?.startsWith("desire:") ||
     op.key?.startsWith("tactic:") || op.key?.startsWith("principle:") ||
-    op.key?.startsWith("config:") || op.key?.startsWith("prompt:")
+    op.key?.startsWith("config:") || op.key?.startsWith("prompt:") ||
+    (identityEnabled && op.key?.startsWith("identification:"))
   );
 
   const blocked = [];
+  if (!identityEnabled) {
+    for (const op of candidateOps.filter(op => op.key?.startsWith("identification:"))) {
+      blocked.push({ key: op.key, error: "identity_review_disabled" });
+    }
+  }
   for (const op of ops) {
     // Preserve the full op shape — DR may use patch + deliberation for principles
     const gatedOp = op.op === "delete"
@@ -1684,13 +2079,48 @@ export async function applyDrResults(K, state, output) {
     if (!result.ok) blocked.push({ key: op.key, error: result.error });
   }
 
+  function isStageableCodeTarget(target) {
+    return typeof target === "string"
+      && (target.startsWith("tool:") || target.startsWith("hook:") || target.startsWith("provider:") || target.startsWith("channel:"))
+      && target.endsWith(":code");
+  }
+
+  function looksLikeReplacementSource(code) {
+    if (typeof code !== "string") return false;
+    const trimmed = code.trim();
+    if (!trimmed) return false;
+    if (/\b(import|export|function|class|const|let|var|async)\b/.test(trimmed)) return true;
+    if (trimmed.includes("=>")) return true;
+    if (trimmed.includes("{") && trimmed.includes("}") && /[;=]/.test(trimmed)) return true;
+    return false;
+  }
+
   // Code staging — DR can stage code changes for governor deployment
   if (output.code_stage_requests?.length) {
     for (const req of output.code_stage_requests) {
+      const target = req?.target || null;
+      if (!isStageableCodeTarget(target)) {
+        blocked.push({ key: target, error: "invalid_code_stage_target" });
+        await K.karmaRecord({
+          event: "dr_invalid_code_stage_request",
+          key: target,
+          error: "invalid_code_stage_target",
+        });
+        continue;
+      }
+      if (!looksLikeReplacementSource(req?.code)) {
+        blocked.push({ key: target, error: "code_stage_requires_replacement_source" });
+        await K.karmaRecord({
+          event: "dr_invalid_code_stage_request",
+          key: target,
+          error: "code_stage_requires_replacement_source",
+        });
+        continue;
+      }
       try {
-        await K.stageCode(req.target, req.code);
+        await K.stageCode(target, req.code);
       } catch (err) {
-        blocked.push({ key: req.target, error: err.message });
+        blocked.push({ key: target, error: err.message });
       }
     }
     if (output.deploy) {
@@ -1732,7 +2162,16 @@ export async function applyDrResults(K, state, output) {
     timestamp: new Date().toISOString(),
     from_dr_generation: state.generation,
     carry_forward,
+    meta_policy_notes: metaPolicyNotes,
   });
+
+  if (metaPolicyNotes.length > 0) {
+    await persistMetaPolicyNotes(K, metaPolicyNotes, {
+      sessionId: executionId,
+      depth: 1,
+      source: "deep_reflect",
+    });
+  }
 
   await K.kvWriteSafe("last_reflect", {
     session_summary: output.reflection,
@@ -1749,7 +2188,17 @@ export async function applyDrResults(K, state, output) {
     desires_changed: ops.filter(o => o.key?.startsWith("desire:")).length,
     patterns_changed: ops.filter(o => o.key?.startsWith("pattern:")).length,
     tactics_changed: ops.filter(o => o.key?.startsWith("tactic:")).length,
+    identifications_changed: ops.filter(o => o.key?.startsWith("identification:")).length,
+    meta_policy_notes: metaPolicyNotes.length,
   });
+
+  if (metaPolicyNotes.length > 0) {
+    await K.karmaRecord({
+      event: "dr_meta_policy_notes_recorded",
+      count: metaPolicyNotes.length,
+      slugs: metaPolicyNotes.map((note) => note.slug).filter(Boolean),
+    });
+  }
 }
 
 async function updateJobRecord(K, jobId, status) {
@@ -1775,7 +2224,7 @@ const BUCKET_MAP = [
   [['action:'], 'sessions'],
   [['karma:'], 'sessions'],
   [['session_request:'], 'requests'],
-  [['desire:', 'pattern:', 'experience:', 'tactic:'], 'mind'],
+  [['desire:', 'pattern:', 'experience:', 'tactic:', 'identification:'], 'mind'],
   [['dr:', 'reflect:', 'last_reflect'], 'reflections'],
   [['chat:', 'outbox:', 'conversation_index:'], 'chats'],
   [['contact:', 'contact_platform:'], 'contacts'],

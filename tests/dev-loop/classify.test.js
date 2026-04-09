@@ -5,7 +5,11 @@ import {
   mergeEvidence,
   auditDesires,
   auditPatterns,
+  auditTactics,
   auditExperiences,
+  auditCarryForward,
+  auditActions,
+  auditMetaPolicyNotes,
   auditKarma,
   dedup,
 } from "../../scripts/dev-loop/classify.mjs";
@@ -213,6 +217,43 @@ describe("auditPatterns", () => {
   });
 });
 
+// ── auditTactics ───────────────────────────────────────────
+
+describe("auditTactics", () => {
+  it("flags tactics that govern reflection instead of act-time behavior", () => {
+    const tactics = [
+      {
+        key: "tactic:reflect-fix",
+        description: "When no_action text drifts, ground reflection in the plan reason before changing behavior.",
+      },
+    ];
+    const issues = auditTactics(tactics);
+    expect(issues.some((i) => i.summary.includes("reflection/review"))).toBe(true);
+  });
+
+  it("flags tactics that smuggle runtime or memory policy", () => {
+    const tactics = [
+      {
+        key: "tactic:meta-policy",
+        description: "When support shows internal_only grounding and zero external anchors, skip idle-streak pressure and coalesce the wake before counting it as fresh experience.",
+      },
+    ];
+    const issues = auditTactics(tactics);
+    expect(issues.some((i) => i.summary.includes("runtime or memory policy"))).toBe(true);
+  });
+
+  it("passes normal act-time tactics", () => {
+    const tactics = [
+      {
+        key: "tactic:follow-up-once",
+        description: "When a stall has already been reported, send at most one concise follow-up and then wait for a reply.",
+      },
+    ];
+    const issues = auditTactics(tactics);
+    expect(issues).toHaveLength(0);
+  });
+});
+
 // ── auditExperiences ───────────────────────────────────────
 
 describe("auditExperiences", () => {
@@ -257,6 +298,122 @@ describe("auditExperiences", () => {
     const issues = auditExperiences(experiences);
     const vague = issues.filter((i) => i.summary.includes("vague observation"));
     expect(vague).toHaveLength(1);
+  });
+
+  it("flags observations contaminated by internal reasoning", () => {
+    const experiences = [
+      {
+        key: "e:1",
+        observation: "No action was taken. Reason: The carry-forward directive to advance desire:service-concrete-external-work remained active.",
+      },
+    ];
+    const issues = auditExperiences(experiences);
+    expect(issues.some((i) => i.summary.includes("internal reasoning"))).toBe(true);
+  });
+});
+
+describe("auditMetaPolicyNotes", () => {
+  it("counts well-formed meta_policy_notes without raising issues", () => {
+    const result = auditMetaPolicyNotes({
+      "reflect:1:s_good": {
+        meta_policy_notes: [
+          {
+            slug: "missing-meta-policy-surface",
+            summary: "Runtime-policy findings are being smuggled into tactics.",
+            rationale: "This belongs in lab review, not live DR-1 state.",
+            proposed_experiment: "Add a non-live note field and rerun the audit.",
+          },
+        ],
+      },
+    });
+    expect(result.totalNotes).toBe(1);
+    expect(result.noteRefs).toEqual(["reflect:1:s_good::missing-meta-policy-surface"]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("flags malformed meta_policy_notes", () => {
+    const result = auditMetaPolicyNotes({
+      "reflect:1:s_bad": {
+        meta_policy_notes: [
+          {
+            slug: "bad-note",
+            summary: "Do this live now.",
+            target_review: "operational_review",
+            non_live: false,
+          },
+        ],
+      },
+    });
+    expect(result.totalNotes).toBe(1);
+    expect(result.noteRefs).toEqual(["reflect:1:s_bad::bad-note"]);
+    expect(result.issues.some((issue) => issue.summary.includes("not clearly marked non-live userspace_review"))).toBe(true);
+    expect(result.issues.some((issue) => issue.summary.includes("missing required explanatory fields"))).toBe(true);
+  });
+});
+
+// ── auditCarryForward ──────────────────────────────────────
+
+describe("auditCarryForward", () => {
+  it("flags carry-forward items that smuggle runtime policy", () => {
+    const issues = auditCarryForward({
+      carry_forward: [
+        {
+          id: "cf1",
+          item: "If another wake arrives, route it through monitoring/coalescing logic instead of generating another full idle-streak deliberation.",
+          why: "Prevent internal_only zero-anchor wakes from counting as fresh experience.",
+        },
+      ],
+    });
+    expect(issues.some((i) => i.summary.includes("runtime/meta-policy"))).toBe(true);
+  });
+
+  it("passes concrete operational carry-forward", () => {
+    const issues = auditCarryForward({
+      carry_forward: [
+        {
+          id: "cf2",
+          item: "If a patron reply arrives, convert it into one concrete next action.",
+          why: "Awaiting real external signal.",
+        },
+      ],
+    });
+    expect(issues).toHaveLength(0);
+  });
+});
+
+// ── auditActions ───────────────────────────────────────────
+
+describe("auditActions", () => {
+  it("flags outbound request_message content that leaks internal runtime terms", () => {
+    const actions = [
+      {
+        key: "action:a1",
+        plan: {
+          action: "request_message",
+          detail: {
+            message: "The carry-forward directive to advance desire:service-concrete-external-work has been considered, and the circuit-breaker threshold has been reached.",
+          },
+        },
+      },
+    ];
+    const issues = auditActions(actions);
+    expect(issues.some((i) => i.summary.includes("leak internal runtime"))).toBe(true);
+  });
+
+  it("passes normal patron-facing messages", () => {
+    const actions = [
+      {
+        key: "action:a2",
+        plan: {
+          action: "request_message",
+          detail: {
+            message: "I do not yet have a real task to act on. If you want me to proceed, please send a concrete request.",
+          },
+        },
+      },
+    ];
+    const issues = auditActions(actions);
+    expect(issues).toHaveLength(0);
   });
 });
 

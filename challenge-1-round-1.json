@@ -1,0 +1,31 @@
+{
+  "objections": [
+    {
+      "claim": "The proposal does not cover the same NLI failure mode in `classifyPlanProgress`, so its \"Generality\" claim is false and desire scoring can still be wrong.",
+      "scenario": "A ledger has `plan.success` set to \"When a probe wake arrives after an outbound check-in, the session remains in no_action\", `served_desires` is non-empty, and Tier 2 NLI returns `contradiction` at 0.95. The proposed patch only changes the pattern loop in `evaluateAction`; `classifyPlanProgress` still accepts the Tier 2 result directly, so `computeDesireAlpha` returns `{}` instead of a positive desire alignment.",
+      "falsification_test": "Add a unit test that mocks a high-confidence contradiction for conditional `plan.success` text. If the proposed change causes `classifyPlanProgress` to route that case through LLM validation or otherwise preserves the correct entailment-based `alpha`, this objection is false."
+    },
+    {
+      "claim": "The hard-coded `HIGH_CONTRADICTION_THRESHOLD = 0.8` is inconsistent with the live configurable `ambiguity_threshold` (default 0.6), leaving false contradictions unresolved in the 0.6-0.79 range.",
+      "scenario": "With the current default config, Tier 2 returns `label: contradiction` with scores `{ contradiction: 0.75, neutral: 0.15, entailment: 0.10 }` for a conditional pattern. The current code resolves that result because `maxScore >= 0.6`; the proposed branch does not escalate it because `0.75 < 0.8`, so the stated fix misses the case.",
+      "falsification_test": "Run `evaluateAction` with `ambiguity_threshold: 0.6` and a mocked Tier 2 result of `contradiction: 0.75` on a conditional pattern. If the proposed patch routes that pair to Tier 3 instead of resolved Tier 2, this objection is false."
+    },
+    {
+      "claim": "The proposal only checks `r.label === \"contradiction\"`, but current sigma computation uses `r.scores.contradiction` as surprise for every resolved pattern, so salience inflation can survive even when the label is `neutral` or `entailment`.",
+      "scenario": "Tier 2 returns `label: neutral` with scores `{ neutral: 0.62, contradiction: 0.59, entailment: 0.12 }` for a conditional pattern. The current code still records `surprise: 0.59`, which can dominate `sigma`. The proposal does not escalate this case because the label is not `contradiction`, so the false-surprise path remains.",
+      "falsification_test": "Add a test with the above Tier 2 scores and inspect `sigma` and `pattern_scores`. If the proposed patch either validates or suppresses the `0.59` contradiction-derived surprise before `computeMetrics` runs, this objection is false."
+    },
+    {
+      "claim": "The proposed conditional detector is lexically incomplete, so the claim that it fixes the class of conditional-logic errors is too broad.",
+      "scenario": "A stored pattern reads, \"Once a dev_loop probe wake follows an outbound check-in, sessions remain in no_action.\" It has the same conditional semantics as the reported bug, but none of the proposed regex markers match it. A high-confidence false contradiction on that pattern would still be accepted at Tier 2.",
+      "falsification_test": "Build a table of semantically equivalent conditional phrasings that use markers outside the proposed regex, such as `once`, `whenever`, `provided that`, or `as long as`. If the detector routes all of them to Tier 3 without expanding the implementation, this objection is false."
+    },
+    {
+      "claim": "The proposal's robustness assessment is incorrect: a Tier 3 failure does not \"return zeros\"; it sends `evaluateAction` into full `llm_fallback`, increasing blast radius and cost.",
+      "scenario": "One Tier 2 contradiction on a conditional pattern is escalated by the proposed patch, then `classifyWithLLM` throws or returns invalid JSON for that Tier 3 batch. The outer `try` in `evaluateAction` catches the error and reclassifies all pairs through full `llm_fallback`, so unrelated pattern results can change even though only one pair was escalated.",
+      "falsification_test": "Mock Tier 2 so one pair is escalated, then make `K.callLLM` fail during the Tier 3 batch. If the proposed change degrades only that pair or returns zeros without invoking full `llm_fallback`, this objection is false."
+    }
+  ],
+  "verdict": "needs_revision",
+  "summary": "The proposal identifies a real weakness in the Tier 2 path, but the patch as written is not ready to merge. It leaves the same conditional-logic failure mode in `classifyPlanProgress`, introduces a new hard-coded threshold that conflicts with the live config, fails to address contradiction-score-driven surprise when the top label is not `contradiction`, relies on an incomplete lexical detector, and misstates the current Tier 3 failure behavior."
+}

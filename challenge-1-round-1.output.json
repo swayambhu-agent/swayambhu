@@ -1,0 +1,35 @@
+{
+  "objections": [
+    {
+      "id": "obj-1",
+      "claim": "Setting `salience=0` for every `plan.no_action` breaks the current bootstrap contract. `writeMemory()` only emits `experience:*` when salience clears 0.5, but `reflect.js` bootstrap detection currently requires an `experience_written` event in the first no-desire session. With the proposed change, the first bootstrap no-action turns into `experience_skipped`, so the existing bootstrap fast-path no longer fires even though `eval.js` still returns `sigma: 1`.",
+      "falsifiable_test": "Apply the change and run `npx vitest run tests/userspace.test.js -t \"skips plan phase and writes a bootstrap no_action experience\"` plus `npx vitest run tests/reflect.test.js -t \"synthesizes minimal bootstrap reflect output without calling the LLM\"`. If both still pass unmodified, this objection is false.",
+      "severity": "high"
+    },
+    {
+      "id": "obj-2",
+      "claim": "The proposal's cold-start argument is too narrow. In `eval.js`, `baseSigma` is set to `1` whenever `patternEntries.length === 0`, not only in the special `(patterns=0 && desires=0)` early return. Hard-zeroing all no-action salience would therefore suppress legitimate patternless abstention memories in states like `desires != 0, patterns = 0`, which the current evaluator explicitly treats as maximum-uncertainty experiences.",
+      "falsifiable_test": "Construct a state with at least one desire, zero patterns, and a `no_action` plan. Verify that current code produces `sigma: 1` and writes an `experience:*`, then verify the proposal skips it. If such a state cannot occur or current code does not write the experience, this objection is false.",
+      "severity": "medium"
+    },
+    {
+      "id": "obj-3",
+      "claim": "Not all no-action episodes are vacuous. The no-action path preserves `plan.reason` in the synthetic review observation, and later deep-reflect loads `experience:*` entries through `selectExperiences()` rather than mining `action:*` audits. A rare abstention caused by newly discovered blocker evidence or a principled safety constraint is exactly the kind of cross-session signal that hardcoding `0` would erase.",
+      "falsifiable_test": "Seed one session with `plan.no_action=true` and a novel blocker reason in `review.observation`, then run a later deep-reflect context build with and without the corresponding `experience:*` record. If the blocker evidence is still equally available to deep-reflect without the experience entry, this objection is false.",
+      "severity": "medium"
+    },
+    {
+      "id": "obj-4",
+      "claim": "A hard zero is not the best available gate because the stated failure is repetition, and the codebase already tracks repetition. `writeMemory()` has near-duplicate suppression by embedding similarity, and session scheduling already tracks `no_action_streak`. A repetition-aware decay or suppression rule would distinguish the first novel abstention from the 20th identical one; hardcoding `0` destroys both.",
+      "falsifiable_test": "Replay the cited no-action sample under three policies: current behavior, hard-zero, and a streak/similarity-aware decay gate. If the decay gate does not materially reduce buffer churn while preserving bootstrap and rare no-action episodes better than hard-zero, this objection is false.",
+      "severity": "medium"
+    },
+    {
+      "id": "obj-5",
+      "claim": "The proposal patches the symptom in `writeMemory()` instead of the error source in eval. `classifyWithLLM()` already encodes the correct rule that absent pattern triggers should be `neutral`, so a narrower fix is to require no-action contradictions to be confirmed by that path (or equivalent trigger-evidence logic) before they contribute to `sigma`. That addresses the false-positive mechanism without deleting all no-action memory.",
+      "falsifiable_test": "Replay the 30-session sample with a no-action-specific eval rule that routes contradiction candidates through tier 3 before computing `sigma`, then compare false-positive rate, retained true-positive no-action memories, and bootstrap behavior against the hard-zero proposal. If the targeted eval gate does not improve precision materially, this objection is false.",
+      "severity": "medium"
+    }
+  ],
+  "overall_assessment": "The proposal identifies a real NLI contradiction bug, but `salience=0` for all no-action is too blunt. It would break the current bootstrap path, suppress legitimate patternless and evidence-bearing abstention memories, and solve a classifier error by deleting memory downstream. A narrower gate at the eval or repetition layer is safer and more falsifiable."
+}

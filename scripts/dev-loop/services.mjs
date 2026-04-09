@@ -27,6 +27,26 @@ async function isServiceUp(port) {
   }
 }
 
+export async function waitForRestartBoundary(config, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  let sawDownState = false;
+  while (Date.now() < deadline) {
+    const [kernelUp, dashboardUp] = await Promise.all([
+      isServiceUp(config.kernelPort),
+      isServiceUp(config.dashboardPort),
+    ]);
+    if (!kernelUp || !dashboardUp) {
+      sawDownState = true;
+      return;
+    }
+    await sleep(1000);
+  }
+
+  throw new Error(
+    `Services on kernel ${config.kernelPort} and dashboard ${config.dashboardPort} never dropped during restart window. See ${config.logPath}`,
+  );
+}
+
 function readActiveBranch() {
   if (!existsSync(ACTIVE_UI_PATH)) {
     throw new Error(`No active state-lab branch found at ${ACTIVE_UI_PATH}`);
@@ -55,14 +75,31 @@ function resolveServiceConfig() {
   };
 }
 
+function readStartOverrides() {
+  const raw = process.env.SWAYAMBHU_START_SET_ARGS;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((value) => String(value)).filter(Boolean);
+    }
+  } catch {}
+  return raw
+    .split(/\r?\n|;;/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 function spawnManagedStart(config, { resetAllState = false } = {}) {
   const logFd = openSync(config.logPath, "a");
   const commonEnv = { ...process.env };
+  const overrides = readStartOverrides();
   let child;
 
   if (config.mode === "state_lab_active") {
     const args = ["scripts/state-lab.mjs", "start", config.branch, "--no-governor"];
     if (resetAllState) args.push("--reset-all-state", "--yes");
+    for (const override of overrides) args.push("--set", override);
     child = spawn("node", args, {
       cwd: REPO_ROOT,
       env: commonEnv,
@@ -72,6 +109,7 @@ function spawnManagedStart(config, { resetAllState = false } = {}) {
   } else {
     const args = ["scripts/start.sh", "--no-governor"];
     if (resetAllState) args.push("--reset-all-state", "--yes");
+    for (const override of overrides) args.push("--set", override);
     child = spawn("bash", args, {
       cwd: REPO_ROOT,
       env: commonEnv,
@@ -113,6 +151,9 @@ export async function ensureServices(options = {}) {
   }
 
   const pid = spawnManagedStart(config, { resetAllState });
+  if ((forceRestart || resetAllState) && kernelUp && dashboardUp) {
+    await waitForRestartBoundary(config);
+  }
   await waitForServices(config);
   return { ...config, pid };
 }

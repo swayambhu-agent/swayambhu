@@ -18,6 +18,19 @@ vi.mock("../memory.js", () => ({
   }),
   callInference: vi.fn(async () => ({ embeddings: [] })),
   embeddingCacheKey: vi.fn((text, model) => `embedding:mock:${model}`),
+  cosineSimilarity: vi.fn((a = [], b = []) => {
+    if (!a.length || !b.length || a.length !== b.length) return 0;
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    if (!normA || !normB) return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  }),
 }));
 
 vi.mock("../lib/reasoning.js", () => ({
@@ -101,7 +114,7 @@ describe("session with empty desires", () => {
     expect(K.kvWriteSafe).toHaveBeenCalledWith(
       expect.stringMatching(/^experience:/),
       expect.objectContaining({
-        observation: expect.stringContaining("No action was taken."),
+        observation: expect.stringContaining("No changes in circumstances. No action taken."),
         salience: 1,
         pattern_delta: expect.objectContaining({ sigma: 1 }),
       }),
@@ -323,7 +336,7 @@ describe("session with empty desires", () => {
     expect(K.kvWriteSafe).toHaveBeenCalledWith(
       expect.stringMatching(/^experience:/),
       expect.objectContaining({
-        observation: expect.stringContaining("No action was taken."),
+        observation: expect.stringContaining("No changes in circumstances. No action taken."),
       }),
     );
   });
@@ -971,7 +984,7 @@ describe("session plan phase", () => {
         event: "review_synthesized",
         source: "no_action_bootstrap",
         assessment: "no_action",
-        observation: "No action was taken. Reason: nothing to do",
+        observation: "No changes in circumstances. No action taken.",
       }),
     );
   });
@@ -1158,10 +1171,66 @@ describe("session plan phase", () => {
 
     const planCall = K.callLLM.mock.calls[0][0];
     expect(planCall.messages[0].content).toContain("[CARRY-FORWARD]");
-    expect(planCall.messages[0].content).toContain("plans from previous session — continue or re-evaluate");
+    expect(planCall.messages[0].content).toContain("operational continuity only");
     expect(planCall.messages[0].content).toContain("Follow up with the patron about scheduling");
     expect(planCall.messages[0].content).toContain("(supports desire:d_help)");
+    expect(planCall.messages[0].content).not.toContain("Keeps the conversation moving");
     expect(planCall.messages[0].content).not.toContain("[CARRY-FORWARD TASKS]");
+  });
+
+  it("keeps carry-forward prose out of the planner while preserving operational facts", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        "last_reflect": {
+          carry_forward: [
+            {
+              id: "s_prev:cf1",
+              item: "Wait for patron confirmation before editing the config",
+              why: "I already concluded they seem impatient and should not be contradicted.",
+              reason: "The last session felt tense and probably means the patron wants minimal initiative.",
+              blocked_on: "explicit patron confirmation",
+              wake_condition: "the patron sends confirmation",
+              priority: "high",
+              status: "active",
+              desire_key: "desire:d_help",
+            },
+          ],
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const planCall = K.callLLM.mock.calls[0][0];
+    expect(planCall.messages[0].content).toContain("Wait for patron confirmation before editing the config");
+    expect(planCall.messages[0].content).toContain("blocked_on=explicit patron confirmation");
+    expect(planCall.messages[0].content).toContain("wake_condition=the patron sends confirmation");
+    expect(planCall.messages[0].content).not.toContain("They seem impatient");
+    expect(planCall.messages[0].content).not.toContain("The last session felt tense");
   });
 
   it("only surfaces active carry-forward items to the planner", async () => {
@@ -1325,6 +1394,148 @@ describe("session plan phase", () => {
     expect(carryForwardBlock).not.toContain("Expired high");
     expect(carryForwardBlock).not.toContain("Low older dropped by cap");
   });
+
+  it("blocks reflective keys from next_act_context.load_keys and only loads factual continuity", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        "workspace:active_ticket": { title: "Fix scheduler", state: "blocked" },
+        "reflect:0:old_session": { reflection: "I think the patron is impatient." },
+        "experience:e_old": { observation: "No changes in circumstances. No action taken." },
+        "last_reflect": {
+          next_act_context: {
+            load_keys: ["workspace:active_ticket", "reflect:0:old_session", "experience:e_old"],
+          },
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const planCall = K.callLLM.mock.calls[0][0];
+    expect(planCall.messages[0].content).toContain("[REFLECT-LOADED CONTEXT]");
+    expect(planCall.messages[0].content).toContain("workspace:active_ticket");
+    expect(planCall.messages[0].content).not.toContain("reflect:0:old_session");
+    expect(planCall.messages[0].content).not.toContain("experience:e_old");
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "reflect_load_keys_blocked",
+        blocked_keys: ["reflect:0:old_session", "experience:e_old"],
+      }),
+    );
+  });
+
+  it("surfaces non-root identifications to the planner when identity is enabled", async () => {
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        "action:1700000000000": {
+          plan: { action: "computer", success: "Inspect the position brief artifact." },
+          tool_calls: [{ tool: "computer" }],
+          review: {
+            observation: "Located the brief at /home/swami/swayambhu/repo/docs/superpowers/research/2026-04-08-external-model-cognitive-brief.md and copied a working version to /home/swayambhu/docs/sadhguru-position-brief-v1.md.",
+            accomplished: "Inspected /home/swayambhu/docs and the repo brief to ground the first external work surface.",
+            key_findings: [
+              "The live artifact now exists at /home/swayambhu/docs/sadhguru-position-brief-v1.md.",
+            ],
+          },
+        },
+        "last_reflect": {
+          carry_forward: [
+            {
+              id: "cf:wait",
+              item: "Wait for callback from the delegated review job and keep the brief thread ready.",
+              why: "The current surface is blocked on callback while the delegated review finishes.",
+              status: "active",
+              priority: "high",
+            },
+          ],
+        },
+        "identification:working-body": {
+          identification: "Operational body: memory continuity, tools, and tool affordances.",
+          strength: 0.8,
+        },
+        "identification:patron-continuity": {
+          identification: "Ongoing patron relationship and unfinished follow-through.",
+          strength: 0.7,
+        },
+        "identification:entrusted-workspace": {
+          identification: "Entrusted workspace integrity and continuity.",
+          strength: 0.4,
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          identity: {
+            enabled: true,
+            max_planner_items: 5,
+            environment_roots: ["/home/swami", "/home/swayambhu"],
+            working_body_prefixes: ["/home/swami/swayambhu", "/home/swami/swayambhu/repo"],
+          },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const planContent = K.callLLM.mock.calls[0][0].messages[0].content;
+    expect(planContent).toContain("[WORKING BODY]");
+    expect(planContent).toContain("Operational body: memory continuity, tools, and tool affordances.");
+    expect(planContent).toContain("[IDENTIFICATIONS]");
+    expect(planContent).toContain("identification:patron-continuity");
+    expect(planContent).toContain("Ongoing patron relationship and unfinished follow-through.");
+    expect(planContent).toContain("identification:entrusted-workspace");
+    expect(planContent).not.toContain("identification:working-body");
+    expect(planContent).toContain("\"environment_context\"");
+    expect(planContent).toContain("/home/swami");
+    expect(planContent).toContain("\"explored_paths\"");
+    expect(planContent).toContain("/home/swayambhu/docs");
+    expect(planContent).toContain("\"all_active_items_waiting\": true");
+    expect(planContent).toContain("\"working_body_prefixes\"");
+    expect(planContent).toContain("/home/swami/swayambhu/repo");
+  });
 });
 
 // ── Memory write tests ───────────────────────────────────────
@@ -1479,6 +1690,13 @@ describe("session memory writes", () => {
     });
     expect(experienceValue.embedding).toBeNull(); // no inferenceConfig
     expect(experienceValue.action_ref).toMatch(/^action:/);
+    expect(experienceValue.support).toEqual(expect.objectContaining({
+      grounding: "mixed",
+      completion: "full_cycle",
+      external_anchor_count: 0,
+      self_generated_only: true,
+      recurrence_count: 1,
+    }));
   });
 
   it("skips experience when salience is below threshold", async () => {
@@ -1493,6 +1711,25 @@ describe("session memory writes", () => {
 
     const experienceCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("experience:"));
     expect(experienceCall).toBeUndefined();
+  });
+
+  it("uses a factual fallback observation instead of narrative or planner reasoning", async () => {
+    const review = {
+      assessment: "success",
+      narrative: "This suggests the tactic is working and should probably be repeated.",
+      salience_estimate: 0.8,
+    };
+    K = makeK(review);
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const experienceCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("experience:"));
+    const experienceValue = typeof experienceCall[1] === "string" ? JSON.parse(experienceCall[1]) : experienceCall[1];
+    expect(experienceValue.observation).toBe("An action completed and produced a response.");
+    expect(experienceValue.observation).not.toContain("tactic");
+    expect(experienceValue.text_rendering).toEqual({
+      narrative: "This suggests the tactic is working and should probably be repeated.",
+    });
   });
 
   it("records embedding timeout from AbortError without Promise.race", async () => {
@@ -1540,6 +1777,69 @@ describe("session memory writes", () => {
     );
   });
 
+  it("merges near-duplicate experiences by increasing recurrence count", async () => {
+    const review = {
+      observation: "A high-salience event occurred.",
+      assessment: "success",
+      narrative: "High-salience event.",
+      salience_estimate: 0.9,
+    };
+    const evalResult = {
+      sigma: 0.7, alpha: {}, salience: 0.7, eval_method: "pipeline",
+      tool_outcomes: [], plan_success_criteria: null,
+      patterns_relied_on: [SAMSKARA_KEY],
+      pattern_scores: {},
+    };
+    K = makeK(review, evalResult);
+    await K.kvWriteSafe("experience:existing", {
+      timestamp: "2026-04-08T10:00:00.000Z",
+      action_ref: "action:old",
+      session_id: "old_session",
+      cycle: 0,
+      observation: "A high-salience event occurred.",
+      desire_alignment: { top_positive: [], top_negative: [], affinity_magnitude: 0 },
+      pattern_delta: { sigma: 0.7, scores: [] },
+      salience: 0.7,
+      embedding: [0.1, 0.2, 0.3],
+      support: {
+        grounding: "mixed",
+        completion: "full_cycle",
+        external_anchor_count: 0,
+        self_generated_only: true,
+        recurrence_count: 2,
+        first_observed_at: "2026-04-08T09:00:00.000Z",
+        last_observed_at: "2026-04-08T10:00:00.000Z",
+      },
+    });
+    const baseDefaults = await K.getDefaults();
+    K.getDefaults = vi.fn(async () => ({
+      ...baseDefaults,
+      inference: { url: "http://localhost:9000" },
+    }));
+    callInference.mockImplementation(async (_url, _secret, path, body) => {
+      if (path === "/embed" && body?.texts?.[0] === "A high-salience event occurred.") {
+        return { embeddings: [[0.1, 0.2, 0.3]] };
+      }
+      return { embeddings: [] };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const mergedExperience = await K.kvGet("experience:existing");
+    expect(mergedExperience.support).toEqual(expect.objectContaining({
+      recurrence_count: 3,
+      completion: "full_cycle",
+      grounding: "mixed",
+    }));
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "experience_recurrence_merged",
+        key: "experience:existing",
+        recurrence_count: 3,
+      }),
+    );
+  });
+
   it("does not update patterns when pattern_scores is empty", async () => {
     const review = {
       assessment: "success",
@@ -1552,6 +1852,104 @@ describe("session memory writes", () => {
 
     const patternWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("pattern:"));
     expect(patternWrites.length).toBe(0);
+  });
+
+  it("records exercised identifications on actions and updates last_exercised_at mechanically", async () => {
+    const review = {
+      observation: "Sent the requested follow-up to the patron.",
+      assessment: "success",
+      narrative: "Patron follow-up sent.",
+      salience_estimate: 0.4,
+    };
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
+        "identification:working-body": {
+          identification: "Operational body: memory continuity, tools, and tool affordances.",
+          strength: 0.8,
+          last_exercised_at: null,
+        },
+        "identification:patron-continuity": {
+          identification: "Ongoing patron relationship and unfinished follow-through.",
+          strength: 0.7,
+          last_exercised_at: null,
+        },
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          identity: { enabled: true, max_planner_items: 5 },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    evaluateAction.mockResolvedValue({
+      sigma: 0.1,
+      alpha: {},
+      salience: 0.4,
+      eval_method: "pipeline",
+      tool_outcomes: [{ tool: "request_message", ok: true }],
+      plan_success_criteria: null,
+      patterns_relied_on: [SAMSKARA_KEY],
+      pattern_scores: {},
+      served_desires: ["desire:d_help"],
+    });
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(JSON.stringify(review))(opts);
+    });
+
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Sent." });
+      return {
+        response: {
+          content: "Sent.",
+          toolCalls: [
+            {
+              function: {
+                name: "request_message",
+                arguments: JSON.stringify({
+                  to: "swami_kevala",
+                  message: "Following up on the earlier thread.",
+                }),
+              },
+            },
+          ],
+        },
+        toolResults: [{ ok: true, delivered: true }],
+        cost: 0.01,
+        done: true,
+      };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const actionCall = K.kvWriteSafe.mock.calls.find(([key]) => key.startsWith("action:"));
+    const actionValue = typeof actionCall[1] === "string" ? JSON.parse(actionCall[1]) : actionCall[1];
+    expect(actionValue.exercised_identifications).toEqual(["identification:patron-continuity"]);
+
+    expect(K.updateIdentificationLastExercised).toHaveBeenCalledWith(
+      "identification:patron-continuity",
+      expect.any(String),
+    );
+    expect(K.updateIdentificationLastExercised).toHaveBeenCalledWith(
+      "identification:working-body",
+      expect.any(String),
+    );
+
+    const patronContinuity = await K.kvGet("identification:patron-continuity");
+    const workingBody = await K.kvGet("identification:working-body");
+    expect(patronContinuity.last_exercised_at).toEqual(expect.any(String));
+    expect(workingBody.last_exercised_at).toEqual(expect.any(String));
   });
 });
 
@@ -1666,6 +2064,10 @@ describe("pulse classify", () => {
     expect(classify(new Set(["experience:1775204183352"]))).toContain("mind");
   });
 
+  it("maps identification keys to mind bucket", () => {
+    expect(classify(new Set(["identification:patron-continuity"]))).toContain("mind");
+  });
+
   it("maps session_counter to sessions bucket", () => {
     expect(classify(new Set(["session_counter"]))).toContain("sessions");
   });
@@ -1730,9 +2132,9 @@ describe("applyDrResults key filter", () => {
       kvWriteSafe: async () => {},
       kvGet: async () => null,
       emitEvent: async () => {},
-      karmaRecord: async () => {},
-      stageCode: async () => {},
-      signalDeploy: async () => {},
+      karmaRecord: vi.fn(async () => {}),
+      stageCode: vi.fn(async () => {}),
+      signalDeploy: vi.fn(async () => {}),
     };
   }
 
@@ -1779,6 +2181,68 @@ describe("applyDrResults key filter", () => {
       reflection: "test",
     });
     expect(writes).toHaveLength(4);
+  });
+
+  it("blocks identification operations when identity review is disabled", async () => {
+    const writes = [];
+    const K = makeMockK({}, {
+      defaults: {
+        identity: { enabled: false },
+      },
+    });
+    K.kvWriteGated = vi.fn(async (op, ctx) => {
+      writes.push({ key: op.key, ctx });
+      return { ok: true };
+    });
+
+    await applyDrResults(K, { generation: 7 }, {
+      kv_operations: [
+        {
+          key: "identification:patron-continuity",
+          op: "put",
+          value: { identification: "Ongoing patron relationship and unfinished follow-through.", strength: 0.3 },
+        },
+      ],
+      reflection: "test",
+    });
+
+    expect(writes).toHaveLength(0);
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "dr_apply_blocked",
+      blocked: [{ key: "identification:patron-continuity", error: "identity_review_disabled" }],
+      applied: -1,
+    }));
+  });
+
+  it("passes identification operations to kvWriteGated when identity review is enabled", async () => {
+    const writes = [];
+    const K = makeMockK({}, {
+      defaults: {
+        identity: { enabled: true },
+      },
+    });
+    K.kvWriteGated = vi.fn(async (op, ctx) => {
+      writes.push({ key: op.key, ctx });
+      return { ok: true };
+    });
+
+    await applyDrResults(K, { generation: 7 }, {
+      kv_operations: [
+        {
+          key: "identification:patron-continuity",
+          op: "put",
+          value: { identification: "Ongoing patron relationship and unfinished follow-through.", strength: 0.3 },
+        },
+      ],
+      reflection: "test",
+    });
+
+    expect(writes).toEqual([
+      { key: "identification:patron-continuity", ctx: "deep-reflect" },
+    ]);
+    expect(K.emitEvent).toHaveBeenCalledWith("dr_complete", expect.objectContaining({
+      identifications_changed: 1,
+    }));
   });
 
   it("preserves existing carry_forward when DR output omits it", async () => {
@@ -1872,6 +2336,107 @@ describe("applyDrResults key filter", () => {
         source: "deep-reflect",
       },
     ]);
+  });
+
+  it("stores meta_policy_notes on the deep-reflect record without loading them into last_reflect", async () => {
+    const K = makeMockK({
+      last_reflect: {
+        note_to_future_self: "Existing note",
+        carry_forward: [],
+      },
+    });
+
+    await applyDrResults(K, { generation: 7 }, {
+      reflection: "test",
+      note_to_future_self: "New note",
+      kv_operations: [],
+      meta_policy_notes: [
+        {
+          slug: "missing-meta-policy-surface",
+          summary: "Runtime policy advice is being smuggled into tactics.",
+          subsystem: "review",
+          observation: "A tactic encoded scheduler/write-policy guidance.",
+          proposed_experiment: "Add a non-live meta-policy note field and rerun the variant audit.",
+          rationale: "This is not an act-time tactic and should stay out of live DR-1 buckets.",
+          confidence: 0.82,
+        },
+      ],
+    });
+
+    const reflectRecord = await K.kvGet("reflect:1:test_execution");
+    const lastReflect = await K.kvGet("last_reflect");
+    const reviewNote = await K.kvGet("review_note:userspace_review:test_execution:d1:000:missing-meta-policy-surface");
+
+    expect(reflectRecord.meta_policy_notes).toEqual([
+      {
+        slug: "missing-meta-policy-surface",
+        summary: "Runtime policy advice is being smuggled into tactics.",
+        subsystem: "review",
+        observation: "A tactic encoded scheduler/write-policy guidance.",
+        proposed_experiment: "Add a non-live meta-policy note field and rerun the variant audit.",
+        rationale: "This is not an act-time tactic and should stay out of live DR-1 buckets.",
+        target_review: "userspace_review",
+        non_live: true,
+        confidence: 0.82,
+      },
+    ]);
+    expect(reviewNote).toEqual({
+      slug: "missing-meta-policy-surface",
+      summary: "Runtime policy advice is being smuggled into tactics.",
+      subsystem: "review",
+      observation: "A tactic encoded scheduler/write-policy guidance.",
+      proposed_experiment: "Add a non-live meta-policy note field and rerun the variant audit.",
+      rationale: "This is not an act-time tactic and should stay out of live DR-1 buckets.",
+      target_review: "userspace_review",
+      non_live: true,
+      confidence: 0.82,
+      created_at: expect.any(String),
+      source: "deep_reflect",
+      source_session_id: "test_execution",
+      source_depth: 1,
+      source_reflect_key: "reflect:1:test_execution",
+    });
+    expect(lastReflect.meta_policy_notes).toBeUndefined();
+  });
+
+  it("rejects invalid code stage targets before calling stageCode", async () => {
+    const writes = [];
+    const K = mockK(writes);
+
+    await applyDrResults(K, { generation: 7 }, {
+      reflection: "test",
+      kv_operations: [],
+      code_stage_requests: [
+        { target: "kernel:source:kernel.js", code: "export async function execute() {}" },
+      ],
+    });
+
+    expect(K.stageCode).not.toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "dr_invalid_code_stage_request",
+      key: "kernel:source:kernel.js",
+      error: "invalid_code_stage_target",
+    }));
+  });
+
+  it("rejects prose code stage requests for valid code keys", async () => {
+    const writes = [];
+    const K = mockK(writes);
+
+    await applyDrResults(K, { generation: 7 }, {
+      reflection: "test",
+      kv_operations: [],
+      code_stage_requests: [
+        { target: "tool:test:code", code: "Add a planner-failure fallback for external probe wakes." },
+      ],
+    });
+
+    expect(K.stageCode).not.toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "dr_invalid_code_stage_request",
+      key: "tool:test:code",
+      error: "code_stage_requires_replacement_source",
+    }));
   });
 
   it("does not call reasoning writer when DR omits reasoning_artifacts", async () => {

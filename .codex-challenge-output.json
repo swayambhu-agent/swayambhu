@@ -1,0 +1,24 @@
+{
+  "objections": [
+    {
+      "claim": "This is not a one-time cleanup in the current codebase. Slash-form `pattern:*` keys are rejected only in `Kernel.kvWriteGated()`, but the repo still exposes raw writers that bypass that validation, so deleting one bad key does not prevent the same defect from being reintroduced.",
+      "evidence": "`kernel.js` rejects `pattern:*` keys containing `/` only inside `kvWriteGated()`. `scripts/write-kv.mjs` and `scripts/seed-local-kv.mjs` both call `kv.put()` directly through `scripts/shared.mjs` with no shared key-format check, so either path can recreate `pattern:foo/bar` after this cleanup.",
+      "severity": "blocking"
+    },
+    {
+      "claim": "The delete is not lossless. The proposal itself shows the two keys already have different strengths (`0.714` vs `0.717`), and runtime strength is tracked per key with no duplicate-merge or history-replay mechanism.",
+      "evidence": "`userspace.js` updates pattern strength per key and calls `K.updatePatternStrength(key, newStrength)`. `kernel.js` then patches only that exact key's `strength` field. There is no migration or helper in the repo that recomputes a canonical strength from experience history or merges duplicate sibling patterns, so a plain delete discards one distinct EMA trajectory.",
+      "severity": "blocking"
+    },
+    {
+      "claim": "Keeping `pattern:bootstrap:desire-to-action` unchanged is not obviously correct cleanup. Under the current deep-reflect contract, the surviving text still looks semantically malformed, so delete-only may preserve a bad pattern rather than repairing it.",
+      "evidence": "`prompts/deep_reflect.md` says patterns must be descriptive only, and explanatory or judgmental text belongs in reflection or tactics. The retained text quoted in the proposal says the pipeline 'works correctly' and describes a 'desire creation -> next session concrete investigation pipeline', which is evaluative process commentary rather than a plain recurring observation.",
+      "severity": "minor"
+    },
+    {
+      "claim": "The exact operational step in the proposal is under-specified and bypasses the repo's audit/rollback path. `node scripts/delete-kv.mjs ...` performs a raw local KV delete against whichever state directory `SWA...PERSIST_DIR` resolves to, so it can target the wrong store and leaves no privileged-write trail.",
+      "evidence": "`scripts/delete-kv.mjs` calls `kv.delete(key)` directly. `scripts/shared.mjs` resolves the target store from `process.env.SWAYAMBHU_PERSIST_DIR` or `.wrangler/shared-state`. By contrast, `kernel.js` `_gateSystem()` snapshots old values and records `privileged_write`, and `scripts/rollback-session.mjs` relies on those records to reverse privileged changes. The proposed command bypasses that path entirely.",
+      "severity": "blocking"
+    }
+  ]
+}

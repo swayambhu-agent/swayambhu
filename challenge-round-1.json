@@ -1,0 +1,48 @@
+{
+  "proposal_1": [
+    {
+      "objection": "This is not demonstrated to be a one-time bootstrap artifact. The colon key already exists in earlier run snapshots, and the slash variant appears later as a new privileged deep-reflect write, which points to an active DR write regression rather than leftover bootstrap debris.",
+      "falsifiable_test": "Trace the first appearance of `pattern:bootstrap/desire-to-action` and `pattern:bootstrap:desire-to-action` across the overnight run artifacts. If the slash key predates the colon key or both are present from the initial bootstrap state, this objection is false."
+    },
+    {
+      "objection": "The proposal treats this as a risk-free delete, but the deep-reflect prompt only names deletion for patterns near strength 0 or temporal-state patterns. Both variants are still strong (~0.71), so if the intended operation is a merge, the proposal should specify merge semantics instead of assuming a plain delete is behaviorally neutral.",
+      "falsifiable_test": "Inspect the live prompt and write-path conventions for duplicate high-strength patterns. If duplicate cleanup is explicitly defined as delete-without-merge or the surviving key's strength/history is deterministically reconstructed elsewhere, this objection is false."
+    },
+    {
+      "objection": "The rationale overstates ongoing EMA divergence in the current waiting regime. `userspace.js` only updates pattern strengths when the plan is not `no_action`, and the current session is explicitly `plan_no_action`, so the duplicate is currently a context/eval duplication problem, not an every-cycle strength-drift problem.",
+      "falsifiable_test": "Inspect `userspace.js` around the pattern strength update guard and compare recent no-action sessions. If no-action cycles are still updating both duplicate pattern strengths, this objection is false."
+    },
+    {
+      "objection": "Deleting only the slash key may preserve the wrong pattern entirely, because the surviving text is evaluative rather than purely observational: it says the pipeline 'works correctly' and that a single desire 'was sufficient'. That conflicts with the S-operator rule that patterns should be descriptive only.",
+      "falsifiable_test": "Audit the source experiences used to justify this pattern and compare them against the `prompts/deep_reflect.md` descriptive-only rule. If the pattern text is already purely observational or explicitly allowed by the prompt, this objection is false."
+    }
+  ],
+  "proposal_2": [
+    {
+      "objection": "The proposal misidentifies the failure point. This experience is not primarily unusable because the D operator cannot score it; deep-reflect drops it earlier because `selectExperiences()` filters out entries missing numeric `salience` and string `timestamp`.",
+      "falsifiable_test": "Trace the deep-reflect experience path from `reflect.js` through `memory.js::selectExperiences()`. If `experience:session_4_waiting_posture` still reaches S/D operator context despite lacking `salience` and `timestamp`, this objection is false."
+    },
+    {
+      "objection": "The proposed owner layer is mismatched. `experience:*` keys are writable from session reflect, so this issue could be repaired or quarantined immediately in the ordinary reflect path; waiting for DR to delete it is unnecessary latency for a low-severity data defect.",
+      "falsifiable_test": "Inspect `prompts/reflect.md` and the reflect write-gating path. If session reflect cannot modify `experience:*` keys in practice, this objection is false."
+    },
+    {
+      "objection": "Deleting the record now removes forensic evidence before the source of the legacy schema is explained. A repo-wide search does not show an active writer that emits `observed/context/learned/tags`, so the origin is unresolved; without root cause, the malformed schema could re-enter through the same unknown path.",
+      "falsifiable_test": "Search current write paths and seed/import scripts for code that creates `observed/context/learned/tags` experience records, or inspect KV provenance for this key. If the legacy writer is already identified and permanently retired, this objection is false."
+    }
+  ],
+  "proposal_3": [
+    {
+      "objection": "The proposal treats `1800` as the live runtime schedule, but the observed snapshot records `session_schedule.interval_seconds = 21600`. `reflect.js` clamps `next_session_config.interval_seconds` up to the default floor on `plan_no_action`, so the claimed 48-sessions-per-day cost burn is counterfactual for this run.",
+      "falsifiable_test": "Compare `last_reflect.next_session_config.interval_seconds` with `observation.analysis.session_schedule.interval_seconds` and inspect the no-action floor logic in `reflect.js`. If the live schedule is actually 1800 seconds, this objection is false."
+    },
+    {
+      "objection": "The premise that the tactic was available to session reflect is not code-backed. `executeReflect()` builds the prompt with `systemKeyPatterns`, `pattern_manifest`, karma, cost, and carry-forward data; it does not inject tactic bodies or a tactic manifest into the session reflect context.",
+      "falsifiable_test": "Inspect `reflect.js::executeReflect()` and the rendered `prompt:reflect` input for the session. If tactic descriptions are present in the actual session reflect context, this objection is false."
+    },
+    {
+      "objection": "Because the scheduler already corrected the interval, the real defect is an observability mismatch: `last_reflect.next_session_config` says 1800 while the applied `session_schedule` is 21600. Deferring to DR self-repair does not target that mismatch unless it changes the reflect prompt or the analyzer that is reading the wrong signal.",
+      "falsifiable_test": "Watch the next few no-action sessions and compare `last_reflect.next_session_config` to `session_schedule`. If they converge without any prompt or analyzer change, this objection is false."
+    }
+  ]
+}

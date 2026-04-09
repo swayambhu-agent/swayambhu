@@ -7,6 +7,17 @@ export const meta = {
   timeout_ms: 300000,
 };
 
+function wrapForNonInteractiveExecution(command) {
+  const envPrefix = [
+    "export GIT_PAGER=cat",
+    "export PAGER=cat",
+    "export LESS=FRX",
+    "export GIT_TERMINAL_PROMPT=0",
+    "export TERM=dumb",
+  ].join("; ");
+  return `${envPrefix}; ${command}`;
+}
+
 function buildHeaders(secrets, contentType) {
   return {
     ...(contentType ? { "Content-Type": contentType } : {}),
@@ -22,13 +33,14 @@ export async function call({ command, baseUrl, timeout, secrets, fetch }) {
   const headers = buildHeaders(secrets, "application/json");
 
   const wait = timeout || 60;
+  const wrappedCommand = wrapForNonInteractiveExecution(command);
 
   let resp;
   try {
     resp = await fetch(`${baseUrl}/execute?wait=${wait}`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ command }),
+      body: JSON.stringify({ command: wrappedCommand }),
     });
   } catch (e) {
     return { ok: false, error: `fetch failed: ${e.message || String(e)}` };

@@ -1,0 +1,41 @@
+{
+  "objections": [
+    {
+      "id": 1,
+      "claim": "As written, the detector will not trigger in the current runtime because `desires` is an object map, not an array.",
+      "evidence": "`formatDesires()` iterates desires with `Object.entries(d)` in `/home/swami/swayambhu/repo/act.js:79-88`, and `userspace.js` later validates them with `Object.keys(desires)` in `/home/swami/swayambhu/repo/userspace.js:634`. The proposal instead uses `desires.length > 0 && desires.every(...)` in `proposal-1.md:26-31`. I ran that exact predicate against a non-empty object-shaped desire set and it returned `{\"allDesiresMeta\":false}`. Falsifiable check: execute the proposed snippet with the current desire state shape; if it returns `true` for a non-empty object map, this objection is false.",
+      "severity": "high"
+    },
+    {
+      "id": 2,
+      "claim": "The new warning asks for desire-independent exploratory action in a state where the same function can still reject desire-less replans outright.",
+      "evidence": "The proposal tells the planner to \"look for actionable work independent of them\" and to \"consider exploratory actions\" (`proposal-1.md:19-20`, `proposal-1.md:39-42`). But `userspace.js:640-654` only accepts a plan with zero `serves_desires` when `priorActions.length === 0`; otherwise it records `plan_missing_serves_desires` and returns `null`. I reproduced the gate with one prior action and a high streak, and `allowExploratoryPlan` was `false`. Falsifiable check: simulate a replan after any prior action in the same session and see whether a desire-less exploratory plan survives validation; if it does, this objection is false.",
+      "severity": "high"
+    },
+    {
+      "id": 3,
+      "claim": "The proposal adds exploration pressure in unhealthy-capacity sessions even though the validator only permits desire-less exploration when capacity is explicitly healthy.",
+      "evidence": "The idle-trap block fires on `noRequestsPending && noActionStreak >= idleTrapThreshold` (`/home/swami/swayambhu/repo/userspace.js:525-528`) and does not check capacity. The later exploratory-plan allowance requires `circumstances.capacity.healthy === true` (`/home/swami/swayambhu/repo/userspace.js:640-647`). I ran the gate logic with `healthy: false` and got `{\"allowExploratoryPlan\":false}`. Falsifiable check: replay a high-streak, unhealthy-capacity session with a desire-less exploratory action; if the plan is accepted, this objection is false.",
+      "severity": "medium"
+    },
+    {
+      "id": 4,
+      "claim": "The keyword detector conflates lexical tokens with meta-desire semantics and can classify ordinary operational work as \"all meta\".",
+      "evidence": "The predicate treats any description containing `bootstrap`, `stall`, or `desire` as meta (`proposal-1.md:29-30`). I ran it on two operational desires, `Unstall the payment webhook` and `Study user desire patterns in inbound requests`, and the detector returned `{\"allDesiresMeta\":true}`. Falsifiable check: run the proposal's predicate on those two example descriptions; if it returns `false`, this objection is false.",
+      "severity": "medium"
+    },
+    {
+      "id": 5,
+      "claim": "The proposal is not targeted to the most likely blocker surface in the current prompt assembly: tactics and carry-forward are at least as plausible as desires, but the fix does not inspect either.",
+      "evidence": "In `userspace.js`, the prompt is assembled as `[DESIRES]`, then `[TACTICS]`, then `[CARRY-FORWARD]`, then later the idle-trap override (`/home/swami/swayambhu/repo/userspace.js:484-540`). The existing override itself says \"Your tactics may be keeping you idle\" (`/home/swami/swayambhu/repo/userspace.js:531-537`). The proposal's diagnosis in `proposal-1.md:5-20` attributes the loop to meta-desires alone without examining tactics or carry-forward state. Falsifiable check: seed operational desires plus a blocking tactic or carry-forward item, reproduce `no_action`, and see whether the proposed meta-desire detector fixes it; if it does, this objection is false.",
+      "severity": "medium"
+    },
+    {
+      "id": 6,
+      "claim": "The prompt text \"Deep-reflect will replace them with actionable desires next cycle\" is not supported by the actual deep-reflect scheduler.",
+      "evidence": "The proposal states that promise in `proposal-1.md:38-39`, but after deep-reflect applies, `userspace.js` schedules the next run using `after_sessions`/`after_days`, defaulting to 20 sessions and 7 days (`/home/swami/swayambhu/repo/userspace.js:1506-1514`). `isDrDue()` only returns true once `next_due_session` or `next_due_date` is reached (`/home/swami/swayambhu/repo/userspace.js:1565-1570`). Falsifiable check: inspect `dr:state:1` after a normal deep-reflect apply; if `next_due_session` is always the immediate next session, this objection is false.",
+      "severity": "medium"
+    }
+  ],
+  "overall_assessment": "The proposal identifies a plausible symptom, but it is not sound as written. One part is structurally incompatible with the current `desires` shape, and the rest conflicts with existing plan-validation and deep-reflect scheduling rules. A credible fix needs to align with the real runtime gates for exploratory plans and show that desires, rather than tactics or carry-forward state, are the dominant blocker in the cited session."
+}

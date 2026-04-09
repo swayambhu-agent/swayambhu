@@ -1,0 +1,30 @@
+{
+  "objections": [
+    {
+      "id": "obj-1",
+      "claim": "Option A's literal command can corrupt `dr:state:1` instead of patching it. `scripts/write-kv.mjs` overwrites the whole key, so writing only `{ \"next_due_session\": 13 }` removes fields like `status` and `generation`. In `userspace.js`, `drCycle()` does not normalize missing fields when the key exists, so DR can become inert because `state.status` is no longer `idle|failed|dispatched|completed`.",
+      "falsification": "Prove that `scripts/write-kv.mjs` merges into the existing JSON object, or run the exact command against a sandbox copy of `dr:state:1` and show that the next `drCycle()` still emits `dr_dispatched` with a valid generation instead of doing nothing.",
+      "severity": "high"
+    },
+    {
+      "id": "obj-2",
+      "claim": "Forcing `next_due_session = 13` does not make DR4 run immediately in the way the proposal claims. In `run()`, `drCycle(..., { phase: \"post\" })` dispatches only after `actCycle()`, and `session_counter` is incremented inside `actCycle()`. With the current counter at 12, session 13 still executes one more no-action act pass before DR is even dispatched.",
+      "falsification": "Start from `session_counter = 12` and a valid idle `dr:state:1` patched to `next_due_session = 13`. If the same tick records `dr_dispatched` before `plan_no_action` / no-action memory for session 13, this objection is false.",
+      "severity": "medium"
+    },
+    {
+      "id": "obj-3",
+      "claim": "Even if DR4 succeeds, Option A may not produce a fast recovery because successful DR apply only pulls `session_schedule.next_session_after` forward when the agent previously had zero desires. Right now it has three meta-desires, so replacing them with good desires will leave the normal schedule untouched and can delay the first act on the new desires until the next scheduled session.",
+      "falsification": "Run a DR apply where some `desire:*` keys already exist and DR writes new outward-facing desires. If `userspace.js` still advances `session_schedule.next_session_after` to `now` in that case, this objection is false.",
+      "severity": "medium"
+    },
+    {
+      "id": "obj-4",
+      "claim": "Option A is not 'safe' under transient DR infra failure. If the forced dispatch hits a missing prompt or `start_job` failure, `drCycle()` marks the state as `failed` and applies exponential session backoff before retrying. That can delay recovery longer than the current four-session wait the proposal is trying to shorten.",
+      "falsification": "Force `isDrDue()` to return true while making `dispatchDr()` fail once. If `dr:state:1` does not transition to `failed` with `consecutive_failures` incremented and delayed retry behavior, this objection is false.",
+      "severity": "medium"
+    }
+  ],
+  "overall_assessment": "oppose",
+  "reasoning": "The underlying idea is directionally reasonable, but the proposal as written is operationally unsafe and overstates how quickly the system will recover. The exact KV-write command can break DR state, and even a correct patch still leaves at least one extra inert session plus a possible delayed wake after DR applies."
+}

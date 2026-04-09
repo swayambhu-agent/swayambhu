@@ -187,6 +187,15 @@ describe("send_slack", () => {
     const opts = f.mock.calls[0][1];
     expect(opts.headers.Authorization).toBe("Bearer xoxb-tok");
   });
+
+  it("throws when Slack rejects the message", async () => {
+    const f = mockFetch({ ok: false, error: "not_in_channel" });
+    await expect(send_slack.execute({
+      text: "hello",
+      secrets: { SLACK_BOT_TOKEN: "xoxb-tok", SLACK_CHANNEL_ID: "C123" },
+      fetch: f,
+    })).rejects.toThrow("Slack chat.postMessage failed: not_in_channel");
+  });
 });
 
 describe("web_fetch", () => {
@@ -226,6 +235,12 @@ describe("computer", () => {
     const opts = f.mock.calls[0][1];
     expect(opts.headers["CF-Access-Client-Id"]).toBe("cid");
     expect(opts.headers["Authorization"]).toBe("Bearer key");
+    const body = JSON.parse(opts.body);
+    expect(body.command).toContain("export GIT_PAGER=cat");
+    expect(body.command).toContain("export PAGER=cat");
+    expect(body.command).toContain("export GIT_TERMINAL_PROMPT=0");
+    expect(body.command).toContain("export TERM=dumb");
+    expect(body.command.endsWith("echo hello")).toBe(true);
   });
 
   it("uses custom timeout", async () => {
@@ -1522,7 +1537,7 @@ describe("channel:slack", () => {
 
   describe("sendReply", () => {
     it("calls Slack chat.postMessage API", async () => {
-      const f = vi.fn(async () => ({ ok: true }));
+      const f = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true }) }));
       const secrets = { SLACK_BOT_TOKEN: "xoxb-test" };
       await slack.sendReply("C123", "Hello!", secrets, f);
 
@@ -1534,6 +1549,15 @@ describe("channel:slack", () => {
       const body = JSON.parse(opts.body);
       expect(body.channel).toBe("C123");
       expect(body.text).toBe("Hello!");
+    });
+
+    it("throws when Slack returns ok:false", async () => {
+      const f = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ ok: false, error: "channel_not_found" }),
+      }));
+      await expect(slack.sendReply("C123", "Hello!", { SLACK_BOT_TOKEN: "xoxb-test" }, f))
+        .rejects.toThrow("Slack chat.postMessage failed: channel_not_found");
     });
   });
 });
