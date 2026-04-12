@@ -5,6 +5,7 @@
 
 import { Kernel } from './kernel.js';
 import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox } from './hook-communication.js';
+import { parseJobOutput } from './lib/parse-job-output.js';
 
 // Hook modules (mutable policy — agent can propose changes)
 import * as session from './userspace.js';
@@ -195,6 +196,35 @@ const EVENT_HANDLERS = {
   },
 };
 
+function decodeCallbackBase64(value) {
+  const normalized = String(value || "").replace(/\s+/g, "");
+  if (!normalized) return null;
+  const binary = atob(normalized);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+async function advanceSessionSchedule(env, defaults, advanceSeconds) {
+  const schedule = await env.KV.get("session_schedule", "json");
+  const nextSessionAfter = new Date(Date.now() + advanceSeconds * 1000).toISOString();
+
+  if (!schedule) {
+    await env.KV.put("session_schedule", JSON.stringify({
+      next_session_after: nextSessionAfter,
+      interval_seconds: defaults?.schedule?.interval_seconds || 21600,
+      no_action_streak: 0,
+    }));
+    return;
+  }
+
+  if (!schedule.next_session_after || new Date(schedule.next_session_after).getTime() > Date.now() + advanceSeconds * 1000) {
+    await env.KV.put("session_schedule", JSON.stringify({
+      ...schedule,
+      next_session_after: nextSessionAfter,
+    }));
+  }
+}
+
 // ── Entry points ──────────────────────────────────────────────
 
 export default {
@@ -205,6 +235,100 @@ export default {
 
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    const jobMatch = url.pathname.match(/^\/job-complete\/([^/]+)$/);
+    if (jobMatch && request.method === "POST") {
+      const jobId = decodeURIComponent(jobMatch[1]);
+      const rawBody = await request.text();
+      const job = await env.KV.get(`job:${jobId}`, "json");
+      if (!job) return new Response("Job not found", { status: 404 });
+
+      const providedSecret = request.headers.get("X-Job-Callback-Secret") || "";
+      if (!job.callback_secret || providedSecret !== job.callback_secret) {
+        return new Response("Invalid callback secret", { status: 401 });
+      }
+
+      let payload;
+      try {
+        payload = rawBody ? JSON.parse(rawBody) : {};
+      } catch {
+        return new Response("Invalid JSON", { status: 400 });
+      }
+
+      const exitCode = Number.isFinite(Number(payload?.exit_code)) ? Number(payload.exit_code) : null;
+      if (!Number.isInteger(exitCode)) {
+        return new Response("exit_code is required", { status: 400 });
+      }
+
+      const now = new Date().toISOString();
+      job.status = exitCode === 0 ? "completed" : "failed";
+      job.completed_at = now;
+      job.callback_received_at = now;
+      job.exit_code = exitCode;
+
+      const hasOutputArtifact = typeof payload?.output_base64 === "string" && payload.output_base64.trim();
+      const hasLabArtifact = typeof payload?.lab_result_base64 === "string" && payload.lab_result_base64.trim();
+      const jobResult = {
+        job_id: jobId,
+        type: job.type,
+        result: null,
+        callback_error: null,
+        lab_result_error: null,
+      };
+
+      if (hasOutputArtifact) {
+        let rawOutput;
+        try {
+          rawOutput = decodeCallbackBase64(payload.output_base64);
+        } catch {
+          jobResult.callback_error = "invalid_output_base64";
+        }
+        if (rawOutput != null) {
+          const { payload: parsedResult, meta } = parseJobOutput(rawOutput);
+          jobResult.result = parsedResult || { raw_output: rawOutput.slice(0, 5000) };
+          if (meta) jobResult.meta = meta;
+        }
+      } else {
+        jobResult.callback_error = "callback_missing_output";
+      }
+
+      if (hasLabArtifact) {
+        try {
+          jobResult.lab_result = JSON.parse(decodeCallbackBase64(payload.lab_result_base64));
+        } catch {
+          jobResult.lab_result_error = "invalid_lab_result_base64";
+        }
+      }
+
+      const resultKey = `job_result:${jobId}`;
+      job.result_key = resultKey;
+      await env.KV.put(resultKey, JSON.stringify(jobResult));
+      await env.KV.put(`job:${jobId}`, JSON.stringify(job));
+
+      const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+      const K = kernel.buildKernelInterface();
+      await K.emitEvent("job_complete", {
+        job_id: jobId,
+        source: { job_id: jobId, via: "callback" },
+        summary: `Job ${jobId} (${job.type}) ${job.status}`,
+        ref: `job:${jobId}`,
+        result_key: resultKey,
+        exit_code: exitCode,
+      });
+
+      const defaults = await env.KV.get("config:defaults", "json");
+      const advanceSeconds = defaults?.jobs?.callback_advance_seconds || 30;
+      await advanceSessionSchedule(env, defaults, advanceSeconds);
+
+      if (ctx?.waitUntil) {
+        ctx.waitUntil((async () => {
+          const wakeKernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+          await wakeKernel.runScheduled();
+        })());
+      }
+
+      return new Response("OK", { status: 202 });
+    }
 
     // Admin: set schedule to past so next /__scheduled runs immediately
     if (url.pathname === "/__clear-schedule" && request.method === "POST") {
