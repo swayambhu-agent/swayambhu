@@ -21,14 +21,14 @@ export function l1Norm(vec) {
   return Object.values(vec).reduce((sum, v) => sum + Math.abs(v), 0);
 }
 
-// ── Samskara strength update ─────────────────────────────
+// ── Pattern strength update ─────────────────────────────
 
-// EMA strength update for samskaras. Confirmation (low surprise) moves
+// EMA strength update for patterns. Confirmation (low surprise) moves
 // strength toward 1. Violation (high surprise) moves strength toward 0.
 // Same α as surprise tracking — they measure the same signal.
 const EMA_ALPHA = 0.3;
 
-export function updateSamskaraStrength(currentStrength, surprise, alpha = EMA_ALPHA) {
+export function updatePatternStrength(currentStrength, surprise, alpha = EMA_ALPHA) {
   const updated = currentStrength * (1 - alpha) + (1 - surprise) * alpha;
   return Math.max(0, Math.min(1, updated));
 }

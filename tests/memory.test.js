@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { updateSamskaraStrength, selectExperiences, cosineSimilarity, embeddingCacheKey } from "../memory.js";
+import { updatePatternStrength, selectExperiences, cosineSimilarity, embeddingCacheKey } from "../memory.js";
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {
@@ -29,29 +29,29 @@ describe("cosineSimilarity", () => {
   });
 });
 
-describe("updateSamskaraStrength", () => {
+describe("updatePatternStrength", () => {
   it("moves strength toward 1 on confirmation (low surprise)", () => {
-    const result = updateSamskaraStrength(0.5, 0.1);
+    const result = updatePatternStrength(0.5, 0.1);
     expect(result).toBeCloseTo(0.62, 2);
   });
 
   it("moves strength toward 0 on violation (high surprise)", () => {
-    const result = updateSamskaraStrength(0.5, 0.9);
+    const result = updatePatternStrength(0.5, 0.9);
     expect(result).toBeCloseTo(0.38, 2);
   });
 
   it("uses custom alpha", () => {
-    const result = updateSamskaraStrength(0.5, 0.0, 0.5);
+    const result = updatePatternStrength(0.5, 0.0, 0.5);
     expect(result).toBeCloseTo(0.75, 2);
   });
 
   it("clamps result to [0, 1]", () => {
-    expect(updateSamskaraStrength(1.0, 0.0)).toBeLessThanOrEqual(1);
-    expect(updateSamskaraStrength(0.0, 1.0)).toBeGreaterThanOrEqual(0);
+    expect(updatePatternStrength(1.0, 0.0)).toBeLessThanOrEqual(1);
+    expect(updatePatternStrength(0.0, 1.0)).toBeGreaterThanOrEqual(0);
   });
 
   it("returns unchanged for zero surprise with strength near 1", () => {
-    const result = updateSamskaraStrength(0.95, 0.0);
+    const result = updatePatternStrength(0.95, 0.0);
     expect(result).toBeGreaterThan(0.95);
     expect(result).toBeLessThanOrEqual(1);
   });

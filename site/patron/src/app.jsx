@@ -74,7 +74,7 @@ export default function App() {
     try {
       const d = await api('/mind', patronKey);
       setMindCounts({
-        samskaras: d.samskaras?.length || 0,
+        patterns: d.patterns?.length || 0,
         desires: d.desires?.length || 0,
         experiences: d.experiences?.length || 0,
         sessionsSinceDr: d.operator_health?.sessions_since_dr ?? '?',
@@ -200,7 +200,7 @@ export default function App() {
         {mindCounts && (
           <div className="flex items-center gap-3 text-gray-500 border-l border-gray-800 pl-3 ml-1">
             <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-green-400 transition">
-              <span className="text-green-400">●</span> {mindCounts.samskaras}s
+              <span className="text-green-400">●</span> {mindCounts.patterns}s
             </span>
             <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-purple-400 transition">
               <span className="text-purple-400">●</span> {mindCounts.desires}d

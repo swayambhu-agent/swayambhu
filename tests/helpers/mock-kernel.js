@@ -104,7 +104,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     isSystemKey: vi.fn(async (key) => {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+        'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
         'principle:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ];
@@ -115,7 +115,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     getSystemKeyPatterns: vi.fn(async () => ({
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+        'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
         'principle:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ],
@@ -145,7 +145,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   // kvWriteGated mock — mirrors kernel context-based permission logic
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+    'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
     'principle:', 'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
   ];

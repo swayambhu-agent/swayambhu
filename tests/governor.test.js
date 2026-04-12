@@ -92,7 +92,6 @@ describe("keyToFilePath", () => {
 
   it("maps hook code keys to root paths", () => {
     expect(keyToFilePath("hook:act:code")).toBe("act.js");
-    expect(keyToFilePath("hook:reflect:code")).toBe("reflect.js");
     expect(keyToFilePath("hook:session:code")).toBe("userspace.js");
   });
 

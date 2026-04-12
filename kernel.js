@@ -6,7 +6,7 @@
 // If the agent could implement something itself via code staging, it doesn't
 // belong here.
 //
-// Policy (session flow, reflection) lives in userspace.js, act.js, reflect.js
+// Policy (session flow and prompt rendering) lives in userspace.js and act.js
 // — mutable code injected at construction via HOOKS. Tools, providers, and
 // channels are also injected. Entry point is index.js.
 //
@@ -63,7 +63,7 @@ class Kernel {
     protected: [
       "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
       "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-      "secret:*", "samskara:*", "skill:*", "task:*",
+      "secret:*", "pattern:*", "skill:*", "task:*",
       "providers", "wallets", "patron:contact", "patron:identity_snapshot",
       "desire:*",
     ],
@@ -1944,7 +1944,7 @@ class Kernel {
       reflect:    { type: "reflect_output", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
-      samskara:  { type: "samskara", format: "json" },
+      pattern:  { type: "pattern", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },
       principle:  { type: "principle", format: "text" },

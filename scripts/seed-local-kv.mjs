@@ -70,7 +70,7 @@ await put("kernel:key_tiers", {
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
     "secret:*", "skill:*", "task:*",
     "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-    "desire:*", "samskara:*",
+    "desire:*", "pattern:*",
   ],
 }, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
 
@@ -136,9 +136,6 @@ await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool (k
 console.log("--- Prompts ---");
 await put("prompt:plan", read("prompts/plan.md"), "text", "Plan phase system prompt — decides what action to take");
 await put("prompt:act", read("prompts/act.md"), "text", "Act phase system prompt — executes the plan using tools");
-await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
-// prompt:reflect:1 removed — depth-1 in-session reflect replaced by async DR operator
-// Old prompt preserved as prompts/deep_reflect_old.md for reference
 await put("prompt:communication", read("prompts/communication.md"), "text", "Communication system prompt");
 await put("prompt:deep_reflect", read("prompts/deep_reflect.md"), "text", "Deep-reflect S/D operator prompt — dispatched as CC analysis job on akash");
 
@@ -170,7 +167,6 @@ console.log("--- Principles ---");
 
 console.log("--- Policy Code ---");
 await put("hook:act:code", read("act.js"), "text", "Session policy — act flow, context building");
-await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy — session/deep reflect, scheduling");
 
 // ── Kernel source (immutable — stored at kernel:* prefix) ─────
 
@@ -200,14 +196,14 @@ for (const [binding, data] of Object.entries(contactsConf.platform_bindings)) {
 await put("patron:contact", contactsConf.patron.slug, "text", "Patron contact slug");
 await put("patron:public_key", contactsConf.patron.public_key, "text", "Patron public key (immutable)");
 
-// ── Seed samskaras (from config/seed-samskaras.json) ────────────────
+// ── Seed patterns (from config/seed-patterns.json) ────────────────
 
-console.log("--- Seed Samskaras ---");
-const seedSamskaras = readJSON("config/seed-samskaras.json");
-for (const [key, value] of Object.entries(seedSamskaras)) {
+console.log("--- Seed Patterns ---");
+const seedPatterns = readJSON("config/seed-patterns.json");
+for (const [key, value] of Object.entries(seedPatterns)) {
   // Add created timestamp at seed time
   if (!value.created) value.created = new Date().toISOString();
-  await put(key, value, "json", `Seed samskara: ${key}`);
+  await put(key, value, "json", `Seed pattern: ${key}`);
 }
 
 // ── Session schedule (seed with past time so first session runs immediately) ──

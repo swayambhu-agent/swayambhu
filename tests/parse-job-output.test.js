@@ -19,7 +19,7 @@ describe("parseJobOutput", () => {
   });
 
   it("unwraps Claude CLI envelope with plain JSON result", () => {
-    const inner = { reflection: "deep thought", kv_operations: [{ key: "samskara:x", value: { pattern: "y", strength: 0.3 } }] };
+    const inner = { reflection: "deep thought", kv_operations: [{ key: "pattern:x", value: { pattern: "y", strength: 0.3 } }] };
     const envelope = {
       type: "result",
       result: JSON.stringify(inner),
@@ -85,7 +85,7 @@ describe("parseJobOutput", () => {
   it("handles real Claude CLI output shape", () => {
     // This mirrors the actual output we saw from the DR job
     const inner = {
-      kv_operations: [{ key: "samskara:bootstrap:x", value: { pattern: "test", strength: 0.3 } }],
+      kv_operations: [{ key: "pattern:bootstrap:x", value: { pattern: "test", strength: 0.3 } }],
       reflection: "Bootstrap deep-reflect",
       note_to_future_self: "Watch patterns",
       next_reflect: { after_sessions: 5, after_days: 3 },

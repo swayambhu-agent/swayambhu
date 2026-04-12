@@ -25,7 +25,6 @@ describe("readCodeFromKV", () => {
       "channel:slack:config": JSON.stringify({ token: "xxx" }),
       // Policy hooks
       "hook:act:code": "export async function runAct() {}",
-      "hook:reflect:code": "export async function reflect() {}",
       // Kernel source (immutable)
       "kernel:source:kernel.js": "class Kernel {}",
       "kernel:source:hook-communication.js": "export function handleChat() {}",
@@ -44,7 +43,6 @@ describe("readCodeFromKV", () => {
     expect(files["providers/llm_balance.js"]).toBe("export function check() {}");
     expect(files["channels/slack.js"]).toBe("export function parseInbound() {}");
     expect(files["act.js"]).toBe("export async function runAct() {}");
-    expect(files["reflect.js"]).toBe("export async function reflect() {}");
     expect(files["kernel.js"]).toBe("class Kernel {}");
     expect(files["hook-communication.js"]).toBe("export function handleChat() {}");
   });

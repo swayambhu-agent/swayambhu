@@ -12,7 +12,6 @@ function keyToVarName(key) {
 export function keyToFilePath(key) {
   if (!key.endsWith(':code')) return null;
   if (key === 'hook:act:code') return 'act.js';
-  if (key === 'hook:reflect:code') return 'reflect.js';
   if (key === 'hook:session:code') return 'userspace.js';
   if (key.startsWith('tool:')) return `tools/${keyToVarName(key)}.js`;
   if (key.startsWith('provider:')) return `providers/${keyToVarName(key)}.js`;
@@ -63,12 +62,9 @@ export async function readCodeFromKV(kv) {
     }
   }
 
-  // Policy hooks (act.js, reflect.js)
+  // Policy hooks
   const actCode = await kv.get('hook:act:code', 'text');
   if (actCode) files['act.js'] = actCode;
-
-  const reflectCode = await kv.get('hook:reflect:code', 'text');
-  if (reflectCode) files['reflect.js'] = reflectCode;
 
   const sessionCode = await kv.get('hook:session:code', 'text');
   if (sessionCode) files['userspace.js'] = sessionCode;

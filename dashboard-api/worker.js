@@ -86,13 +86,13 @@ export default {
       return json({ sessionCounter, schedule, lastReflect, session: activeSession || session });
     }
 
-    // GET /mind — cognitive state snapshot (samskaras, desires, experiences, operator health)
+    // GET /mind — cognitive state snapshot (patterns, desires, experiences, operator health)
     if (path === "/mind") {
       const [
-        samskaraKeys, desireKeys, experienceKeys, principleKeys,
+        patternKeys, desireKeys, experienceKeys, principleKeys,
         reflectSchedule, sessionCounter,
       ] = await Promise.all([
-        kvListAll(env.KV, { prefix: "samskara:" }),
+        kvListAll(env.KV, { prefix: "pattern:" }),
         kvListAll(env.KV, { prefix: "desire:" }),
         kvListAll(env.KV, { prefix: "experience:" }),
         kvListAll(env.KV, { prefix: "principle:" }),
@@ -102,7 +102,7 @@ export default {
 
       // Batch read all values
       const allKeys = [
-        ...samskaraKeys.map(k => k.name),
+        ...patternKeys.map(k => k.name),
         ...desireKeys.map(k => k.name),
         ...experienceKeys.map(k => k.name).slice(-20),
         ...principleKeys.map(k => k.name),
@@ -120,7 +120,7 @@ export default {
         }
       }));
 
-      const samskaras = samskaraKeys
+      const patterns = patternKeys
         .map(k => ({ key: k.name, ...values[k.name] }))
         .filter(s => s.pattern);
 
@@ -158,7 +158,7 @@ export default {
         : null;
 
       const operatorHealth = {
-        bootstrap_complete: samskaras.length > 0 || desires.length > 0,
+        bootstrap_complete: patterns.length > 0 || desires.length > 0,
         last_deep_reflect_session: lastDrSession,
         sessions_since_dr: sessionsSinceDr,
         next_dr_due: nextDrDue,
@@ -169,7 +169,7 @@ export default {
         } : null,
       };
 
-      return json({ principles, samskaras, desires, experiences, operator_health: operatorHealth });
+      return json({ principles, patterns, desires, experiences, operator_health: operatorHealth });
     }
 
     // GET /deep-reflect/:sessionId — structured DR execution data
@@ -231,7 +231,7 @@ export default {
       const sOutput = [];
       const dOutput = [];
       for (const op of (drOutput.kv_operations || [])) {
-        if (op.key?.startsWith('samskara:')) {
+        if (op.key?.startsWith('pattern:')) {
           sOutput.push({
             action: op.op === 'delete' ? 'deleted' : 'written',
             key: op.key,
