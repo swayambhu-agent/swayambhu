@@ -1,6 +1,6 @@
 // Dispatch a long-running background job on a compute target.
 // Packs context from KV into a tarball, transfers to target, starts nohup process.
-// Returns immediately with a job ID. The job calls back on completion.
+// Returns immediately with a job ID. drCycle polls for completion.
 
 import { packAndEncode } from '../lib/tarball.js';
 
@@ -38,9 +38,6 @@ export async function execute({ type, prompt, context_keys, include_code, comman
 
   // Generate IDs
   const jobId = `j_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const callbackSecret = Array.from(
-    { length: 32 }, () => Math.floor(Math.random() * 16).toString(16)
-  ).join('');
 
   // Pack context from KV
   const files = [];
@@ -83,11 +80,20 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     return { ok: false, error: `tarball failed: ${e.message}` };
   }
 
+  // Shell single-quote escaping: a'b → a'\''b
+  const esc = s => s.replace(/'/g, "'\\''");
+
+  // Validate path_dirs
+  const rawDirs = jobs.path_dirs;
+  const pathDirs = Array.isArray(rawDirs)
+    ? rawDirs.filter(d => typeof d === 'string' && /^\/[a-zA-Z0-9._\/-]+$/.test(d))
+    : [];
+
   // Resolve command for job type
   let jobCommand;
   if (type === "cc_analysis") {
     const model = jobs.cc_model || "";
-    const modelFlag = model ? ` --model ${model}` : "";
+    const modelFlag = model ? ` --model '${esc(model)}'` : "";
     jobCommand = `claude -p "$(cat prompt.txt)" --output-format json${modelFlag}`;
   } else {
     jobCommand = command;
@@ -96,24 +102,23 @@ export async function execute({ type, prompt, context_keys, include_code, comman
   // Build the workdir path
   const workdir = `${baseDir}/${jobId}`;
 
-  // Determine callback URL — use the kernel's own origin
-  // The job script curls back on completion
-  const callbackBase = jobs.callback_url || baseUrl.replace(/\/+$/, '');
+  // Build inner script (plain shell text — will be base64-encoded)
+  const innerLines = [
+    pathDirs.length ? `export PATH=${pathDirs.join(':')}` + '${PATH:+:$PATH}' : null,
+    `cd '${esc(workdir)}' || { echo 1 > '${esc(workdir)}/exit_code'; exit 1; }`,
+    type === "custom"
+      ? `(${jobCommand}) > output.json 2>stderr.log; echo $? > '${esc(workdir)}/exit_code'`
+      : `${jobCommand} > output.json 2>stderr.log; echo $? > exit_code`,
+  ].filter(Boolean);
 
-  // Build shell script
+  const innerScript = innerLines.join('\n');
+  const innerB64 = Buffer.from(innerScript, 'utf8').toString('base64');
+
+  // Build outer script (setup + nohup with base64-encoded inner script)
   const shellScript = [
-    `mkdir -p ${workdir}`,
-    `echo '${base64Tar}' | base64 -d | tar xz -C ${workdir}`,
-    `nohup sh -c '`,
-    `  cd ${workdir} &&`,
-    `  ${jobCommand} > output.json 2>stderr.log;`,
-    `  EXIT=$?; echo $EXIT > exit_code;`,
-    `  curl -sf -X POST ${callbackBase}/job-complete/${jobId}`,
-    `    -H "Authorization: Bearer ${callbackSecret}"`,
-    `    -H "Content-Type: application/json"`,
-    `    -d "{\\"exit_code\\": $EXIT}"`,
-    `    || true`,
-    `' > /dev/null 2>&1 & echo $!`,
+    `mkdir -p '${esc(workdir)}'`,
+    `printf '%s' '${base64Tar}' | base64 -d | tar xz -C '${esc(workdir)}'`,
+    `nohup sh -c "printf '%s' '${innerB64}' | base64 -d | sh" > /dev/null 2>&1 & echo $!`,
   ].join(' && \\\n');
 
   // Execute on compute target
@@ -143,7 +148,6 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     created_at: new Date().toISOString(),
     workdir,
     pid,
-    callback_secret: callbackSecret,
     config: {
       prompt_summary: (prompt || command || '').slice(0, 200),
       context_keys: context_keys || [],

@@ -68,20 +68,24 @@ await put("kernel:key_tiers", {
   protected: [
     "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-    "secret:*", "doc:*", "skill:*", "task:*",
+    "secret:*", "skill:*", "task:*",
     "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-    "desire:*", "samskara:*",
+    "desire:*", "pattern:*",
   ],
 }, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
 
 // Event handlers
 await put("config:event_handlers", {
-  session_request: ["sessionTrigger"],
-  session_response: ["communicationDelivery"],
-  job_complete: ["communicationDelivery", "sessionTrigger"],
-  patron_direct: ["sessionTrigger"],
-  error: [],
-}, "json", "Event bus handler routing — maps event types to handler names");
+  handlers: {
+    session_request: ["sessionTrigger"],
+    job_complete: ["sessionTrigger"],
+    patron_direct: ["sessionTrigger"],
+  },
+  deferred: {
+    inbound_message: ["comms"],
+    comms_request: ["comms"],
+  },
+}, "json", "Event bus routing — immediate handlers + deferred processors");
 
 // ── Providers (from providers/*.js) ───────────────────────────
 
@@ -106,7 +110,7 @@ const toolNames = [
   "kv_manifest", "kv_query", "computer",
   "check_email", "send_email", "test_model",
   "web_search", "start_job", "collect_jobs",
-  "google_docs", "send_whatsapp",
+  "google_docs", "send_whatsapp", "request_message",
 ];
 const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];
 const toolGrants = {};
@@ -130,20 +134,13 @@ await put("kernel:tool_grants", toolGrants, "json", "Security grants per tool (k
 // ── Prompts (from prompts/*.md) ──────────────────────────────
 
 console.log("--- Prompts ---");
-await put("prompt:act", read("prompts/act.md"), "text", "Act session system prompt");
-await put("prompt:reflect", read("prompts/reflect.md"), "text", "Session-level reflection prompt (depth 0)");
-await put("prompt:reflect:1", read("prompts/deep-reflect.md"), "text", "Deep reflection prompt (depth 1)");
+await put("prompt:plan", read("prompts/plan.md"), "text", "Plan phase system prompt — decides what action to take");
+await put("prompt:act", read("prompts/act.md"), "text", "Act phase system prompt — executes the plan using tools");
 await put("prompt:communication", read("prompts/communication.md"), "text", "Communication system prompt");
-await put("prompt:deep_reflect", read("prompts/deep_reflect.md"), "text", "Deep-reflect M/D operator prompt — dispatched as CC analysis job");
+await put("prompt:deep_reflect", read("prompts/deep_reflect.md"), "text", "Deep-reflect S/D operator prompt — dispatched as CC analysis job on akash");
 
-// ── Documentation (from docs/agent/*.md) ──────────────────────
-
-console.log("--- Documentation ---");
-await put("doc:design_rationale", read("docs/agent/design-rationale.md"), "text", "Design rationale");
-await put("doc:threat_model", read("docs/agent/threat-model.md"), "text", "Threat model");
-// doc:wisdom_guide removed — samskaras are self-explaining via the deep_reflect prompt
-await put("doc:patron", read("docs/agent/patron-relationship.md"), "text", "Patron relationship");
-await put("doc:setup_guide", read("docs/agent/setup-guide.md"), "text", "Setup guide");
+// doc:* keys removed — rationale lives as comments in kernel.js, behavioral
+// guidance lives in prompts. Single source of truth: the code itself.
 
 // ── Dharma ───────────────────────────────────────────────────
 
@@ -170,7 +167,6 @@ console.log("--- Principles ---");
 
 console.log("--- Policy Code ---");
 await put("hook:act:code", read("act.js"), "text", "Session policy — act flow, context building");
-await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy — session/deep reflect, scheduling");
 
 // ── Kernel source (immutable — stored at kernel:* prefix) ─────
 
@@ -200,14 +196,14 @@ for (const [binding, data] of Object.entries(contactsConf.platform_bindings)) {
 await put("patron:contact", contactsConf.patron.slug, "text", "Patron contact slug");
 await put("patron:public_key", contactsConf.patron.public_key, "text", "Patron public key (immutable)");
 
-// ── Seed samskaras (from config/seed-samskaras.json) ────────────────
+// ── Seed patterns (from config/seed-patterns.json) ────────────────
 
-console.log("--- Seed Samskaras ---");
-const seedSamskaras = readJSON("config/seed-samskaras.json");
-for (const [key, value] of Object.entries(seedSamskaras)) {
+console.log("--- Seed Patterns ---");
+const seedPatterns = readJSON("config/seed-patterns.json");
+for (const [key, value] of Object.entries(seedPatterns)) {
   // Add created timestamp at seed time
   if (!value.created) value.created = new Date().toISOString();
-  await put(key, value, "json", `Seed samskara: ${key}`);
+  await put(key, value, "json", `Seed pattern: ${key}`);
 }
 
 // ── Session schedule (seed with past time so first session runs immediately) ──
@@ -217,6 +213,15 @@ await put("session_schedule", {
   next_session_after: new Date(Date.now() - 1000).toISOString(),
   interval_seconds: readJSON("config/defaults.json").schedule?.interval_seconds || 21600,
 }, "json", "Session schedule — seeded in the past for immediate first session");
+
+// ── DR lifecycle state ────────────────────────────────────────
+
+console.log("--- DR State ---");
+await put("dr:state:1", {
+  status: "idle",
+  generation: 0,
+  consecutive_failures: 0,
+}, "json", "DR lifecycle state — idle, ready for first dispatch");
 
 // ── Secrets (local dev placeholders) ─────────────────────────
 

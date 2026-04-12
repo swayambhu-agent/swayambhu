@@ -2,6 +2,8 @@
 // Primary notification path is the /job-complete callback → inbox; this tool is for
 // explicit mid-session checks.
 
+import { parseJobOutput } from '../lib/parse-job-output.js';
+
 export const meta = {
   secrets: ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "COMPUTER_API_KEY"],
   kv_access: "read_all",
@@ -13,6 +15,7 @@ export const meta = {
 export async function execute({ job_id, wait_seconds, provider, secrets, fetch, kv, config }) {
   const jobs = config?.jobs || {};
   const baseUrl = jobs.base_url || "https://akash.swayambhu.dev";
+  const esc = s => s.replace(/'/g, "'\\''");
 
   // Gather job records
   let jobRecords = [];
@@ -56,7 +59,7 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
 
     // Check exit_code file on compute target
     const checkResult = await provider.call({
-      command: `test -f ${job.workdir}/exit_code && cat ${job.workdir}/exit_code || echo RUNNING`,
+      command: `test -f '${esc(job.workdir)}/exit_code' && cat '${esc(job.workdir)}/exit_code' || echo RUNNING`,
       baseUrl,
       timeout: 5,
       secrets,
@@ -82,8 +85,9 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
 
     // Read output.json
     let resultData = null;
+    let resultMeta = null;
     const outputResult = await provider.call({
-      command: `cat ${job.workdir}/output.json 2>/dev/null || echo '{}'`,
+      command: `cat '${esc(job.workdir)}/output.json' 2>/dev/null || echo '{}'`,
       baseUrl,
       timeout: 10,
       secrets,
@@ -94,7 +98,9 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
       const raw = Array.isArray(outputResult.output)
         ? outputResult.output.map(o => o.data || '').join('')
         : String(outputResult.output || '');
-      try { resultData = JSON.parse(raw); } catch { resultData = { raw_output: raw.slice(0, 5000) }; }
+      const { payload, meta } = parseJobOutput(raw);
+      resultData = payload || { raw_output: raw.slice(0, 5000) };
+      resultMeta = meta;
     }
 
     // Write job_result
@@ -103,6 +109,7 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
       job_id: job.id,
       type: job.type,
       result: resultData,
+      ...(resultMeta ? { meta: resultMeta } : {}),
     }));
 
     // Update job record

@@ -1,11 +1,17 @@
-// Swayambhu Kernel
-// Hardcoded safety primitives, execution engine, and session infrastructure.
-// Policy (session flow, reflection) lives in act.js and reflect.js — mutable
-// code injected at construction via HOOKS. Tools, providers, and channels are
-// also injected. The kernel enforces safety: KV write tiers, dharma injection,
-// communication gates, budget enforcement, and code staging.
+// Swayambhu Kernel — safety floor, not ceiling.
 //
-// Entry point is index.js, which imports all modules and wires them here.
+// The kernel is deliberately thin. It enforces ~10 safety invariants and
+// nothing else. Everything beyond safety lives in KV and is agent-modifiable.
+// Features locked in the kernel are capabilities the agent can never improve.
+// If the agent could implement something itself via code staging, it doesn't
+// belong here.
+//
+// Policy (session flow and prompt rendering) lives in userspace.js and act.js
+// — mutable code injected at construction via HOOKS. Tools, providers, and
+// channels are also injected. Entry point is index.js.
+//
+// The agent's identity is its KV data, not the kernel. The kernel is
+// disposable infrastructure that can be redeployed without losing anything.
 
 class Kernel {
   constructor(env, opts = {}) {
@@ -20,7 +26,7 @@ class Kernel {
     this.CHANNELS = opts.CHANNELS || {};
     this._eventHandlers = opts.EVENT_HANDLERS || {};
     this.startTime = Date.now();
-    this.sessionId = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.executionId = `x_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.sessionCost = 0;
     this.sessionLLMCalls = 0;
     this.karma = [];           // The flight recorder — replaces this.log
@@ -40,15 +46,24 @@ class Kernel {
     this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
     this.patronPlatforms = null; // Patron's platform bindings (loaded at boot from contact_platform: keys)
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
+    this.touchedKeys = new Set();
+    this.pulseCounter = 0;
   }
 
+  // Write tiers enforce trust boundaries:
+  // - immutable: identity anchors. Without a fixed point, everything drifts.
+  // - kernel_only: safety state the agent must not touch (audit logs, quarantine,
+  //   execution tracking). Modifying these would let the agent disable its own
+  //   safety mechanisms.
+  // - protected: agent-modifiable via kvWriteGated in deep-reflect context,
+  //   with old values captured in karma for rollback.
   static DEFAULT_KEY_TIERS = {
     immutable: ["dharma", "principle:*", "patron:public_key"],
     kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
     protected: [
       "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
       "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-      "secret:*", "doc:*", "samskara:*", "skill:*", "task:*",
+      "secret:*", "pattern:*", "skill:*", "task:*",
       "providers", "wallets", "patron:contact", "patron:identity_snapshot",
       "desire:*",
     ],
@@ -233,7 +248,13 @@ class Kernel {
   // are retried up to 3 times then dead-lettered.
 
   async drainEvents(handlers) {
-    const handlerConfig = await this.kvGet('config:event_handlers') || {};
+    const rawConfig = await this.kvGet('config:event_handlers') || {};
+
+    // Backward compat: if config has handlers/deferred keys, use them;
+    // otherwise treat the whole object as handlers with no deferred.
+    const handlerConfig = rawConfig.handlers || (rawConfig.deferred ? {} : rawConfig);
+    const deferredConfig = rawConfig.deferred || {};
+
     const listResult = await this.kvListAll({ prefix: 'event:' });
     const events = [];
 
@@ -242,14 +263,16 @@ class Kernel {
       if (val) events.push({ key: name, ...val });
     }
 
-    if (events.length === 0) return { processed: [], actContext: [] };
+    if (events.length === 0) return { processed: [], actContext: [], deferred: {} };
 
     const processed = [];
     const actContext = [];
+    const deferred = {}; // { processorName: [event, ...] }
 
     for (const event of events) {
       actContext.push(event);
 
+      // --- Immediate handlers ---
       const handlerNames = handlerConfig[event.type] || [];
       let allHandlersSucceeded = true;
 
@@ -277,7 +300,32 @@ class Kernel {
         }
       }
 
-      if (allHandlersSucceeded) {
+      // --- Deferred processors ---
+      const deferredProcessors = deferredConfig[event.type] || [];
+      const hasDeferred = deferredProcessors.length > 0;
+
+      if (hasDeferred) {
+        // Track how many times this deferred event has been drained
+        const drainKey = `event_drain_count:${event.key}`;
+        const drainCount = ((await this.kvGet(drainKey)) || 0) + 1;
+
+        if (drainCount >= 5) {
+          // Dead-letter: processor never claimed terminal disposition
+          const deadKey = event.key.replace('event:', 'event_dead:');
+          await this.kv.put(deadKey, JSON.stringify({ ...event, drain_count: drainCount }), { expirationTtl: 604800 });
+          await this.kv.delete(event.key);
+          await this.kv.delete(drainKey);
+          await this.karmaRecord({ event: "event_dead_lettered", type: event.type, key: event.key, reason: "deferred_ttl" });
+        } else {
+          await this.kv.put(drainKey, JSON.stringify(drainCount), { expirationTtl: 86400 });
+          // Group event by processor name — processor owns deletion
+          for (const processorName of deferredProcessors) {
+            if (!deferred[processorName]) deferred[processorName] = [];
+            deferred[processorName].push(event);
+          }
+        }
+        processed.push(event);
+      } else if (allHandlersSucceeded) {
         await this.kv.delete(event.key);
         processed.push(event);
       } else {
@@ -301,7 +349,7 @@ class Kernel {
       await this.karmaRecord({ event: "events_drained", count: events.length, types: typeCounts });
     }
 
-    return { processed, actContext };
+    return { processed, actContext, deferred };
   }
 
   // ── Debug log (durable, auto-expiring) ──────────────────────
@@ -330,14 +378,14 @@ class Kernel {
     // In chat mode, karma stays in-memory only — handleChat embeds it in the chat object.
     // In session mode, persist to KV after every event for crash recovery.
     if (this.mode !== 'chat') {
-      await this.kvWrite(`karma:${this.sessionId}`, this.karma);
+      await this.kvWrite(`karma:${this.executionId}`, this.karma);
     }
 
     if (Kernel.DANGER_SIGNALS.includes(entry.event)) {
       await this.kvWrite("last_danger", {
         t: record.t,
         event: entry.event,
-        session_id: this.sessionId,
+        execution_id: this.executionId,
       });
     }
   }
@@ -355,8 +403,8 @@ class Kernel {
       // Resolve {{ENV_VAR}} patterns in URL from this.env
       const url = config.url.replace(/\{\{(\w+)\}\}/g, (_, name) => this.env[name] || "");
 
-      // Build body from template, interpolating {{message}}, {{event}}, {{session}}
-      const vars = { message, event, session: this.sessionId };
+      // Build body from template, interpolating {{message}}, {{event}}, {{execution}}
+      const vars = { message, event, execution: this.executionId };
       const bodyStr = JSON.stringify(config.body_template || {})
         .replace(/\{\{(\w+)\}\}/g, (_, name) => vars[name] || "");
 
@@ -383,6 +431,7 @@ class Kernel {
     if (this.isImmutableKey(key)) throw new Error(`Cannot delete "${key}" — immutable key`);
     if (this.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
     if (this.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
+    if (this.touchedKeys) this.touchedKeys.add(key);
     return this.kv.delete(key);
   }
 
@@ -399,7 +448,9 @@ class Kernel {
       // LLM
       callLLM: async (opts) => kernel.callLLM(opts),
 
-      // KV reads (sealed keys blocked — hook code must not read quarantined data)
+      // KV reads — sealed keys blocked. Quarantined content (from unknown senders)
+      // may contain prompt injection. The agent never sees raw sealed content;
+      // the patron reviews and approves senders via the dashboard.
       kvGet: async (key) => {
         if (key.startsWith("sealed:")) return null;
         return kernel.kvGet(key);
@@ -427,7 +478,8 @@ class Kernel {
       // Event bus
       emitEvent: async (type, payload) => {
         const ts = Date.now().toString().padStart(15, '0');
-        const key = `event:${ts}:${type}`;
+        const nonce = Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+        const key = `event:${ts}:${type}:${nonce}`;
         const event = {
           type,
           ...payload,
@@ -436,6 +488,36 @@ class Kernel {
         await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
         await kernel.karmaRecord({ event: "event_emitted", type, key });
         return { key };
+      },
+
+      // Event lease helpers
+      claimEvent: async (key, executionId) => {
+        const raw = await kernel.kv.get(key);
+        if (!raw) return false;
+        const event = JSON.parse(raw);
+        const now = Date.now();
+        if (event.claimed_by && event.lease_expires && event.lease_expires > now) {
+          return false;
+        }
+        event.claimed_by = executionId;
+        event.claimed_at = now;
+        event.lease_expires = now + 60000;
+        await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+        return true;
+      },
+      releaseEvent: async (key) => {
+        const raw = await kernel.kv.get(key);
+        if (!raw) return;
+        const event = JSON.parse(raw);
+        delete event.claimed_by;
+        delete event.claimed_at;
+        delete event.lease_expires;
+        await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+      },
+      deleteEvent: async (key) => {
+        if (!key.startsWith('event:')) throw new Error(`deleteEvent: not an event key: "${key}"`);
+        await kernel.kv.delete(key);
+        await kernel.kv.delete(`event_drain_count:${key}`);
       },
 
       // Balance
@@ -453,7 +535,7 @@ class Kernel {
         const filtered = keys.filter(k => !k.startsWith("sealed:"));
         return kernel.loadKeys(filtered);
       },
-      getSessionCount: async () => kernel.getSessionCount(),
+      // getSessionCount removed — userspace reads session_counter directly via kvGet
       mergeDefaults: async (defaults, overrides) => kernel.mergeDefaults(defaults, overrides),
       isSystemKey: async (key) => kernel.isSystemKey(key),
       getSystemKeyPatterns: async () => kernel.keyTiers || Kernel.DEFAULT_KEY_TIERS,
@@ -466,7 +548,7 @@ class Kernel {
       signalDeploy: async () => kernel.signalDeploy(),
 
       // State (read-only)
-      getSessionId: async () => kernel.sessionId,
+      getExecutionId: async () => kernel.executionId,
       getSessionCost: async () => kernel.sessionCost,
       getKarma: async () => kernel.karma,
       getChatKarma: async () => kernel.mode === 'chat' ? [...kernel.karma] : [],
@@ -593,7 +675,10 @@ class Kernel {
       return { ok: false, error: `Unsupported op "${op.op}" for system key "${key}"` };
     }
 
-    // Model capabilities require deliberation
+    // Model capabilities are separated from config:models to prevent
+    // self-escalation — a single write can't both add a model and grant it
+    // communication or principle-writing powers. The deliberation requirement
+    // forces careful reasoning about capability changes.
     if (key === "config:model_capabilities") {
       if (!op.deliberation || op.deliberation.length < 200) {
         return { ok: false, error: `Model capability changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
@@ -631,7 +716,7 @@ class Kernel {
     // Alert on hook: key writes
     if (key.startsWith("hook:")) {
       await this.sendKernelAlert("hook_write",
-        `Privileged write to ${key} in session ${this.sessionId}`);
+        `Privileged write to ${key} in execution ${this.executionId}`);
     }
 
     // Auto-reload cached config
@@ -692,7 +777,7 @@ class Kernel {
     const record = {
       code,
       staged_at: new Date().toISOString(),
-      session_id: this.sessionId,
+      execution_id: this.executionId,
     };
     await this.kvWrite(`code_staging:${targetKey}`, record);
     await this.karmaRecord({ event: "code_staged", target: targetKey });
@@ -701,7 +786,7 @@ class Kernel {
   async signalDeploy() {
     await this.kvWrite("deploy:pending", {
       requested_at: new Date().toISOString(),
-      session_id: this.sessionId,
+      execution_id: this.executionId,
     });
     await this.karmaRecord({ event: "deploy_signaled" });
   }
@@ -728,8 +813,8 @@ class Kernel {
   // ── Hook dispatch (scheduled entry point) ─────────────────
 
   async runScheduled() {
-    // 1. Session lock — prevent overlapping sessions
-    const active = await this.kvGet("kernel:active_session");
+    // 1. Execution lock — prevent overlapping executions
+    const active = await this.kvGet("kernel:active_execution");
     if (active?.started_at) {
       const maxDuration = this.defaults?.session_budget?.max_duration_seconds
         || (await this.kvGet("config:defaults"))?.session_budget?.max_duration_seconds
@@ -742,16 +827,16 @@ class Kernel {
         return;
       }
 
-      // Stale marker — previous session is dead (platform kill / OOM)
-      const history = await this.kvGet("kernel:last_sessions") || [];
+      // Stale marker — previous execution is dead (platform kill / OOM)
+      const history = await this.kvGet("kernel:last_executions") || [];
       history.unshift({ id: active.id, outcome: "killed", ts: new Date().toISOString() });
       while (history.length > 5) history.pop();
-      await this.kvWrite("kernel:last_sessions", history);
+      await this.kvWrite("kernel:last_executions", history);
     }
 
     // 2. Acquire lock — write marker before any work
-    await this.kvWrite("kernel:active_session", {
-      id: this.sessionId,
+    await this.kvWrite("kernel:active_execution", {
+      id: this.executionId,
       started_at: new Date().toISOString(),
     });
 
@@ -760,146 +845,120 @@ class Kernel {
 
     // 4. Execute hook or fallback
     if (hookSafe) {
-      await this.executeHook();
+      await this.runTick();
     } else {
       await this.runFallbackSession();
     }
   }
 
+  // Hook safety tripwire: 3 consecutive crashes trigger rollback.
+  // 1 crash could be transient (network), 2 could be coincidence, 3 strongly
+  // suggests broken hook code. We signal the governor to rollback rather than
+  // restoring inline, so the deployed code is also fixed.
   async checkHookSafety() {
-    const history = await this.kvGet("kernel:last_sessions") || [];
+    const history = await this.kvGet("kernel:last_executions") || [];
     if (history.length < 3) return true;
 
     const last3 = history.slice(0, 3);
     const allBad = last3.every(s => s.outcome === "crash" || s.outcome === "killed");
     if (!allBad) return true;
-
-    // Tripwire fires — signal governor to rollback
     await this.kvWrite("deploy:rollback_requested", {
       reason: "3_consecutive_crashes",
-      last_sessions: last3,
+      last_executions: last3,
       requested_at: new Date().toISOString(),
     });
 
-    await this.karmaRecord({ event: "hook_safety_reset", last_sessions: last3 });
+    await this.karmaRecord({ event: "hook_safety_reset", last_executions: last3 });
     await this.sendKernelAlert("hook_reset",
       "3 consecutive crashes detected. Signaled governor for rollback. Running minimal mode.");
     return false;
   }
 
-  async executeHook() {
-    let outcome = "clean";
-    try {
-      await this.runSession();
-    } catch (err) {
-      outcome = "crash";
-      await this.karmaRecord({
-        event: "hook_execution_error",
-        error: err.message,
-        stack: err.stack,
-      });
-
-      // Fall back to hardcoded minimal in same session
-      await this.runMinimalFallback();
-    }
-
-    // Update session history
-    await this.updateSessionOutcome(outcome);
-
-    // Clean up active session marker
-    await this.kv.delete("kernel:active_session");
-  }
-
-  // Session orchestration — schedule gate, infrastructure inputs, hook dispatch
-  async runSession() {
+  async runTick() {
+    this.touchedKeys = new Set();
     await this.loadEagerConfig();
     const K = this.buildKernelInterface();
+    let outcome = "clean";
 
     try {
-      // 1. Schedule gate
-      const schedule = await this.kvGet("session_schedule");
-      if (!this._isSessionDue(schedule)) {
-        if (!schedule?.next_session_after) {
-          // No valid session time — heal by writing a fallback schedule
-          const defaults = this.defaults;
-          const fallbackInterval = defaults?.schedule?.interval_seconds || 21600;
-          const fallbackTime = new Date(Date.now() + fallbackInterval * 1000).toISOString();
-          await this.kvWriteSafe("session_schedule", { ...schedule, next_session_after: fallbackTime, interval_seconds: fallbackInterval });
-          return { skipped: true, reason: "not_time_yet", healed: true };
-        }
-        return { skipped: true, reason: "not_time_yet" };
-      }
-
-      // 2. Infrastructure inputs
+      // Infrastructure inputs
       const crashData = await this._detectCrash();
       const balances = await this.checkBalance({});
-      const { actContext: events } = await this.drainEvents(this._eventHandlers);
+      const { actContext: events, deferred } = await this.drainEvents(this._eventHandlers);
 
-      // 3. Session start bookkeeping
-      const count = await this.getSessionCount();
-      await this.kvWriteSafe("session_counter", count + 1);
-      const sessionIds = await this.kvGet("cache:session_ids") || [];
-      sessionIds.push(this.sessionId);
-      await this.kvWriteSafe("cache:session_ids", sessionIds);
+      // Process deferred events FIRST (comms replies before act session).
+      // Why: inbound messages should get fast replies (~2-5s) without
+      // waiting for the act session (30-300s). Still inside the execution
+      // lock so overlapping ticks can't double-process.
+      if (this.HOOKS.deferred) {
+        for (const [processor, processorEvents] of Object.entries(deferred)) {
+          const hook = this.HOOKS.deferred[processor];
+          if (!hook?.run) continue;
+          try {
+            await hook.run(K, processorEvents);
+          } catch (err) {
+            await this.karmaRecord({ event: "deferred_processor_error", processor, error: err.message });
+          }
+        }
+      }
 
-      await this.karmaRecord({
-        event: "session_start",
-        session_id: this.sessionId,
-        session_number: count + 1,
-        scheduled_at: schedule?.next_session_after || null,
-        crash_detected: !!crashData,
-        balances,
-      });
-
-      // 4. Hand everything to the session hook
-      const { run } = this.HOOKS.session || {};
-      if (!run) throw new Error("No HOOKS.session.run");
-      await run(K, { crashData, balances, events, schedule });
-
-      // 5. Post-session bookkeeping
-      await this._writeSessionHealth("clean");
-      await this.updateSessionOutcome("clean");
-
-      return { ok: true };
+      // Hand to userspace — act session runs after comms
+      const { tick } = this.HOOKS;
+      if (!tick?.run) throw new Error("No HOOKS.tick.run");
+      await tick.run(K, { crashData, balances, events });
 
     } catch (err) {
+      outcome = "crash";
       await this.karmaRecord({
         event: "fatal_error",
         error: err.message,
         stack: err.stack,
       });
-      await this._writeSessionHealth("error");
-      return { ok: false, error: err.message };
     }
-  }
 
-  _isSessionDue(schedule) {
-    const nextSession = schedule?.next_session_after;
-    if (!nextSession) return false;
-    return Date.now() >= new Date(nextSession).getTime();
+    // Always record execution outcome and release lock
+    await this._writeExecutionHealth(outcome);
+    await this.updateExecutionOutcome(outcome);
+    await this.kv.delete("kernel:active_execution");
+
+    // Pulse — written last, after everything is settled.
+    // Best-effort: failure must not crash the tick.
+    try {
+      const changed = this.HOOKS.pulse?.classify
+        ? await this.HOOKS.pulse.classify(this.touchedKeys)
+        : [];
+      await this.kv.put("kernel:pulse", JSON.stringify({
+        v: 1,
+        n: this.pulseCounter++,
+        execution_id: this.executionId,
+        outcome,
+        ts: Date.now(),
+        changed,
+      }));
+    } catch {}
   }
 
   // ── Crash detection ───────────────────────────────────────
 
   async _detectCrash() {
-    // The active_session marker is always the current session at this point
-    // (written by runScheduled before runSession). Crash detection for dead
-    // sessions is now handled in runScheduled's lock check, which records
-    // killed sessions in kernel:last_sessions before we get here.
-    // This method now just checks if a killed session was recorded.
-    const history = await this.kvGet("kernel:last_sessions") || [];
+    // The active_execution marker is always the current execution at this point
+    // (written by runScheduled before runTick). Crash detection for dead
+    // executions is now handled in runScheduled's lock check, which records
+    // killed executions in kernel:last_executions before we get here.
+    // This method now just checks if a killed execution was recorded.
+    const history = await this.kvGet("kernel:last_executions") || [];
     const lastKilled = history.find(s => s.outcome === "killed");
     if (!lastKilled) return null;
 
     const deadKarma = await this.kvGet(`karma:${lastKilled.id}`);
     return {
-      dead_session_id: lastKilled.id,
+      dead_execution_id: lastKilled.id,
       karma: deadKarma,
       last_entry: Array.isArray(deadKarma) ? deadKarma[deadKarma.length - 1] : null,
     };
   }
 
-  async _writeSessionHealth(outcome) {
+  async _writeExecutionHealth(outcome) {
     const karma = this.karma || [];
     const health = {
       outcome,
@@ -926,18 +985,18 @@ class Kernel {
     if (!health.updates_missed) delete health.updates_missed;
     try {
       await this.kv.put(
-        `session_health:${this.sessionId}`,
+        `execution_health:${this.executionId}`,
         JSON.stringify(health),
         { expirationTtl: 30 * 24 * 60 * 60, metadata: { format: "json" } }
       );
     } catch {}
   }
 
-  async updateSessionOutcome(outcome) {
-    const history = await this.kvGet("kernel:last_sessions") || [];
-    history.unshift({ id: this.sessionId, outcome, ts: new Date().toISOString() });
+  async updateExecutionOutcome(outcome) {
+    const history = await this.kvGet("kernel:last_executions") || [];
+    history.unshift({ id: this.executionId, outcome, ts: new Date().toISOString() });
     while (history.length > 5) history.pop();
-    await this.kvWrite("kernel:last_sessions", history);
+    await this.kvWrite("kernel:last_executions", history);
   }
 
   async runMinimalFallback() {
@@ -948,7 +1007,7 @@ class Kernel {
 
     await this.loadEagerConfig();
     this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 120 } };
-    await this.karmaRecord({ event: "session_start", mode: "recovery" });
+    await this.karmaRecord({ event: "act_start", mode: "recovery" });
 
     const tools = this.buildToolDefinitions();
     const fallbackModel = await this.getFallbackModel();
@@ -975,7 +1034,7 @@ class Kernel {
     }
 
     // Write session counter via internal kvWrite
-    const count = await this.getSessionCount();
+    const count = (await this.kvGet("session_counter")) || 0;
     await this.kvWrite("session_counter", count + 1);
   }
 
@@ -988,7 +1047,7 @@ class Kernel {
 
   async runFallbackSession() {
     await this.runMinimalFallback();
-    await this.updateSessionOutcome("clean");
+    await this.updateExecutionOutcome("clean");
   }
 
   // ── Actions (dynamic tools) ─────────────────────────────────
@@ -1166,7 +1225,7 @@ class Kernel {
     });
 
     await this.sendKernelAlert("patron_key_rotated",
-      `Patron public key rotated in session ${this.sessionId}`);
+      `Patron public key rotated in execution ${this.executionId}`);
 
     return { rotated: true };
   }
@@ -1202,6 +1261,19 @@ class Kernel {
     if (meta.kv_access && meta.kv_access !== "none") {
       ctx.kv = this._buildScopedKV(toolName, meta.kv_access, meta.kv_write_prefixes);
     }
+    // emitEvent is infrastructure (like kv.put or fetch) — tools use it
+    // to create events that userspace processors handle. The kernel
+    // provides the transport, userspace provides the meaning.
+    const kernel = this;
+    ctx.emitEvent = async (type, payload) => {
+      const nonce = Math.random().toString(36).slice(2, 6);
+      const ts = Date.now().toString().padStart(15, '0');
+      const key = `event:${ts}:${type}:${nonce}`;
+      const event = { type, ...payload, timestamp: payload.timestamp || new Date().toISOString() };
+      await kernel.kv.put(key, JSON.stringify(event), { expirationTtl: 86400 });
+      await kernel.karmaRecord({ event: "event_emitted", type, key });
+      return { key };
+    };
     // Provider binding comes from grants (kernel-controlled), not meta
     const grant = this.toolGrants?.[toolName];
     if (grant?.provider) {
@@ -1238,6 +1310,7 @@ class Kernel {
 
   _buildScopedKV(toolName, kvAccess, writePrefixes = []) {
     const kv = this.kv;
+    const kernel = this;
     const scope = `tooldata:${toolName}:`;
     return {
       async get(key) {
@@ -1250,6 +1323,7 @@ class Kernel {
         // Allow writes to declared prefixes (e.g., job:, job_result:) without scoping
         const allowedPrefix = writePrefixes.find(p => key.startsWith(p));
         const resolved = allowedPrefix ? key : `${scope}${key}`;
+        if (kernel.touchedKeys) kernel.touchedKeys.add(resolved);
         const fmt = typeof value === "string" ? "text" : "json";
         await kv.put(resolved, typeof value === "string" ? value : JSON.stringify(value), {
           metadata: { type: allowedPrefix ? "job" : "tooldata", format: fmt, updated_at: new Date().toISOString() },
@@ -1272,7 +1346,13 @@ class Kernel {
     };
   }
 
-  // ── LLM calls (dynamic provider with cascade fallback) ─────
+  // ── LLM calls (3-tier provider cascade) ─────────────────────
+  // Tier 1: compiled provider (agent-modifiable via code staging)
+  // Tier 2: last-working snapshot (auto-captured on first success per session)
+  // Tier 3: kernel hardcoded fallback (human-managed, always works)
+  // This ensures LLM access survives the agent's own mistakes. If the agent
+  // breaks the provider adapter, tier 2 catches it. If tier 2 is also bad,
+  // tier 3 is always there.
 
   async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap, json }) {
     const budget = this.defaults?.session_budget;
@@ -1284,10 +1364,10 @@ class Kernel {
 
     const startMs = Date.now();
 
-    // Kernel-enforced dharma injection — no hook or prompt modification can bypass this
+    // Dharma and principles are injected here in the kernel, not in hook code.
+    // This guarantees every LLM call carries core identity — a bad hook
+    // modification cannot remove it.
     const dharmaPrefix = this.dharma ? `[DHARMA]\n${this.dharma}\n[/DHARMA]\n\n` : '';
-
-    // Kernel-enforced principle injection — always present
     let principlesBlock = '';
     if (this.principles && Object.keys(this.principles).length > 0) {
       const entries = Object.entries(this.principles)
@@ -1841,6 +1921,8 @@ class Kernel {
       throw new Error(`Cannot write "${key}" — immutable key`);
     }
 
+    if (this.touchedKeys) this.touchedKeys.add(key);
+
     // System keys cannot be marked unprotected
     if (this.isSystemKey(key)) delete metadata.unprotected;
 
@@ -1862,7 +1944,7 @@ class Kernel {
       reflect:    { type: "reflect_output", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
-      samskara:  { type: "samskara", format: "json" },
+      pattern:  { type: "pattern", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },
       principle:  { type: "principle", format: "text" },
@@ -1929,11 +2011,6 @@ class Kernel {
       }
     }
     return merged;
-  }
-
-  async getSessionCount() {
-    const counter = await this.kvGet("session_counter");
-    return counter || 0;
   }
 
   buildPrompt(template, vars) {

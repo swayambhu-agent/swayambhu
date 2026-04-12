@@ -1,24 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeMockK } from "./helpers/mock-kernel.js";
 
-vi.mock("../reflect.js", () => ({
-  runReflect: vi.fn(async () => {}),
-  highestReflectDepthDue: vi.fn(async () => 0),
-  isReflectDue: vi.fn(async () => false),
-  applyReflectOutput: vi.fn(async () => {}),
-}));
-
 vi.mock("../eval.js", () => ({
   evaluateAction: vi.fn(async () => ({
     sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
     tool_outcomes: [], plan_success_criteria: null,
-    samskaras_relied_on: [],
-    samskara_scores: {},
+    patterns_relied_on: [],
+    pattern_scores: {},
   })),
 }));
 
 vi.mock("../memory.js", () => ({
-  updateSamskaraStrength: vi.fn((currentStrength, surprise) => {
+  updatePatternStrength: vi.fn((currentStrength, surprise) => {
     const alpha = 0.3;
     return currentStrength * (1 - alpha) + (1 - surprise) * alpha;
   }),
@@ -26,10 +19,9 @@ vi.mock("../memory.js", () => ({
   embeddingCacheKey: vi.fn((text, model) => `embedding:mock:${model}`),
 }));
 
-import { run } from "../session.js";
-import { runReflect, highestReflectDepthDue, isReflectDue, applyReflectOutput } from "../reflect.js";
+import { run, classify } from "../userspace.js";
 import { evaluateAction } from "../eval.js";
-import { updateSamskaraStrength } from "../memory.js";
+import { updatePatternStrength } from "../memory.js";
 
 // Helper: builds a callLLM mock response, auto-adding parsed when json:true
 function llmResp(content, opts = {}) {
@@ -76,21 +68,10 @@ describe("session with empty desires", () => {
     // callLLM should have been called (plan phase ran)
     expect(K.callLLM).toHaveBeenCalledTimes(1);
 
-    // Plan call should include DESIRES and SAMSKARAS sections
+    // Plan call should include DESIRES and PATTERNS sections
     const planCall = K.callLLM.mock.calls[0][0];
     expect(planCall.messages[0].content).toMatch(/DESIRES/);
-    expect(planCall.messages[0].content).toMatch(/SAMSKARAS/);
-  });
-
-  it("does not call runReflect with coldStart flag", async () => {
-    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
-
-    // runReflect may or may not be called (depending on highestReflectDepthDue)
-    // but it should never be called with coldStart: true
-    for (const call of runReflect.mock.calls) {
-      const context = call[3];
-      expect(context?.coldStart).not.toBe(true);
-    }
+    expect(planCall.messages[0].content).toMatch(/PATTERNS/);
   });
 
   it("can precipitate an action even with empty desires", async () => {
@@ -127,7 +108,7 @@ describe("session with empty desires", () => {
 
     // Session completed normally
     expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "session_complete" }),
+      expect.objectContaining({ event: "act_complete" }),
     );
   });
 });
@@ -167,7 +148,7 @@ describe("session plan phase", () => {
     K = makeMockK(
       {
         "desire:d_help": JSON.stringify(DESIRE),
-        "samskara:a_available": JSON.stringify(SAMSKARA),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
       },
       {
         defaults: {
@@ -204,10 +185,10 @@ describe("session plan phase", () => {
     // callLLM should have been called at least twice: plan + review (may loop more cycles)
     expect(K.callLLM.mock.calls.length).toBeGreaterThanOrEqual(2);
 
-    // First call: plan phase — messages contain desires/samskaras
+    // First call: plan phase — messages contain desires/patterns
     const planCall = K.callLLM.mock.calls[0][0];
     expect(planCall.messages[0].content).toMatch(/DESIRES/);
-    expect(planCall.messages[0].content).toMatch(/SAMSKARAS/);
+    expect(planCall.messages[0].content).toMatch(/PATTERNS/);
 
     // runAgentTurn should have been called at least once (act phase ran)
     expect(K.runAgentTurn.mock.calls.length).toBeGreaterThanOrEqual(1);
@@ -241,7 +222,7 @@ describe("session plan phase", () => {
 describe("session memory writes", () => {
   let K;
 
-  const SAMSKARA_KEY = "samskara:a_available";
+  const SAMSKARA_KEY = "pattern:a_available";
 
   const DESIRE = {
     slug: "d_help",
@@ -266,7 +247,7 @@ describe("session memory writes", () => {
     const k = makeMockK(
       {
         "desire:d_help": JSON.stringify(DESIRE),
-        "samskara:a_available": JSON.stringify(SAMSKARA),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
       },
       {
         defaults: {
@@ -279,15 +260,15 @@ describe("session memory writes", () => {
       },
     );
 
-    // evaluateAction controls samskara_scores and salience
+    // evaluateAction controls pattern_scores and salience
     if (evalOverride) {
       evaluateAction.mockResolvedValue(evalOverride);
     } else {
       evaluateAction.mockResolvedValue({
         sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
         tool_outcomes: [], plan_success_criteria: null,
-        samskaras_relied_on: [SAMSKARA_KEY],
-        samskara_scores: {},
+        patterns_relied_on: [SAMSKARA_KEY],
+        pattern_scores: {},
       });
     }
 
@@ -311,17 +292,17 @@ describe("session memory writes", () => {
     vi.clearAllMocks();
   });
 
-  it("updates samskara strength on confirmation", async () => {
+  it("updates pattern strength on confirmation", async () => {
     const review = {
       assessment: "success",
-      narrative: "Samskara confirmed.",
+      narrative: "Pattern confirmed.",
       salience_estimate: 0.1,
     };
     const evalResult = {
       sigma: 0, alpha: {}, salience: 0, eval_method: "pipeline",
       tool_outcomes: [], plan_success_criteria: null,
-      samskaras_relied_on: [SAMSKARA_KEY],
-      samskara_scores: {
+      patterns_relied_on: [SAMSKARA_KEY],
+      pattern_scores: {
         [SAMSKARA_KEY]: { direction: "entailment", surprise: 0 },
       },
     };
@@ -329,25 +310,25 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // Should write updated strength back to the samskara key
-    const strengthWrite = K.kvWriteSafe.mock.calls.find(([key]) => key === SAMSKARA_KEY);
+    // Should write updated strength via kvWriteGated (pattern:* is protected)
+    const strengthWrite = K.kvWriteGated.mock.calls.find(([op]) => op.key === SAMSKARA_KEY);
     expect(strengthWrite).toBeDefined();
-    const written = typeof strengthWrite[1] === "string" ? JSON.parse(strengthWrite[1]) : strengthWrite[1];
+    const written = strengthWrite[0].value;
     expect(written.strength).toBeGreaterThanOrEqual(0);
     expect(written.strength).toBeLessThanOrEqual(1);
   });
 
-  it("updates samskara strength on violation", async () => {
+  it("updates pattern strength on violation", async () => {
     const review = {
       assessment: "failed",
-      narrative: "Samskara violated.",
+      narrative: "Pattern violated.",
       salience_estimate: 0.1,
     };
     const evalResult = {
       sigma: 0.8, alpha: {}, salience: 0.8, eval_method: "pipeline",
       tool_outcomes: [], plan_success_criteria: null,
-      samskaras_relied_on: [SAMSKARA_KEY],
-      samskara_scores: {
+      patterns_relied_on: [SAMSKARA_KEY],
+      pattern_scores: {
         [SAMSKARA_KEY]: { direction: "contradiction", surprise: 0.8 },
       },
     };
@@ -355,9 +336,9 @@ describe("session memory writes", () => {
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    const strengthWrite = K.kvWriteSafe.mock.calls.find(([key]) => key === SAMSKARA_KEY);
+    const strengthWrite = K.kvWriteGated.mock.calls.find(([op]) => op.key === SAMSKARA_KEY);
     expect(strengthWrite).toBeDefined();
-    const written = typeof strengthWrite[1] === "string" ? JSON.parse(strengthWrite[1]) : strengthWrite[1];
+    const written = strengthWrite[0].value;
     // Violation should decrease strength
     expect(written.strength).toBeLessThan(0.8);
   });
@@ -398,221 +379,180 @@ describe("session memory writes", () => {
     expect(experienceCall).toBeUndefined();
   });
 
-  it("does not update samskaras when samskara_scores is empty", async () => {
+  it("does not update patterns when pattern_scores is empty", async () => {
     const review = {
       assessment: "success",
-      narrative: "No samskaras tested.",
+      narrative: "No patterns tested.",
       salience_estimate: 0.1,
     };
     K = makeK(review);
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    const samskaraWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("samskara:"));
-    expect(samskaraWrites.length).toBe(0);
+    const patternWrites = K.kvWriteSafe.mock.calls.filter(([key]) => key.startsWith("pattern:"));
+    expect(patternWrites.length).toBe(0);
   });
 });
 
-// ── Deep-reflect job collection tests ─────────────────────────
+// ── Event emission tests ─────────────────────────────────────
 
-describe("deep-reflect job collection", () => {
+describe("session event emission", () => {
   let K;
 
-  const JOB_ID = "job_dr_001";
   const DESIRE = {
     slug: "d_help",
     direction: "help patrons effectively",
-    description: "Be genuinely helpful.",
+    description: "Be genuinely helpful in all interactions.",
     created_at: "2026-01-01T00:00:00.000Z",
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  const SAMSKARA = {
+    pattern: "Patron is available to receive messages",
+    strength: 0.8,
+  };
+
+  const VALID_PLAN = JSON.stringify({
+    action: "send_greeting",
+    success: "patron receives greeting",
+    relies_on: [],
+    defer_if: [],
   });
 
-  function makeJobK(jobResult, extraKv = {}) {
-    const kvData = {
-      "desire:d_help": JSON.stringify(DESIRE),
-      [`job:${JOB_ID}`]: JSON.stringify({
-        id: JOB_ID,
-        config: { deep_reflect: true, depth: 1, dispatch_session: 0 },
-      }),
-      [`job_result:${JOB_ID}`]: JSON.stringify({ result: jobResult }),
-      ...extraKv,
-    };
+  const VALID_REVIEW = JSON.stringify({
+    assessment: "success",
+    narrative: "Greeting sent successfully.",
+    salience_estimate: 0.1,
+  });
 
-    const k = makeMockK(kvData, {
-      defaults: {
-        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
-        reflect: { model: "test-model" },
-        session_budget: { max_cost: 0.01 }, // tiny budget so main loop exits immediately
-        session: { min_review_cost: 0.05 },
-        schedule: { interval_seconds: 3600 },
-        execution: { max_steps: { act: 5 } },
-        deep_reflect: { max_stale_sessions: 5 },
+  beforeEach(() => {
+    vi.clearAllMocks();
+    K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify(DESIRE),
+        "pattern:a_available": JSON.stringify(SAMSKARA),
       },
-      sessionCount: 2,
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(VALID_PLAN)(opts)
+        : llmResp(VALID_REVIEW)(opts);
     });
 
-    // Plan returns no_action (budget exhausted anyway)
-    const noActionContent = JSON.stringify({ no_action: true, reason: "budget" });
-    k.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+  });
 
-    // getSessionCost returns high cost so main loop skips
-    k.getSessionCost = vi.fn(async () => 0.50);
+  it("emits session_complete after act cycle with actions", async () => {
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    return k;
-  }
-
-  it("applies deep-reflect job results from events", async () => {
-    const jobResult = {
-      reflection: "Test reflection",
-      kv_operations: [
-        { op: "put", key: "desire:d_new", value: { slug: "d_new", direction: "new desire" } },
-      ],
-    };
-
-    K = makeJobK(jobResult);
-    const events = [
-      { type: "job_complete", source: { job_id: JOB_ID } },
-    ];
-
-    await run(K, { crashData: null, balances: {}, events, schedule: {} });
-
-    // applyReflectOutput should have been called with the filtered output
-    expect(applyReflectOutput).toHaveBeenCalledWith(
-      K,
-      expect.objectContaining({ defaults: expect.any(Object) }),
-      1,
+    expect(K.emitEvent).toHaveBeenCalledWith(
+      "session_complete",
       expect.objectContaining({
-        reflection: "Test reflection",
-        kv_operations: [
-          expect.objectContaining({ key: "desire:d_new" }),
-        ],
+        cycles: expect.any(Number),
+        actions_summary: expect.any(String),
       }),
-      { fromJob: JOB_ID },
     );
 
-    // Karma should log deep_reflect_applied
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "deep_reflect_applied", job_id: JOB_ID }),
-    );
+    const call = K.emitEvent.mock.calls.find(([type]) => type === "session_complete");
+    expect(call).toBeDefined();
+    expect(call[1].cycles).toBeGreaterThan(0);
   });
 
-  it("filters non-desire/samskara kv_operations", async () => {
-    const jobResult = {
-      reflection: "Test reflection",
-      kv_operations: [
-        { op: "put", key: "desire:d_new", value: { slug: "d_new" } },
-        { op: "put", key: "config:defaults", value: { hacked: true } },
-        { op: "put", key: "samskara:a_new", value: { pattern: "new pattern", strength: 0.5 } },
-        { op: "put", key: "prompt:act", value: "pwned" },
-      ],
-    };
-
-    K = makeJobK(jobResult);
-    const events = [
-      { type: "job_complete", source: { job_id: JOB_ID } },
-    ];
-
-    await run(K, { crashData: null, balances: {}, events, schedule: {} });
-
-    // applyReflectOutput should only get desire:* and samskara:* operations
-    const call = applyReflectOutput.mock.calls[0];
-    const output = call[3];
-    expect(output.kv_operations).toHaveLength(2);
-    expect(output.kv_operations[0].key).toBe("desire:d_new");
-    expect(output.kv_operations[1].key).toBe("samskara:a_new");
-  });
-
-  it("skips stale deep-reflect jobs", async () => {
-    const jobResult = {
-      reflection: "Stale reflection",
-      kv_operations: [],
-    };
-
-    const kvData = {
-      "desire:d_help": JSON.stringify(DESIRE),
-      [`job:${JOB_ID}`]: JSON.stringify({
-        id: JOB_ID,
-        config: { deep_reflect: true, depth: 1, dispatch_session: 0 },
-      }),
-      [`job_result:${JOB_ID}`]: JSON.stringify({ result: jobResult }),
-    };
-
-    K = makeMockK(kvData, {
-      defaults: {
-        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
-        reflect: { model: "test-model" },
-        session_budget: { max_cost: 0.01 },
-        session: { min_review_cost: 0.05 },
-        schedule: { interval_seconds: 3600 },
-        execution: { max_steps: { act: 5 } },
-        deep_reflect: { max_stale_sessions: 5 },
-      },
-      sessionCount: 10, // 10 - 0 = 10 > 5 max_stale
-    });
-
-    const noActionContent = JSON.stringify({ no_action: true, reason: "budget" });
+  it("does not emit session_complete when plan returns no_action", async () => {
+    const noActionContent = JSON.stringify({ no_action: true, reason: "nothing to do" });
     K.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
-    K.getSessionCost = vi.fn(async () => 0.50);
-
-    const events = [
-      { type: "job_complete", source: { job_id: JOB_ID } },
-    ];
-
-    await run(K, { crashData: null, balances: {}, events, schedule: {} });
-
-    // applyReflectOutput should NOT have been called
-    expect(applyReflectOutput).not.toHaveBeenCalled();
-
-    // Should log staleness
-    expect(K.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "deep_reflect_stale", job_id: JOB_ID }),
-    );
-  });
-});
-
-// ── Per-depth reflect dispatch tests ──────────────────────────
-
-describe("per-depth reflect dispatch", () => {
-  let K;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    K = makeMockK({}, {
-      defaults: {
-        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
-        reflect: { model: "test-model" },
-        session_budget: { max_cost: 0.01 },
-        session: { min_review_cost: 0.05 },
-        schedule: { interval_seconds: 3600 },
-        execution: { max_steps: { act: 5 }, max_reflect_depth: 3 },
-      },
-    });
-
-    const noActionContent = JSON.stringify({ no_action: true, reason: "budget" });
-    K.callLLM = vi.fn(async (opts) => llmResp(noActionContent)(opts));
-    K.getSessionCost = vi.fn(async () => 0.50);
-  });
-
-  it("dispatches each due depth independently", async () => {
-    // Depths 3 and 1 are due, depth 2 is not
-    isReflectDue.mockImplementation(async (K, state, d) => d === 3 || d === 1);
 
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
-    // runReflect should be called for depth 3 and depth 1
-    expect(runReflect).toHaveBeenCalledTimes(2);
-    expect(runReflect.mock.calls[0][2]).toBe(3);
-    expect(runReflect.mock.calls[1][2]).toBe(1);
-  });
-
-  it("dispatches nothing when no depth is due", async () => {
-    isReflectDue.mockResolvedValue(false);
-
-    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
-
-    expect(runReflect).not.toHaveBeenCalled();
+    const sessionCompleteCall = K.emitEvent.mock.calls.find(([type]) => type === "session_complete");
+    expect(sessionCompleteCall).toBeUndefined();
   });
 });
+
+// ── Pulse classify tests ────────────────────────────────────
+
+describe("pulse classify", () => {
+  it("always includes health", () => {
+    expect(classify(new Set())).toContain("health");
+  });
+
+  it("maps desire keys to mind bucket", () => {
+    const result = classify(new Set(["desire:dharma-clarity"]));
+    expect(result).toContain("mind");
+    expect(result).toContain("health");
+  });
+
+  it("maps pattern keys to mind bucket", () => {
+    expect(classify(new Set(["pattern:pacing:slow"]))).toContain("mind");
+  });
+
+  it("maps experience keys to mind bucket", () => {
+    expect(classify(new Set(["experience:1775204183352"]))).toContain("mind");
+  });
+
+  it("maps session_counter to sessions bucket", () => {
+    expect(classify(new Set(["session_counter"]))).toContain("sessions");
+  });
+
+  it("maps karma keys to sessions bucket", () => {
+    expect(classify(new Set(["karma:x_123"]))).toContain("sessions");
+  });
+
+  it("maps action keys to sessions bucket", () => {
+    expect(classify(new Set(["action:a_123_test"]))).toContain("sessions");
+  });
+
+  it("maps dr state to reflections bucket", () => {
+    expect(classify(new Set(["dr:state:1"]))).toContain("reflections");
+  });
+
+  it("maps reflect keys to reflections bucket", () => {
+    expect(classify(new Set(["reflect:1:x_123"]))).toContain("reflections");
+  });
+
+  it("maps last_reflect to reflections bucket", () => {
+    expect(classify(new Set(["last_reflect"]))).toContain("reflections");
+  });
+
+  it("maps chat keys to chats bucket", () => {
+    expect(classify(new Set(["chat:slack:U123"]))).toContain("chats");
+  });
+
+  it("maps outbox keys to chats bucket", () => {
+    expect(classify(new Set(["outbox:chat:slack:U123:ob_1"]))).toContain("chats");
+  });
+
+  it("maps contact keys to contacts bucket", () => {
+    expect(classify(new Set(["contact:swami_kevala"]))).toContain("contacts");
+  });
+
+  it("maps contact_platform keys to contacts bucket", () => {
+    expect(classify(new Set(["contact_platform:slack:U123"]))).toContain("contacts");
+  });
+
+  it("ignores unknown prefixes", () => {
+    const result = classify(new Set(["kernel:active_execution"]));
+    expect(result).toEqual(["health"]);
+  });
+
+  it("deduplicates buckets", () => {
+    const result = classify(new Set(["desire:a", "pattern:b", "experience:c"]));
+    const mindCount = result.filter(b => b === "mind").length;
+    expect(mindCount).toBe(1);
+  });
+});
+

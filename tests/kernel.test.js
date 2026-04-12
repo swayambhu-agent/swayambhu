@@ -1084,7 +1084,6 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
     expect(kernel.isSystemKey("tool:kv_query:code")).toBe(true);
     expect(kernel.isSystemKey("hook:act:code")).toBe(true);
     expect(kernel.isSystemKey("principle:care")).toBe(true);
-    expect(kernel.isSystemKey("doc:guide")).toBe(true);
     expect(kernel.isSystemKey("skill:model-config")).toBe(true);
   });
 
@@ -1092,7 +1091,7 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
     const { kernel } = makeKernel();
     expect(kernel.isSystemKey("providers")).toBe(true);
     expect(kernel.isSystemKey("wallets")).toBe(true);
-    // wisdom is no longer a system key (replaced by samskara: prefix)
+    // wisdom is no longer a system key (replaced by pattern: prefix)
   });
 
   it("rejects non-system keys", () => {
@@ -1104,8 +1103,8 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
 
   it("recognizes kernel-only keys", () => {
     const { kernel } = makeKernel();
-    expect(kernel.isKernelOnly("kernel:last_sessions")).toBe(true);
-    expect(kernel.isKernelOnly("kernel:active_session")).toBe(true);
+    expect(kernel.isKernelOnly("kernel:last_executions")).toBe(true);
+    expect(kernel.isKernelOnly("kernel:active_execution")).toBe(true);
     expect(kernel.isKernelOnly("kernel:alert_config")).toBe(true);
   });
 
@@ -1183,7 +1182,7 @@ describe("kvWriteSafe", () => {
 
   it("blocks kernel-only keys", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvWriteSafe("kernel:last_sessions", []))
+    await expect(kernel.kvWriteSafe("kernel:last_executions", []))
       .rejects.toThrow("kernel-only");
   });
 
@@ -1205,9 +1204,9 @@ describe("kvWriteSafe", () => {
       .rejects.toThrow("system key");
   });
 
-  it("blocks samskara keys (protected)", async () => {
+  it("blocks pattern keys (protected)", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvWriteSafe("samskara:slack-working", { slug: "slack-working" }))
+    await expect(kernel.kvWriteSafe("pattern:slack-working", { slug: "slack-working" }))
       .rejects.toThrow("system key");
   });
 
@@ -1251,7 +1250,7 @@ describe("kvDeleteSafe", () => {
 
   it("blocks kernel-only keys", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvDeleteSafe("kernel:active_session"))
+    await expect(kernel.kvDeleteSafe("kernel:active_execution"))
       .rejects.toThrow("kernel-only");
   });
 
@@ -1273,9 +1272,9 @@ describe("kvDeleteSafe", () => {
       .rejects.toThrow("system key");
   });
 
-  it("blocks samskara keys (protected)", async () => {
+  it("blocks pattern keys (protected)", async () => {
     const { kernel } = makeKernel();
-    await expect(kernel.kvDeleteSafe("samskara:slack-working"))
+    await expect(kernel.kvDeleteSafe("pattern:slack-working"))
       .rejects.toThrow("system key");
   });
 
@@ -1319,7 +1318,7 @@ describe("kvWriteGated", () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     const result = await kernel.kvWriteGated(
-      { op: "put", key: "kernel:last_sessions", value: [] }, "deep-reflect"
+      { op: "put", key: "kernel:last_executions", value: [] }, "deep-reflect"
     );
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/kernel key/);
@@ -1499,7 +1498,7 @@ describe("checkHookSafety", () => {
 
   it("returns true with mixed outcomes", async () => {
     const { kernel } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_1", outcome: "crash" },
         { id: "s_2", outcome: "clean" },
         { id: "s_3", outcome: "crash" },
@@ -1512,7 +1511,7 @@ describe("checkHookSafety", () => {
 
   it("fires tripwire on 3 consecutive crashes — writes deploy:rollback_requested", async () => {
     const { kernel, env } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_1", outcome: "crash" },
         { id: "s_2", outcome: "killed" },
         { id: "s_3", outcome: "crash" },
@@ -1537,7 +1536,7 @@ describe("checkHookSafety", () => {
 
   it("returns true when fewer than 3 sessions in history", async () => {
     const { kernel } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_1", outcome: "crash" },
         { id: "s_2", outcome: "crash" },
       ]),
@@ -1555,64 +1554,64 @@ describe("session lock", () => {
   it("proceeds when no active session marker", async () => {
     const { kernel } = makeKernel();
     kernel.checkHookSafety = vi.fn(async () => true);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
     await kernel.runScheduled();
-    expect(kernel.executeHook).toHaveBeenCalled();
+    expect(kernel.runTick).toHaveBeenCalled();
   });
 
   it("bails when active session is recent", async () => {
     const { kernel } = makeKernel({
-      "kernel:active_session": JSON.stringify({ id: "s_other", started_at: new Date().toISOString() }),
+      "kernel:active_execution": JSON.stringify({ id: "s_other", started_at: new Date().toISOString() }),
       "config:defaults": JSON.stringify({ session_budget: { max_duration_seconds: 600 } }),
     });
     kernel.checkHookSafety = vi.fn(async () => true);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
     await kernel.runScheduled();
-    expect(kernel.executeHook).not.toHaveBeenCalled();
+    expect(kernel.runTick).not.toHaveBeenCalled();
   });
 
   it("treats stale marker as killed session and proceeds", async () => {
     const staleTime = new Date(Date.now() - 1300 * 1000).toISOString(); // older than 2x 600s
     const { kernel, env } = makeKernel({
-      "kernel:active_session": JSON.stringify({ id: "s_dead", started_at: staleTime }),
+      "kernel:active_execution": JSON.stringify({ id: "s_dead", started_at: staleTime }),
       "config:defaults": JSON.stringify({ session_budget: { max_duration_seconds: 600 } }),
     });
     kernel.checkHookSafety = vi.fn(async () => true);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
     await kernel.runScheduled();
 
     // Should have recorded the killed session
-    const historyPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:last_sessions");
+    const historyPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:last_executions");
     expect(historyPut).toBeTruthy();
     const history = JSON.parse(historyPut[1]);
     expect(history[0].outcome).toBe("killed");
     expect(history[0].id).toBe("s_dead");
 
     // Should have proceeded
-    expect(kernel.executeHook).toHaveBeenCalled();
+    expect(kernel.runTick).toHaveBeenCalled();
   });
 });
 
-// ── 18. updateSessionOutcome ────────────────────────────────
+// ── 18. updateExecutionOutcome ────────────────────────────────
 
-describe("updateSessionOutcome", () => {
-  it("adds clean outcome to kernel:last_sessions", async () => {
+describe("updateExecutionOutcome", () => {
+  it("adds clean outcome to kernel:last_executions", async () => {
     const { kernel, env } = makeKernel();
-    await kernel.updateSessionOutcome("clean");
+    await kernel.updateExecutionOutcome("clean");
 
     const putCalls = env.KV.put.mock.calls;
-    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_executions");
     expect(sessionsPut).toBeTruthy();
     const sessions = JSON.parse(sessionsPut[1]);
     expect(sessions[0].outcome).toBe("clean");
   });
 
-  it("adds crash outcome to kernel:last_sessions", async () => {
+  it("adds crash outcome to kernel:last_executions", async () => {
     const { kernel, env } = makeKernel();
-    await kernel.updateSessionOutcome("crash");
+    await kernel.updateExecutionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_executions");
     expect(sessionsPut).toBeTruthy();
     const sessions = JSON.parse(sessionsPut[1]);
     expect(sessions[0].outcome).toBe("crash");
@@ -1620,14 +1619,14 @@ describe("updateSessionOutcome", () => {
 
   it("prepends to existing history", async () => {
     const { kernel, env } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_old", outcome: "clean", ts: "2026-01-01T00:00:00Z" },
       ]),
     });
-    await kernel.updateSessionOutcome("crash");
+    await kernel.updateExecutionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_executions");
     const sessions = JSON.parse(sessionsPut[1]);
     expect(sessions).toHaveLength(2);
     expect(sessions[0].outcome).toBe("crash");
@@ -1636,7 +1635,7 @@ describe("updateSessionOutcome", () => {
 
   it("caps history at 5 entries", async () => {
     const { kernel, env } = makeKernel({
-      "kernel:last_sessions": JSON.stringify([
+      "kernel:last_executions": JSON.stringify([
         { id: "s_1", outcome: "clean", ts: "t1" },
         { id: "s_2", outcome: "clean", ts: "t2" },
         { id: "s_3", outcome: "clean", ts: "t3" },
@@ -1644,10 +1643,10 @@ describe("updateSessionOutcome", () => {
         { id: "s_5", outcome: "clean", ts: "t5" },
       ]),
     });
-    await kernel.updateSessionOutcome("crash");
+    await kernel.updateExecutionOutcome("crash");
 
     const putCalls = env.KV.put.mock.calls;
-    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_sessions");
+    const sessionsPut = putCalls.find(([key]) => key === "kernel:last_executions");
     const sessions = JSON.parse(sessionsPut[1]);
     expect(sessions).toHaveLength(5);
     expect(sessions[0].outcome).toBe("crash");
@@ -1656,24 +1655,24 @@ describe("updateSessionOutcome", () => {
   });
 });
 
-// ── 19. _writeSessionHealth ──────────────────────────────────
+// ── 19. _writeExecutionHealth ──────────────────────────────────
 
-describe("_writeSessionHealth", () => {
+describe("_writeExecutionHealth", () => {
   it("writes a clean health summary", async () => {
     const { kernel, env } = makeKernel();
-    kernel.sessionId = "s_test_health";
+    kernel.executionId = "s_test_health";
     kernel.sessionCost = 0.05;
     kernel.sessionLLMCalls = 3;
     kernel._sessionStart = Date.now() - 5000;
     kernel.karma = [
-      { event: "session_start" },
+      { event: "act_start" },
       { event: "llm_call", step: "act_turn_0" },
       { event: "llm_call", step: "reflect_turn_0" },
     ];
 
-    await kernel._writeSessionHealth("clean");
+    await kernel._writeExecutionHealth("clean");
 
-    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_health");
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "execution_health:s_test_health");
     expect(putCall).toBeTruthy();
     const health = JSON.parse(putCall[1]);
     expect(health.outcome).toBe("clean");
@@ -1686,20 +1685,20 @@ describe("_writeSessionHealth", () => {
 
   it("captures budget_exceeded and missing reflect", async () => {
     const { kernel, env } = makeKernel();
-    kernel.sessionId = "s_test_budget";
+    kernel.executionId = "s_test_budget";
     kernel.sessionCost = 0.20;
     kernel.sessionLLMCalls = 8;
     kernel._sessionStart = Date.now() - 10000;
     kernel.karma = [
-      { event: "session_start" },
+      { event: "act_start" },
       { event: "llm_call", step: "act_turn_0" },
       { event: "budget_exceeded", step: "act" },
       { event: "budget_exceeded", step: "reflect" },
     ];
 
-    await kernel._writeSessionHealth("clean");
+    await kernel._writeExecutionHealth("clean");
 
-    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_budget");
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "execution_health:s_test_budget");
     const health = JSON.parse(putCall[1]);
     expect(health.budget_exceeded).toEqual(["act", "reflect"]);
     expect(health.reflect_ran).toBe(false);
@@ -1707,12 +1706,12 @@ describe("_writeSessionHealth", () => {
 
   it("captures truncations and tool failures", async () => {
     const { kernel, env } = makeKernel();
-    kernel.sessionId = "s_test_trunc";
+    kernel.executionId = "s_test_trunc";
     kernel.sessionCost = 0.10;
     kernel.sessionLLMCalls = 4;
     kernel._sessionStart = Date.now() - 8000;
     kernel.karma = [
-      { event: "session_start" },
+      { event: "act_start" },
       { event: "llm_call", step: "reflect_turn_0", truncated: true },
       { event: "tool_complete", tool: "computer", ok: false },
       { event: "tool_complete", tool: "computer", ok: false },
@@ -1720,9 +1719,9 @@ describe("_writeSessionHealth", () => {
       { event: "vikalpa_updates_missed", missed: [] },
     ];
 
-    await kernel._writeSessionHealth("clean");
+    await kernel._writeExecutionHealth("clean");
 
-    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_trunc");
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "execution_health:s_test_trunc");
     const health = JSON.parse(putCall[1]);
     expect(health.truncations).toEqual(["reflect_turn_0"]);
     expect(health.tool_failures).toBe(2);
@@ -1733,18 +1732,18 @@ describe("_writeSessionHealth", () => {
 
   it("writes health on fatal error path", async () => {
     const { kernel, env } = makeKernel();
-    kernel.sessionId = "s_test_fatal";
+    kernel.executionId = "s_test_fatal";
     kernel.sessionCost = 0.01;
     kernel.sessionLLMCalls = 1;
     kernel._sessionStart = Date.now() - 2000;
     kernel.karma = [
-      { event: "session_start" },
+      { event: "act_start" },
       { event: "fatal_error", error: "boom" },
     ];
 
-    await kernel._writeSessionHealth("error");
+    await kernel._writeExecutionHealth("error");
 
-    const putCall = env.KV.put.mock.calls.find(([k]) => k === "session_health:s_test_fatal");
+    const putCall = env.KV.put.mock.calls.find(([k]) => k === "execution_health:s_test_fatal");
     const health = JSON.parse(putCall[1]);
     expect(health.outcome).toBe("error");
     expect(health.reflect_ran).toBe(false);
@@ -1756,42 +1755,42 @@ describe("_writeSessionHealth", () => {
 // ── 20. runScheduled hook execution flow ──────────────────
 
 describe("runScheduled hook execution flow", () => {
-  it("calls checkHookSafety → executeHook when safe", async () => {
+  it("calls checkHookSafety → runTick when safe", async () => {
     const { kernel } = makeKernel();
     const callOrder = [];
     kernel.checkHookSafety = vi.fn(async () => { callOrder.push("checkHookSafety"); return true; });
-    kernel.executeHook = vi.fn(async () => callOrder.push("executeHook"));
+    kernel.runTick = vi.fn(async () => callOrder.push("runTick"));
     kernel.runFallbackSession = vi.fn(async () => callOrder.push("fallback"));
 
     await kernel.runScheduled();
 
-    expect(callOrder).toEqual(["checkHookSafety", "executeHook"]);
+    expect(callOrder).toEqual(["checkHookSafety", "runTick"]);
     expect(kernel.runFallbackSession).not.toHaveBeenCalled();
   });
 
   it("falls back to runFallbackSession() when checkHookSafety returns false", async () => {
     const { kernel } = makeKernel();
     kernel.checkHookSafety = vi.fn(async () => false);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
     kernel.runFallbackSession = vi.fn(async () => {});
 
     await kernel.runScheduled();
 
-    expect(kernel.executeHook).not.toHaveBeenCalled();
+    expect(kernel.runTick).not.toHaveBeenCalled();
     expect(kernel.runFallbackSession).toHaveBeenCalled();
   });
 
   it("writes active session marker before executing", async () => {
     const { kernel, env } = makeKernel();
     kernel.checkHookSafety = vi.fn(async () => true);
-    kernel.executeHook = vi.fn(async () => {});
+    kernel.runTick = vi.fn(async () => {});
 
     await kernel.runScheduled();
 
-    const markerPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:active_session");
+    const markerPut = env.KV.put.mock.calls.find(([key]) => key === "kernel:active_execution");
     expect(markerPut).toBeTruthy();
     const marker = JSON.parse(markerPut[1]);
-    expect(marker.id).toBe(kernel.sessionId);
+    expect(marker.id).toBe(kernel.executionId);
     expect(marker.started_at).toBeTruthy();
   });
 });
@@ -2291,7 +2290,7 @@ describe("sealed namespace", () => {
   describe("kvWriteGated blocks sealed: keys", () => {
     it("blocks writes to sealed: keys", async () => {
       const { kernel } = makeKernel();
-      kernel.sessionId = "test_session";
+      kernel.executionId = "test_session";
       const result = await kernel.kvWriteGated(
         { op: "put", key: "sealed:quarantine:test", value: { data: 1 } }, "deep-reflect"
       );
@@ -2306,7 +2305,7 @@ describe("sealed namespace", () => {
 describe("inbound content gate", () => {
   async function setupBrainForInbound(kvInit = {}, contacts = {}) {
     const { kernel, env } = makeKernel(kvInit);
-    kernel.sessionId = "test_session";
+    kernel.executionId = "test_session";
     kernel.karma = [];
     kernel.defaults = {
       act: { model: "test-model", max_steps: 10, max_cost: 1.0 },
@@ -2600,7 +2599,7 @@ describe("rotatePatronKey", () => {
     const { kernel, env } = makeKernel({ "patron:public_key": JSON.stringify(testKey) });
     kernel.karmaRecord = vi.fn(async () => {});
     kernel.sendKernelAlert = vi.fn(async () => {});
-    kernel.sessionId = "test_session";
+    kernel.executionId = "test_session";
 
     const result = await kernel.rotatePatronKey(newKey, rotateSignature);
     expect(result.rotated).toBe(true);
@@ -2670,14 +2669,14 @@ describe("loadKeys size guard", () => {
 // ── emitEvent ────────────────────────────────────────────────
 
 describe("emitEvent", () => {
-  it("writes a key with format event:{15-digit-timestamp}:{type}", async () => {
+  it("writes a key with format event:{15-digit-timestamp}:{type}:{4-char-nonce}", async () => {
     const { kernel, env } = makeKernel();
     const K = kernel.buildKernelInterface();
     const result = await K.emitEvent("chat_message", { source: "slack", text: "hello" });
 
     expect(result).toHaveProperty("key");
     const key = result.key;
-    expect(key).toMatch(/^event:\d{15}:chat_message$/);
+    expect(key).toMatch(/^event:\d{15}:chat_message:[a-z0-9]{4}$/);
 
     const stored = JSON.parse(await env.KV.get(key));
     expect(stored.type).toBe("chat_message");
@@ -2694,7 +2693,7 @@ describe("emitEvent", () => {
     await K.emitEvent("session_end", { session_id: "s_123" });
 
     expect(putSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/^event:\d{15}:session_end$/),
+      expect.stringMatching(/^event:\d{15}:session_end:[a-z0-9]{4}$/),
       expect.any(String),
       { expirationTtl: 86400 }
     );
@@ -2736,6 +2735,107 @@ describe("emitEvent", () => {
       })
     );
   });
+
+  it("appends a 4-char alphanumeric nonce as the 4th key segment", async () => {
+    const { kernel } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const result = await K.emitEvent("test_event", { foo: "bar" });
+
+    const parts = result.key.split(":");
+    expect(parts).toHaveLength(4);
+    expect(parts[3]).toMatch(/^[a-z0-9]{4}$/);
+  });
+});
+
+// ── claimEvent / releaseEvent ────────────────────────────────
+
+describe("claimEvent", () => {
+  it("marks event with lease fields and returns true", async () => {
+    const { kernel, env } = makeKernel({
+      'event:0001:test_event:abcd': JSON.stringify({ type: 'test_event', text: 'hello' }),
+    });
+    const K = kernel.buildKernelInterface();
+    const result = await K.claimEvent('event:0001:test_event:abcd', 'exec_123');
+
+    expect(result).toBe(true);
+    const stored = JSON.parse(await env.KV.get('event:0001:test_event:abcd'));
+    expect(stored.claimed_by).toBe('exec_123');
+    expect(stored.claimed_at).toBeTypeOf('number');
+    expect(stored.lease_expires).toBeTypeOf('number');
+    expect(stored.lease_expires).toBeGreaterThan(stored.claimed_at);
+  });
+
+  it("returns false if event is already claimed with active lease", async () => {
+    const future = Date.now() + 30000;
+    const { kernel } = makeKernel({
+      'event:0002:test_event:abcd': JSON.stringify({
+        type: 'test_event',
+        claimed_by: 'exec_111',
+        claimed_at: Date.now() - 5000,
+        lease_expires: future,
+      }),
+    });
+    const K = kernel.buildKernelInterface();
+    const result = await K.claimEvent('event:0002:test_event:abcd', 'exec_222');
+
+    expect(result).toBe(false);
+  });
+
+  it("succeeds if previous lease has expired", async () => {
+    const past = Date.now() - 5000;
+    const { kernel, env } = makeKernel({
+      'event:0003:test_event:abcd': JSON.stringify({
+        type: 'test_event',
+        claimed_by: 'exec_old',
+        claimed_at: past - 60000,
+        lease_expires: past,
+      }),
+    });
+    const K = kernel.buildKernelInterface();
+    const result = await K.claimEvent('event:0003:test_event:abcd', 'exec_new');
+
+    expect(result).toBe(true);
+    const stored = JSON.parse(await env.KV.get('event:0003:test_event:abcd'));
+    expect(stored.claimed_by).toBe('exec_new');
+  });
+
+  it("returns false if event does not exist", async () => {
+    const { kernel } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    const result = await K.claimEvent('event:9999:missing:abcd', 'exec_123');
+
+    expect(result).toBe(false);
+  });
+});
+
+describe("releaseEvent", () => {
+  it("removes claim fields from the event", async () => {
+    const { kernel, env } = makeKernel({
+      'event:0001:test_event:abcd': JSON.stringify({
+        type: 'test_event',
+        text: 'hello',
+        claimed_by: 'exec_123',
+        claimed_at: Date.now() - 1000,
+        lease_expires: Date.now() + 59000,
+      }),
+    });
+    const K = kernel.buildKernelInterface();
+    await K.releaseEvent('event:0001:test_event:abcd');
+
+    const stored = JSON.parse(await env.KV.get('event:0001:test_event:abcd'));
+    expect(stored.claimed_by).toBeUndefined();
+    expect(stored.claimed_at).toBeUndefined();
+    expect(stored.lease_expires).toBeUndefined();
+    expect(stored.type).toBe('test_event');
+    expect(stored.text).toBe('hello');
+  });
+
+  it("is a no-op if event does not exist", async () => {
+    const { kernel } = makeKernel();
+    const K = kernel.buildKernelInterface();
+    // Should not throw
+    await expect(K.releaseEvent('event:9999:missing:abcd')).resolves.toBeUndefined();
+  });
 });
 
 // ── drainEvents ─────────────────────────────────────────────
@@ -2744,7 +2844,7 @@ describe("drainEvents", () => {
   it("returns empty arrays when no event:* keys exist", async () => {
     const { kernel } = makeKernel();
     const result = await kernel.drainEvents({});
-    expect(result).toEqual({ processed: [], actContext: [] });
+    expect(result).toEqual({ processed: [], actContext: [], deferred: {} });
   });
 
   it("routes event to configured handler and deletes event on success", async () => {
@@ -2865,6 +2965,128 @@ describe("drainEvents", () => {
     expect(processed).toHaveLength(2);
     expect(processed.every(e => e.type === 'chat_message')).toBe(true);
   });
+
+  it("returns deferred events grouped by processor with new config format", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: { job_complete: ['sessionTrigger'] },
+        deferred: { inbound_message: ['comms'], job_complete: ['comms'] },
+      }),
+      'event:0001:inbound_message': JSON.stringify({ type: 'inbound_message', text: 'hi' }),
+      'event:0002:job_complete': JSON.stringify({ type: 'job_complete', job_id: 'j1' }),
+    });
+    const sessionTrigger = vi.fn(async () => {});
+    const { deferred, processed } = await kernel.drainEvents({ sessionTrigger });
+
+    // Both events should be in deferred.comms
+    expect(deferred.comms).toHaveLength(2);
+    expect(deferred.comms.map(e => e.type)).toContain('inbound_message');
+    expect(deferred.comms.map(e => e.type)).toContain('job_complete');
+
+    // Events with deferred processors should NOT be deleted from KV
+    expect(await env.KV.get('event:0001:inbound_message')).not.toBeNull();
+    expect(await env.KV.get('event:0002:job_complete')).not.toBeNull();
+
+    // Immediate handler should still have been called for job_complete
+    expect(sessionTrigger).toHaveBeenCalledTimes(1);
+
+    // Both should be in processed
+    expect(processed).toHaveLength(2);
+  });
+
+  it("backward compat: old flat config format still works as handlers-only", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({ chat_message: ['onChat'] }),
+      'event:0001:chat_message': JSON.stringify({ type: 'chat_message', text: 'hello' }),
+    });
+    const onChat = vi.fn(async () => {});
+    const { processed, deferred } = await kernel.drainEvents({ onChat });
+
+    // Should work like before — handler called, event deleted, no deferred
+    expect(onChat).toHaveBeenCalledTimes(1);
+    expect(await env.KV.get('event:0001:chat_message')).toBeNull();
+    expect(processed).toHaveLength(1);
+    expect(deferred).toEqual({});
+  });
+
+  it("immediate handler failure does not block deferred processing", async () => {
+    const { kernel } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: { job_complete: ['failHandler'] },
+        deferred: { job_complete: ['comms'] },
+      }),
+      'event:0001:job_complete': JSON.stringify({ type: 'job_complete', job_id: 'j1' }),
+    });
+    const failHandler = vi.fn(async () => { throw new Error('boom'); });
+    const { deferred } = await kernel.drainEvents({ failHandler });
+
+    // Event should still be in deferred despite handler failure
+    expect(deferred.comms).toHaveLength(1);
+    expect(deferred.comms[0].type).toBe('job_complete');
+  });
+
+  it("events with only handlers (no deferred) are deleted on success", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: { session_request: ['sessionTrigger'] },
+        deferred: {},
+      }),
+      'event:0001:session_request': JSON.stringify({ type: 'session_request' }),
+    });
+    const sessionTrigger = vi.fn(async () => {});
+    await kernel.drainEvents({ sessionTrigger });
+    expect(await env.KV.get('event:0001:session_request')).toBeNull();
+  });
+
+  it("dead-letters deferred events after 5 drains without terminal disposition", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: {},
+        deferred: { stuck_event: ['comms'] },
+      }),
+      'event:0001:stuck_event': JSON.stringify({ type: 'stuck_event', data: 'test' }),
+    });
+
+    // Drain 4 times — event should still be alive and in deferred
+    for (let i = 0; i < 4; i++) {
+      const { deferred } = await kernel.drainEvents({});
+      expect(deferred.comms).toHaveLength(1);
+      expect(await env.KV.get('event:0001:stuck_event')).not.toBeNull();
+    }
+
+    // 5th drain — should dead-letter
+    const { deferred } = await kernel.drainEvents({});
+    expect(deferred.comms || []).toHaveLength(0);
+    expect(await env.KV.get('event:0001:stuck_event')).toBeNull();
+    expect(await env.KV.get('event_dead:0001:stuck_event', 'json')).toBeTruthy();
+    expect(await env.KV.get('event_drain_count:event:0001:stuck_event')).toBeNull();
+  });
+
+  it("deleteEvent removes event and its drain count", async () => {
+    const { kernel, env } = makeKernel({
+      'config:event_handlers': JSON.stringify({
+        handlers: {},
+        deferred: { test_event: ['comms'] },
+      }),
+      'event:0001:test_event': JSON.stringify({ type: 'test_event' }),
+    });
+
+    // Drain once to create a drain count
+    await kernel.drainEvents({});
+    expect(await env.KV.get('event_drain_count:event:0001:test_event')).not.toBeNull();
+
+    // deleteEvent should clean up both
+    const K = kernel.buildKernelInterface();
+    await K.deleteEvent('event:0001:test_event');
+    expect(await env.KV.get('event:0001:test_event')).toBeNull();
+    expect(await env.KV.get('event_drain_count:event:0001:test_event')).toBeNull();
+  });
+
+  it("deleteEvent rejects non-event keys", async () => {
+    const { kernel } = makeKernel({});
+    const K = kernel.buildKernelInterface();
+    await expect(K.deleteEvent('config:defaults')).rejects.toThrow('not an event key');
+  });
 });
 
 // ── code staging ─────────────────────────────────────────────
@@ -2883,7 +3105,7 @@ describe("code staging", () => {
     expect(staged).toEqual({
       code: "export function execute() {}",
       staged_at: expect.any(String),
-      session_id: kernel.sessionId,
+      execution_id: kernel.executionId,
     });
   });
 
@@ -2899,7 +3121,7 @@ describe("code staging", () => {
     const pending = await kernel.kvGet("deploy:pending");
     expect(pending).toEqual({
       requested_at: expect.any(String),
-      session_id: kernel.sessionId,
+      execution_id: kernel.executionId,
     });
   });
 
@@ -2917,5 +3139,138 @@ describe("code staging", () => {
     expect(kernel.karma).toContainEqual(
       expect.objectContaining({ event: "code_staged", target: "tool:kv_query:code" })
     );
+  });
+});
+
+// ── touchedKeys tracking ──────────────────────────────────────
+
+describe("touchedKeys tracking", () => {
+  it("tracks keys written via kvWriteSafe", async () => {
+    const { kernel } = makeKernel();
+    kernel.touchedKeys = new Set();
+    await kernel.kvWriteSafe("experience:test1", { data: "hello" });
+    expect(kernel.touchedKeys.has("experience:test1")).toBe(true);
+  });
+
+  it("tracks keys deleted via kvDeleteSafe", async () => {
+    const { kernel } = makeKernel();
+    kernel.touchedKeys = new Set();
+    await kernel.kvWriteSafe("experience:del1", "temp");
+    kernel.touchedKeys.clear();
+    await kernel.kvDeleteSafe("experience:del1");
+    expect(kernel.touchedKeys.has("experience:del1")).toBe(true);
+  });
+
+  it("tracks keys written via internal kvWrite", async () => {
+    const { kernel } = makeKernel();
+    kernel.touchedKeys = new Set();
+    await kernel.karmaRecord({ event: "test" });
+    expect(kernel.touchedKeys.size).toBeGreaterThan(0);
+  });
+});
+
+// ── kernel:pulse ─────────────────────────────────────────
+
+describe("kernel:pulse", () => {
+  it("writes kernel:pulse at end of runTick", async () => {
+    const { kernel } = makeKernel();
+    kernel.HOOKS = {
+      tick: { run: async () => {} },
+    };
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+
+    const pulse = JSON.parse(await kernel.kv.get("kernel:pulse"));
+    expect(pulse.v).toBe(1);
+    expect(pulse.n).toBe(0);
+    expect(pulse.execution_id).toBe(kernel.executionId);
+    expect(pulse.outcome).toBe("clean");
+    expect(pulse.ts).toBeGreaterThan(0);
+    expect(Array.isArray(pulse.changed)).toBe(true);
+  });
+
+  it("increments pulse counter across ticks", async () => {
+    const { kernel } = makeKernel();
+    kernel.HOOKS = {
+      tick: { run: async () => {} },
+    };
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+    const p1 = JSON.parse(await kernel.kv.get("kernel:pulse"));
+
+    kernel.touchedKeys = new Set();
+    kernel.karma = [];
+    kernel.sessionCost = 0;
+    kernel.sessionLLMCalls = 0;
+    await kernel.runTick();
+    const p2 = JSON.parse(await kernel.kv.get("kernel:pulse"));
+
+    expect(p2.n).toBe(p1.n + 1);
+  });
+
+  it("calls HOOKS.pulse.classify with touchedKeys", async () => {
+    const { kernel } = makeKernel();
+    let receivedKeys = null;
+    kernel.HOOKS = {
+      tick: { run: async (K) => {
+        await K.kvWriteSafe("experience:test", { data: 1 });
+      }},
+      pulse: { classify: (keys) => {
+        receivedKeys = keys;
+        return ["mind"];
+      }},
+    };
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+
+    expect(receivedKeys).toBeInstanceOf(Set);
+    expect(receivedKeys.has("experience:test")).toBe(true);
+    const pulse = JSON.parse(await kernel.kv.get("kernel:pulse"));
+    expect(pulse.changed).toEqual(["mind"]);
+  });
+
+  it("pulse write failure does not crash the tick", async () => {
+    const { kernel } = makeKernel();
+    kernel.HOOKS = {
+      tick: { run: async () => {} },
+    };
+    const origPut = kernel.kv.put.bind(kernel.kv);
+    kernel.kv.put = async (key, ...args) => {
+      if (key === "kernel:pulse") throw new Error("KV write failed");
+      return origPut(key, ...args);
+    };
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+    // Should not throw — pulse write is best-effort
+  });
+});
+
+// ── pulse integration ─────────────────────────────────────────
+
+describe("pulse integration", () => {
+  it("full flow: userspace writes → classify → pulse reflects changes", async () => {
+    const { classify } = await import('../userspace.js');
+    const { kernel } = makeKernel();
+
+    kernel.HOOKS = {
+      tick: { run: async (K) => {
+        await K.kvWriteSafe("experience:integration_test", { test: true });
+        await K.kvWriteGated(
+          { op: "put", key: "desire:test-desire", value: { slug: "test", direction: "approach" } },
+          "deep-reflect"
+        );
+      }},
+      pulse: { classify },
+    };
+
+    await kernel.loadEagerConfig();
+    await kernel.runTick();
+
+    const pulse = JSON.parse(await kernel.kv.get("kernel:pulse"));
+    expect(pulse.v).toBe(1);
+    expect(pulse.outcome).toBe("clean");
+    expect(pulse.changed).toContain("mind");
+    expect(pulse.changed).toContain("health");
+    expect(pulse.n).toBe(0);
   });
 });

@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+/* Theme — custom colors and fonts (Tailwind v4 CSS-based config) */
+@theme {
+  --color-bg: #0a0a0f;
+  --color-bg-panel: #0f0f18;
+  --color-bg-card: #14142a;
+  --color-border: #1e1e3a;
+  --color-accent: #f59e0b;
+  --color-accent-dim: rgba(245, 158, 11, 0.12);
+  --color-deep: #a78bfa;
+  --color-deep-dim: rgba(167, 139, 250, 0.15);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Custom scrollbar */
+.scrollbar-thin::-webkit-scrollbar { width: 6px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: #1e1e3a; border-radius: 3px; }
+
+/* Animations */
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in { animation: fade-in 0.3s ease-out; }
+
+/* Markdown prose */
+.md-prose { color: #d1d5db; line-height: 1.7; }
+.md-prose h1, .md-prose h2, .md-prose h3 { color: #f59e0b; font-weight: 700; margin: 0.75em 0 0.25em; }
+.md-prose h1 { font-size: 1.1em; } .md-prose h2 { font-size: 1em; } .md-prose h3 { font-size: 0.95em; }
+.md-prose p { margin: 0.4em 0; }
+.md-prose ul, .md-prose ol { margin: 0.4em 0; padding-left: 1.5em; }
+.md-prose li { margin: 0.2em 0; }
+.md-prose code { background: #1e1e3a; padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.9em; color: #a5b4fc; }
+.md-prose pre { background: #0a0a0f; padding: 0.5em; border-radius: 4px; overflow-x: auto; margin: 0.4em 0; }
+.md-prose pre code { background: none; padding: 0; }
+.md-prose strong { color: #e5e7eb; }
+.md-prose em { color: #9ca3af; }
+.md-prose a { color: #60a5fa; text-decoration: underline; }
+.md-prose blockquote { border-left: 2px solid #1e1e3a; padding-left: 0.75em; color: #9ca3af; margin: 0.4em 0; }
+
+/* Divider */
+.divider-dragging { cursor: col-resize !important; user-select: none !important; }

@@ -77,11 +77,11 @@ export async function deploy(env, files, mainModule = "index.js") {
 }
 
 // Record deployment version in KV
-export async function recordDeployment(kv, versionId, proposals, codeHashes) {
+export async function recordDeployment(kv, versionId, changedKeys, codeHashes) {
   const manifest = {
     version_id: versionId,
     deployed_at: new Date().toISOString(),
-    proposals: proposals.map(p => p.id),
+    changed_keys: changedKeys,
     code_hashes: codeHashes,
   };
 
@@ -106,7 +106,7 @@ export async function recordDeployment(kv, versionId, proposals, codeHashes) {
   history.unshift({
     version_id: versionId,
     deployed_at: manifest.deployed_at,
-    proposal_count: proposals.length,
+    changed_count: changedKeys.length,
   });
   while (history.length > 10) history.pop();
   await kv.put("deploy:history", JSON.stringify(history), {
@@ -116,18 +116,6 @@ export async function recordDeployment(kv, versionId, proposals, codeHashes) {
   return manifest;
 }
 
-// Rollback to a previous version — restore KV code keys from manifest
-export async function rollback(kv, env, versionId) {
-  const manifest = await kv.get(`deploy:version:${versionId}`, "json");
-  if (!manifest) throw new Error(`No deployment manifest for version ${versionId}`);
-
-  // The manifest's code_hashes tells us what was deployed, but to rollback
-  // we need to redeploy from current KV state after restoring code keys.
-  // For now, we just redeploy the current KV state (governor rebuilds from KV).
-  // Future: store full code snapshots in the manifest for true rollback.
-
-  return manifest;
-}
 
 // Compute a simple hash of code content for the version manifest
 export function hashCode(code) {

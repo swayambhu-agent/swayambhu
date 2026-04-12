@@ -221,6 +221,9 @@ echo "=== Starting dashboard API (port $DASHBOARD_PORT) ==="
 setsid bash -c 'cd dashboard-api && exec npx wrangler dev --port "'"$DASHBOARD_PORT"'" --inspector-port 9230 --persist-to ../.wrangler/shared-state' &
 PGIDS+=($!)
 
+echo "=== Building dashboard ==="
+npm run build:dashboard
+
 echo "=== Starting dashboard SPA (port $SPA_PORT) ==="
 setsid node scripts/dev-serve.mjs "$SPA_PORT" &
 PGIDS+=($!)

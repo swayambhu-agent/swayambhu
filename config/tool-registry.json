@@ -29,7 +29,7 @@
       "name": "kv_query",
       "description": "Read a KV value. Returns small values directly. For large arrays/objects, returns a summary — use path to drill in.",
       "input": {
-        "key": "required — full KV key (e.g. karma:s_123, samskara:pacing, config:defaults)",
+        "key": "required — full KV key (e.g. karma:s_123, pattern:pacing, config:defaults)",
         "path": "optional — dot-bracket path to navigate into the value (e.g. .text, [1].tool_calls[0].function, .sources[0].note)"
       }
     },
@@ -86,6 +86,20 @@
         "job_id": "optional — specific job to check. Omit to check all.",
         "wait_seconds": "optional — short poll, wait up to N seconds for completion (max 30)"
       }
+    },
+    {
+      "name": "request_message",
+      "description": "Request that a message be sent to a contact. The communication agent decides whether and how to deliver.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "contact": { "type": "string", "description": "Contact slug (e.g. swami_kevala)" },
+          "intent": { "type": "string", "enum": ["share", "ask", "report"], "description": "Communication intent" },
+          "content": { "type": "string", "description": "What you want to communicate" }
+        },
+        "required": ["contact", "intent", "content"]
+      },
+      "grants": { "kv_read": ["contact:*"] }
     },
     {
       "name": "google_docs",

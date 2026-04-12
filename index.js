@@ -4,10 +4,11 @@
 // In local dev, this is a static hand-written file importing from disk.
 
 import { Kernel } from './kernel.js';
-import { handleChat, handleDelivery } from './hook-communication.js';
+import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox } from './hook-communication.js';
 
 // Hook modules (mutable policy — agent can propose changes)
-import * as session from './session.js';
+import * as session from './userspace.js';
+import { classify as pulseClassify } from './userspace.js';
 
 // Channel adapters
 import * as slackAdapter from './channels/slack.js';
@@ -28,6 +29,7 @@ import * as collect_jobs from './tools/collect_jobs.js';
 import * as send_whatsapp from './tools/send_whatsapp.js';
 import * as google_docs from './tools/google_docs.js';
 import * as gnanetra from './tools/gnanetra.js';
+import * as request_message from './tools/request_message.js';
 
 // Provider adapter modules
 import * as llm from './providers/llm.js';
@@ -42,6 +44,7 @@ const TOOLS = {
   send_slack, web_fetch, kv_manifest, kv_query,
   computer, check_email, send_email, test_model, web_search,
   start_job, collect_jobs, send_whatsapp, google_docs, gnanetra,
+  request_message,
 };
 
 const PROVIDERS = {
@@ -58,13 +61,122 @@ const PROVIDERS = {
 
 const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
 
-const HOOKS = { session };
+const HOOKS = {
+  tick: session,
+  deferred: {
+    comms: {
+      async run(K, events) {
+        // Group by conversation
+        const byConv = {};
+        for (const ev of events) {
+          let turn;
+          if (ev.type === "inbound_message") {
+            turn = ev; // Already a CommTurn shape from fetch
+            // Ensure idempotency_key is set — fallback to ev.key if missing
+            // (prevents re-drain if the event was created without one)
+            if (!turn.idempotency_key) turn.idempotency_key = ev.key;
+          } else {
+            turn = await ingestInternal(K, ev);
+          }
+          if (!turn) {
+            // Can't route to a conversation — delete to prevent re-drain
+            if (ev.key) await K.deleteEvent(ev.key);
+            await K.karmaRecord({ event: "comms_unroutable", event_type: ev.type, event_key: ev.key });
+            continue;
+          }
+          const cid = turn.conversation_id;
+          if (!byConv[cid]) byConv[cid] = [];
+          byConv[cid].push(turn);
+        }
+
+        // Run each conversation
+        for (const [convId, turns] of Object.entries(byConv)) {
+          try {
+            // Claim all events for this batch
+            const claimed = [];
+            for (const t of turns) {
+              if (t.idempotency_key) {
+                const ok = await K.claimEvent(t.idempotency_key, await K.getExecutionId());
+                if (ok) claimed.push(t);
+              } else {
+                claimed.push(t);
+              }
+            }
+            if (claimed.length === 0) continue;
+
+            const result = await runTurn(K, convId, claimed);
+
+            // Event lifecycle based on outcome
+            for (const t of claimed) {
+              if (!t.idempotency_key) continue;
+              if (result.action === "sent" || result.action === "discarded") {
+                await K.deleteEvent(t.idempotency_key);
+              } else if (result.action === "held") {
+                await createOutboxItem(K, convId, t.content, result.reason, result.release_after, [t.idempotency_key]);
+                await K.deleteEvent(t.idempotency_key);
+              } else {
+                // error — release claim for retry
+                await K.releaseEvent(t.idempotency_key);
+              }
+            }
+          } catch (err) {
+            await K.karmaRecord({ event: "comms_error", conversation: convId, error: err.message });
+            // Release claims on error
+            for (const t of turns) {
+              if (t.idempotency_key) {
+                try { await K.releaseEvent(t.idempotency_key); } catch {}
+              }
+            }
+          }
+        }
+
+        // Check outbox for due items
+        const dueItems = await checkOutbox(K);
+        for (const item of dueItems) {
+          try {
+            const turn = {
+              conversation_id: item.conversation_id,
+              reply_target: null,
+              source: "internal",
+              content: item.content,
+              intent: "share",
+              idempotency_key: item.key || null,
+              metadata: { outbox_id: item.id },
+            };
+
+            // Load reply_target from conversation state
+            const conv = await K.kvGet(item.conversation_id);
+            if (conv?.reply_target) {
+              turn.reply_target = conv.reply_target;
+            } else {
+              const parts = item.conversation_id.replace("chat:", "").split(":");
+              turn.reply_target = { platform: parts[0], channel: parts.slice(1).join(":"), thread_ts: null };
+            }
+
+            const result = await runTurn(K, item.conversation_id, [turn]);
+            if (result.action === "sent" || result.action === "discarded") {
+              await K.kvDeleteSafe(item.key);
+            } else {
+              // Still held or error — increment attempts
+              item.attempts = (item.attempts || 0) + 1;
+              if (item.attempts >= 3) {
+                await K.kvDeleteSafe(item.key);
+                await K.karmaRecord({ event: "outbox_dead_lettered", id: item.id });
+              } else {
+                await K.kvWriteSafe(item.key, item);
+              }
+            }
+          } catch (err) {
+            await K.karmaRecord({ event: "outbox_error", id: item.id, error: err.message });
+          }
+        }
+      },
+    },
+  },
+  pulse: { classify: pulseClassify },
+};
 
 const EVENT_HANDLERS = {
-  communicationDelivery: async (K, event) => {
-    if (!EVENT_HANDLERS._pendingDelivery) EVENT_HANDLERS._pendingDelivery = [];
-    EVENT_HANDLERS._pendingDelivery.push(event);
-  },
   sessionTrigger: async (K, event) => {
     try {
       const schedule = await K.kvGet("session_schedule");
@@ -89,12 +201,6 @@ export default {
   async scheduled(event, env, ctx) {
     const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
     await kernel.runScheduled();
-    // Flush pending communication deliveries in background
-    if (EVENT_HANDLERS._pendingDelivery?.length) {
-      const pending = EVENT_HANDLERS._pendingDelivery.splice(0);
-      const K = kernel.buildKernelInterface();
-      ctx.waitUntil(handleDelivery(K, pending));
-    }
   },
 
   async fetch(request, env, ctx) {
@@ -107,56 +213,6 @@ export default {
         interval_seconds: 21600,
       }));
       return new Response("session_schedule set to past", { status: 200 });
-    }
-
-    // Job completion callback — compute target calls back when a job finishes
-    const jobMatch = url.pathname.match(/^\/job-complete\/(.+)$/);
-    if (jobMatch && request.method === "POST") {
-      const jobId = jobMatch[1];
-      const jsonHeaders = { "Content-Type": "application/json" };
-      try {
-        const body = await request.json();
-        const job = await env.KV.get(`job:${jobId}`, "json");
-        if (!job) return new Response(JSON.stringify({ error: "unknown job" }), { status: 404, headers: jsonHeaders });
-        if (job.status !== "running") return new Response(JSON.stringify({ error: "job not running" }), { status: 409, headers: jsonHeaders });
-
-        const auth = request.headers.get("Authorization")?.replace("Bearer ", "");
-        if (auth !== job.callback_secret) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: jsonHeaders });
-
-        job.status = body.exit_code === 0 ? "completed" : "failed";
-        job.completed_at = new Date().toISOString();
-        job.exit_code = body.exit_code;
-        if (body.artifacts) job.artifacts = body.artifacts;
-        await env.KV.put(`job:${jobId}`, JSON.stringify(job));
-
-        // Emit event into the event bus
-        const jobKernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
-        const K = jobKernel.buildKernelInterface();
-        await K.emitEvent("job_complete", {
-          source: { job_id: jobId },
-          summary: `Job ${jobId} (${job.type}) ${job.status}`,
-          ref: `job:${jobId}`,
-          result_key: `job_result:${jobId}`,
-        });
-
-        // Advance session schedule (same pattern as chat handler)
-        try {
-          const schedule = await env.KV.get("session_schedule", "json");
-          if (schedule?.next_session_after) {
-            const advanceTo = Date.now() + 30 * 1000;
-            if (new Date(schedule.next_session_after).getTime() > advanceTo) {
-              await env.KV.put("session_schedule", JSON.stringify({
-                ...schedule,
-                next_session_after: new Date(advanceTo).toISOString(),
-              }));
-            }
-          }
-        } catch {}
-
-        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: jsonHeaders });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: jsonHeaders });
-      }
     }
 
     const match = url.pathname.match(/^\/channel\/(\w+)$/);
@@ -215,37 +271,38 @@ export default {
       await kernel.kv.put(dedupKey, "1", { expirationTtl: 60 });
     }
 
-    // Process in background, return 200 immediately
-    const work = (async () => {
-      try {
-        await kernel.loadEagerConfig();
+    // Handle commands immediately (no scheduler needed)
+    if (inbound.command) {
+      const K = kernel.buildKernelInterface();
+      await kernel.loadEagerConfig();
+      const result = await handleCommand(K, channel, inbound);
+      if (result) return new Response("OK", { status: 200 });
+    }
 
-        const adapter = {
-          sendReply: async (chatId, text) => {
-            const secrets = {};
-            for (const s of (adapterMod.config?.secrets || [])) {
-              if (env[s] !== undefined) secrets[s] = env[s];
-            }
-            await adapterMod.sendReply(chatId, text, secrets, fetch);
-          },
-        };
+    // Write inbound event to KV — scheduler will process it
+    const nonce = Math.random().toString(36).slice(2, 6);
+    const ts = Date.now().toString().padStart(15, '0');
+    const eventKey = `event:${ts}:inbound_message:${nonce}`;
+    const commTurn = ingestInbound(channel, inbound);
+    await env.KV.put(eventKey, JSON.stringify({
+      type: "inbound_message",
+      ...commTurn,
+      idempotency_key: eventKey,  // enables claim/delete in deferred comms processor
+      timestamp: new Date().toISOString(),
+    }), { expirationTtl: 86400 });
 
-        const K = kernel.buildKernelInterface();
-        await handleChat(K, channel, inbound);
-      } catch (err) {
-        console.error(`[CHAT] error: ${err.message}`, err.stack);
-        try {
-          const logRef = await kernel.writeLog("chat", {
-            error: err.message,
-            stack: err.stack,
-            channel,
-            inbound: { chatId: inbound.chatId, userId: inbound.userId, text: inbound.text?.slice(0, 500) },
-          });
-          await kernel.karmaRecord({ event: "chat_error", channel, log_ref: logRef });
-        } catch {}
+    // Wake scheduler
+    const schedule = await env.KV.get("session_schedule", "json");
+    if (schedule?.next_session_after) {
+      const now = new Date().toISOString();
+      if (schedule.next_session_after > now) {
+        await env.KV.put("session_schedule", JSON.stringify({
+          ...schedule,
+          next_session_after: now,
+        }));
       }
-    })();
-    if (ctx?.waitUntil) ctx.waitUntil(work);
+    }
+
     return new Response("OK", { status: 200 });
   },
 };

@@ -1,0 +1,15 @@
+{
+  "handlers": {
+    "session_request": ["sessionTrigger"],
+    "job_complete": ["sessionTrigger"],
+    "patron_direct": ["sessionTrigger"]
+  },
+  "deferred": {
+    "inbound_message": ["comms"],
+    "comms_request": ["comms"],
+    "session_complete": ["comms"],
+    "dr_complete": ["comms"],
+    "session_response": ["comms"],
+    "job_complete": ["comms"]
+  }
+}

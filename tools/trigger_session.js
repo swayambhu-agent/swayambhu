@@ -1,5 +1,6 @@
 export const meta = {
-  kv_access: "none",
+  kv_access: "read_all",
+  kv_write_prefixes: ["session_request:", "session_schedule"],
   timeout_ms: 5000,
   secrets: [],
 };
@@ -8,7 +9,7 @@ export const meta = {
 // Creates a session_request KV key (source of truth) and emits a
 // session_request event (signal). The session will respond with a
 // session_response when work is done.
-export async function execute({ summary, K, _chatContext }) {
+export async function execute({ summary, kv, emitEvent, _chatContext }) {
   if (!_chatContext) return { error: "trigger_session can only be called from chat" };
 
   const { channel, userId, contact, convKey, chatConfig } = _chatContext;
@@ -28,10 +29,10 @@ export async function execute({ summary, K, _chatContext }) {
     error: null,
     next_session: null,
   };
-  await K.kvWriteSafe(`session_request:${id}`, request);
+  await kv.put(`session_request:${id}`, request);
 
   // Emit event — signal for sessionTrigger handler
-  await K.emitEvent("session_request", {
+  await emitEvent("session_request", {
     contact: userId,
     ref: `session_request:${id}`,
   });
@@ -39,12 +40,12 @@ export async function execute({ summary, K, _chatContext }) {
   // Advance session schedule
   const advanceSecs = chatConfig?.session_advance_seconds
     ?? (chatConfig?.session_advance_minutes ? chatConfig.session_advance_minutes * 60 : 30);
-  const schedule = await K.kvGet("session_schedule");
+  const schedule = await kv.get("session_schedule");
   if (schedule?.next_session_after) {
     const sessionAt = new Date(schedule.next_session_after).getTime();
     const advanceTo = Date.now() + advanceSecs * 1000;
     if (sessionAt > advanceTo) {
-      await K.kvWriteSafe("session_schedule", {
+      await kv.put("session_schedule", {
         ...schedule,
         next_session_after: new Date(advanceTo).toISOString(),
       });

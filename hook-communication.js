@@ -1,351 +1,414 @@
-// Swayambhu Communication Handler — inbound chat and outbound delivery pipeline.
-// Channel adapters handle platform specifics (statically imported).
-// The communication system prompt (prompt:communication) is in KV = agent-evolvable.
-//
-// Every kernel method is called via K (the kernel interface).
-// This module is kernel-level code — immutable, imported directly.
-//
-// Chat state is stored per-channel: chat:{channel}:{chatId}
-// One object per conversation, growing chronologically (mirrors Slack).
-// Karma (audit trail) is embedded in the chat object, not in karma:{sessionId}.
+// Swayambhu Communication — unified turn processor.
+// All communication flows through runTurn: one brain, one state, one prompt.
+// Ingress normalizers (ingestInbound, ingestInternal) create CommTurns.
+// The scheduled tick is the single writer — fetch only writes events.
 
-export async function handleChat(K, channel, inbound) {
-  const { chatId, text, command, userId, resolvedChatKey, sentTs } = inbound;
-  const convKey = `chat:${channel}:${resolvedChatKey || chatId}`;
+// ── LLM tools for communication ───────────────────────
 
-  // Load or init conversation state
-  let conv = await K.kvGet(convKey) || {
+const SEND_TOOL = {
+  type: "function",
+  function: {
+    name: "send",
+    description: "Send a message to the contact. Use this for every outbound reply.",
+    parameters: {
+      type: "object",
+      properties: { message: { type: "string", description: "Message to send" } },
+      required: ["message"],
+    },
+  },
+};
+
+const HOLD_TOOL = {
+  type: "function",
+  function: {
+    name: "hold",
+    description: "Defer delivery. Use when timing is wrong or you need to bundle with other updates.",
+    parameters: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "Why you are holding" },
+        release_after: { type: "string", description: "ISO8601 timestamp to release (optional)" },
+      },
+      required: ["reason"],
+    },
+  },
+};
+
+const DISCARD_TOOL = {
+  type: "function",
+  function: {
+    name: "discard",
+    description: "Drop this update without sending. Use when the content is not worth communicating.",
+    parameters: {
+      type: "object",
+      properties: { reason: { type: "string", description: "Why you are discarding" } },
+      required: ["reason"],
+    },
+  },
+};
+
+const KV_QUERY_TOOL = {
+  type: "function",
+  function: {
+    name: "kv_query",
+    description: "Read a KV value. Use to look up tasks, session history, contact info.",
+    parameters: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "KV key to read" },
+        path: { type: "string", description: "Dot-bracket path to drill in" },
+      },
+      required: ["key"],
+    },
+  },
+};
+
+const KV_MANIFEST_TOOL = {
+  type: "function",
+  function: {
+    name: "kv_manifest",
+    description: "List KV keys by prefix.",
+    parameters: {
+      type: "object",
+      properties: {
+        prefix: { type: "string", description: "Key prefix" },
+        limit: { type: "number", description: "Max keys (default 20)" },
+      },
+    },
+  },
+};
+
+const TRIGGER_SESSION_TOOL = {
+  type: "function",
+  function: {
+    name: "trigger_session",
+    description: "Signal that the conversation has an actionable request. Only call when you have enough detail to act on.",
+    parameters: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "What the session should work on" },
+      },
+      required: ["summary"],
+    },
+  },
+};
+
+// ── runTurn: the unified conversation processor ───────
+
+export async function runTurn(K, conversationId, turns) {
+  // 1. Load conversation state
+  let conv = await K.kvGet(conversationId) || {
     messages: [],
     karma: [],
-    total_cost: 0,
+    inbound_cost: 0,
+    internal_cost: 0,
     created_at: new Date().toISOString(),
     turn_count: 0,
   };
-  // Ensure karma array exists (migration from older format)
   if (!conv.karma) conv.karma = [];
+  if (conv.inbound_cost === undefined) conv.inbound_cost = conv.total_cost || 0;
+  if (conv.internal_cost === undefined) conv.internal_cost = 0;
 
-  // Handle commands
+  // 2. Load config
+  const defaults = await K.getDefaults();
+  const chatDefaults = defaults?.chat || {};
+
+  // Determine source type for this batch
+  const hasInbound = turns.some(t => t.source === "inbound");
+  const hasInternal = turns.some(t => t.source === "internal");
+  const costKey = hasInbound ? "inbound_cost" : "internal_cost";
+
+  // Budget check
+  const maxCost = chatDefaults.max_cost_per_conversation || 0.50;
+  if (conv[costKey] >= maxCost) {
+    return { action: "error", error: "budget_exhausted", retryable: false };
+  }
+
+  // 3. Sort: internal first, then inbound
+  const sorted = [...turns].sort((a, b) => {
+    if (a.source === "internal" && b.source === "inbound") return -1;
+    if (a.source === "inbound" && b.source === "internal") return 1;
+    return 0;
+  });
+
+  // 4. Build system prompt with internal context
+  const chatPrompt = await K.kvGet("prompt:communication") || "You are in a live communication session. Respond conversationally.";
+  const contact = turns[0]?.reply_target?.platform
+    ? await K.resolveContact(turns[0].reply_target.platform, turns[0].reply_target.channel)
+    : null;
+  const contactContext = contact ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}` : "";
+
+  // Render internal turns as agent context block
+  const internalTurns = sorted.filter(t => t.source === "internal");
+  const agentUpdates = internalTurns.length > 0
+    ? "\n\n[AGENT UPDATES]\n" + internalTurns.map(t =>
+        `- [${t.intent || "update"}] ${t.content}`
+      ).join("\n") + "\n\nDecide whether to send, hold, or discard each update. Use the send tool to message the contact, hold to defer, or discard to drop."
+    : "";
+
+  const systemPrompt = (chatPrompt + contactContext + agentUpdates).trim();
+
+  // Append inbound turns to message history
+  const inboundTurns = sorted.filter(t => t.source === "inbound");
+  for (const turn of inboundTurns) {
+    conv.messages.push({
+      role: "user",
+      content: turn.content,
+      userId: turn.metadata?.userId,
+      ts: turn.metadata?.sentTs
+        ? new Date(parseFloat(turn.metadata.sentTs) * 1000).toISOString()
+        : new Date().toISOString(),
+      sentTs: turn.metadata?.sentTs,
+    });
+  }
+
+  // 5. Build tools
+  const tools = [SEND_TOOL, HOLD_TOOL, DISCARD_TOOL, KV_QUERY_TOOL, KV_MANIFEST_TOOL];
+  if (hasInbound) tools.push(TRIGGER_SESSION_TOOL);
+
+  // 6. Call LLM (with tool loop for kv_query/kv_manifest)
+  const model = await K.resolveModel(chatDefaults.model || defaults?.act?.model || "sonnet");
+  const maxRounds = 3;
+  let outcome = null;
+
+  for (let i = 0; i < maxRounds; i++) {
+    const response = await K.callLLM({
+      model,
+      effort: chatDefaults.effort || "low",
+      maxTokens: chatDefaults.max_output_tokens || 1000,
+      systemPrompt,
+      messages: conv.messages,
+      tools,
+      step: `comms_${conv.turn_count}_r${i}`,
+    });
+    conv[costKey] += response.cost || 0;
+
+    if (!response.toolCalls?.length) {
+      // No tool call — default to hold (safer than send)
+      outcome = { action: "held", reason: "no explicit send/hold/discard tool call" };
+      break;
+    }
+
+    // Process tool calls
+    const tc = response.toolCalls[0];
+    const name = tc.function?.name;
+    const args = JSON.parse(tc.function?.arguments || "{}");
+
+    if (name === "send") {
+      outcome = { action: "sent", message: args.message };
+      break;
+    }
+    if (name === "hold") {
+      outcome = { action: "held", reason: args.reason, release_after: args.release_after || null };
+      break;
+    }
+    if (name === "discard") {
+      outcome = { action: "discarded", reason: args.reason };
+      break;
+    }
+
+    // kv_query, kv_manifest, trigger_session — execute and continue loop
+    conv.messages.push({
+      role: "assistant",
+      content: response.content || null,
+      tool_calls: response.toolCalls,
+    });
+
+    const results = await Promise.all(
+      response.toolCalls.map(async (tc2) => {
+        const n = tc2.function?.name;
+        if (n === "trigger_session") {
+          const mod = await import("./tools/trigger_session.js");
+          const chatContext = {
+            channel: turns[0].reply_target?.platform,
+            userId: turns[0].metadata?.userId,
+            contact,
+            convKey: conversationId,
+            chatConfig: chatDefaults,
+          };
+          return mod.execute({ ...JSON.parse(tc2.function?.arguments || "{}"), K, _chatContext: chatContext });
+        }
+        return K.executeToolCall(tc2).catch(err => ({ error: err.message }));
+      })
+    );
+
+    for (let j = 0; j < response.toolCalls.length; j++) {
+      conv.messages.push({
+        role: "tool",
+        tool_call_id: response.toolCalls[j].id,
+        content: JSON.stringify(results[j]),
+      });
+    }
+  }
+
+  if (!outcome) {
+    outcome = { action: "held", reason: "tool rounds exhausted without outcome" };
+  }
+
+  // 7. Execute outcome
+  if (outcome.action === "sent") {
+    const replyTarget = turns[0].reply_target;
+    await K.executeAdapter(replyTarget.platform, {
+      text: outcome.message,
+      channel: replyTarget.channel,
+      thread_ts: replyTarget.thread_ts || undefined,
+    });
+    conv.messages.push({ role: "assistant", content: outcome.message, ts: new Date().toISOString() });
+  }
+
+  if (outcome.action === "sent" || outcome.action === "discarded") {
+    await K.karmaRecord({
+      event: outcome.action === "sent" ? "comms_sent" : "comms_discarded",
+      conversation: conversationId,
+      reason: outcome.reason,
+    });
+  }
+
+  // 8. Persist state
+  conv.reply_target = turns[0].reply_target; // always update last-known reply target
+  conv.turn_count++;
+  conv.last_activity = new Date().toISOString();
+  const maxMsgs = chatDefaults.max_history_messages || 40;
+  if (conv.messages.length > maxMsgs) {
+    conv.messages = trimByTurns(conv.messages, maxMsgs);
+  }
+  await K.kvWriteSafe(conversationId, conv);
+
+  return outcome;
+}
+
+// ── Ingress: inbound message ──────────────────────────
+
+export function ingestInbound(channel, inbound) {
+  const { chatId, text, userId, resolvedChatKey, sentTs } = inbound;
+  const platformUserId = resolvedChatKey || chatId;
+  return {
+    conversation_id: `chat:${channel}:${platformUserId}`,
+    reply_target: { platform: channel, channel: platformUserId, thread_ts: null },
+    source: "inbound",
+    content: text,
+    intent: null,
+    idempotency_key: null, // set by caller from event key
+    metadata: { sentTs, userId, channel },
+  };
+}
+
+// ── Ingress: internal event ───────────────────────────
+
+export async function ingestInternal(K, event) {
+  const contactSlug = event.contact;
+  // Resolve conversation_id from contact slug
+  let conversationId = await K.kvGet(`conversation_index:${contactSlug}`);
+  if (!conversationId) {
+    // Look up platform binding to find platformUserId
+    const contact = await K.kvGet(`contact:${contactSlug}`);
+    if (!contact) return null;
+    // Find first platform binding
+    const bindings = await K.kvList({ prefix: `contact_platform:` });
+    for (const b of bindings.keys) {
+      const binding = await K.kvGet(b.name);
+      if (binding?.contact === contactSlug) {
+        const parts = b.name.replace("contact_platform:", "").split(":");
+        const platform = parts[0];
+        const platformUserId = parts[1];
+        conversationId = `chat:${platform}:${platformUserId}`;
+        // Create index for future lookups
+        await K.kvWriteSafe(`conversation_index:${contactSlug}`, conversationId);
+        break;
+      }
+    }
+  }
+  if (!conversationId) return null;
+
+  // Load existing conv to get reply_target
+  const conv = await K.kvGet(conversationId);
+  const parts = conversationId.replace("chat:", "").split(":");
+  const platform = parts[0];
+  const platformUserId = parts.slice(1).join(":");
+
+  return {
+    conversation_id: conversationId,
+    reply_target: conv?.reply_target || { platform, channel: platformUserId, thread_ts: null },
+    source: "internal",
+    content: event.content || event.reflection || event.actions_summary || JSON.stringify(event),
+    intent: event.intent || (event.type === "dr_complete" ? "share" : "report"),
+    idempotency_key: event.key || null,
+    metadata: { event_type: event.type, event_key: event.key },
+  };
+}
+
+// ── Outbox helpers ────────────────────────────────────
+
+export async function createOutboxItem(K, conversationId, content, reason, releaseAfter, sourceEventKeys) {
+  const id = `ob_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const item = {
+    id,
+    conversation_id: conversationId,
+    content,
+    hold_reason: reason,
+    release_after: releaseAfter || null,
+    source_event_keys: sourceEventKeys || [],
+    created_at: new Date().toISOString(),
+    attempts: 0,
+  };
+  await K.kvWriteSafe(`outbox:${conversationId}:${id}`, item);
+  return item;
+}
+
+export async function checkOutbox(K) {
+  const now = new Date();
+  const list = await K.kvList({ prefix: "outbox:" });
+  const due = [];
+  for (const entry of list.keys) {
+    const item = await K.kvGet(entry.name);
+    if (!item) continue;
+    if (item.release_after && new Date(item.release_after) <= now) {
+      due.push({ key: entry.name, ...item });
+    }
+  }
+  return due;
+}
+
+// ── Commands (handled in fetch, not runTurn) ──────────
+
+export async function handleCommand(K, channel, inbound) {
+  const { chatId, command, resolvedChatKey } = inbound;
+  const platformUserId = resolvedChatKey || chatId;
+  const convKey = `chat:${channel}:${platformUserId}`;
+
   if (command === "reset") {
-    conv.total_cost = 0;
-    delete conv._budget_warned;
-    await K.kvWriteSafe(convKey, conv);
-    await K.executeAdapter(channel, { text: "Budget refilled. Conversation history preserved.", channel: chatId });
+    const conv = await K.kvGet(convKey);
+    if (conv) {
+      conv.inbound_cost = 0;
+      conv.internal_cost = 0;
+      delete conv._budget_warned;
+      await K.kvWriteSafe(convKey, conv);
+    }
+    await K.executeAdapter(channel, { text: "Budget refilled.", channel: chatId });
     return { ok: true, reason: "reset" };
   }
+
   if (command === "clear") {
     await K.kvDeleteSafe(convKey);
     await K.executeAdapter(channel, { text: "Conversation cleared.", channel: chatId });
     return { ok: true, reason: "clear" };
   }
 
-  // Load config: global defaults + contact overrides
-  const defaults = await K.getDefaults();
-  const contact = await K.resolveContact(channel, userId);
-  const chatDefaults = defaults?.chat || {};
-  const contactConfig = contact?.chat || {};
-  const chatConfig = { ...chatDefaults, ...contactConfig };
-  const maxCost = chatConfig.max_cost_per_conversation || 0.50;
-  if (conv.total_cost >= maxCost) {
-    await K.executeAdapter(channel, { text: "Budget reached. Send /reset to refill or /clear to start fresh.", channel: chatId });
-    return { ok: true, reason: "budget_exhausted" };
-  }
-
-  // Build system prompt (dharma injected by kernel in callLLM)
-  const chatPrompt = await K.kvGet("prompt:communication");
-  const contactContext = contact
-    ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}`
-    : "";
-
-  const systemPrompt = [
-    chatPrompt || "You are in a live communication session. Respond conversationally.",
-    contactContext,
-  ].join("\n\n").trim();
-
-  // Deduplicate layer 1: same Slack timestamp = same message re-delivered
-  if (sentTs && conv.messages.some(m => m.sentTs === sentTs)) {
-    return { ok: true, reason: "duplicate_ts" };
-  }
-
-  // Deduplicate layer 2: same text with no intervening reply = double-send
-  // Find where this message belongs chronologically using Slack's sent timestamp
-  const lastUserMsg = [...conv.messages].reverse().find(m => m.role === "user");
-  const lastNonUserMsg = [...conv.messages].reverse().find(m => m.role !== "user");
-  const lastUserIsNewer = lastUserMsg && (!lastNonUserMsg || lastUserMsg.ts > (lastNonUserMsg.ts || ""));
-  if (lastUserIsNewer && lastUserMsg.content === text) {
-    return { ok: true, reason: "duplicate_content" };
-  }
-
-  // Append user message (use Slack's sent timestamp for correct ordering)
-  const ts = sentTs ? new Date(parseFloat(sentTs) * 1000).toISOString() : new Date().toISOString();
-  conv.messages.push({ role: "user", content: text, userId, ts, sentTs });
-
-  // Resolve model — chat can read KV and trigger sessions, nothing else.
-  const chatModel = chatConfig.model || defaults?.act?.model || "sonnet";
-  const model = await K.resolveModel(chatModel);
-
-  if (!contact) {
-    await K.karmaRecord({ event: 'inbound_unknown', sender_id: userId, channel });
-  } else if (!contact.approved) {
-    await K.karmaRecord({ event: 'inbound_unapproved', sender_id: userId, channel });
-  }
-
-  // Chat tools: read KV state + trigger sessions. No work tools.
-  const chatTools = [
-    {
-      type: 'function',
-      function: {
-        name: 'kv_query',
-        description: 'Read a KV value. Use to look up tasks, session history, contact info, or any agent state.',
-        parameters: {
-          type: 'object',
-          properties: {
-            key: { type: 'string', description: 'KV key to read' },
-            path: { type: 'string', description: 'Dot-bracket path to drill into the value' },
-          },
-          required: ['key'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'kv_manifest',
-        description: 'List KV keys by prefix. Use to discover what state exists.',
-        parameters: {
-          type: 'object',
-          properties: {
-            prefix: { type: 'string', description: 'Key prefix to filter by' },
-            limit: { type: 'number', description: 'Max keys to return (default 20)' },
-          },
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'trigger_session',
-        description: 'Signal that the conversation has an actionable request. Call this when the contact has given you enough info to act on. Do NOT call if you still need clarification.',
-        parameters: {
-          type: 'object',
-          properties: {
-            summary: { type: 'string', description: 'Brief summary of what the session should work on' },
-          },
-          required: ['summary'],
-        },
-      },
-    },
-  ];
-
-  // Chat context passed to trigger_session tool
-  const chatContext = { channel, userId, contact, convKey, chatConfig };
-
-  // Tool-calling loop — max 3 rounds (KV reads + optional trigger)
-  const maxRounds = 3;
-  let reply = null;
-
-  for (let i = 0; i < maxRounds; i++) {
-    const response = await K.callLLM({
-      model,
-      effort: chatConfig.effort || "low",
-      maxTokens: chatConfig.max_output_tokens || 1000,
-      systemPrompt,
-      messages: conv.messages,
-      tools: chatTools,
-      step: `chat_${channel}_t${conv.turn_count}_r${i}`,
-    });
-    conv.total_cost += response.cost || 0;
-
-    if (response.toolCalls?.length) {
-      conv.messages.push({
-        role: "assistant",
-        content: response.content || null,
-        tool_calls: response.toolCalls,
-      });
-      const results = await Promise.all(
-        response.toolCalls.map(async (tc) => {
-          const name = tc.function?.name;
-          const args = JSON.parse(tc.function?.arguments || '{}');
-          if (name === 'trigger_session') {
-            const mod = await import('./tools/trigger_session.js');
-            return mod.execute({ ...args, K, _chatContext: chatContext });
-          }
-          // kv_query and kv_manifest go through kernel
-          return K.executeToolCall(tc).catch(err => ({ error: err.message }));
-        })
-      );
-      for (let j = 0; j < response.toolCalls.length; j++) {
-        conv.messages.push({
-          role: "tool",
-          tool_call_id: response.toolCalls[j].id,
-          content: JSON.stringify(results[j]),
-        });
-      }
-      continue;
-    }
-
-    reply = response.content;
-    conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
-    break;
-  }
-
-  if (!reply) {
-    // Rounds exhausted — force final text reply
-    const finalResponse = await K.callLLM({
-      model,
-      effort: chatConfig.effort || "low",
-      maxTokens: chatConfig.max_output_tokens || 1000,
-      systemPrompt,
-      messages: conv.messages,
-      step: `chat_${channel}_t${conv.turn_count}_final`,
-    });
-    conv.total_cost += finalResponse.cost || 0;
-    reply = finalResponse.content || "I'll look into this in my next session.";
-    conv.messages.push({ role: "assistant", content: reply, ts: new Date().toISOString() });
-  }
-
-  // Send via channel adapter
-  await K.executeAdapter(channel, { text: reply, channel: chatId });
-
-  // Collect chat karma from kernel (in-memory only, not written to karma:{sessionId})
-  const chatKarma = await K.getChatKarma();
-  conv.karma.push(...chatKarma);
-
-  // Trim + save state
-  conv.turn_count++;
-  conv.last_activity = new Date().toISOString();
-  const maxMsgs = chatConfig.max_history_messages || 40;
-  if (conv.messages.length > maxMsgs) {
-    conv.messages = trimByTurns(conv.messages, maxMsgs);
-  }
-  await K.kvWriteSafe(convKey, conv);
-
-  return { ok: true, turn: conv.turn_count };
+  return null;
 }
 
-export async function handleDelivery(K, events) {
-  const byContact = {};
-  for (const event of events) {
-    const contactId = event.contact || "unknown";
-    if (!byContact[contactId]) byContact[contactId] = [];
-    byContact[contactId].push(event);
-  }
+// ── Trim helper (unchanged) ──────────────────────────
 
-  const results = [];
-
-  for (const [contactId, contactEvents] of Object.entries(byContact)) {
-    try {
-      const contact = await K.resolveContact(null, contactId);
-      if (!contact) {
-        await K.karmaRecord({
-          event: "delivery_skipped",
-          contact: contactId,
-          reason: "contact_not_found",
-          event_count: contactEvents.length,
-        });
-        continue;
-      }
-
-      const platform = contact.platform || "slack";
-      const convKey = `chat:${platform}:${contactId}`;
-      const conv = await K.kvGet(convKey) || { messages: [] };
-
-      const prompt = await K.kvGet("prompt:communication");
-      if (!prompt) {
-        await K.karmaRecord({ event: "delivery_error", reason: "no_prompt:communication" });
-        continue;
-      }
-
-      // Load session_request KV keys for events with refs
-      const requests = [];
-      for (const e of contactEvents) {
-        if (e.ref?.startsWith("session_request:")) {
-          const req = await K.kvGet(e.ref);
-          if (req) requests.push(req);
-        } else {
-          // Non-request events (e.g. job_complete) — pass through
-          requests.push({
-            type: e.type,
-            content: e.content,
-            attachments: e.attachments,
-            status: e.status,
-          });
-        }
-      }
-
-      const deliveryContext = {
-        mode: "delivery",
-        contact: { id: contactId, name: contact.name, platform },
-        requests,
-        conversation_history: conv.messages.slice(-20),
-      };
-
-      const model = await K.resolveModel(
-        (await K.getDefaults())?.communication?.model || (await K.getDefaults())?.act?.model
-      );
-      const response = await K.callLLM({
-        model,
-        system: prompt,
-        messages: [{ role: "user", content: JSON.stringify(deliveryContext) }],
-        max_tokens: 1000,
-      });
-
-      const message = response?.content;
-      if (!message) continue;
-
-      const adapterKey = platform === "slack" ? "slack" : platform;
-      await K.executeAdapter(adapterKey, {
-        text: message,
-        channel: contactId,
-      });
-
-      conv.messages.push(
-        { role: "user", content: `[DELIVERY] ${contactEvents.map(e => e.content).join("; ")}` },
-        { role: "assistant", content: message }
-      );
-      await K.kvWriteSafe(convKey, conv);
-
-      await K.karmaRecord({
-        event: "delivery_sent",
-        contact: contactId,
-        event_count: contactEvents.length,
-        model,
-      });
-
-      results.push({ contact: contactId, sent: true });
-    } catch (err) {
-      await K.karmaRecord({
-        event: "delivery_error",
-        contact: contactId,
-        error: err.message,
-      });
-      results.push({ contact: contactId, sent: false, error: err.message });
-    }
-  }
-
-  return results;
-}
-
-// Trim messages by turn boundaries, keeping the most recent turns.
-// A turn is: a user/system message, a standalone assistant message,
-// or an assistant message with tool_calls + all its tool results.
 function trimByTurns(messages, maxMsgs) {
-  // Find turn boundaries (indices where a new turn starts)
   const boundaries = [0];
   for (let i = 1; i < messages.length; i++) {
-    const msg = messages[i];
-    // tool results belong to the preceding assistant turn
-    if (msg.role === 'tool') continue;
-    boundaries.push(i);
+    if (messages[i].role !== "tool") boundaries.push(i);
   }
-
-  // Walk backwards through turns until we hit the limit
   let startIdx = messages.length;
   for (let b = boundaries.length - 1; b >= 0; b--) {
     const turnStart = boundaries[b];
-    const turnSize = startIdx - turnStart;
     if (messages.length - turnStart > maxMsgs && turnStart < startIdx) break;
     startIdx = turnStart;
   }
-
   return messages.slice(startIdx);
 }

@@ -3,13 +3,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --minify && npx @tailwindcss/cli -i site/patron/src/input.css -o site/patron/app.css --minify",
+    "watch:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --watch"
   },
   "devDependencies": {
     "ethers": "^6.16.0",
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "@tailwindcss/cli": "^4.2.2",
+    "esbuild": "^0.28.0",
+    "highlight.js": "^11.11.1",
+    "marked": "^17.0.5",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "wrangler": "^4.70.0"
   }
 }

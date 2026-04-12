@@ -37,9 +37,33 @@ export function makeMockK(kvInit = {}, opts = {}) {
     // kvWritePrivileged removed — functionality moved to kvWriteGated with context
 
     // Event bus
+    claimEvent: vi.fn(async (key, executionId) => {
+      const raw = kv._store.get(key) ?? null;
+      if (!raw) return false;
+      const event = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const now = Date.now();
+      if (event.claimed_by && event.lease_expires && event.lease_expires > now) {
+        return false;
+      }
+      event.claimed_by = executionId;
+      event.claimed_at = now;
+      event.lease_expires = now + 60000;
+      kv._store.set(key, JSON.stringify(event));
+      return true;
+    }),
+    releaseEvent: vi.fn(async (key) => {
+      const raw = kv._store.get(key) ?? null;
+      if (!raw) return;
+      const event = typeof raw === "string" ? JSON.parse(raw) : raw;
+      delete event.claimed_by;
+      delete event.claimed_at;
+      delete event.lease_expires;
+      kv._store.set(key, JSON.stringify(event));
+    }),
     emitEvent: vi.fn(async (type, payload) => {
       const ts = Date.now().toString().padStart(15, '0');
-      const key = `event:${ts}:${type}`;
+      const nonce = Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+      const key = `event:${ts}:${type}:${nonce}`;
       const event = { type, ...payload, timestamp: payload?.timestamp || new Date().toISOString() };
       kv._store.set(key, JSON.stringify(event));
       return { key };
@@ -76,12 +100,11 @@ export function makeMockK(kvInit = {}, opts = {}) {
       }
       return result;
     }),
-    getSessionCount: vi.fn(async () => opts.sessionCount || 0),
     mergeDefaults: vi.fn(async (d, o) => ({ ...d, ...o })),
     isSystemKey: vi.fn(async (key) => {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+        'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
         'principle:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ];
@@ -92,7 +115,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     getSystemKeyPatterns: vi.fn(async () => ({
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-        'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+        'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
         'principle:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ],
@@ -100,7 +123,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
     })),
 
     // State
-    getSessionId: vi.fn(async () => opts.sessionId || "test_session"),
+    getExecutionId: vi.fn(async () => opts.executionId || opts.sessionId || "test_execution"),
     getSessionCost: vi.fn(async () => opts.sessionCost || 0),
     getKarma: vi.fn(async () => opts.karma || []),
     getChatKarma: vi.fn(async () => []),
@@ -115,12 +138,6 @@ export function makeMockK(kvInit = {}, opts = {}) {
     resolveContact: vi.fn(async (platform, userId) => null),
     elapsed: vi.fn(async () => 0),
 
-    // Proposal system
-    createProposal: vi.fn(async () => "p_test_123"),
-    loadProposals: vi.fn(async () => ({})),
-    updateProposalStatus: vi.fn(async () => {}),
-    processProposalVerdicts: vi.fn(async () => {}),
-
     // Internal — expose KV store for assertions
     _kv: kv,
   };
@@ -128,7 +145,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   // kvWriteGated mock — mirrors kernel context-based permission logic
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
-    'hook:', 'doc:', 'samskara:', 'skill:', 'task:',
+    'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
     'principle:', 'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
   ];
@@ -156,7 +173,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       return { ok: false, error: `Cannot write kernel key "${key}"` };
     }
     if (_isCodeKey(key)) {
-      return { ok: false, error: `Code key "${key}" requires proposal_requests` };
+      return { ok: false, error: `Code key "${key}" requires K.stageCode()` };
     }
 
     // Contact keys — allowed in all contexts

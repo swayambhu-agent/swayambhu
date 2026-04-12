@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { makeMockK } from "./helpers/mock-kernel.js";
 
 // ── Tool modules ─────────────────────────────────────────────
 
@@ -19,7 +20,7 @@ import * as collect_jobs from "../tools/collect_jobs.js";
 import * as send_whatsapp from "../tools/send_whatsapp.js";
 import * as google_docs from "../tools/google_docs.js";
 import * as gnanetra from "../tools/gnanetra.js";
-
+import * as request_message from "../tools/request_message.js";
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
@@ -115,7 +116,7 @@ function mockKV(initial = {}) {
 const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
-  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra,
+  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra, request_message,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail, compute };
@@ -304,7 +305,7 @@ describe("provider:wallet_balance", () => {
 // ── 5. kv_query tests ──────────────────────────────────────
 
 const SAMPLE_KARMA = [
-  { event: "session_start", session_id: "s_123", effort: "low" },
+  { event: "act_start", session_id: "s_123", effort: "low" },
   {
     event: "llm_call", step: "act_turn_0", ok: true,
     request: { model: "anthropic/claude-opus-4.6", messages: [{ role: "system", content: "long..." }] },
@@ -334,7 +335,7 @@ describe("kv_query", () => {
     const result = await kv_query.execute({ key: "karma:s_123", kv });
     // Small array returned as-is
     expect(result).toHaveLength(3);
-    expect(result[0].event).toBe("session_start");
+    expect(result[0].event).toBe("act_start");
     expect(result[1].event).toBe("llm_call");
   });
 
@@ -346,7 +347,7 @@ describe("kv_query", () => {
     });
     expect(result.type).toBe("array");
     expect(result.count).toBe(3);
-    expect(result.items[0]).toContain("session_start");
+    expect(result.items[0]).toContain("act_start");
     expect(result.items[1]).toContain("llm_call");
   });
 
@@ -1557,7 +1558,7 @@ describe("start_job", () => {
     const record = JSON.parse(kv._store.get(jobKey));
     expect(record.status).toBe("running");
     expect(record.type).toBe("custom");
-    expect(record.callback_secret).toBeTruthy();
+    expect(record.callback_secret).toBeUndefined();
   });
 
   it("returns error when type is missing", async () => {
@@ -1593,6 +1594,146 @@ describe("start_job", () => {
 
     expect(result.ok).toBe(true);
     expect(result.context_files).toBe(3); // config/defaults.json, karma/s1.json, prompt.txt
+  });
+
+  it("generates valid inner script for cc_analysis (no && contamination)", async () => {
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        expect(command).toContain("base64 -d | sh");
+        expect(command).not.toMatch(/sh -c '[^']*&&/);
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test prompt",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, cc_model: "opus", path_dirs: ["/home/swayambhu/.local/bin"] } },
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("injects path_dirs into inner script", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, path_dirs: ["/opt/bin", "/usr/local/custom"] } },
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    expect(b64Match).toBeTruthy();
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("export PATH=/opt/bin:/usr/local/custom${PATH:+:$PATH}");
+  });
+
+  it("escapes cc_model with quotes in inner script", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, cc_model: "model'injection" } },
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("--model 'model'\\''injection'");
+    expect(innerScript).not.toContain("--model model'injection");
+  });
+
+  it("filters invalid path_dirs entries", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, path_dirs: ["/valid/path", "not-absolute", "/inject;rm -rf /", 42, "/ok"] } },
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("export PATH=/valid/path:/ok${PATH:+:$PATH}");
+    expect(innerScript).not.toContain("not-absolute");
+    expect(innerScript).not.toContain("inject");
+  });
+
+  it("wraps custom command in subshell with absolute exit_code path", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "custom",
+      command: "python3 analyze.py",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv, config,
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("(python3 analyze.py)");
+    expect(innerScript).toMatch(/echo \$\? > '\/tmp\/jobs\/[^']+\/exit_code'/);
+  });
+
+  it("handles non-array path_dirs gracefully", async () => {
+    let capturedCommand;
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, path_dirs: "/not/an/array" } },
+    });
+
+    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).not.toContain("export PATH");
   });
 });
 
@@ -1667,6 +1808,71 @@ describe("collect_jobs", () => {
     const job = JSON.parse(kv._store.get("job:j1"));
     expect(job.status).toBe("expired");
   });
+
+  it("quotes workdir in polling commands", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1", type: "custom", status: "running",
+        created_at: new Date().toISOString(),
+        workdir: "/tmp/jobs/o'reilly", config: { ttl_minutes: 120 },
+      }),
+    });
+    const commands = [];
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        commands.push(command);
+        if (command.includes("exit_code")) return { ok: true, output: [{ data: "0\r\n" }] };
+        if (command.includes("output.json")) return { ok: true, output: [{ data: '{"result":"ok"}\r\n' }] };
+        return { ok: true, output: [] };
+      }),
+    };
+
+    await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
+
+    const exitCmd = commands.find(c => c.includes("exit_code"));
+    const outputCmd = commands.find(c => c.includes("output.json"));
+    expect(exitCmd).toContain("'/tmp/jobs/o'\\''reilly/exit_code'");
+    expect(outputCmd).toContain("'/tmp/jobs/o'\\''reilly/output.json'");
+  });
 });
 
+// ── request_message ───────────────────────────────────────────
 
+describe("request_message", () => {
+  it("emits comms_request event with validated contact", async () => {
+    const kv = {
+      async get(key) {
+        if (key === "contact:swami_kevala") return { name: "Swami Kevala" };
+        return null;
+      },
+    };
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
+    const result = await request_message.execute({
+      contact: "swami_kevala",
+      intent: "ask",
+      content: "What should I work on?",
+      kv,
+      emitEvent,
+    });
+    expect(result.ok).toBe(true);
+    expect(emitEvent).toHaveBeenCalledWith("comms_request", {
+      contact: "swami_kevala",
+      intent: "ask",
+      content: "What should I work on?",
+    });
+  });
+
+  it("rejects unknown contact slugs", async () => {
+    const kv = { async get() { return null; } };
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
+    const result = await request_message.execute({
+      contact: "nonexistent",
+      intent: "share",
+      content: "hello",
+      kv,
+      emitEvent,
+    });
+    expect(result.error).toMatch(/unknown contact/i);
+    expect(emitEvent).not.toHaveBeenCalled();
+  });
+});

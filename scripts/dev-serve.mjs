@@ -48,7 +48,12 @@ createServer((req, res) => {
 
   let file = join(siteDir, urlPath);
 
-  // If path is a directory, redirect to add trailing slash or serve index.html
+  // If path is a directory without trailing slash, redirect so relative paths resolve correctly
+  if (existsSync(file) && statSync(file).isDirectory() && !urlPath.endsWith("/")) {
+    res.writeHead(301, { Location: urlPath + "/" });
+    res.end();
+    return;
+  }
   if (existsSync(file) && statSync(file).isDirectory()) {
     file = join(file, "index.html");
   }
