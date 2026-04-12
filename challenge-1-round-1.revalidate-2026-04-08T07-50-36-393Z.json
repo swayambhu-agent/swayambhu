@@ -1,0 +1,33 @@
+{
+  "objections": [
+    {
+      "id": "obj-1",
+      "claim": "The proposal's core sufficiency claim is not supported by the current planner contract. Removing the bypass does not make the bounded-probe escape hatch mandatory, and the prompt still defaults empty-desire sessions to `no_action`.",
+      "evidence": "`/home/swami/swayambhu/repo/prompts/plan.md:7-11` tells the planner that when `[DESIRES]` is empty, action is usually not warranted and it should return `no_action` unless there is a pending request. The bounded-probe language at `/home/swami/swayambhu/repo/prompts/plan.md:54-66` only says such a probe is legitimate, not required. In code, `/home/swami/swayambhu/repo/userspace.js:598` accepts `plan.no_action` immediately, and the idle-trap block at `/home/swami/swayambhu/repo/userspace.js:528-539` only adds advisory prompt text.",
+      "severity": "high",
+      "falsifiable_test": "Replay the captured empty-desire, repeated-idle session with only the proposed bypass change applied. If the first planning call reliably emits a bounded probe or `request_message` instead of `no_action` under the current prompt, this objection is false."
+    },
+    {
+      "id": "obj-2",
+      "claim": "The proposal's `worst case: planner produces no_action anyway, no regression` claim is false. Routing empty-desire sessions into `planPhase()` introduces a harder failure mode than the current deterministic bootstrap branch.",
+      "evidence": "`/home/swami/swayambhu/repo/userspace.js:592-654` returns `null` on plan parse failure or on a desire-less non-`no_action` plan that does not satisfy the exploratory/request exceptions. The act loop then just stops at `/home/swami/swayambhu/repo/userspace.js:1201`. By contrast, the current bypassed no-action path at `/home/swami/swayambhu/repo/userspace.js:1210-1262` always records eval, synthesizes review, and writes memory. Those are not equivalent outcomes.",
+      "severity": "high",
+      "falsifiable_test": "Stub the planner to return `{ \"action\": \"inspect state\", \"success\": \"state inspected\", \"serves_desires\": [] }` while `no_action_streak` is below the exploratory threshold or capacity is unhealthy. If the run still goes through the existing `no_action_bootstrap` review/memory path instead of breaking on `!plan`, this objection is false."
+    },
+    {
+      "id": "obj-3",
+      "claim": "`last_applied_session` is too coarse to represent the proposal's intended condition. It records every successful DR application, not `DR applied and still produced zero desires`, so the change would permanently reroute all future empty-desire sessions after any DR generation.",
+      "evidence": "After any completed DR apply, `/home/swami/swayambhu/repo/userspace.js:1499-1517` unconditionally sets `state.last_applied_session = sessionCount` and persists it back to `dr:state:1`. There is no companion state field for `desire count remained zero` or `bootstrap DR failed`. The proposed guard therefore changes behavior for all later empty-desire states, not just this bootstrap-stall case.",
+      "severity": "medium",
+      "falsifiable_test": "Seed `dr:state:1` with a prior successful DR application that only updated patterns or prompts, clear all `desire:*` keys, and run the session. If the proposed guard still falls back to `deriveBootstrapNoActionPlan()` rather than entering `planPhase()`, this objection is false."
+    },
+    {
+      "id": "obj-4",
+      "claim": "The cited bounded-probe path is not actually verified for the target state. The codebase only tests exploratory planning without `serves_desires` when a live desire already exists, so there is no evidence that an actually empty `[DESIRES]` session can use that escape hatch under the current prompt.",
+      "evidence": "The only regression test for this behavior is `/home/swami/swayambhu/repo/tests/userspace.test.js:883-932`, and it explicitly seeds `\"desire:d_help\"` at `/home/swami/swayambhu/repo/tests/userspace.test.js:886`. There is no comparable test with zero desires. That matters because the planner prompt still opens with the empty-desire `no_action` default at `/home/swami/swayambhu/repo/prompts/plan.md:7-11`.",
+      "severity": "medium",
+      "falsifiable_test": "Add a regression test identical to `tests/userspace.test.js:883-932` but with no `desire:*` keys in KV. If the planner still executes a valid exploratory action and logs `plan_exploratory_without_desire`, this objection is false."
+    }
+  ],
+  "overall_assessment": "Reject the proposal as written. The bypass is real, but the code does not support the stronger claim that removing it is sufficient, low-regression, or narrowly scoped. The current planner path remains permissive of repeated `no_action`, has a worse failure mode than the bootstrap branch, and is not actually demonstrated for a truly empty-desire session."
+}

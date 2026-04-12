@@ -83,6 +83,10 @@ Or: `{ "no_action": true, "reason": "..." }`
 8. If no desire gap is closable with available tools and no bounded probe
    would generate useful information, no_action is correct.
 
+Internal self-audit of KV, prompts, hooks, or kernel state is not a valid
+bootstrap probe unless [CIRCUMSTANCES] already points to an internal fault,
+cleanup task, or explicit maintenance need.
+
 ## Pending requests
 
 If [PENDING REQUESTS] is present, those are durable work contracts already

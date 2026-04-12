@@ -191,6 +191,7 @@ class Kernel {
     await this.loadPrinciples();
     // Tactics loaded by userspace planPhase, not kernel
     await this.loadPatronContext();
+    await this.ensureIdentitySeed();
   }
 
   async loadPrinciples() {
@@ -253,6 +254,22 @@ class Kernel {
         });
       }
     }
+  }
+
+  async ensureIdentitySeed() {
+    if (this.defaults?.identity?.enabled !== true) return;
+    const key = "identification:working-body";
+    const existing = await this.kvGet(key);
+    if (existing) return;
+    const now = new Date().toISOString();
+    await this.kvWrite(key, {
+      identification: "Operational body: memory continuity, tools, and tool affordances through which perception and action happen.",
+      strength: 0.8,
+      source: "constitutional_seed",
+      created_at: now,
+      last_reviewed_at: now,
+      last_exercised_at: null,
+    });
   }
 
   async kvListAll(opts = {}) {

@@ -1,0 +1,70 @@
+{
+  "proposals": {
+    "1": {
+      "objections": [
+        {
+          "id": "1a",
+          "claim": "The predicate `Object.keys(await loadDesires(K)).length === 0` is broader than bootstrap in the actual code. `actCycle()` only treats bootstrap specially when `cyclesRun === 0 && sessionCount === 0 && Object.keys(desires).length === 0`; your change would disable dedup in any later zero-desire state, not just cold start.",
+          "scenario": "After April 8, 2026 session 4, if the system still has zero desires at session 10 or an operator deletes the only `desire:*` key, every near-identical no-action observation keeps getting written because the exemption never turns off until a desire exists. The current scheduler can shorten idle sessions to 1800 seconds after the streak threshold, so this can become an indefinite duplicate stream.",
+          "severity": "high"
+        },
+        {
+          "id": "1b",
+          "claim": "`writeMemory()` handles normal action sessions too, and the proposed guard does not limit itself to `ledger.plan.no_action` or to the bootstrap planner path. Empty desires are possible while `pendingRequests.length > 0`, because those sessions go through `planPhase()` instead of `deriveBootstrapNoActionPlan()`.",
+          "scenario": "A pending `session_request:*` arrives while `desire:*` is empty. The planner retries the same request-handling action across sessions; proposal 1 stores every near-duplicate failure or success experience because dedup is globally disabled for all empty-desire writes, not just bootstrap no-action traces.",
+          "severity": "medium"
+        },
+        {
+          "id": "1c",
+          "claim": "In the no-action path, the observation text is synthesized from a fixed template in `syntheticReview`, so skipping dedup turns one generated sentence into multiple 'experiences'. The deep-reflect prompt explicitly tells DR to create patterns when multiple experiences recur.",
+          "scenario": "Sessions 3, 4, and 5 all produce `No action was taken...` with no new external events. Proposal 1 preserves all three, and deep-reflect can now justify a new pattern or tactic from cloned template text rather than from genuinely new circumstances.",
+          "severity": "medium"
+        }
+      ]
+    },
+    "2": {
+      "objections": [
+        {
+          "id": "2a",
+          "claim": "Because `run()` executes `drCycle(K, { phase: 'pre' })` and later `drCycle(K, { phase: 'post' })` in the same tick, an idle-state override can cause immediate back-to-back DR dispatch after a zero-op result is applied.",
+          "scenario": "A `job_complete` event arrives when `session_schedule.no_action_streak` is 4 and `desire:*` is still empty. Pre-phase applies generation 1, sets `state.status = 'idle'`, and writes `next_due_session = 6`. Post-phase runs later in the same tick and the override dispatches generation 2 immediately, with no intervening act session or new experience.",
+          "severity": "high"
+        },
+        {
+          "id": "2b",
+          "claim": "`no_action_streak` is the wrong sole trigger for 'bootstrap stall' because the code resets it to 0 whenever `cyclesRun > 0`, even if the action was a useless one-step probe and the desire set is still empty.",
+          "scenario": "The planner performs one low-cost probe or handles one request on session 5, `cyclesRun` becomes 1, `session_schedule.no_action_streak` is reset to 0 at the end of `actCycle()`, and proposal 2 no longer forces DR even though the agent still has zero desires and remains directionless.",
+          "severity": "medium"
+        },
+        {
+          "id": "2c",
+          "claim": "The override would fire on ordinary scheduled ticks that do not run an act session, because `run()` always calls post-phase `drCycle()` even when `actCycle()` returns `{ skipped: true }` due to `next_session_after`.",
+          "scenario": "In the current snapshot, `next_session_after` is `2026-04-08T07:51:38.976Z`. Any cron tick before that time skips `actCycle`, writes no new memory, but still reaches post-phase `drCycle()`. With `no_action_streak = 4` and no desires, proposal 2 can launch DR against unchanged context before the scheduled session exists.",
+          "severity": "high"
+        }
+      ]
+    },
+    "3": {
+      "objections": [
+        {
+          "id": "3a",
+          "claim": "As written, the patch is internally contradictory. The existing D operator says 'Without experience, no desire arises'; your added clause says principles alone are sufficient at bootstrap. If you only append the new paragraph, the prompt contains both rules.",
+          "scenario": "The next deep-reflect run reads both instructions and follows the earlier no-desire-without-experience rule, returning `kv_operations: []` again even though the bootstrap clause exists lower in the prompt.",
+          "severity": "high"
+        },
+        {
+          "id": "3b",
+          "claim": "The prompt cannot reliably key off 'generation 1' because `dispatchDr()` does not include `dr:state:1` or any generation metadata in `context_keys`. The model only sees `experience:*`, `desire:*`, `pattern:*`, `principle:*`, action history, and prompt/config text.",
+          "scenario": "Later in the system's life, all `desire:*` keys are deleted or blocked. DR sees an empty `desire/` directory but has no authoritative way to distinguish 'first bootstrap run' from 'later reset', so the bootstrap clause can misfire outside the intended case.",
+          "severity": "medium"
+        },
+        {
+          "id": "3c",
+          "claim": "Nothing in `applyDrResults()` validates that a bootstrap desire is specific, outward-facing in a non-vacuous way, or distinct from a principle restatement. It only whitelists prefixes and writes whatever `desire:*` object DR emits.",
+          "scenario": "DR creates a generic bootstrap desire like `I serve usefully` from principles alone. `applyDrResults()` accepts it, bootstrap ends because `loadDesires()` is now non-empty, and later plan/eval steps operate against a vague desire that is hard for NLI to score and easy to confuse with the principles themselves.",
+          "severity": "high"
+        }
+      ]
+    }
+  }
+}

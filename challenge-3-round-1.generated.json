@@ -1,0 +1,25 @@
+{
+  "objections": [
+    {
+      "claim": "As written, proposal-3 cannot be dropped into the current `writeMemory()` path without breaking. `salience` is declared as a constant in `userspace.js:521-523`, but the proposal mutates it with `salience *= (1 - sim)` (`proposal-3.md:23`). It also assumes `K.kvList()` yields an iterable array of key strings (`proposal-3.md:16-18`), while the current interface returns the raw `kv.list()` object (`kernel.js:465`) and existing readers consume `result.keys` (`reflect.js:403-406`; `tests/helpers/mock-kernel.js:19-26`).",
+      "falsification_test": "Apply the proposal snippet literally to the current source and run a test that enters the novelty-discount branch. If it executes without a compile/runtime failure and successfully loads recent experience records, this objection is false."
+    },
+    {
+      "claim": "Proposal-3 uses observation-text embedding similarity as a proxy for the full salience formula, but the implemented formula is not text-only. In `eval.js:94-100`, salience stays high when `desireAxis` is high even if `sigma` is low. The embedding used in `writeMemory()` is built only from `reviewRecord.observation || reviewRecord.narrative || ledger.final_text` (`userspace.js:578-580`), while the desire contribution lives in `alpha` and is persisted separately as `desire_alignment` (`eval.js:84-100`, `userspace.js:596-599`). Two near-identical observations can therefore encode different desire states, so treating high text similarity as 'zero marginal information' is not justified by the current formula.",
+      "falsification_test": "Construct two runs with the same observation text and embedding similarity above 0.85, but different `desireAlpha` values that produce materially different `desire_axis`. If proposal-3 still preserves both experiences rather than suppressing or sharply discounting the second one, this objection is false."
+    },
+    {
+      "claim": "The codebase already has a near-duplicate suppressor that is closer to the actual experience schema than proposal-3. The existing gate compares embeddings, only suppresses when salience has not increased, and additionally requires unchanged `desire_alignment.affinity_magnitude` (`userspace.js:603-617`). Proposal-3 replaces that richer notion of sameness with a pure embedding-based discount before showing that the existing gate, once repaired, is insufficient. That makes the claim that proposal-3 is the 'more principled fix' (`proposal-3.md:39`) unproven.",
+      "falsification_test": "Repair the current dedupe path so it reads the latest experience correctly, then replay the 36-experience trace cited in the proposal. If the repaired existing gate still leaves essentially the same duplicate-write problem and the same flat distribution, this objection is false."
+    },
+    {
+      "claim": "Lowering stored `experience.salience` to encode local recency will permanently distort downstream recall. `selectExperiences()` ranks memories using stored salience as the base score and only then adds desire-similarity boost (`memory.js:58-76`). Proposal-3 therefore turns a short-horizon redundancy heuristic ('similar to one of the last 3 observations') into a permanent property of the memory record. A repeated but strategically important episode can become harder to retrieve later even when it remains highly relevant to current desires.",
+      "falsification_test": "Create a history with two equally important experiences that are highly similar to each other, then run `selectExperiences()` against a desire embedding that matches both. If the later repeated experience is not persistently under-ranked after applying proposal-3, this objection is false."
+    },
+    {
+      "claim": "Proposal-3 is not robust in the degraded mode the current write path explicitly supports. When embedding inference times out or fails, `writeMemory()` records `experience_embedding_timeout` or `experience_embedding_failed` and continues (`userspace.js:575-587`). In that mode the novelty discount disappears entirely, so the repeated-observation flood described in `proposal-3.md:7` returns unchanged. That directly weakens the proposal's robustness claim (`proposal-3.md:45`).",
+      "falsification_test": "Replay repeated observations with embedding calls forced to fail or with `inferenceConfig` disabled. If proposal-3 still suppresses the duplicate experiences in that mode, this objection is false."
+    }
+  ],
+  "overall_assessment": "The proposal is directionally aimed at a real symptom, but it is not yet defensible against the current implementation. As written it does not fit the existing `writeMemory()` API, it uses observation-text similarity as a lossy proxy for a salience formula that explicitly includes desire state, and it permanently alters downstream recall ranking instead of keeping novelty as a local write-time heuristic. I would not adopt it before first repairing the existing dedupe path and validating replay tests that vary desire-axis, embedding availability, and deep-reflect retrieval behavior."
+}
