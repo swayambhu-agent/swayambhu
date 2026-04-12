@@ -1122,6 +1122,22 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
     expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
     expect(kernel.isImmutableKey("config:defaults")).toBe(false);
   });
+
+  it("seeds identification:working-body at boot when identity is enabled", async () => {
+    const { kernel, env } = makeKernel({
+      "config:defaults": JSON.stringify({
+        identity: { enabled: true, max_planner_items: 5 },
+      }),
+    });
+
+    await kernel.loadEagerConfig();
+
+    const seeded = JSON.parse(await env.KV.get("identification:working-body"));
+    expect(seeded.identification).toContain("Operational body");
+    expect(seeded.strength).toBe(0.8);
+    expect(seeded.source).toBe("constitutional_seed");
+    expect(seeded.last_exercised_at).toBeNull();
+  });
 });
 
 // ── 12b. config-driven key tiers ──────────────────────────────
@@ -3272,5 +3288,37 @@ describe("pulse integration", () => {
     expect(pulse.changed).toContain("mind");
     expect(pulse.changed).toContain("health");
     expect(pulse.n).toBe(0);
+  });
+});
+
+describe("identifications", () => {
+  it("updates last_exercised_at through the dedicated kernel primitive", async () => {
+    const { kernel, env } = makeKernel({
+      "config:defaults": JSON.stringify({
+        identity: { enabled: true },
+      }),
+      "identification:patron-continuity": JSON.stringify({
+        identification: "Ongoing patron relationship and unfinished follow-through.",
+        strength: 0.5,
+        last_exercised_at: null,
+      }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+
+    const timestamp = "2026-04-09T16:00:00.000Z";
+    const result = await kernel.updateIdentificationLastExercised("identification:patron-continuity", timestamp);
+
+    expect(result.ok).toBe(true);
+    const updated = JSON.parse(await env.KV.get("identification:patron-continuity"));
+    expect(updated.last_exercised_at).toBe(timestamp);
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "identification_exercised",
+        key: "identification:patron-continuity",
+        old: null,
+        new: timestamp,
+      }),
+    );
   });
 });

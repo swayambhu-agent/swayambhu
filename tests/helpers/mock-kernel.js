@@ -105,7 +105,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
-        'principle:', 'contact:', 'contact_platform:', 'sealed:',
+        'principle:', 'tactic:', 'identification:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -116,7 +116,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
-        'principle:', 'contact:', 'contact_platform:', 'sealed:',
+        'principle:', 'tactic:', 'identification:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
@@ -146,7 +146,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
-    'principle:', 'contact:', 'contact_platform:', 'sealed:',
+    'principle:', 'tactic:', 'identification:', 'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -162,6 +162,14 @@ export function makeMockK(kvInit = {}, opts = {}) {
     return _KERNEL_ONLY.some(p => key.startsWith(p));
   }
   function _isCodeKey(key) { return _CODE_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code'); }
+
+  mock.updateIdentificationLastExercised = vi.fn(async (key, timestamp) => {
+    if (!key.startsWith("identification:")) return { ok: false, error: `Not an identification key: ${key}` };
+    const existing = await mock.kvGet(key);
+    if (existing === null) return { ok: false, error: `Identification not found: ${key}` };
+    await mock.kvWriteSafe(key, { ...existing, last_exercised_at: timestamp }, { unprotected: true });
+    return { ok: true };
+  });
 
   mock.kvWriteGated = vi.fn(async (op, context) => {
     const key = op.key;

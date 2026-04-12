@@ -93,6 +93,45 @@ const TRIGGER_SESSION_TOOL = {
   },
 };
 
+const INTERNAL_MECHANICS_PATTERNS = [
+  ["carry-forward", /\bcarry[- ]forward\b/i],
+  ["desire-key", /\bdesire:[a-z0-9._-]+\b/i],
+  ["pattern-key", /\bpattern:[a-z0-9._-]+\b/i],
+  ["tactic-key", /\btactic:[a-z0-9._-]+\b/i],
+  ["principle-key", /\bprinciple:[a-z0-9._-]+\b/i],
+  ["identification-key", /\bidentification:[a-z0-9._-]+\b/i],
+  ["no_action", /\bno_action\b/i],
+  ["idle-streak", /\bidle[- ]streak\b/i],
+  ["circuit-breaker", /\bcircuit[- ]breaker\b/i],
+  ["dev-loop", /\bdev[_-]?loop\b/i],
+  ["reflect-key", /\breflect:\d+:/i],
+  ["last-reflect", /\blast_reflect\b/i],
+  ["session-request-key", /\bsession_request:[a-z0-9._-]+\b/i],
+  ["kv", /\bKV keys?\b|\bkey names?\b/i],
+];
+
+function detectInternalMechanicsLeak(text) {
+  const message = String(text || "");
+  if (!message.trim()) return [];
+  return INTERNAL_MECHANICS_PATTERNS
+    .filter(([, pattern]) => pattern.test(message))
+    .map(([marker]) => marker);
+}
+
+async function applyOutboundMessageGuard(K, conversationId, outcome, { mode }) {
+  if (outcome?.action !== "sent") return outcome;
+  const markers = detectInternalMechanicsLeak(outcome.message);
+  if (!markers.length) return outcome;
+  await K.karmaRecord({
+    event: "comms_internal_mechanics_blocked",
+    conversation: conversationId,
+    mode,
+    reason: outcome.reason,
+    markers,
+  });
+  return { action: "discarded", reason: "internal_mechanics_blocked" };
+}
+
 // ── runTurn: the unified conversation processor ───────
 
 export async function runTurn(K, conversationId, turns) {
@@ -246,6 +285,10 @@ export async function runTurn(K, conversationId, turns) {
   }
 
   // 7. Execute outcome
+  outcome = await applyOutboundMessageGuard(K, conversationId, outcome, {
+    mode: hasInbound ? "inbound" : "internal",
+  });
+
   if (outcome.action === "sent") {
     const replyTarget = turns[0].reply_target;
     await K.executeAdapter(replyTarget.platform, {

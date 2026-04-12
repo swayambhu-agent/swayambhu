@@ -19,6 +19,15 @@ const kv = await getKV();
 
 let count = 0;
 
+function readBooleanEnv(name) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return null;
+  const normalized = String(raw).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`Invalid boolean for ${name}: ${raw}`);
+}
+
 async function put(key, value, format = "json", description) {
   const val = typeof value === "object" && format === "json"
     ? JSON.stringify(value)
@@ -35,6 +44,13 @@ console.log("=== Seeding local KV ===\n");
 
 console.log("--- Config ---");
 
+const defaultsConfig = readJSON("config/defaults.json");
+const identityEnabledOverride = readBooleanEnv("SWAYAMBHU_IDENTITY_ENABLED");
+if (identityEnabledOverride !== null) {
+  defaultsConfig.identity = defaultsConfig.identity || {};
+  defaultsConfig.identity.enabled = identityEnabledOverride;
+}
+
 const configMap = {
   "config:defaults":            "config/defaults.json",
   "config:models":              "config/models.json",
@@ -46,7 +62,8 @@ const configMap = {
 };
 
 for (const [key, file] of Object.entries(configMap)) {
-  await put(key, readJSON(file), "json", file);
+  const value = key === "config:defaults" ? defaultsConfig : readJSON(file);
+  await put(key, value, "json", file);
 }
 
 // Identity
@@ -70,7 +87,7 @@ await put("kernel:key_tiers", {
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
     "secret:*", "skill:*", "task:*",
     "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-    "desire:*", "pattern:*",
+    "desire:*", "pattern:*", "principle:*", "tactic:*", "identification:*",
   ],
 }, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
 

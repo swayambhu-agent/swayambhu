@@ -504,6 +504,10 @@ describe("pulse classify", () => {
     expect(classify(new Set(["experience:1775204183352"]))).toContain("mind");
   });
 
+  it("maps identification keys to mind bucket", () => {
+    expect(classify(new Set(["identification:patron-continuity"]))).toContain("mind");
+  });
+
   it("maps session_counter to sessions bucket", () => {
     expect(classify(new Set(["session_counter"]))).toContain("sessions");
   });
@@ -556,3 +560,143 @@ describe("pulse classify", () => {
   });
 });
 
+describe("identity integration", () => {
+  it("surfaces non-root identifications to the planner when identity is enabled", async () => {
+    const K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify({
+          slug: "d_help",
+          direction: "approach",
+          description: "Help the patron effectively.",
+        }),
+        "pattern:a_available": JSON.stringify({
+          pattern: "Patron is available to receive messages",
+          strength: 0.8,
+        }),
+        "identification:working-body": JSON.stringify({
+          identification: "Operational body: memory continuity, tools, and tool affordances.",
+          strength: 0.8,
+        }),
+        "identification:patron-continuity": JSON.stringify({
+          identification: "Ongoing patron relationship continuity.",
+          strength: 0.7,
+        }),
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          identity: { enabled: true, max_planner_items: 5 },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(JSON.stringify({
+          action: "send_greeting",
+          success: "patron receives greeting",
+          relies_on: [],
+          defer_if: [],
+        }))(opts)
+        : llmResp(JSON.stringify({
+          assessment: "success",
+          narrative: "Greeting sent successfully.",
+          salience_estimate: 0.1,
+        }))(opts);
+    });
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Done." });
+      return { response: { content: "Done.", toolCalls: [] }, toolResults: [], cost: 0.01, done: true };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [] });
+
+    const planContent = K.callLLM.mock.calls[0][0].messages[0].content;
+    expect(planContent).toContain("[IDENTIFICATIONS]");
+    expect(planContent).toContain("identification:patron-continuity");
+    expect(planContent).not.toContain("identification:working-body");
+  });
+
+  it("records exercised identifications on actions and updates last_exercised_at mechanically", async () => {
+    const K = makeMockK(
+      {
+        "desire:d_help": JSON.stringify({
+          slug: "d_help",
+          direction: "approach",
+          description: "Help the patron effectively.",
+        }),
+        "pattern:a_available": JSON.stringify({
+          pattern: "Patron is available to receive messages",
+          strength: 0.8,
+        }),
+        "identification:working-body": JSON.stringify({
+          identification: "Operational body: memory continuity, tools, and tool affordances.",
+          strength: 0.8,
+          last_exercised_at: null,
+        }),
+        "identification:patron-continuity": JSON.stringify({
+          identification: "Ongoing patron relationship continuity.",
+          strength: 0.7,
+          last_exercised_at: null,
+        }),
+      },
+      {
+        defaults: {
+          act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+          reflect: { model: "test-model" },
+          identity: { enabled: true, max_planner_items: 5 },
+          session_budget: { max_cost: 0.50 },
+          schedule: { interval_seconds: 3600 },
+          execution: { max_steps: { act: 5 } },
+        },
+      },
+    );
+
+    let callCount = 0;
+    K.callLLM = vi.fn(async (opts) => {
+      callCount++;
+      return callCount === 1
+        ? llmResp(JSON.stringify({
+          action: "send_followup",
+          success: "patron receives a continuity-preserving follow-up",
+          relies_on: [],
+          defer_if: [],
+        }))(opts)
+        : llmResp(JSON.stringify({
+          assessment: "success",
+          narrative: "Patron relationship continuity was maintained with a concrete follow-up.",
+          salience_estimate: 0.1,
+          accomplished: "Sent the follow-up.",
+        }))(opts);
+    });
+    K.runAgentTurn = vi.fn(async ({ messages }) => {
+      messages.push({ role: "assistant", content: "Patron relationship continuity maintained." });
+      return {
+        response: { content: "Patron relationship continuity maintained.", toolCalls: [] },
+        toolResults: [],
+        cost: 0.01,
+        done: true,
+      };
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [] });
+
+    const actionKey = [...K._kv._store.keys()].find((key) => key.startsWith("action:"));
+    const actionValue = await K.kvGet(actionKey);
+    expect(actionValue.exercised_identifications).toEqual(["identification:patron-continuity"]);
+    expect(K.updateIdentificationLastExercised).toHaveBeenCalledWith(
+      "identification:patron-continuity",
+      expect.any(String),
+    );
+    expect(K.updateIdentificationLastExercised).toHaveBeenCalledWith(
+      "identification:working-body",
+      expect.any(String),
+    );
+  });
+});

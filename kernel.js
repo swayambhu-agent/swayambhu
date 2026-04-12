@@ -65,7 +65,7 @@ class Kernel {
       "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
       "secret:*", "pattern:*", "skill:*", "task:*",
       "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-      "desire:*",
+      "desire:*", "principle:*", "tactic:*", "identification:*",
     ],
   };
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
@@ -130,6 +130,7 @@ class Kernel {
     }
     await this.loadPrinciples();
     await this.loadPatronContext();
+    await this.ensureIdentitySeed();
   }
 
   async loadPrinciples() {
@@ -192,6 +193,22 @@ class Kernel {
         });
       }
     }
+  }
+
+  async ensureIdentitySeed() {
+    if (this.defaults?.identity?.enabled !== true) return;
+    const key = "identification:working-body";
+    const existing = await this.kvGet(key);
+    if (existing) return;
+    const now = new Date().toISOString();
+    await this.kvWrite(key, {
+      identification: "Operational body: memory continuity, tools, and tool affordances through which perception and action happen.",
+      strength: 0.8,
+      source: "constitutional_seed",
+      created_at: now,
+      last_reviewed_at: now,
+      last_exercised_at: null,
+    });
   }
 
   async kvListAll(opts = {}) {
@@ -1945,6 +1962,7 @@ class Kernel {
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
       pattern:  { type: "pattern", format: "json" },
+      identification: { type: "identification", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },
       principle:  { type: "principle", format: "text" },
@@ -1957,6 +1975,26 @@ class Kernel {
 
     const data = typeof value === "string" ? value : JSON.stringify(value);
     await this.kv.put(key, data, { metadata: finalMetadata });
+  }
+
+  async updateIdentificationLastExercised(key, timestamp = new Date().toISOString()) {
+    if (!key.startsWith("identification:")) {
+      return { ok: false, error: `updateIdentificationLastExercised only applies to identification:* keys, got "${key}"` };
+    }
+    const existing = await this.kvGet(key);
+    if (existing === null) return { ok: false, error: `Identification not found: ${key}` };
+    if (typeof existing !== "object" || typeof existing.identification !== "string") {
+      return { ok: false, error: `Invalid identification schema at "${key}"` };
+    }
+    const updated = { ...existing, last_exercised_at: timestamp };
+    await this.kvWrite(key, updated);
+    await this.karmaRecord({
+      event: "identification_exercised",
+      key,
+      old: existing.last_exercised_at || null,
+      new: timestamp,
+    });
+    return { ok: true };
   }
 
   async loadKeys(keys) {
