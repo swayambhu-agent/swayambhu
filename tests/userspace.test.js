@@ -19,7 +19,7 @@ vi.mock("../memory.js", () => ({
   embeddingCacheKey: vi.fn((text, model) => `embedding:mock:${model}`),
 }));
 
-import { run, classify } from "../userspace.js";
+import { run, classify, applyDrResults } from "../userspace.js";
 import { evaluateAction } from "../eval.js";
 import { updatePatternStrength } from "../memory.js";
 
@@ -698,5 +698,67 @@ describe("identity integration", () => {
       "identification:working-body",
       expect.any(String),
     );
+  });
+});
+
+describe("deep reflect meta-policy notes", () => {
+  it("persists review notes without copying them into last_reflect", async () => {
+    const K = makeMockK({
+      last_reflect: {
+        note_to_future_self: "Existing note",
+      },
+    });
+
+    await applyDrResults(K, { generation: 7 }, {
+      reflection: "test",
+      note_to_future_self: "New note",
+      kv_operations: [],
+      meta_policy_notes: [
+        {
+          slug: "missing-meta-policy-surface",
+          summary: "Runtime policy advice is being smuggled into tactics.",
+          subsystem: "review",
+          observation: "A tactic encoded scheduler/write-policy guidance.",
+          proposed_experiment: "Add a non-live meta-policy note field and rerun the variant audit.",
+          rationale: "This is not an act-time tactic and should stay out of live DR-1 buckets.",
+          confidence: 0.82,
+        },
+      ],
+    });
+
+    const reflectRecord = await K.kvGet("reflect:1:test_execution");
+    const lastReflect = await K.kvGet("last_reflect");
+    const reviewNote = await K.kvGet("review_note:userspace_review:test_execution:d1:000:missing-meta-policy-surface");
+
+    expect(reflectRecord.meta_policy_notes).toEqual([
+      {
+        slug: "missing-meta-policy-surface",
+        summary: "Runtime policy advice is being smuggled into tactics.",
+        subsystem: "review",
+        observation: "A tactic encoded scheduler/write-policy guidance.",
+        proposed_experiment: "Add a non-live meta-policy note field and rerun the variant audit.",
+        rationale: "This is not an act-time tactic and should stay out of live DR-1 buckets.",
+        target_review: "userspace_review",
+        non_live: true,
+        confidence: 0.82,
+      },
+    ]);
+    expect(reviewNote).toEqual({
+      slug: "missing-meta-policy-surface",
+      summary: "Runtime policy advice is being smuggled into tactics.",
+      subsystem: "review",
+      observation: "A tactic encoded scheduler/write-policy guidance.",
+      proposed_experiment: "Add a non-live meta-policy note field and rerun the variant audit.",
+      rationale: "This is not an act-time tactic and should stay out of live DR-1 buckets.",
+      target_review: "userspace_review",
+      non_live: true,
+      confidence: 0.82,
+      created_at: expect.any(String),
+      source: "deep_reflect",
+      source_session_id: "test_execution",
+      source_depth: 1,
+      source_reflect_key: "reflect:1:test_execution",
+    });
+    expect(lastReflect.meta_policy_notes).toBeUndefined();
   });
 });
