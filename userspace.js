@@ -7,6 +7,7 @@ import { evaluateAction } from './eval.js';
 import { updatePatternStrength, callInference, embeddingCacheKey } from './memory.js';
 import { renderActPrompt, buildToolSet, formatDesires, formatPatterns, formatCircumstances } from './act.js';
 import { parseJobOutput } from './lib/parse-job-output.js';
+import { normalizeMetaPolicyNotes, persistMetaPolicyNotes } from './meta-policy.js';
 
 // ── Snapshot loaders ────────────────────────────────────────
 
@@ -878,6 +879,7 @@ async function applyDrResults(K, state, output) {
   const executionId = await K.getExecutionId();
   const defaults = typeof K.getDefaults === "function" ? await K.getDefaults() : {};
   const identityEnabled = defaults?.identity?.enabled === true;
+  const metaPolicyNotes = normalizeMetaPolicyNotes(output.meta_policy_notes);
 
   const ops = (output.kv_operations || []).filter(op =>
     op.key?.startsWith("pattern:")
@@ -926,7 +928,16 @@ async function applyDrResults(K, state, output) {
     session_id: executionId,
     timestamp: new Date().toISOString(),
     from_dr_generation: state.generation,
+    meta_policy_notes: metaPolicyNotes,
   });
+
+  if (metaPolicyNotes.length > 0) {
+    await persistMetaPolicyNotes(K, metaPolicyNotes, {
+      sessionId: executionId,
+      depth: 1,
+      source: "deep_reflect",
+    });
+  }
 
   await K.kvWriteSafe("last_reflect", {
     session_summary: output.reflection,
@@ -941,6 +952,7 @@ async function applyDrResults(K, state, output) {
     desires_changed: ops.filter(o => o.key?.startsWith("desire:")).length,
     patterns_changed: ops.filter(o => o.key?.startsWith("pattern:")).length,
     identifications_changed: ops.filter(o => o.key?.startsWith("identification:")).length,
+    meta_policy_notes: metaPolicyNotes.length,
   });
 }
 
@@ -998,3 +1010,5 @@ export async function run(K, { crashData, balances, events }) {
     await K.karmaRecord({ event: "dr_cycle_error", error: e.message, stack: e.stack?.slice(0, 500) });
   }
 }
+
+export { applyDrResults };

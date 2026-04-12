@@ -4,6 +4,10 @@
 
 const CF_API_BASE = "https://api.cloudflare.com/client/v4";
 
+function resolveDeployMode(env) {
+  return env.GOVERNOR_DEPLOY_MODE === "local" ? "local" : "cloudflare";
+}
+
 // Build multipart form body for CF Workers script upload (ES modules format).
 // files: { "kernel.js": "...", "tools/kv_query.js": "...", ... }
 // mainModule: the entry point file name (e.g. "index.js")
@@ -43,6 +47,18 @@ function buildMultipartBody(files, mainModule) {
 
 // Deploy the runtime worker via CF Workers API
 export async function deploy(env, files, mainModule = "index.js") {
+  const deployMode = resolveDeployMode(env);
+  if (deployMode === "local") {
+    return {
+      id: null,
+      etag: null,
+      mode: "local",
+      deployed_at: new Date().toISOString(),
+      files_count: Object.keys(files).length,
+      main_module: mainModule,
+    };
+  }
+
   const accountId = env.CF_ACCOUNT_ID;
   const apiToken = env.CF_API_TOKEN;
   const scriptName = env.CF_SCRIPT_NAME || "swayambhu-cns";
@@ -72,17 +88,19 @@ export async function deploy(env, files, mainModule = "index.js") {
   return {
     id: result.result?.id,
     etag: result.result?.etag,
+    mode: deployMode,
     deployed_at: new Date().toISOString(),
   };
 }
 
 // Record deployment version in KV
-export async function recordDeployment(kv, versionId, changedKeys, codeHashes) {
+export async function recordDeployment(kv, versionId, changedKeys, codeHashes, options = {}) {
   const manifest = {
     version_id: versionId,
     deployed_at: new Date().toISOString(),
     changed_keys: changedKeys,
     code_hashes: codeHashes,
+    deploy_mode: options.deploy_mode || "cloudflare",
   };
 
   await kv.put(`deploy:version:${versionId}`, JSON.stringify(manifest), {
@@ -93,6 +111,7 @@ export async function recordDeployment(kv, versionId, changedKeys, codeHashes) {
   await kv.put("deploy:current", JSON.stringify({
     version_id: versionId,
     deployed_at: manifest.deployed_at,
+    deploy_mode: manifest.deploy_mode,
   }), {
     metadata: { type: "deployment", format: "json" },
   });
@@ -107,6 +126,7 @@ export async function recordDeployment(kv, versionId, changedKeys, codeHashes) {
     version_id: versionId,
     deployed_at: manifest.deployed_at,
     changed_count: changedKeys.length,
+    deploy_mode: manifest.deploy_mode,
   });
   while (history.length > 10) history.pop();
   await kv.put("deploy:history", JSON.stringify(history), {
