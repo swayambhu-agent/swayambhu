@@ -108,7 +108,7 @@ if [ "${1:-}" = "--status" ]; then
   status_line "env_has OPENROUTER_API_KEY" "OpenRouter API key" "run: bash scripts/setup.sh"
   status_line "env_has SLACK_BOT_TOKEN" "Slack bot token" "run: bash scripts/setup.sh"
   status_line "env_has SLACK_SIGNING_SECRET" "Slack signing secret" "run: bash scripts/setup.sh"
-  status_line "env_has GMAIL_REFRESH_TOKEN" "Gmail refresh token" "run: bash scripts/setup.sh"
+  status_line "env_has EMAIL_RELAY_SECRET" "Email relay secret" "run: bash scripts/setup.sh"
   status_line "[ -f patron_key ]" "Patron keypair" "run: bash scripts/setup.sh"
   status_line "contacts_configured" "Contact config" "run: bash scripts/setup.sh"
   status_line "[ -f DHARMA.md ]" "DHARMA.md" "create your agent's identity document"
@@ -295,44 +295,29 @@ else
 fi
 echo ""
 
-# Gmail
-if env_has GMAIL_REFRESH_TOKEN; then
-  green "  ✓ Gmail credentials already set"
+# Email relay
+if env_has EMAIL_RELAY_SECRET; then
+  green "  ✓ Email relay credentials already set"
 else
-  echo "  $(bold 'Gmail') — Email send/receive (optional, can add later)"
-  echo "  1. Google Cloud Console → create project → enable Gmail API"
-  echo "  2. OAuth consent screen → configure (add your email as test user)"
-  echo "  3. Credentials → OAuth client ID → Web application"
-  echo "  4. Add http://localhost:8089 as authorized redirect URI"
-  echo "  5. Copy Client ID and Client Secret"
+  echo "  $(bold 'Email Relay') — Email send/receive via Gmail app password (optional, can add later)"
+  echo "  1. Run services/email-gateway.mjs on your server"
+  echo "  2. Set server env: GMAIL_USER, GMAIL_APP_PASSWORD, EMAIL_RELAY_SECRET"
+  echo "  3. Put the gateway behind Cloudflare Access or point relay_url at a trusted internal URL"
+  echo "  4. Create a Cloudflare Access service token for the worker"
   echo ""
-  if confirm "Enter Gmail OAuth credentials now?"; then
-    ask_secret "Gmail Client ID" GMAIL_CID
-    [ -n "$GMAIL_CID" ] && write_env_var "GMAIL_CLIENT_ID" "$GMAIL_CID"
+  if confirm "Enter email relay worker credentials now?"; then
+    ask_secret "CF Access Client ID" CF_ACCESS_ID
+    [ -n "$CF_ACCESS_ID" ] && write_env_var "CF_ACCESS_CLIENT_ID" "$CF_ACCESS_ID"
 
-    ask_secret "Gmail Client Secret" GMAIL_CS
-    [ -n "$GMAIL_CS" ] && write_env_var "GMAIL_CLIENT_SECRET" "$GMAIL_CS"
+    ask_secret "CF Access Client Secret" CF_ACCESS_SECRET
+    [ -n "$CF_ACCESS_SECRET" ] && write_env_var "CF_ACCESS_CLIENT_SECRET" "$CF_ACCESS_SECRET"
+
+    ask_secret "Email Relay Secret" EMAIL_RELAY
+    [ -n "$EMAIL_RELAY" ] && write_env_var "EMAIL_RELAY_SECRET" "$EMAIL_RELAY"
 
     green "  ✓ Saved to .env"
-    echo ""
-
-    if confirm "Generate Gmail refresh token now? (opens browser)"; then
-      echo ""
-      echo "  Starting OAuth flow..."
-      set -a; source "$ROOT/.env"; set +a
-      node scripts/gmail-auth.mjs &
-      GMAIL_PID=$!
-      echo ""
-      echo "  After completing the OAuth flow, paste the refresh token:"
-      ask_secret "Refresh token" GMAIL_RT
-      [ -n "$GMAIL_RT" ] && write_env_var "GMAIL_REFRESH_TOKEN" "$GMAIL_RT"
-      kill $GMAIL_PID 2>/dev/null || true
-      green "  ✓ Saved to .env"
-    else
-      dim "  Run 'source .env && node scripts/gmail-auth.mjs' later."
-    fi
   else
-    dim "  Skipping — add Gmail vars to .env when ready."
+    dim "  Skipping — add CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET, and EMAIL_RELAY_SECRET to .env when ready."
   fi
 fi
 echo ""
@@ -564,8 +549,8 @@ if [ "$READY" = true ]; then
     dim "  ⊘ Slack not configured (agent will run without chat)"
     echo ""
   fi
-  if ! env_has GMAIL_REFRESH_TOKEN; then
-    dim "  ⊘ Gmail not configured (agent will run without email)"
+  if ! env_has EMAIL_RELAY_SECRET; then
+    dim "  ⊘ Email relay not configured (agent will run without email)"
     echo ""
   fi
 

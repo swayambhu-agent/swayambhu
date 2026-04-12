@@ -43,7 +43,7 @@
     },
     {
       "name": "check_email",
-      "description": "Check for unread emails in Gmail inbox. Returns sender, subject, date, and snippet for each. Emails from unknown senders (no contact record) have content replaced with [content redacted — unknown sender] and the original quarantined under sealed:* keys until approved by patron",
+      "description": "Check for unread emails via the configured email relay. Returns sender, subject, date, and snippet for each. Emails from unknown senders (no contact record) have content replaced with [content redacted — unknown sender] and the original quarantined under sealed:* keys until approved by patron",
       "input": {
         "mark_read": "optional boolean — mark fetched emails as read (default true)",
         "max_results": "optional — max emails to return (default 10, max 20)"

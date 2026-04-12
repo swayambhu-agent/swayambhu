@@ -90,7 +90,7 @@ await put("config:event_handlers", {
 // ── Providers (from providers/*.js) ───────────────────────────
 
 console.log("--- Providers ---");
-const providerFiles = ["llm", "llm_balance", "wallet_balance", "gmail", "compute"];
+const providerFiles = ["llm", "llm_balance", "wallet_balance", "gmail", "email-relay", "compute"];
 for (const name of providerFiles) {
   const mod = await importLocal(`providers/${name}.js`);
   await put(`provider:${name}:code`, read(`providers/${name}.js`), "text", `Provider source: ${name}`);

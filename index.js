@@ -36,6 +36,7 @@ import * as llm from './providers/llm.js';
 import * as llm_balance from './providers/llm_balance.js';
 import * as wallet_balance from './providers/wallet_balance.js';
 import * as gmail from './providers/gmail.js';
+import * as email_relay from './providers/email-relay.js';
 import * as compute from './providers/compute.js';
 
 // ── Wire modules ──────────────────────────────────────────────
@@ -52,6 +53,7 @@ const PROVIDERS = {
   'provider:llm_balance': llm_balance,
   'provider:wallet_balance': wallet_balance,
   'provider:gmail': gmail,
+  'provider:email-relay': email_relay,
   'provider:compute': compute,
   // Communication adapters — exposed for K.executeAdapter() calls from hooks
   slack: send_slack,

@@ -1,35 +1,35 @@
-// Tool: check_email — fetch unread emails from Gmail.
+// Tool: check_email — fetch unread emails via Akash email gateway.
 // No `export default` — required for wrapAsModule compatibility.
 
 export const meta = {
-  secrets: ["GMAIL_CLIENT_ID", "GMAIL_CLIENT_SECRET", "GMAIL_REFRESH_TOKEN"],
+  secrets: ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "EMAIL_RELAY_SECRET"],
   kv_access: "none",
-  timeout_ms: 15000,
-  provider: "gmail",
+  timeout_ms: 60000,
+  provider: "email-relay",
   inbound: { channel: "email", sender_field: "sender_email", content_field: "body", result_array: "emails" },
 };
 
-export async function execute({ mark_read = true, max_results, secrets, fetch, provider }) {
-  const token = await provider.getAccessToken(secrets, fetch);
+export async function execute({ mark_read = true, max_results, secrets, fetch, provider, config }) {
   const limit = Math.min(max_results || 10, 20);
-  const stubs = await provider.listUnread(token, fetch, limit);
 
-  if (stubs.length === 0) return { emails: [], count: 0 };
+  const result = await provider.checkEmail({
+    maxResults: limit,
+    markRead: mark_read,
+    secrets,
+    fetch,
+    config,
+  });
 
-  const emails = [];
-  for (const stub of stubs) {
-    const msg = await provider.getMessage(token, fetch, stub.id);
-    emails.push({
-      id: msg.id,
-      threadId: msg.threadId,
-      from: msg.from,
-      sender_email: extractEmailAddress(msg.from),
-      subject: msg.subject,
-      date: msg.date,
-      body: msg.body,
-    });
-    if (mark_read) await provider.markAsRead(token, fetch, stub.id);
-  }
+  if (result.count === 0) return { emails: [], count: 0 };
+
+  const emails = result.emails.map((email) => ({
+    id: email.id,
+    from: email.from,
+    sender_email: email.sender_email || extractEmailAddress(email.from),
+    subject: email.subject,
+    date: email.date,
+    body: email.body,
+  }));
 
   return { emails, count: emails.length };
 }
