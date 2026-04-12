@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readCodeFromKV, generateIndexJS, keyToFilePath } from "../governor/builder.js";
 import { deploy, recordDeployment, hashCode } from "../governor/deployer.js";
-import { applyStagedCode, snapshotCanonicalCode } from "../governor/worker.js";
+import governorWorker, { applyStagedCode, snapshotCanonicalCode, performRollback } from "../governor/worker.js";
 import { makeKVStore } from "./helpers/mock-kv.js";
 
 // ── 1. readCodeFromKV ─────────────────────────────────────────
@@ -112,6 +112,11 @@ describe("recordDeployment", () => {
     expect(manifest.version_id).toBe("v_test_1");
     expect(manifest.changed_keys).toEqual(changedKeys);
     expect(manifest.code_hashes).toEqual(hashes);
+    expect(manifest.predecessor_version_id).toBeNull();
+    expect(manifest.execution_id).toBeNull();
+    expect(manifest.source).toBeNull();
+    expect(manifest.rollback_reason).toBeNull();
+    expect(manifest.rollback_requested_by).toBeNull();
 
     // KV: version key
     const stored = JSON.parse(kv._store.get("deploy:version:v_test_1"));
@@ -129,6 +134,37 @@ describe("recordDeployment", () => {
     expect(history[0].version_id).toBe("v_test_1");
     expect(history[0].changed_count).toBe(2);
     expect(history[0].deploy_mode).toBe("cloudflare");
+    expect(history[0].source_kind).toBeNull();
+  });
+
+  it("records predecessor and source provenance when provided", async () => {
+    const manifest = await recordDeployment(kv, "v_test_2", ["hook:session:code"], {}, {
+      deploy_mode: "local",
+      predecessor_version_id: "v_prev",
+      execution_id: "x_123",
+      source: {
+        kind: "dr2",
+        review_note_key: "review_note:userspace_review:x_wait:d1:000:test",
+        authority_effect: "no_authority_change",
+        change_family: "family_1",
+      },
+    });
+
+    expect(manifest.predecessor_version_id).toBe("v_prev");
+    expect(manifest.execution_id).toBe("x_123");
+    expect(manifest.source).toEqual({
+      kind: "dr2",
+      review_note_key: "review_note:userspace_review:x_wait:d1:000:test",
+      authority_effect: "no_authority_change",
+      change_family: "family_1",
+    });
+
+    const history = JSON.parse(kv._store.get("deploy:history"));
+    expect(history[0]).toEqual(expect.objectContaining({
+      version_id: "v_test_2",
+      predecessor_version_id: "v_prev",
+      source_kind: "dr2",
+    }));
   });
 
   it("prepends to history (newest first)", async () => {
@@ -500,5 +536,168 @@ describe("full DR → stage → deploy flow", () => {
     // Snapshot still intact for rollback
     const postSnapshot = JSON.parse(kv._store.get("deploy:snapshot:v_deploy_1"));
     expect(postSnapshot["tool:kv_query:code"]).toBe("// v1 original");
+  });
+
+  it("scheduled deploy preserves pending execution provenance for batch scoping", async () => {
+    const kv = makeKVStore({
+      "tool:foo:code": "// original foo",
+      "tool:bar:code": "// original bar",
+      "code_staging:tool:foo:code": JSON.stringify({
+        code: "// foo from exec_1",
+        execution_id: "exec_1",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+      "code_staging:tool:bar:code": JSON.stringify({
+        code: "// bar from exec_2",
+        execution_id: "exec_2",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+      "deploy:pending": JSON.stringify({
+        requested_at: "2026-01-01T00:00:00Z",
+        execution_id: "exec_1",
+        source: {
+          kind: "dr2",
+          review_note_key: "review_note:userspace_review:x_wait:d1:000:test",
+          authority_effect: "no_authority_change",
+          change_family: "family_1",
+        },
+      }),
+    });
+
+    await governorWorker.scheduled({}, { KV: kv, GOVERNOR_DEPLOY_MODE: "local" }, {});
+
+    expect(kv._store.get("tool:foo:code")).toBe("// foo from exec_1");
+    expect(kv._store.get("tool:bar:code")).toBe("// original bar");
+    expect(kv._store.has("deploy:pending")).toBe(false);
+
+    const current = JSON.parse(kv._store.get("deploy:current"));
+    const manifest = JSON.parse(kv._store.get(`deploy:version:${current.version_id}`));
+    expect(manifest.execution_id).toBe("exec_1");
+    expect(manifest.source).toEqual({
+      kind: "dr2",
+      review_note_key: "review_note:userspace_review:x_wait:d1:000:test",
+      authority_effect: "no_authority_change",
+      change_family: "family_1",
+    });
+  });
+
+  it("ignores targeted rollback requests for a non-current version", async () => {
+    const kv = makeKVStore({
+      "deploy:current": JSON.stringify({
+        version_id: "v_current",
+        deployed_at: "2026-01-01T00:00:00Z",
+        deploy_mode: "local",
+      }),
+      "deploy:snapshot:v_current": JSON.stringify({
+        "tool:foo:code": "// previous foo",
+      }),
+      "tool:foo:code": "// current foo",
+    });
+
+    const result = await performRollback(kv, { KV: kv, GOVERNOR_DEPLOY_MODE: "local" }, {
+      request: {
+        reason: "semantic_regression",
+        requested_by: "deployment_review",
+        target_current_version: "v_old",
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ignored: true,
+      reason: "stale_target_version",
+      current_version_id: "v_current",
+      requested_target_version: "v_old",
+    }));
+    expect(kv._store.get("tool:foo:code")).toBe("// current foo");
+    expect(JSON.parse(kv._store.get("deploy:rollback:last_ignored"))).toEqual(expect.objectContaining({
+      reason: "stale_target_version",
+      current_version_id: "v_current",
+      requested_target_version: "v_old",
+    }));
+  });
+
+  it("records rollback restoration provenance on rollback-created versions", async () => {
+    const kv = makeKVStore({
+      "deploy:current": JSON.stringify({
+        version_id: "v_bad",
+        deployed_at: "2026-01-01T00:00:00Z",
+        deploy_mode: "local",
+      }),
+      "deploy:version:v_bad": JSON.stringify({
+        version_id: "v_bad",
+        predecessor_version_id: "v_good",
+        changed_keys: ["tool:foo:code"],
+        code_hashes: {},
+        deploy_mode: "local",
+      }),
+      "deploy:snapshot:v_bad": JSON.stringify({
+        "tool:foo:code": "// restored foo",
+      }),
+      "tool:foo:code": "// bad foo",
+      "code_staging:tool:bar:code": JSON.stringify({
+        code: "// orphan staging should not apply",
+        execution_id: "exec_orphan",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+    });
+
+    const result = await performRollback(kv, { KV: kv, GOVERNOR_DEPLOY_MODE: "local" }, {
+      request: {
+        reason: "semantic_regression",
+        requested_by: "deployment_review",
+        target_current_version: "v_bad",
+      },
+    });
+
+    expect(result.rolled_back_from).toBe("v_bad");
+    expect(kv._store.get("tool:foo:code")).toBe("// restored foo");
+
+    const current = JSON.parse(kv._store.get("deploy:current"));
+    const manifest = JSON.parse(kv._store.get(`deploy:version:${current.version_id}`));
+    expect(manifest.rollback_of_version_id).toBe("v_bad");
+    expect(manifest.restored_predecessor_version_id).toBe("v_good");
+    expect(manifest.predecessor_version_id).toBe("v_bad");
+    expect(manifest.rollback_reason).toBe("semantic_regression");
+    expect(manifest.rollback_requested_by).toBe("deployment_review");
+    expect(kv._store.get("tool:bar:code")).toBeUndefined();
+    expect(kv._store.has("code_staging:tool:bar:code")).toBe(true);
+
+    const rollbackSnapshot = JSON.parse(kv._store.get(`deploy:snapshot:${current.version_id}`));
+    expect(rollbackSnapshot).toEqual({});
+  });
+
+  it("opens probation automatically for governed DR-2 deploys", async () => {
+    const kv = makeKVStore({
+      "code_staging:hook:session:code": JSON.stringify({
+        code: "// updated session hook",
+        execution_id: "exec_1",
+        staged_at: "2026-01-01T00:00:00Z",
+      }),
+      "deploy:pending": JSON.stringify({
+        execution_id: "exec_1",
+        source: {
+          kind: "dr2",
+          review_note_key: "review_note:userspace_review:x_wait:d1:000:test",
+          authority_effect: "no_authority_change",
+          change_family: "family_1",
+        },
+      }),
+    });
+
+    await governorWorker.scheduled({}, { KV: kv, GOVERNOR_DEPLOY_MODE: "local" }, {});
+
+    const current = JSON.parse(kv._store.get("deploy:current"));
+    const probation = JSON.parse(kv._store.get("deployment_review:state:1"));
+    expect(probation).toEqual(expect.objectContaining({
+      generation: 1,
+      status: "observing",
+      active_version_id: current.version_id,
+      source_kind: "dr2",
+      source_review_note_key: "review_note:userspace_review:x_wait:d1:000:test",
+      change_family: "family_1",
+      observation_mode: "devloop_30",
+      final_verdict: null,
+      finalized_at: null,
+    }));
   });
 });

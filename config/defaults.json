@@ -104,6 +104,20 @@
     "source_ref": "current",
     "allow_authority_widening": false
   },
+  "deployment_review": {
+    "enabled": true,
+    "review_runner": "codex",
+    "adversarial_runner": "claude",
+    "review_timeout_ms": 600000,
+    "adversarial_timeout_ms": 600000,
+    "adversarial_max_rounds": 3,
+    "observation_mode": "devloop_30",
+    "observation_cycles": 30,
+    "max_extensions": 1,
+    "quarantine_sessions": 60,
+    "timeout_minutes": 240,
+    "repo_dir": "/home/swami/swayambhu/repo"
+  },
   "identity": {
     "enabled": false,
     "max_planner_items": 5,

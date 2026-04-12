@@ -31,7 +31,7 @@ function privilegedOps({
 export const BOOTSTRAP_KEY_TIERS = {
   immutable: ["dharma", "patron:public_key"],
   kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
-  lifecycle: ["dr:*", "dr2:*", "dr3:*"],
+  lifecycle: ["dr:*", "dr2:*", "dr3:*", "deployment_review:*"],
   protected: [
     "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",

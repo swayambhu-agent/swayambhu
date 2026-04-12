@@ -1,5 +1,23 @@
 # DR Self-Modification: Config, Prompts, and Code
 
+## Staleness Note (2026-04-12)
+
+This document is materially stale against the live code base.
+
+Concrete drift:
+
+- it describes direct DR code staging as the active architecture
+- live runtime now routes governed code changes through the DR-2 lab path and
+  governor handoff instead of direct DR staging
+- it describes config/prompt rollback as manual-only operator action
+- current architecture now includes governed post-deploy rollback design work
+  in:
+  - `docs/superpowers/specs/2026-04-10-dr1-dr2-self-modification-handoff-design.md`
+  - `docs/superpowers/specs/2026-04-12-probationary-semantic-rollback-and-deployment-review.md`
+
+Keep this file as historical design context, not as the current source of
+truth for self-modification or rollback behavior.
+
 ## Purpose
 
 Enable deep-reflect (DR) to modify the agent's config, prompts, and code

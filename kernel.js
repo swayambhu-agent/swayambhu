@@ -647,7 +647,7 @@ class Kernel {
 
       // Code staging
       stageCode: async (targetKey, code) => kernel.stageCode(targetKey, code),
-      signalDeploy: async () => kernel.signalDeploy(),
+      signalDeploy: async (options) => kernel.signalDeploy(options),
 
       // State (read-only)
       getExecutionId: async () => kernel.executionId,
@@ -1008,12 +1008,29 @@ class Kernel {
     await this.karmaRecord({ event: "code_staged", target: targetKey });
   }
 
-  async signalDeploy() {
-    await this.kvWrite("deploy:pending", {
+  async signalDeploy(options = {}) {
+    const rawSource = options?.source;
+    const source = rawSource && typeof rawSource === "object"
+      ? {
+          ...(typeof rawSource.kind === "string" ? { kind: rawSource.kind } : {}),
+          ...(typeof rawSource.review_note_key === "string" ? { review_note_key: rawSource.review_note_key } : {}),
+          ...(typeof rawSource.authority_effect === "string" ? { authority_effect: rawSource.authority_effect } : {}),
+          ...(typeof rawSource.change_family === "string" ? { change_family: rawSource.change_family } : {}),
+        }
+      : null;
+
+    const payload = {
       requested_at: new Date().toISOString(),
       execution_id: this.executionId,
+      ...(source && Object.keys(source).length > 0 ? { source } : {}),
+    };
+
+    await this.kvWrite("deploy:pending", payload);
+    await this.karmaRecord({
+      event: "deploy_signaled",
+      source_kind: payload.source?.kind || null,
+      review_note_key: payload.source?.review_note_key || null,
     });
-    await this.karmaRecord({ event: "deploy_signaled" });
   }
 
   async kvDelete(key) {
@@ -1087,8 +1104,11 @@ class Kernel {
     const last3 = history.slice(0, 3);
     const allBad = last3.every(s => s.outcome === "crash" || s.outcome === "killed");
     if (!allBad) return true;
+    const currentDeploy = await this.kvGet("deploy:current");
     await this.kvWrite("deploy:rollback_requested", {
       reason: "3_consecutive_crashes",
+      requested_by: "kernel_tripwire",
+      target_current_version: currentDeploy?.version_id || null,
       last_executions: last3,
       requested_at: new Date().toISOString(),
     });

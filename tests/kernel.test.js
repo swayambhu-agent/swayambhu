@@ -1588,6 +1588,7 @@ describe("config-driven key tiers", () => {
     expect(kernel.isLifecycleKey("dr:state:1")).toBe(true);
     expect(kernel.isLifecycleKey("dr2:state:1")).toBe(true);
     expect(kernel.isLifecycleKey("dr3:state:1")).toBe(true);
+    expect(kernel.isLifecycleKey("deployment_review:state:1")).toBe(true);
     expect(kernel.isSystemKey("review_note:userspace_review:test")).toBe(true);
   });
 
@@ -2124,6 +2125,11 @@ describe("checkHookSafety", () => {
         { id: "s_2", outcome: "killed" },
         { id: "s_3", outcome: "crash" },
       ]),
+      "deploy:current": JSON.stringify({
+        version_id: "v_current",
+        deployed_at: "2026-04-12T00:00:00.000Z",
+        deploy_mode: "local",
+      }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
     kernel.sendKernelAlert = vi.fn(async () => {});
@@ -2137,6 +2143,8 @@ describe("checkHookSafety", () => {
     expect(rollbackPut).toBeTruthy();
     const rollback = JSON.parse(rollbackPut[1]);
     expect(rollback.reason).toBe("3_consecutive_crashes");
+    expect(rollback.requested_by).toBe("kernel_tripwire");
+    expect(rollback.target_current_version).toBe("v_current");
 
     expect(kernel.sendKernelAlert).toHaveBeenCalledWith("hook_reset",
       expect.stringContaining("3 consecutive crashes"));
@@ -3959,6 +3967,29 @@ describe("code staging", () => {
     expect(pending).toEqual({
       requested_at: expect.any(String),
       execution_id: kernel.executionId,
+    });
+  });
+
+  it("signalDeploy carries optional provenance metadata", async () => {
+    const kernel = createTestKernel();
+    await kernel.signalDeploy({
+      source: {
+        kind: "dr2",
+        review_note_key: "review_note:userspace_review:x_wait:d1:000:test",
+        authority_effect: "no_authority_change",
+        change_family: "abc123",
+      },
+    });
+    const pending = await kernel.kvGet("deploy:pending");
+    expect(pending).toEqual({
+      requested_at: expect.any(String),
+      execution_id: kernel.executionId,
+      source: {
+        kind: "dr2",
+        review_note_key: "review_note:userspace_review:x_wait:d1:000:test",
+        authority_effect: "no_authority_change",
+        change_family: "abc123",
+      },
     });
   });
 

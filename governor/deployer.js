@@ -98,9 +98,16 @@ export async function recordDeployment(kv, versionId, changedKeys, codeHashes, o
   const manifest = {
     version_id: versionId,
     deployed_at: new Date().toISOString(),
+    predecessor_version_id: options.predecessor_version_id || null,
+    execution_id: options.execution_id || null,
     changed_keys: changedKeys,
     code_hashes: codeHashes,
     deploy_mode: options.deploy_mode || "cloudflare",
+    source: options.source || null,
+    rollback_of_version_id: options.rollback_of_version_id || null,
+    restored_predecessor_version_id: options.restored_predecessor_version_id || null,
+    rollback_reason: options.rollback_reason || null,
+    rollback_requested_by: options.rollback_requested_by || null,
   };
 
   await kv.put(`deploy:version:${versionId}`, JSON.stringify(manifest), {
@@ -125,8 +132,11 @@ export async function recordDeployment(kv, versionId, changedKeys, codeHashes, o
   history.unshift({
     version_id: versionId,
     deployed_at: manifest.deployed_at,
+    predecessor_version_id: manifest.predecessor_version_id,
     changed_count: changedKeys.length,
     deploy_mode: manifest.deploy_mode,
+    source_kind: manifest.source?.kind || null,
+    rollback_of_version_id: manifest.rollback_of_version_id,
   });
   while (history.length > 10) history.pop();
   await kv.put("deploy:history", JSON.stringify(history), {

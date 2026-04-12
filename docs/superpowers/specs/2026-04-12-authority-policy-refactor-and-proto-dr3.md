@@ -9,6 +9,7 @@ Related:
 - `docs/superpowers/specs/2026-04-07-userspace-review-roles.md`
 - `docs/superpowers/specs/2026-04-10-dr1-dr2-self-modification-handoff-design.md`
 - `docs/superpowers/specs/2026-04-09-identification-implementation-spec.md`
+- `docs/superpowers/specs/2026-04-12-probationary-semantic-rollback-and-deployment-review.md`
 
 ## Purpose
 
@@ -17,10 +18,8 @@ userspace-specific cognitive concepts.
 
 The immediate trigger is narrow:
 
-- `kernel.js` currently names cognitive families like `pattern:*` and
-  `identification:*`
-- `kernel.js` also contains entity-specific helpers like
-  `updatePatternStrength()` and `updateIdentificationLastExercised()`
+- bootstrap authority policy still names cognitive families like `pattern:*`
+  and `identification:*`
 - `kernel.js` currently seeds `identification:working-body`, which is a
   first-order cognitive object
 
@@ -45,13 +44,16 @@ This spec was validated against the live repo before drafting.
 
 Current code facts that this spec is explicitly responding to:
 
-- `kernel.js` still hardcodes ontology-specific families in
-  `DEFAULT_KEY_TIERS`
+- `authority-policy.js` already exists and now provides:
+  - `BOOTSTRAP_KEY_TIERS`
+  - `BOOTSTRAP_WRITE_POLICY`
+  - `mergeKeyTiers()`
+  - `mergeWritePolicy()`
+- `kernel.js` already loads policy through those bootstrap helpers
 - `scripts/seed-local-kv.mjs` already seeds `kernel:key_tiers`
+- `scripts/seed-local-kv.mjs` already seeds `kernel:write_policy`
 - `kernel.js` still contains:
   - `ensureIdentitySeed()`
-  - `updatePatternStrength()`
-  - `updateIdentificationLastExercised()`
 - `kernel.js` also still contains hardcoded write-friction checks in
   `_gateSystem()` for:
   - `principle:*`
@@ -65,13 +67,15 @@ Current code facts that this spec is explicitly responding to:
 - live code treats `principle:*` as protected-with-deliberation even though
   `CLAUDE.md` still describes principles as immutable; this spec follows the
   live runtime, not the stale note
-- `buildKernelInterface()` currently exposes `updatePatternStrength()`, but
-  does not expose `updateIdentificationLastExercised()`
-- `userspace.js` still attempts `K.updateIdentificationLastExercised?.(...)`
-  opportunistically, so identification exercise tracking is currently a silent
-  no-op rather than a working helper path
-- `kvWriteGated()` currently supports `put`, `delete`, and `patch`, but not
-  `field_merge`
+- `userspace.js` now already updates:
+  - `identification:*.last_exercised_at`
+  - `pattern:*.strength`
+  through `field_merge`
+- `kvWriteGated()` already supports:
+  - `put`
+  - `delete`
+  - `patch`
+  - `field_merge`
 - current runtime `kvWriteGated()` call sites use only:
   - `reflect`
   - `deep-reflect`
@@ -87,11 +91,11 @@ base, not an abstract architecture disconnected from implementation.
 ## Problem
 
 The current runtime boundary is cleaner than early Swayambhu, but it still has
-three leaks.
+two major remaining leaks.
 
 ### 1. Kernel knows current cognitive families
 
-`DEFAULT_KEY_TIERS` in `kernel.js` currently hardcodes families like:
+bootstrap policy in `authority-policy.js` currently hardcodes families like:
 
 - `pattern:*`
 - `desire:*`
@@ -108,28 +112,13 @@ That means:
 - the kernel carries assumptions about current cognitive design
 - "protectedness" of a concept is partly encoded in source instead of policy
 
-### 2. Kernel exposes ontology-specific mutation helpers
-
-`kernel.js` currently contains:
-
-- `updatePatternStrength()`
-- `updateIdentificationLastExercised()`
-
-These are narrow helpers, but they still embed:
-
-- entity names
-- field names
-- schema expectations
-
-That is domain knowledge in the kernel.
-
-### 3. Kernel seeds a cognitive object
+### 2. Kernel seeds a cognitive object
 
 `ensureIdentitySeed()` currently creates `identification:working-body`.
 
 That is not just an authority rule. It is a statement about userspace meaning.
 
-This is the clearest boundary leak:
+This is now the clearest remaining boundary leak:
 
 - the kernel is creating first-order cognition
 - therefore the kernel is no longer purely generic infrastructure
@@ -215,6 +204,7 @@ After this refactor, kernel source may still know:
   - `dr:*`
   - `dr2:*`
   - `dr3:*`
+  - `deployment_review:*`
   - `dharma`
   - patron trust anchors
 
@@ -982,7 +972,7 @@ The invariant suite should become an explicit test target, not a prose hope.
 
 ## Migration Plan
 
-## Stage 1: Add `kernel:write_policy`
+## Stage 1: Add `kernel:write_policy` (Complete)
 
 Keep the existing seeded `kernel:key_tiers`.
 
@@ -990,7 +980,7 @@ Add and seed:
 
 - `kernel:write_policy`
 
-Do not yet remove:
+At the time this stage began, do not yet remove:
 
 - existing helper methods
 - hardcoded `_gateSystem()` deliberation checks
@@ -1000,7 +990,7 @@ Goal:
 - establish `kernel:write_policy` as a real runtime object without changing
   behavior yet
 
-## Stage 2: Add `field_merge` to `kvWriteGated`
+## Stage 2: Add `field_merge` to `kvWriteGated` (Complete)
 
 Extend the existing write engine.
 
@@ -1019,9 +1009,9 @@ Goal:
 - add baseline unit tests for current `updatePatternStrength()` behavior before
   migrating callers away from it
 
-## Stage 3: Move helper call sites to `field_merge`
+## Stage 3: Move helper call sites to `field_merge` (Complete)
 
-Replace:
+This stage replaced:
 
 - `K.updatePatternStrength(...)`
 - `K.updateIdentificationLastExercised(...)`
@@ -1035,12 +1025,12 @@ Goal:
 - prove helper methods are no longer needed
 - prove `mechanical` budget behavior preserves the current no-budget property
   of helper-based field updates
-- replace the currently broken identification exercise no-op with a real
-  `field_merge` write path
+- replace the old identification exercise no-op with a real `field_merge`
+  write path
 - make caller-side clamping of pattern strength explicit and tested before
   deleting the kernel helper
 
-## Stage 4: Remove ontology-specific kernel helpers
+## Stage 4: Remove ontology-specific kernel helpers (Complete)
 
 Delete:
 

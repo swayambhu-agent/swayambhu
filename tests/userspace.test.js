@@ -2858,6 +2858,671 @@ describe("applyDrResults key filter", () => {
     expect(K.stageCode).toHaveBeenCalledWith("hook:session:code", expect.stringContaining("──────────────"));
   });
 
+  it("signals deploy with DR-2 provenance when stageable output requests deployment", async () => {
+    const reviewNoteKey = "review_note:userspace_review:x_wait:d1:000:waiting-state-derived-too-narrowly";
+    const validatedChanges = {
+      kv_operations: [],
+      code_stage_requests: [{
+        target: "hook:session:code",
+        code: "export default async function needsDeploy() {}\n",
+      }],
+      deploy: true,
+    };
+    const validatedChangesHash = sha256Json(validatedChanges);
+    const expectedChangeFamily = sha256Json({
+      source_kind: "dr2",
+      changed_keys: ["hook:session:code"],
+    });
+    const K = makeMockK({
+      session_counter: 40,
+      session_schedule: {
+        next_session_after: new Date(Date.now() + 60_000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 0,
+      },
+      "dr:state:1": {
+        status: "idle",
+        generation: 1,
+        consecutive_failures: 0,
+        next_due_session: 999,
+      },
+      "dr2:state:1": {
+        status: "dispatched",
+        generation: 1,
+        active_review_note_key: reviewNoteKey,
+        active_review_note_created_at: "2026-04-10T15:04:45.893Z",
+        job_id: "job_dr2",
+        workdir: "/tmp/dr2-job",
+        dispatched_at: new Date(Date.now() - 5_000).toISOString(),
+        processed_note_keys: [],
+        processed_through_created_at: null,
+        consecutive_failures: 0,
+      },
+      "job:job_dr2": {
+        id: "job_dr2",
+        status: "completed",
+        result_key: "job_result:job_dr2",
+      },
+      "job_result:job_dr2": {
+        job_id: "job_dr2",
+        type: "custom",
+        result: {
+          review_note_key: reviewNoteKey,
+          promotion_recommendation: "stageable",
+          validated_changes_hash: validatedChangesHash,
+          validated_changes: validatedChanges,
+        },
+        lab_result: {
+          review_note_key: reviewNoteKey,
+          validated_changes_hash: validatedChangesHash,
+        },
+      },
+    }, {
+      defaults: {
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 120 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7 },
+        dr2: {
+          enabled: true,
+          cooldown_sessions: 3,
+        },
+        jobs: { base_url: "http://akash.test" },
+      },
+    });
+    K.stageCode = vi.fn(async () => {});
+    K.signalDeploy = vi.fn(async () => {});
+    K.executeAdapter = vi.fn(async () => {
+      throw new Error("remote artifact read should not be needed");
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{ type: "job_complete", job_id: "job_dr2" }],
+    });
+
+    expect(K.signalDeploy).toHaveBeenCalledWith({
+      source: {
+        kind: "dr2",
+        review_note_key: reviewNoteKey,
+        authority_effect: "no_authority_change",
+        change_family: expectedChangeFamily,
+        branch_name: null,
+        lab_result_path: null,
+        review_result_path: null,
+        baseline_summary: null,
+      },
+    });
+  });
+
+  it("dispatches a deployment review probe from active probation", async () => {
+    const K = makeMockK({
+      session_counter: 41,
+      "deployment_review:state:1": {
+        generation: 1,
+        status: "observing",
+        active_version_id: "v_probation",
+        predecessor_version_id: "v_prev",
+        source_review_note_key: "review_note:userspace_review:x:test",
+        source_branch_name: "candidate-1",
+        max_extensions: 1,
+      },
+      "deploy:current": {
+        version_id: "v_probation",
+        deployed_at: "2026-04-12T10:00:00.000Z",
+      },
+    }, {
+      defaults: {
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 120 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7 },
+        deployment_review: {
+          enabled: true,
+          observation_cycles: 30,
+          repo_dir: "/home/swami/swayambhu/repo",
+          timeout_minutes: 240,
+        },
+      },
+    });
+    K.executeToolCall = vi.fn(async () => ({ ok: true, job_id: "job_probe", workdir: "/tmp/deployment-probe" }));
+
+    await run(K, { crashData: null, balances: {}, events: [] });
+
+    expect(K.executeToolCall).toHaveBeenCalledWith(expect.objectContaining({
+      function: expect.objectContaining({ name: "start_job" }),
+    }));
+    const call = K.executeToolCall.mock.calls[0][0];
+    const toolArgs = JSON.parse(call.function.arguments);
+    expect(toolArgs.command).toContain("node scripts/deployment-review-probe.mjs");
+    expect(toolArgs.command).toContain("'--version-id' 'v_probation'");
+    expect(toolArgs.command).toContain("'--branch-name' 'candidate-1'");
+    expect(toolArgs.context_keys).toContain("deployment_review:state:1");
+    expect(toolArgs.context_keys).toContain("deploy:current");
+    expect(toolArgs.context_keys).toContain("deploy:version:v_probation");
+    expect(toolArgs.context_keys).toContain("deploy:version:v_prev");
+    expect(toolArgs.context_keys).toContain("review_note:userspace_review:x:test");
+
+    const state = await K.kvGet("deployment_review:state:1");
+    expect(state.status).toBe("probe_dispatched");
+    expect(state.probe_job_id).toBe("job_probe");
+  });
+
+  it("advances deployment probation from probe to review to keep", async () => {
+    const K = makeMockK({
+      session_counter: 43,
+      "deployment_review:state:1": {
+        generation: 4,
+        status: "observing",
+        active_version_id: "v_probation",
+        predecessor_version_id: "v_prev",
+        source_review_note_key: "review_note:userspace_review:x:test",
+        source_branch_name: "candidate-keep",
+        max_extensions: 1,
+      },
+      "deploy:current": {
+        version_id: "v_probation",
+        deployed_at: "2026-04-12T10:00:00.000Z",
+      },
+    }, {
+      defaults: {
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 120 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7 },
+        deployment_review: {
+          enabled: true,
+          observation_cycles: 30,
+          repo_dir: "/home/swami/swayambhu/repo",
+          timeout_minutes: 240,
+          review_runner: "codex",
+          adversarial_runner: "claude",
+          review_timeout_ms: 600000,
+          adversarial_timeout_ms: 600000,
+          adversarial_max_rounds: 3,
+        },
+      },
+    });
+
+    K.executeToolCall = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, job_id: "job_probe", workdir: "/tmp/deployment-probe" })
+      .mockResolvedValueOnce({ ok: true, job_id: "job_review", workdir: "/tmp/deployment-review" });
+
+    await run(K, { crashData: null, balances: {}, events: [] });
+
+    let state = await K.kvGet("deployment_review:state:1");
+    expect(state.status).toBe("probe_dispatched");
+    expect(state.probe_job_id).toBe("job_probe");
+
+    await K.writeLifecycleState("job:job_probe", {
+      id: "job_probe",
+      status: "completed",
+      result_key: "job_result:job_probe",
+    });
+    await K.writeLifecycleState("job_result:job_probe", {
+      job_id: "job_probe",
+      type: "custom",
+      result: {
+        review_role: "deployment_review_probe",
+        target_current_version: "v_probation",
+        expected_predecessor_version: "v_prev",
+        observation_mode: "devloop_30",
+        observation_artifact_ref: "/tmp/probe/batch-summary.json",
+        batch_summary_path: "/tmp/probe/batch-summary.json",
+        batch_summary: { meaningful_action_sessions: 6 },
+        meta_policy_note_refs: ["review_note:userspace_review:x:new"],
+        spec_path: "/tmp/deployment-probe/deployment-review-spec.json",
+      },
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{ type: "job_complete", job_id: "job_probe" }],
+    });
+
+    state = await K.kvGet("deployment_review:state:1");
+    expect(state.status).toBe("review_dispatched");
+    expect(state.review_job_id).toBe("job_review");
+    expect(state.probe_job_id).toBeNull();
+    expect(state.probe_spec_path).toBe("/tmp/deployment-probe/deployment-review-spec.json");
+
+    await K.writeLifecycleState("job:job_review", {
+      id: "job_review",
+      status: "completed",
+      result_key: "job_result:job_review",
+    });
+    await K.writeLifecycleState("job_result:job_review", {
+      job_id: "job_review",
+      type: "custom",
+      result: {
+        review_role: "deployment_review",
+        verdict: "keep",
+        confidence: 0.88,
+        summary: "The deployed change improved the target issue without adjacent regression.",
+        target_current_version: "v_probation",
+        expected_predecessor_version: "v_prev",
+        causal_adjacency: "medium",
+        evidence_for_improvement: ["Target issue improved versus baseline."],
+        evidence_for_regression: [],
+        quarantine_recommended: false,
+        quarantine_reason: null,
+      },
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{ type: "job_complete", job_id: "job_review" }],
+    });
+
+    state = await K.kvGet("deployment_review:state:1");
+    expect(state.status).toBe("completed");
+    expect(state.final_verdict).toBe("keep");
+    expect(state.final_reason).toBe("deployment_review_keep");
+    expect(state.finalized_at).toBeTruthy();
+
+    const result = await K.kvGet("deployment_review:result:4");
+    expect(result).toEqual(expect.objectContaining({
+      verdict: "keep",
+      target_current_version: "v_probation",
+    }));
+  });
+
+  it("requests targeted rollback when deployment review concludes rollback", async () => {
+    const K = makeMockK({
+      session_counter: 42,
+      "deployment_review:state:1": {
+        generation: 2,
+        status: "review_dispatched",
+        active_version_id: "v_probation",
+        predecessor_version_id: "v_prev",
+        source_review_note_key: "review_note:userspace_review:x:test",
+        change_family: "family_1",
+        review_job_id: "job_review",
+        review_workdir: "/tmp/deployment-review",
+        review_dispatched_at: new Date(Date.now() - 5_000).toISOString(),
+        max_extensions: 1,
+      },
+      "deploy:current": {
+        version_id: "v_probation",
+        deployed_at: "2026-04-12T10:00:00.000Z",
+      },
+      "job:job_review": {
+        id: "job_review",
+        status: "completed",
+        result_key: "job_result:job_review",
+      },
+      "job_result:job_review": {
+        job_id: "job_review",
+        type: "custom",
+        result: {
+          review_role: "deployment_review",
+          verdict: "rollback",
+          confidence: 0.91,
+          summary: "The probationary deploy introduced adjacent regressions.",
+          target_current_version: "v_probation",
+          expected_predecessor_version: "v_prev",
+          causal_adjacency: "high",
+          evidence_for_improvement: [],
+          evidence_for_regression: ["Exploration collapsed after deploy."],
+          quarantine_recommended: true,
+          quarantine_reason: "Repeated collapse on the same change family.",
+        },
+      },
+    }, {
+      defaults: {
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 120 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7 },
+        deployment_review: {
+          enabled: true,
+          timeout_minutes: 240,
+        },
+      },
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [{ type: "job_complete", job_id: "job_review" }] });
+
+    const rollback = await K.kvGet("deploy:rollback_requested");
+    expect(rollback).toEqual(expect.objectContaining({
+      reason: "semantic_regression",
+      requested_by: "deployment_review",
+      target_current_version: "v_probation",
+      expected_predecessor_version: "v_prev",
+      source_review_note_key: "review_note:userspace_review:x:test",
+      change_family: "family_1",
+    }));
+    const result = await K.kvGet("deployment_review:result:2");
+    expect(result.verdict).toBe("rollback");
+    const quarantine = await K.kvGet("deployment_review:quarantine:family_1");
+    expect(quarantine).toEqual(expect.objectContaining({
+      change_family: "family_1",
+      created_session: 42,
+      expires_after_sessions: 60,
+      expires_at_session: 102,
+      source_review_note_key: "review_note:userspace_review:x:test",
+      rolled_back_version_id: "v_probation",
+      reason: "Repeated collapse on the same change family.",
+    }));
+
+    const state = await K.kvGet("deployment_review:state:1");
+    expect(state.status).toBe("rollback_requested");
+    expect(state.final_verdict).toBe("rollback");
+    expect(state.review_job_id).toBeNull();
+  });
+
+  it("quarantines the change family when deployment review exhausts extensions", async () => {
+    const K = makeMockK({
+      session_counter: 52,
+      "deployment_review:state:1": {
+        generation: 3,
+        status: "review_dispatched",
+        active_version_id: "v_probation",
+        predecessor_version_id: "v_prev",
+        source_review_note_key: "review_note:userspace_review:x:test",
+        change_family: "family_2",
+        extensions_used: 1,
+        max_extensions: 1,
+        review_job_id: "job_review",
+        review_workdir: "/tmp/deployment-review",
+        review_dispatched_at: new Date(Date.now() - 5_000).toISOString(),
+      },
+      "deploy:current": {
+        version_id: "v_probation",
+        deployed_at: "2026-04-12T10:00:00.000Z",
+      },
+      "job:job_review": {
+        id: "job_review",
+        status: "completed",
+        result_key: "job_result:job_review",
+      },
+      "job_result:job_review": {
+        job_id: "job_review",
+        type: "custom",
+        result: {
+          review_role: "deployment_review",
+          verdict: "extend",
+          confidence: 0.62,
+          summary: "Evidence stayed mixed and adjacent regressions persisted.",
+          target_current_version: "v_probation",
+          expected_predecessor_version: "v_prev",
+          causal_adjacency: "high",
+          evidence_for_improvement: ["Target issue improved slightly."],
+          evidence_for_regression: ["New adjacent regressions remained."],
+          quarantine_recommended: true,
+          quarantine_reason: "Mixed result still recurs on the same surface.",
+        },
+      },
+    }, {
+      defaults: {
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 120 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7 },
+        deployment_review: {
+          enabled: true,
+          timeout_minutes: 240,
+          quarantine_sessions: 60,
+        },
+      },
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [{ type: "job_complete", job_id: "job_review" }] });
+
+    const rollback = await K.kvGet("deploy:rollback_requested");
+    expect(rollback).toEqual(expect.objectContaining({
+      target_current_version: "v_probation",
+      change_family: "family_2",
+    }));
+    const quarantine = await K.kvGet("deployment_review:quarantine:family_2");
+    expect(quarantine).toEqual(expect.objectContaining({
+      change_family: "family_2",
+      created_session: 52,
+      expires_after_sessions: 60,
+      expires_at_session: 112,
+      reason: "Mixed result still recurs on the same surface.",
+    }));
+    const state = await K.kvGet("deployment_review:state:1");
+    expect(state.status).toBe("rollback_requested");
+    expect(state.final_reason).toBe("deployment_review_extend_exhausted");
+  });
+
+  it("blocks DR-2 code staging when the change family is quarantined", async () => {
+    const reviewNoteKey = "review_note:userspace_review:x_wait:d1:000:quarantined-family";
+    const stagedTarget = "hook:session:code";
+    const changeFamily = sha256Json({
+      source_kind: "dr2",
+      changed_keys: [stagedTarget],
+    });
+    const validatedChanges = {
+      kv_operations: [{ op: "put", key: "prompt:plan", value: "updated prompt", deliberation: "x".repeat(220) }],
+      code_stage_requests: [{
+        target: stagedTarget,
+        code: "export default async function blockedByQuarantine() {}\n",
+      }],
+      deploy: true,
+    };
+    const validatedChangesHash = sha256Json(validatedChanges);
+    const K = makeMockK({
+      session_counter: 45,
+      session_schedule: {
+        next_session_after: new Date(Date.now() + 60_000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 0,
+      },
+      "dr:state:1": {
+        status: "idle",
+        generation: 1,
+        consecutive_failures: 0,
+        next_due_session: 999,
+      },
+      "dr2:state:1": {
+        status: "dispatched",
+        generation: 1,
+        active_review_note_key: reviewNoteKey,
+        active_review_note_created_at: "2026-04-10T15:04:45.893Z",
+        job_id: "job_dr2",
+        workdir: "/tmp/dr2-job",
+        dispatched_at: new Date(Date.now() - 5_000).toISOString(),
+        processed_note_keys: [],
+        processed_through_created_at: null,
+        consecutive_failures: 0,
+      },
+      [ `deployment_review:quarantine:${changeFamily}` ]: {
+        change_family: changeFamily,
+        created_at: "2026-04-12T10:00:00.000Z",
+        created_session: 40,
+        expires_after_sessions: 60,
+        expires_at_session: 100,
+        source_review_note_key: "review_note:userspace_review:x:test",
+        rolled_back_version_id: "v_probation",
+        reason: "Repeated collapse on the same change family.",
+      },
+      "job:job_dr2": {
+        id: "job_dr2",
+        status: "completed",
+        result_key: "job_result:job_dr2",
+      },
+      "job_result:job_dr2": {
+        job_id: "job_dr2",
+        type: "custom",
+        result: {
+          review_note_key: reviewNoteKey,
+          promotion_recommendation: "stageable",
+          validated_changes_hash: validatedChangesHash,
+          validated_changes: validatedChanges,
+        },
+        lab_result: {
+          review_note_key: reviewNoteKey,
+          validated_changes_hash: validatedChangesHash,
+        },
+      },
+    }, {
+      defaults: {
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 120 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7 },
+        dr2: {
+          enabled: true,
+          cooldown_sessions: 3,
+        },
+        deployment_review: {
+          enabled: true,
+          quarantine_sessions: 60,
+        },
+        jobs: { base_url: "http://akash.test" },
+      },
+    });
+    K.stageCode = vi.fn(async () => {});
+    K.signalDeploy = vi.fn(async () => {});
+    K.executeAdapter = vi.fn(async () => {
+      throw new Error("remote artifact read should not be needed");
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{ type: "job_complete", job_id: "job_dr2" }],
+    });
+
+    expect(await K.kvGet("prompt:plan")).toBe("updated prompt");
+    expect(K.stageCode).not.toHaveBeenCalled();
+    expect(K.signalDeploy).not.toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "dr2_governed_deploy_blocked_by_quarantine",
+      review_note_key: reviewNoteKey,
+      change_family: changeFamily,
+      expires_at_session: 100,
+    }));
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "dr2_validated_changes_applied",
+      applied_kv: 1,
+      staged_code: 0,
+      blocked: [
+        expect.objectContaining({
+          key: stagedTarget,
+          error: "change_family_quarantined",
+          change_family: changeFamily,
+          expires_at_session: 100,
+        }),
+      ],
+    }));
+  });
+
+  it("blocks DR-2 code staging while deployment probation is active", async () => {
+    const reviewNoteKey = "review_note:userspace_review:x_wait:d1:000:queued-during-probation";
+    const validatedChanges = {
+      kv_operations: [{ op: "put", key: "prompt:plan", value: "updated prompt", deliberation: "x".repeat(220) }],
+      code_stage_requests: [{
+        target: "hook:session:code",
+        code: "export default async function blockedByProbation() {}\n",
+      }],
+      deploy: true,
+    };
+    const validatedChangesHash = sha256Json(validatedChanges);
+    const K = makeMockK({
+      session_counter: 40,
+      session_schedule: {
+        next_session_after: new Date(Date.now() + 60_000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 0,
+      },
+      "dr:state:1": {
+        status: "idle",
+        generation: 1,
+        consecutive_failures: 0,
+        next_due_session: 999,
+      },
+      "dr2:state:1": {
+        status: "dispatched",
+        generation: 1,
+        active_review_note_key: reviewNoteKey,
+        active_review_note_created_at: "2026-04-10T15:04:45.893Z",
+        job_id: "job_dr2",
+        workdir: "/tmp/dr2-job",
+        dispatched_at: new Date(Date.now() - 5_000).toISOString(),
+        processed_note_keys: [],
+        processed_through_created_at: null,
+        consecutive_failures: 0,
+      },
+      "deployment_review:state:1": {
+        generation: 3,
+        status: "observing",
+        active_version_id: "v_probation",
+        started_at: "2026-04-12T10:00:00.000Z",
+      },
+      "job:job_dr2": {
+        id: "job_dr2",
+        status: "completed",
+        result_key: "job_result:job_dr2",
+      },
+      "job_result:job_dr2": {
+        job_id: "job_dr2",
+        type: "custom",
+        result: {
+          review_note_key: reviewNoteKey,
+          promotion_recommendation: "stageable",
+          validated_changes_hash: validatedChangesHash,
+          validated_changes: validatedChanges,
+        },
+        lab_result: {
+          review_note_key: reviewNoteKey,
+          validated_changes_hash: validatedChangesHash,
+        },
+      },
+    }, {
+      defaults: {
+        schedule: { interval_seconds: 3600 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 120 },
+        execution: { max_steps: { act: 5 } },
+        deep_reflect: { default_interval_sessions: 5, default_interval_days: 7 },
+        dr2: {
+          enabled: true,
+          cooldown_sessions: 3,
+        },
+        jobs: { base_url: "http://akash.test" },
+      },
+    });
+    K.stageCode = vi.fn(async () => {});
+    K.signalDeploy = vi.fn(async () => {});
+    K.executeAdapter = vi.fn(async () => {
+      throw new Error("remote artifact read should not be needed");
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{ type: "job_complete", job_id: "job_dr2" }],
+    });
+
+    expect(await K.kvGet("prompt:plan")).toBe("updated prompt");
+    expect(K.stageCode).not.toHaveBeenCalled();
+    expect(K.signalDeploy).not.toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "dr2_governed_deploy_blocked_by_probation",
+      review_note_key: reviewNoteKey,
+      active_version_id: "v_probation",
+    }));
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "dr2_validated_changes_applied",
+      review_note_key: reviewNoteKey,
+      applied_kv: 1,
+      staged_code: 0,
+      blocked: [
+        expect.objectContaining({
+          key: "hook:session:code",
+          error: "probation_active",
+          active_version_id: "v_probation",
+        }),
+      ],
+    }));
+  });
+
   it("finalizes DR-2 from callback-hydrated job_result without re-reading the remote workdir", async () => {
     const reviewNoteKey = "review_note:userspace_review:x_wait:d1:000:waiting-state-derived-too-narrowly";
     const validatedChanges = {

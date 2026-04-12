@@ -159,7 +159,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   const _KERNEL_ONLY = ['kernel:', 'sealed:', 'karma:', 'event:', 'event_dead:'];
   const _KERNEL_ONLY_EXACT = ['patron:direct'];
-  const _LIFECYCLE = ['dr:', 'dr2:', 'dr3:'];
+  const _LIFECYCLE = ['dr:', 'dr2:', 'dr3:', 'deployment_review:'];
   const _CODE_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
   const _KNOWN_CONTEXTS = new Set(['act', 'reflect', 'deep-reflect', 'userspace-review', 'authority-review']);
   const _EXPLICIT_PRIVILEGED_PREFIXES = ['config:', 'prompt:', 'pattern:', 'principle:', 'desire:', 'tactic:', 'identification:', 'review_note:'];

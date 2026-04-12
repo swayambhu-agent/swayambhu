@@ -2487,6 +2487,49 @@ async function pollDr2Result(K, state, defaults) {
   return { status: "completed", output: payload, meta };
 }
 
+function isDeploymentProbationActive(state) {
+  if (!state || typeof state !== "object") return false;
+  if (state.finalized_at) return false;
+  return state.status !== "idle" && state.status !== "completed";
+}
+
+async function getActiveDeploymentProbation(K) {
+  const state = await K.kvGet("deployment_review:state:1");
+  return isDeploymentProbationActive(state) ? state : null;
+}
+
+async function computeChangeFamily(sourceKind, targets) {
+  const changedKeys = [...new Set((targets || []).filter(Boolean))].sort();
+  if (changedKeys.length === 0) return null;
+  return sha256Json({
+    source_kind: sourceKind,
+    changed_keys: changedKeys,
+  });
+}
+
+function quarantineKeyForFamily(changeFamily) {
+  return `deployment_review:quarantine:${changeFamily}`;
+}
+
+async function getActiveDeploymentQuarantine(K, changeFamily, sessionCount) {
+  if (!changeFamily) return null;
+  const key = quarantineKeyForFamily(changeFamily);
+  const record = await K.kvGet(key);
+  if (!record || typeof record !== "object") return null;
+  const expiresAt = Number(record.expires_at_session);
+  if (Number.isFinite(expiresAt) && Number(sessionCount || 0) >= expiresAt) {
+    await K.deleteLifecycleState(key);
+    await K.karmaRecord({
+      event: "deployment_review_quarantine_expired",
+      change_family: changeFamily,
+      expired_at_session: expiresAt,
+      current_session: Number(sessionCount || 0),
+    });
+    return null;
+  }
+  return record;
+}
+
 async function applyDr2ValidatedChanges(K, output) {
   const changes = output?.validated_changes || {};
   const kvOps = Array.isArray(changes.kv_operations) ? changes.kv_operations : [];
@@ -2494,6 +2537,12 @@ async function applyDr2ValidatedChanges(K, output) {
   const blocked = [];
   let appliedKv = 0;
   let stagedCode = 0;
+  const stagedTargets = [];
+  const requestedTargets = codeStageRequests.map((req) => req?.target || null).filter(Boolean);
+  const requestedChangeFamily = codeStageRequests.length > 0
+    ? await computeChangeFamily("dr2", requestedTargets)
+    : null;
+  const sessionCount = (await K.kvGet("session_counter")) || 0;
 
   for (const op of kvOps) {
     const result = await K.kvWriteGated(toPrivilegedOp(op), "userspace-review");
@@ -2504,7 +2553,50 @@ async function applyDr2ValidatedChanges(K, output) {
     appliedKv += 1;
   }
 
-  for (const req of codeStageRequests) {
+  const activeProbation = codeStageRequests.length > 0
+    ? await getActiveDeploymentProbation(K)
+    : null;
+  const activeQuarantine = (!activeProbation && requestedChangeFamily)
+    ? await getActiveDeploymentQuarantine(K, requestedChangeFamily, sessionCount)
+    : null;
+
+  if (activeProbation) {
+    for (const req of codeStageRequests) {
+      blocked.push({
+        key: req?.target || null,
+        error: "probation_active",
+        active_version_id: activeProbation.active_version_id || null,
+      });
+    }
+    await K.karmaRecord({
+      event: "dr2_governed_deploy_blocked_by_probation",
+      review_note_key: output.review_note_key || null,
+      active_version_id: activeProbation.active_version_id || null,
+      probation_generation: activeProbation.generation || null,
+      blocked_targets: codeStageRequests.map((req) => req?.target || null),
+    });
+  }
+
+  if (activeQuarantine) {
+    for (const req of codeStageRequests) {
+      blocked.push({
+        key: req?.target || null,
+        error: "change_family_quarantined",
+        change_family: requestedChangeFamily,
+        quarantine_reason: activeQuarantine.reason || null,
+        expires_at_session: activeQuarantine.expires_at_session || null,
+      });
+    }
+    await K.karmaRecord({
+      event: "dr2_governed_deploy_blocked_by_quarantine",
+      review_note_key: output.review_note_key || null,
+      change_family: requestedChangeFamily,
+      expires_at_session: activeQuarantine.expires_at_session || null,
+      blocked_targets: codeStageRequests.map((req) => req?.target || null),
+    });
+  }
+
+  for (const req of (activeProbation || activeQuarantine) ? [] : codeStageRequests) {
     const target = req?.target || null;
     if (!isStageableCodeTarget(target)) {
       blocked.push({ key: target, error: "invalid_code_stage_target" });
@@ -2517,13 +2609,26 @@ async function applyDr2ValidatedChanges(K, output) {
     try {
       await K.stageCode(target, req.code);
       stagedCode += 1;
+      stagedTargets.push(target);
     } catch (error) {
       blocked.push({ key: target, error: error.message });
     }
   }
 
   if (stagedCode > 0 && changes.deploy !== false) {
-    await K.signalDeploy();
+    const changeFamily = await computeChangeFamily("dr2", stagedTargets);
+    await K.signalDeploy({
+      source: {
+        kind: "dr2",
+        review_note_key: output.review_note_key || null,
+        authority_effect: "no_authority_change",
+        change_family: changeFamily,
+        branch_name: output.branch_name || null,
+        lab_result_path: output.lab_result_path || null,
+        review_result_path: output.review_result_path || null,
+        baseline_summary: output.comparison_summary?.baseline || null,
+      },
+    });
     await K.karmaRecord({ event: "deploy_requested_by_dr2", staged: stagedCode });
   }
 
@@ -2536,6 +2641,389 @@ async function applyDr2ValidatedChanges(K, output) {
   });
 
   return { appliedKv, stagedCode, blocked };
+}
+
+function looksLikeDeploymentReviewResult(payload) {
+  return !!(
+    payload
+    && payload.review_role === "deployment_review"
+    && ["keep", "rollback", "extend"].includes(payload.verdict)
+    && typeof payload.summary === "string"
+    && typeof payload.target_current_version === "string"
+    && ["low", "medium", "high"].includes(payload.causal_adjacency)
+    && Array.isArray(payload.evidence_for_improvement)
+    && Array.isArray(payload.evidence_for_regression)
+    && typeof payload.quarantine_recommended === "boolean"
+    && typeof payload.confidence === "number"
+  );
+}
+
+async function readCompletedJobPayload(K, jobId, defaults) {
+  if (!jobId) return null;
+  const job = await K.kvGet(`job:${jobId}`);
+  if (!job) return null;
+  if (job.status !== "completed" && job.status !== "failed") return null;
+
+  const resultKey = job.result_key || `job_result:${job.id}`;
+  let jobResult = await K.kvGet(resultKey);
+  if (!jobResult) {
+    const hydration = await hydrateCompletedJobResult(K, job, defaults);
+    if (!hydration.ok) {
+      return { status: "failed", error: hydration.error };
+    }
+    jobResult = hydration.jobResult;
+  }
+
+  if (!jobResult || typeof jobResult !== "object") {
+    return { status: "failed", error: "job_result_missing" };
+  }
+  const payload = (jobResult.result && typeof jobResult.result === "object")
+    ? jobResult.result
+    : ((jobResult.lab_result && typeof jobResult.lab_result === "object")
+      ? jobResult.lab_result
+      : null);
+  if (!payload) {
+    return { status: "failed", error: jobResult?.callback_error || "job_result_missing" };
+  }
+  return { status: "completed", output: payload, meta: jobResult.meta || null };
+}
+
+async function dispatchDeploymentReviewProbe(K, defaults, state) {
+  const deploymentReview = defaults?.deployment_review || {};
+  const repoDir = deploymentReview.repo_dir || defaults?.dr2?.repo_dir || "/home/swami/swayambhu/repo";
+  const esc = (value) => String(value).replace(/'/g, "'\\''");
+  const args = [
+    "--version-id", state.active_version_id,
+    "--generation", String(state.generation || 1),
+    "--workspace-dir", state.source_branch_name
+      ? `/home/swami/swayambhu/state-lab/branches/${state.source_branch_name}/workspace`
+      : repoDir,
+    "--cycles", String(Number(deploymentReview.observation_cycles || 30)),
+  ];
+  if (state.predecessor_version_id) {
+    args.push("--expected-predecessor-version", state.predecessor_version_id);
+  }
+  if (state.source_review_note_key) {
+    args.push("--review-note-key", state.source_review_note_key);
+  }
+  if (state.source_lab_result_path) {
+    args.push("--lab-result-path", state.source_lab_result_path);
+  }
+  if (state.source_branch_name) {
+    args.push("--branch-name", state.source_branch_name);
+  }
+
+  const command = [
+    `cd '${esc(repoDir)}' || exit 1`,
+    `node scripts/deployment-review-probe.mjs ${args.map((arg) => `'${esc(arg)}'`).join(" ")}`,
+  ].join("\n");
+
+  const contextKeys = [
+    "deployment_review:state:1",
+    "deploy:current",
+    `deploy:version:${state.active_version_id}`,
+    ...(state.predecessor_version_id ? [`deploy:version:${state.predecessor_version_id}`] : []),
+    ...(state.source_review_note_key ? [state.source_review_note_key] : []),
+  ];
+
+  const result = await K.executeToolCall({
+    id: `deployment_review_probe_${Date.now()}`,
+    function: {
+      name: "start_job",
+      arguments: JSON.stringify({
+        type: "custom",
+        command,
+        context_keys: contextKeys,
+      }),
+    },
+  });
+
+  if (!result?.ok) return null;
+  return { job_id: result.job_id, workdir: result.workdir };
+}
+
+async function dispatchDeploymentReview(K, defaults, state) {
+  const deploymentReview = defaults?.deployment_review || {};
+  const repoDir = deploymentReview.repo_dir || defaults?.dr2?.repo_dir || "/home/swami/swayambhu/repo";
+  const esc = (value) => String(value).replace(/'/g, "'\\''");
+  const args = [
+    "--spec", state.probe_spec_path,
+    "--review-runner", deploymentReview.review_runner || "codex",
+    "--adversarial-runner", deploymentReview.adversarial_runner || "claude",
+    "--review-timeout-ms", String(Number(deploymentReview.review_timeout_ms || 600000)),
+    "--adversarial-timeout-ms", String(Number(deploymentReview.adversarial_timeout_ms || 600000)),
+    "--adversarial-max-rounds", String(Number(deploymentReview.adversarial_max_rounds || 3)),
+    "--label", `deployment-review-${state.active_version_id}`,
+  ];
+  const command = [
+    `cd '${esc(repoDir)}' || exit 1`,
+    `node scripts/deployment-review-run.mjs ${args.map((arg) => `'${esc(arg)}'`).join(" ")}`,
+  ].join("\n");
+  const result = await K.executeToolCall({
+    id: `deployment_review_dispatch_${Date.now()}`,
+    function: {
+      name: "start_job",
+      arguments: JSON.stringify({
+        type: "custom",
+        command,
+        context_keys: [],
+      }),
+    },
+  });
+  if (!result?.ok) return null;
+  return { job_id: result.job_id, workdir: result.workdir };
+}
+
+async function requestDeploymentRollback(K, state, reason = "semantic_regression") {
+  const request = {
+    reason,
+    requested_at: new Date().toISOString(),
+    requested_by: "deployment_review",
+    target_current_version: state.active_version_id || null,
+    expected_predecessor_version: state.predecessor_version_id || null,
+    source_review_note_key: state.source_review_note_key || null,
+    change_family: state.change_family || null,
+  };
+  await K.kvWriteSafe("deploy:rollback_requested", request, { unprotected: true });
+  await K.karmaRecord({
+    event: "deployment_review_rollback_requested",
+    target_current_version: request.target_current_version,
+    expected_predecessor_version: request.expected_predecessor_version,
+    reason: request.reason,
+  });
+}
+
+async function writeDeploymentQuarantine(K, defaults, state, output, sessionCount) {
+  if (!state?.change_family || output?.quarantine_recommended !== true) return null;
+  const quarantineSessions = Math.max(1, Number(defaults?.deployment_review?.quarantine_sessions || 60));
+  const record = {
+    change_family: state.change_family,
+    created_at: new Date().toISOString(),
+    created_session: Number(sessionCount || 0),
+    expires_after_sessions: quarantineSessions,
+    expires_at_session: Number(sessionCount || 0) + quarantineSessions,
+    source_review_note_key: state.source_review_note_key || null,
+    rolled_back_version_id: state.active_version_id || null,
+    reason: output?.quarantine_reason || output?.summary || "deployment_review_rollback",
+  };
+  await K.writeLifecycleState(quarantineKeyForFamily(state.change_family), record);
+  await K.karmaRecord({
+    event: "deployment_review_quarantine_written",
+    change_family: state.change_family,
+    rolled_back_version_id: state.active_version_id || null,
+    expires_at_session: record.expires_at_session,
+  });
+  return record;
+}
+
+async function deploymentReviewCycle(K, { phase = "post", events = [] } = {}) {
+  const defaults = await K.getDefaults();
+  if (defaults?.deployment_review?.enabled !== true) {
+    return { handledJobIds: [] };
+  }
+  const sessionCount = (await K.kvGet("session_counter")) || 0;
+  const state = await K.kvGet("deployment_review:state:1") || { status: "idle", generation: 0 };
+  if (!Number.isFinite(Number(state.max_extensions))) {
+    state.max_extensions = Math.max(0, Number(defaults?.deployment_review?.max_extensions || 1));
+  }
+  const callbackJobIds = new Set(
+    (events || [])
+      .filter((event) => event?.type === "job_complete")
+      .map(getEventJobId)
+      .filter(Boolean),
+  );
+  const activeJobId = state.probe_job_id || state.review_job_id || null;
+  const hasMatchingCallback = !!(activeJobId && callbackJobIds.has(activeJobId));
+  const handledJobIds = hasMatchingCallback ? [activeJobId] : [];
+
+  const currentDeploy = await K.kvGet("deploy:current");
+  if (
+    state.active_version_id
+    && currentDeploy?.version_id
+    && currentDeploy.version_id !== state.active_version_id
+    && !state.finalized_at
+  ) {
+    state.status = "completed";
+    state.final_verdict = state.final_verdict || "rollback";
+    state.final_reason = state.final_reason || "external_version_change";
+    state.finalized_at = new Date().toISOString();
+    state.probe_job_id = null;
+    state.review_job_id = null;
+    await K.writeLifecycleState("deployment_review:state:1", state);
+    return { handledJobIds };
+  }
+
+  if (state.status === "probe_dispatched" && (phase !== "pre" || hasMatchingCallback)) {
+    const probeJobId = state.probe_job_id;
+    const ttl = defaults?.deployment_review?.timeout_minutes || defaults?.jobs?.default_ttl_minutes || 120;
+    const age = (Date.now() - new Date(state.probe_dispatched_at).getTime()) / 60000;
+    if (age > ttl) {
+      state.status = "observing";
+      state.extensions_used = (state.extensions_used || 0) + 1;
+      state.probe_job_id = null;
+      state.probe_workdir = null;
+      state.probe_dispatched_at = null;
+      if ((state.extensions_used || 0) > (state.max_extensions || 1)) {
+        await requestDeploymentRollback(K, state, "semantic_regression");
+        state.status = "rollback_requested";
+      }
+      await updateJobRecord(K, probeJobId, "expired");
+      await K.writeLifecycleState("deployment_review:state:1", state);
+      return { handledJobIds };
+    }
+    const result = await readCompletedJobPayload(K, state.probe_job_id, defaults);
+    if (result?.status === "failed") {
+      state.status = "observing";
+      state.extensions_used = (state.extensions_used || 0) + 1;
+      state.probe_job_id = null;
+      state.probe_workdir = null;
+      state.probe_dispatched_at = null;
+      state.failure_reason = result.error;
+      if ((state.extensions_used || 0) > (state.max_extensions || 1)) {
+        await requestDeploymentRollback(K, state, "semantic_regression");
+        state.status = "rollback_requested";
+      }
+      await updateJobRecord(K, probeJobId, "failed");
+      await K.writeLifecycleState("deployment_review:state:1", state);
+      return { handledJobIds };
+    }
+    if (result?.status === "completed") {
+      const output = result.output || {};
+      if (output.target_current_version !== state.active_version_id || !output.spec_path) {
+        state.status = "rollback_requested";
+        state.failure_reason = "probe_result_invalid";
+        await requestDeploymentRollback(K, state, "semantic_regression");
+      } else {
+        state.status = "reviewing";
+        state.observation_artifact_ref = output.observation_artifact_ref || output.batch_summary_path || null;
+        state.probe_spec_path = output.spec_path;
+        state.probe_meta_policy_note_refs = output.meta_policy_note_refs || [];
+        state.probe_summary = output.batch_summary || null;
+      }
+      state.probe_job_id = null;
+      state.probe_workdir = null;
+      state.probe_dispatched_at = null;
+      await updateJobRecord(K, probeJobId, "completed");
+      await K.writeLifecycleState("deployment_review:state:1", state);
+    } else {
+      return { handledJobIds };
+    }
+  }
+
+  if (state.status === "review_dispatched" && (phase !== "pre" || hasMatchingCallback)) {
+    const reviewJobId = state.review_job_id;
+    const ttl = defaults?.deployment_review?.timeout_minutes || defaults?.jobs?.default_ttl_minutes || 120;
+    const age = (Date.now() - new Date(state.review_dispatched_at).getTime()) / 60000;
+    if (age > ttl) {
+      state.extensions_used = (state.extensions_used || 0) + 1;
+      state.status = (state.extensions_used || 0) > (state.max_extensions || 1) ? "rollback_requested" : "observing";
+      state.review_job_id = null;
+      state.review_workdir = null;
+      state.review_dispatched_at = null;
+      if (state.status === "rollback_requested") {
+        await requestDeploymentRollback(K, state, "semantic_regression");
+      }
+      await updateJobRecord(K, reviewJobId, "expired");
+      await K.writeLifecycleState("deployment_review:state:1", state);
+      return { handledJobIds };
+    }
+    const result = await readCompletedJobPayload(K, state.review_job_id, defaults);
+    if (result?.status === "failed") {
+      state.extensions_used = (state.extensions_used || 0) + 1;
+      state.status = (state.extensions_used || 0) > (state.max_extensions || 1) ? "rollback_requested" : "observing";
+      state.failure_reason = result.error;
+      state.review_job_id = null;
+      state.review_workdir = null;
+      state.review_dispatched_at = null;
+      if (state.status === "rollback_requested") {
+        await requestDeploymentRollback(K, state, "semantic_regression");
+      }
+      await updateJobRecord(K, reviewJobId, "failed");
+      await K.writeLifecycleState("deployment_review:state:1", state);
+      return { handledJobIds };
+    }
+    if (result?.status === "completed") {
+      const output = result.output || {};
+      if (!looksLikeDeploymentReviewResult(output) || output.target_current_version !== state.active_version_id) {
+        state.extensions_used = (state.extensions_used || 0) + 1;
+        state.status = (state.extensions_used || 0) > (state.max_extensions || 1) ? "rollback_requested" : "observing";
+        state.failure_reason = "deployment_review_result_invalid";
+        if (state.status === "rollback_requested") {
+          await requestDeploymentRollback(K, state, "semantic_regression");
+        }
+      } else {
+        await K.writeLifecycleState(`deployment_review:result:${state.generation}`, output);
+        if (output.verdict === "keep") {
+          state.status = "completed";
+          state.final_verdict = "keep";
+          state.final_reason = "deployment_review_keep";
+          state.finalized_at = new Date().toISOString();
+        } else if (output.verdict === "rollback") {
+          state.status = "rollback_requested";
+          state.final_verdict = "rollback";
+          state.final_reason = "deployment_review_rollback";
+          await writeDeploymentQuarantine(K, defaults, state, output, sessionCount);
+          await requestDeploymentRollback(K, state, "semantic_regression");
+        } else {
+          state.extensions_used = (state.extensions_used || 0) + 1;
+          if ((state.extensions_used || 0) > (state.max_extensions || 1)) {
+            state.status = "rollback_requested";
+            state.final_verdict = "rollback";
+            state.final_reason = "deployment_review_extend_exhausted";
+            await writeDeploymentQuarantine(K, defaults, state, output, sessionCount);
+            await requestDeploymentRollback(K, state, "semantic_regression");
+          } else {
+            state.status = "observing";
+          }
+        }
+      }
+      state.review_job_id = null;
+      state.review_workdir = null;
+      state.review_dispatched_at = null;
+      await updateJobRecord(K, reviewJobId, "completed");
+      await K.writeLifecycleState("deployment_review:state:1", state);
+    } else {
+      return { handledJobIds };
+    }
+  }
+
+  if (phase === "pre") {
+    return { handledJobIds };
+  }
+
+  if (state.status === "observing") {
+    const dispatch = await dispatchDeploymentReviewProbe(K, defaults, state);
+    if (dispatch) {
+      state.status = "probe_dispatched";
+      state.probe_job_id = dispatch.job_id;
+      state.probe_workdir = dispatch.workdir;
+      state.probe_dispatched_at = new Date().toISOString();
+      await K.writeLifecycleState("deployment_review:state:1", state);
+      await K.karmaRecord({
+        event: "deployment_review_probe_dispatched",
+        job_id: dispatch.job_id,
+        generation: state.generation || 0,
+        active_version_id: state.active_version_id || null,
+      });
+    }
+  } else if (state.status === "reviewing") {
+    const dispatch = await dispatchDeploymentReview(K, defaults, state);
+    if (dispatch) {
+      state.status = "review_dispatched";
+      state.review_job_id = dispatch.job_id;
+      state.review_workdir = dispatch.workdir;
+      state.review_dispatched_at = new Date().toISOString();
+      await K.writeLifecycleState("deployment_review:state:1", state);
+      await K.karmaRecord({
+        event: "deployment_review_dispatched",
+        job_id: dispatch.job_id,
+        generation: state.generation || 0,
+        active_version_id: state.active_version_id || null,
+      });
+    }
+  }
+
+  return { handledJobIds };
 }
 
 async function dr2Cycle(K, { phase = "post", events = [] } = {}) {
@@ -2848,7 +3336,7 @@ const BUCKET_MAP = [
   [['karma:'], 'sessions'],
   [['session_request:'], 'requests'],
   [['desire:', 'pattern:', 'experience:', 'tactic:', 'identification:'], 'mind'],
-  [['dr:', 'dr2:', 'reflect:', 'last_reflect'], 'reflections'],
+  [['dr:', 'dr2:', 'deployment_review:', 'reflect:', 'last_reflect'], 'reflections'],
   [['chat:', 'outbox:', 'conversation_index:'], 'chats'],
   [['contact:', 'contact_platform:'], 'contacts'],
 ];
@@ -2887,9 +3375,19 @@ export async function run(K, { crashData, balances, events }) {
     }
   })();
 
+  const preDeploymentReview = await (async () => {
+    try {
+      return await deploymentReviewCycle(K, { phase: "pre", events });
+    } catch (e) {
+      await K.karmaRecord({ event: "deployment_review_cycle_error", phase: "pre", error: e.message, stack: e.stack?.slice(0, 500) });
+      return { handledJobIds: [] };
+    }
+  })();
+
   const handledJobIds = new Set([
     ...(preDr?.handledJobIds || []),
     ...(preDr2?.handledJobIds || []),
+    ...(preDeploymentReview?.handledJobIds || []),
   ]);
   const actEvents = handledJobIds.size > 0
     ? events.filter(event => !(event.type === "job_complete" && handledJobIds.has(getEventJobId(event))))
@@ -2929,5 +3427,11 @@ export async function run(K, { crashData, balances, events }) {
     await dr2Cycle(K, { phase: "post", events });
   } catch (e) {
     await K.karmaRecord({ event: "dr2_cycle_error", phase: "post", error: e.message, stack: e.stack?.slice(0, 500) });
+  }
+
+  try {
+    await deploymentReviewCycle(K, { phase: "post", events });
+  } catch (e) {
+    await K.karmaRecord({ event: "deployment_review_cycle_error", phase: "post", error: e.message, stack: e.stack?.slice(0, 500) });
   }
 }

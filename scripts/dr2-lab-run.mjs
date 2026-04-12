@@ -579,6 +579,7 @@ async function main(argv = process.argv.slice(2)) {
       lab_result_path: bundledLabResultPath,
       branch_name: labResult.branch || null,
       promotion_recommendation: labResult.promotion_recommendation || "reject",
+      comparison_summary: labResult.comparison_summary || null,
       hypothesis_hash: labResult.hypothesis_hash || null,
       validated_changes_hash: labResult.validated_changes_hash || null,
       validated_changes: labResult.validated_changes || null,
