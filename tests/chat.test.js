@@ -101,6 +101,50 @@ describe("runTurn", () => {
     expect(result.reason).toBe("not relevant");
   });
 
+  it("blocks inbound replies that leak internal mechanics", async () => {
+    K.callLLM = vi.fn(async () => makeLLMResponse(null, [
+      { id: "tc_1", function: { name: "send", arguments: '{"message":"The carry-forward for desire:serve is still active."}' } },
+    ]));
+
+    const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Any update?")]);
+
+    expect(result).toEqual({
+      action: "discarded",
+      reason: "internal_mechanics_blocked",
+    });
+    expect(K.executeAdapter).not.toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "comms_internal_mechanics_blocked",
+      mode: "inbound",
+      markers: expect.arrayContaining(["carry-forward", "desire-key"]),
+    }));
+  });
+
+  it("blocks internal sends that leak internal mechanics", async () => {
+    K.callLLM = vi.fn(async () => makeLLMResponse(null, [
+      {
+        id: "tc_1",
+        function: {
+          name: "send",
+          arguments: '{"message":"The carry-forward directive for desire:service is still active, and circuit-breaker pressure is rising."}',
+        },
+      },
+    ]));
+
+    const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInternalTurn("deliver update")]);
+
+    expect(result).toEqual({
+      action: "discarded",
+      reason: "internal_mechanics_blocked",
+    });
+    expect(K.executeAdapter).not.toHaveBeenCalled();
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "comms_internal_mechanics_blocked",
+      mode: "internal",
+      markers: expect.arrayContaining(["carry-forward", "desire-key", "circuit-breaker"]),
+    }));
+  });
+
   it("tracks inbound_cost and internal_cost separately", async () => {
     K.callLLM = vi.fn(async () => makeLLMResponse(null, [
       { id: "tc_1", function: { name: "send", arguments: '{"message":"ok"}' } },

@@ -30,6 +30,16 @@ async function loadPatterns(K) {
   return patterns;
 }
 
+async function loadIdentifications(K) {
+  const list = await K.kvList({ prefix: "identification:" });
+  const identifications = {};
+  for (const entry of list.keys) {
+    const val = await K.kvGet(entry.name);
+    if (val) identifications[entry.name] = val;
+  }
+  return identifications;
+}
+
 // ── Plan prompt vars ────────────────────────────────────────
 
 const COMMS_TOOLS = new Set(["send_slack", "send_whatsapp", "send_email", "check_email"]);
@@ -73,6 +83,60 @@ function buildCircumstances(events, balances, crashData) {
   return circumstances;
 }
 
+function formatIdentificationPlannerLine(key, value) {
+  const strength = typeof value?.strength === "number"
+    ? ` (strength=${value.strength.toFixed(2)})`
+    : "";
+  return `- ${key}: ${value?.identification || ""}${strength}`;
+}
+
+function extractIdentificationTerms(key, value) {
+  const text = `${String(key || "").replace(/^identification:/, "").replace(/[-_:]+/g, " ")} ${value?.identification || ""}`
+    .toLowerCase();
+  return [...new Set(
+    text
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean)
+      .filter(token => token.length >= 4)
+  )];
+}
+
+function collectSessionSurfaceText({ ledger, review }) {
+  const parts = [
+    ledger?.plan?.action,
+    ledger?.plan?.success,
+    ledger?.plan?.reason,
+    ledger?.final_text,
+    review?.assessment,
+    review?.narrative,
+    review?.accomplished,
+    ...(Array.isArray(review?.key_findings) ? review.key_findings : []),
+  ];
+  for (const call of ledger?.tool_calls || []) {
+    parts.push(call?.tool);
+    if (typeof call?.input === "string") parts.push(call.input);
+    else if (call?.input != null) parts.push(JSON.stringify(call.input));
+    if (typeof call?.output === "string") parts.push(call.output);
+    else if (call?.output != null) parts.push(JSON.stringify(call.output));
+  }
+  return parts.filter(Boolean).join(" ").toLowerCase();
+}
+
+function inferExercisedIdentificationKeys(identifications, context) {
+  const surfaceText = collectSessionSurfaceText(context);
+  if (!surfaceText) return [];
+
+  const matches = [];
+  for (const [key, record] of Object.entries(identifications || {})) {
+    if (key === "identification:working-body") continue;
+    const terms = extractIdentificationTerms(key, record);
+    if (terms.length === 0) continue;
+    const hitCount = terms.filter(term => surfaceText.includes(term)).length;
+    if (hitCount >= 2) matches.push(key);
+  }
+  return matches;
+}
+
 // ── Embedding cache helper ───────────────────────────────────
 
 async function cacheEmbeddings(K, entities, textField, model, config) {
@@ -110,7 +174,7 @@ async function cacheEmbeddings(K, entities, textField, model, config) {
 
 // ── Plan phase ──────────────────────────────────────────────
 
-async function planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig }) {
+async function planPhase(K, { desires, patterns, identifications, circumstances, priorActions, defaults, modelsConfig }) {
   const model = await K.resolveModel(defaults?.act?.model || "sonnet");
   const planPrompt = await K.kvGet("prompt:plan");
   const systemPrompt = planPrompt
@@ -122,6 +186,18 @@ async function planPhase(K, { desires, patterns, circumstances, priorActions, de
     "[PATTERNS]", formatPatterns(patterns), "",
     "[CIRCUMSTANCES]", formatCircumstances(circumstances),
   ];
+  if (defaults?.identity?.enabled === true) {
+    const plannerIdentifications = Object.entries(identifications || {})
+      .filter(([key]) => key !== "identification:working-body")
+      .sort(([, a], [, b]) => Number(b?.strength || 0) - Number(a?.strength || 0))
+      .slice(0, defaults?.identity?.max_planner_items || 5);
+    if (plannerIdentifications.length) {
+      sections.push("", "[IDENTIFICATIONS]");
+      for (const [key, value] of plannerIdentifications) {
+        sections.push(formatIdentificationPlannerLine(key, value));
+      }
+    }
+  }
   if (priorActions?.length) {
     sections.push("", "[PRIOR ACTIONS THIS SESSION]");
     for (const pa of priorActions) {
@@ -314,9 +390,13 @@ async function reviewPhase(K, { ledger, evalResult, defaults }) {
 
 // ── Memory writes ───────────────────────────────────────────
 
-async function writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber, cycle }) {
+async function writeMemory(K, { ledger, evalResult, review, desires, patterns, identifications, inferenceConfig, executionId, sessionNumber, cycle }) {
   const now = new Date().toISOString();
   const cap = (s, n = 500) => s && s.length > n ? s.slice(0, n) + '…' : s;
+  const exercisedIdentificationKeys = inferExercisedIdentificationKeys(identifications, {
+    ledger,
+    review,
+  });
 
   // Action record — structured audit trail
   await K.kvWriteSafe(`action:${ledger.action_id}`, {
@@ -339,11 +419,25 @@ async function writeMemory(K, { ledger, evalResult, review, desires, patterns, i
       method: evalResult.eval_method,
       tool_outcomes: evalResult.tool_outcomes,
     },
+    ...(exercisedIdentificationKeys.length ? { exercised_identifications: exercisedIdentificationKeys } : {}),
     review: review ? {
       assessment: review.assessment,
       narrative: review.narrative,
     } : null,
   });
+
+  if (Object.keys(identifications || {}).length > 0) {
+    const touched = new Set(exercisedIdentificationKeys);
+    if (identifications["identification:working-body"]) {
+      touched.add("identification:working-body");
+    }
+    for (const key of touched) {
+      const result = await K.updateIdentificationLastExercised?.(key, now);
+      if (result && !result.ok) {
+        await K.karmaRecord({ event: "identification_exercise_write_failed", key, error: result.error });
+      }
+    }
+  }
 
   // Pattern strength updates — from eval's per-pattern surprise scores
   if (evalResult.pattern_scores) {
@@ -432,6 +526,7 @@ async function actCycle(K, { crashData, balances, events }) {
   // 2. Snapshot desires and patterns
   let desires = await loadDesires(K);
   let patterns = await loadPatterns(K);
+  const identifications = defaults?.identity?.enabled === true ? await loadIdentifications(K) : {};
 
   // 2b. Cache embeddings for Tier 1 relevance filtering
   if (inferenceConfig) {
@@ -487,7 +582,7 @@ async function actCycle(K, { crashData, balances, events }) {
     }
 
     // 6b. Plan phase
-    const plan = await planPhase(K, { desires, patterns, circumstances, priorActions, defaults, modelsConfig });
+    const plan = await planPhase(K, { desires, patterns, identifications, circumstances, priorActions, defaults, modelsConfig });
     if (!plan) break; // parse failure
     if (plan.no_action) {
       await K.karmaRecord({ event: "plan_no_action", reason: plan.reason, cycle });
@@ -508,7 +603,7 @@ async function actCycle(K, { crashData, balances, events }) {
         narrative: `No action taken: ${plan.reason}`,
         salience_estimate: evalResult.salience || 0,
       };
-      await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+      await writeMemory(K, { ledger: noActionLedger, evalResult, review: syntheticReview, desires, patterns, identifications, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
       break;
     }
@@ -525,7 +620,7 @@ async function actCycle(K, { crashData, balances, events }) {
     const review = await reviewPhase(K, { ledger, evalResult, defaults });
 
     // 6f. Memory writes
-    await writeMemory(K, { ledger, evalResult, review, desires, patterns, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
+    await writeMemory(K, { ledger, evalResult, review, desires, patterns, identifications, inferenceConfig, executionId, sessionNumber: sessionCount + 1, cycle });
 
     cyclesRun++;
 
@@ -716,7 +811,7 @@ async function dispatchDr(K, defaults) {
         type: "cc_analysis",
         prompt,
         context_keys: [
-          "pattern:*", "experience:*", "desire:*",
+          "pattern:*", "experience:*", "desire:*", "identification:*",
           "principle:*", "config:defaults",
           "reflect:1:*", "last_reflect",
         ],
@@ -781,12 +876,21 @@ async function pollJobResult(K, state, defaults) {
 
 async function applyDrResults(K, state, output) {
   const executionId = await K.getExecutionId();
+  const defaults = typeof K.getDefaults === "function" ? await K.getDefaults() : {};
+  const identityEnabled = defaults?.identity?.enabled === true;
 
   const ops = (output.kv_operations || []).filter(op =>
-    op.key?.startsWith("pattern:") || op.key?.startsWith("desire:")
+    op.key?.startsWith("pattern:")
+    || op.key?.startsWith("desire:")
+    || (identityEnabled && op.key?.startsWith("identification:"))
   );
 
   const blocked = [];
+  if (!identityEnabled) {
+    for (const op of (output.kv_operations || []).filter(item => item.key?.startsWith("identification:"))) {
+      blocked.push({ key: op.key, error: "identity_review_disabled" });
+    }
+  }
   for (const op of ops) {
     // DR output uses { key, value } for writes, { key, op: "delete" } for deletes
     const gatedOp = op.op === "delete"
@@ -836,6 +940,7 @@ async function applyDrResults(K, state, output) {
     reflection: output.reflection || "",
     desires_changed: ops.filter(o => o.key?.startsWith("desire:")).length,
     patterns_changed: ops.filter(o => o.key?.startsWith("pattern:")).length,
+    identifications_changed: ops.filter(o => o.key?.startsWith("identification:")).length,
   });
 }
 
@@ -857,7 +962,7 @@ const BUCKET_MAP = [
   [['session_counter', 'cache:session_ids'], 'sessions'],
   [['action:'], 'sessions'],
   [['karma:'], 'sessions'],
-  [['desire:', 'pattern:', 'experience:'], 'mind'],
+  [['desire:', 'pattern:', 'experience:', 'identification:'], 'mind'],
   [['dr:', 'reflect:', 'last_reflect'], 'reflections'],
   [['chat:', 'outbox:', 'conversation_index:'], 'chats'],
   [['contact:', 'contact_platform:'], 'contacts'],
