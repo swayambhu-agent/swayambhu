@@ -77,7 +77,7 @@ function ReflectionsTab({ patronKey, reflectionsRev }) {
       });
   }, [selectedDr, patronKey]);
 
-  if (loading) return <div className="p-8 text-gray-500 text-sm">Loading deep reflect sessions...</div>;
+  if (loading) return <div className="p-8 text-gray-500 text-sm">Loading DR-1 sessions...</div>;
   if (drSessions.length === 0) return <div className="p-8 text-gray-500 text-sm">No deep reflect sessions yet</div>;
 
   const strengthColor = (s) => s > 0.7 ? '#22c55e' : s > 0.3 ? '#f59e0b' : '#ef4444';
@@ -97,7 +97,7 @@ function ReflectionsTab({ patronKey, reflectionsRev }) {
     <div className="flex flex-col h-full">
       {/* DR selector bar */}
       <div className="px-4 py-2 bg-bg-panel border-b border-border flex flex-wrap items-start md:items-center gap-2 text-xs flex-shrink-0">
-        <span className="text-purple-400 font-semibold">Deep Reflect</span>
+        <span className="text-purple-400 font-semibold">DR-1</span>
         <select
           value={selectedDr || ''}
           onChange={e => setSelectedDr(e.target.value)}

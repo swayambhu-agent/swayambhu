@@ -1,5 +1,20 @@
 # Cognitive Tiers and Desire Properties
 
+## Staleness Note (2026-04-12)
+
+This document is partially stale against the live code base.
+
+Concrete drift:
+
+- it describes tactic loading/injection as a kernel responsibility
+- current code explicitly keeps tactics out of kernel loading and injects them
+  from userspace planning instead
+- parts of the implementation-scope table should therefore not be treated as
+  current source of truth for runtime ownership boundaries
+
+Keep this document as historical design context, not as the authoritative map
+of current code.
+
 Two changes to the cognitive architecture: a three-tier value system
 and formal properties of desire (expansion, always-positive,
 append-only).

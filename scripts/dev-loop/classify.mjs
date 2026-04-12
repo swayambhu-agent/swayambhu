@@ -55,6 +55,16 @@ export function mergeEvidence(issue, newEvidence) {
 // ── Audit functions ─────────────────────────────────────────
 
 const AVOIDANCE_WORDS = /\b(avoid|stop|prevent|don't|never|reduce|eliminate)\b/i;
+const EXPERIENCE_INTERNAL_REASONING = /\bReason:\b|\b(carry-forward|carry forward|desire:|pattern:|tactic:)\b/i;
+const TACTIC_REFLECTION_WORDS = /\b(reflect|reflection|deep-reflect|review|plan reason)\b/i;
+const TACTIC_META_POLICY_WORDS = /\b(idle[- ]streak|no_action_streak|circuit-breaker pressure|fresh experience|internal_only|external anchors?|wake path)\b/i;
+const TACTIC_META_POLICY_VERBS = /\b(skip|count(?:ing)?|coalesce|inspect|route)\b/i;
+const CARRY_FORWARD_META_POLICY = /\b(idle[- ]streak|circuit-breaker|fresh experience|internal_only|pattern:|tactic:|monitoring\/coalescing|route it through|coalesce|apply pattern)\b/i;
+const OUTBOUND_INTERNAL_RUNTIME = /\b(carry-forward|carry forward|desire:|pattern:|tactic:|no_action|idle[- ]streak|circuit-breaker|hold contract|dev_loop|debug\/probe|probe wake)\b/i;
+
+function textSnippet(text, max = 72) {
+  return String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
+}
 
 export function auditDesires(desires) {
   const issues = [];
@@ -132,6 +142,39 @@ export function auditPatterns(patterns) {
   return issues;
 }
 
+export function auditTactics(tactics) {
+  const issues = [];
+  for (const t of tactics) {
+    const key = t.key || t.id || "unknown";
+    const desc = t.description || "";
+
+    if (TACTIC_REFLECTION_WORDS.test(desc)) {
+      issues.push(
+        createIssue({
+          summary: `Tactic ${key} appears to govern reflection/review instead of act-time behavior`,
+          locus: "userspace",
+          severity: "medium",
+          evidenceQuality: "strong",
+          confidence: 0.9,
+        }),
+      );
+    }
+
+    if (TACTIC_META_POLICY_WORDS.test(desc) && TACTIC_META_POLICY_VERBS.test(desc)) {
+      issues.push(
+        createIssue({
+          summary: `Tactic ${key} appears to smuggle runtime or memory policy into the tactic layer`,
+          locus: "userspace",
+          severity: "medium",
+          evidenceQuality: "moderate",
+          confidence: 0.8,
+        }),
+      );
+    }
+  }
+  return issues;
+}
+
 export function auditExperiences(experiences) {
   const issues = [];
 
@@ -166,8 +209,107 @@ export function auditExperiences(experiences) {
         }),
       );
     }
+
+    if (EXPERIENCE_INTERNAL_REASONING.test(observation)) {
+      issues.push(
+        createIssue({
+          summary: `Experience ${key} observation appears to contain narrative or internal reasoning: "${textSnippet(observation)}"`,
+          locus: "userspace",
+          severity: "medium",
+          evidenceQuality: "strong",
+          confidence: 0.9,
+        }),
+      );
+    }
   }
   return issues;
+}
+
+export function auditCarryForward(lastReflect) {
+  const issues = [];
+  for (const item of lastReflect?.carry_forward || []) {
+    const text = `${item.item || ""} ${item.why || ""}`.trim();
+    if (!text) continue;
+    if (CARRY_FORWARD_META_POLICY.test(text)) {
+      issues.push(
+        createIssue({
+          summary: `Carry-forward item ${item.id || "unknown"} appears to smuggle runtime/meta-policy instead of a concrete next step: "${textSnippet(item.item || text)}"`,
+          locus: "userspace",
+          severity: "medium",
+          evidenceQuality: "moderate",
+          confidence: 0.8,
+        }),
+      );
+    }
+  }
+  return issues;
+}
+
+export function auditActions(actions) {
+  const issues = [];
+  for (const action of actions) {
+    const key = action.key || action.id || action.action_id || "unknown";
+    const isRequestMessage = action.plan?.action === "request_message"
+      || (Array.isArray(action.tool_calls) && action.tool_calls.some((call) => call.tool === "request_message"));
+    if (!isRequestMessage) continue;
+
+    const message = action.plan?.detail?.message
+      || action.plan?.detail?.content
+      || "";
+
+    if (message && OUTBOUND_INTERNAL_RUNTIME.test(message)) {
+      issues.push(
+        createIssue({
+          summary: `Outbound message in ${key} appears to leak internal runtime/cognitive vocabulary: "${textSnippet(message)}"`,
+          locus: "userspace",
+          severity: "high",
+          evidenceQuality: "strong",
+          confidence: 0.95,
+        }),
+      );
+    }
+  }
+  return issues;
+}
+
+export function auditMetaPolicyNotes(reflections) {
+  const issues = [];
+  let totalNotes = 0;
+  const noteRefs = [];
+
+  for (const [key, reflection] of Object.entries(reflections || {})) {
+    const notes = Array.isArray(reflection?.meta_policy_notes) ? reflection.meta_policy_notes : [];
+    totalNotes += notes.length;
+    notes.forEach((note, index) => {
+      noteRefs.push(`${key}::${note?.slug || index}`);
+      const hasWrongTargetReview = note?.target_review != null && note.target_review !== "userspace_review";
+      const hasWrongNonLive = note?.non_live != null && note.non_live !== true;
+      if (hasWrongTargetReview || hasWrongNonLive) {
+        issues.push(
+          createIssue({
+            summary: `Meta-policy note ${key}[${index}] is not clearly marked non-live userspace_review output`,
+            locus: "userspace",
+            severity: "medium",
+            evidenceQuality: "strong",
+            confidence: 0.9,
+          }),
+        );
+      }
+      if (!note?.summary || !note?.rationale || !note?.proposed_experiment) {
+        issues.push(
+          createIssue({
+            summary: `Meta-policy note ${key}[${index}] is missing required explanatory fields`,
+            locus: "userspace",
+            severity: "low",
+            evidenceQuality: "strong",
+            confidence: 0.85,
+          }),
+        );
+      }
+    });
+  }
+
+  return { issues, totalNotes, noteRefs };
 }
 
 export function auditKarma(karma) {
@@ -274,10 +416,15 @@ export async function runClassify({ baseDir, observation, timestamp }) {
   const toArray = (obj) => Array.isArray(obj) ? obj
     : Object.entries(obj || {}).map(([key, val]) => ({ key, ...val }));
 
+  const metaPolicyAudit = auditMetaPolicyNotes(analysis.reflections || {});
   const allIssues = [
     ...auditDesires(toArray(analysis.desires)),
     ...auditPatterns(toArray(analysis.patterns)),
+    ...auditTactics(toArray(analysis.tactics)),
     ...auditExperiences(toArray(analysis.experiences)),
+    ...auditCarryForward(analysis.last_reflect || {}),
+    ...auditActions(toArray(analysis.actions)),
+    ...metaPolicyAudit.issues,
     ...auditKarma(analysis.karma || {}),
   ];
 
@@ -300,6 +447,8 @@ export async function runClassify({ baseDir, observation, timestamp }) {
     total_issues_found: allIssues.length,
     new_issues: newIssues.length,
     updated_probes: updatedProbes.length,
+    meta_policy_notes_total: metaPolicyAudit.totalNotes,
+    meta_policy_note_refs: metaPolicyAudit.noteRefs,
     issues: allIssues.map(({ id, summary, locus, severity }) => ({
       id,
       summary,

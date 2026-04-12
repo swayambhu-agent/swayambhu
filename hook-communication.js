@@ -191,6 +191,49 @@ function isTrivialAcknowledgement(text) {
   return /^(ok|okay|ok great|great|got it|sounds good|all good|perfect|nice|cool|thanks|thank you|thankyou|awesome|sure|yep|yes|fine)$/.test(normalized);
 }
 
+const INTERNAL_MECHANICS_PATTERNS = [
+  ["carry-forward", /\bcarry[- ]forward\b/i],
+  ["desire-key", /\bdesire:[a-z0-9._-]+\b/i],
+  ["pattern-key", /\bpattern:[a-z0-9._-]+\b/i],
+  ["tactic-key", /\btactic:[a-z0-9._-]+\b/i],
+  ["principle-key", /\bprinciple:[a-z0-9._-]+\b/i],
+  ["no_action", /\bno_action\b/i],
+  ["idle-streak", /\bidle[- ]streak\b/i],
+  ["circuit-breaker", /\bcircuit[- ]breaker\b/i],
+  ["hold-contract", /\bhold contract\b/i],
+  ["dev-loop", /\bdev[_-]?loop\b/i],
+  ["probe-wake", /\bprobe wake\b|\bdebug\/probe\b/i],
+  ["reflect-key", /\breflect:\d+:/i],
+  ["review-note", /\breview_note:[a-z0-9._:-]+\b/i],
+  ["meta-policy-notes", /\bmeta_policy_notes\b/i],
+  ["next-act-context", /\bnext_act_context\b/i],
+  ["last-reflect", /\blast_reflect\b/i],
+  ["session-request-key", /\bsession_request:[a-z0-9._-]+\b/i],
+  ["kv", /\bKV keys?\b|\bkey names?\b/i],
+];
+
+function detectInternalMechanicsLeak(text) {
+  const message = String(text || "");
+  if (!message.trim()) return [];
+  return INTERNAL_MECHANICS_PATTERNS
+    .filter(([, pattern]) => pattern.test(message))
+    .map(([marker]) => marker);
+}
+
+async function applyOutboundMessageGuard(K, conversationId, outcome, { mode }) {
+  if (outcome?.action !== "sent") return outcome;
+  const markers = detectInternalMechanicsLeak(outcome.message);
+  if (!markers.length) return outcome;
+  await K.karmaRecord({
+    event: "comms_internal_mechanics_blocked",
+    conversation: conversationId,
+    mode,
+    reason: outcome.reason,
+    markers,
+  });
+  return { action: "discarded", reason: "internal_mechanics_blocked" };
+}
+
 function parseToolArgs(rawArgs) {
   try {
     return JSON.parse(rawArgs || "{}");
@@ -436,6 +479,8 @@ async function runInboundTurn(K, conversationId, turns) {
       outcome = normalized;
     }
   }
+
+  outcome = await applyOutboundMessageGuard(K, conversationId, outcome, { mode: "inbound" });
 
   if (outcome.action === "sent") {
     const replyTarget = turns[0].reply_target;
@@ -736,6 +781,10 @@ export async function runTurn(K, conversationId, turns) {
   }
 
   // 7. Execute outcome
+  outcome = await applyOutboundMessageGuard(K, conversationId, outcome, {
+    mode: hasInbound ? "inbound" : "internal",
+  });
+
   if (outcome.action === "sent") {
     const replyTarget = turns[0].reply_target;
     await K.executeAdapter(replyTarget.platform, {

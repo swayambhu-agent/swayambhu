@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { generateIndexJS, keyToFilePath } from "../governor/builder.js";
+import { filePathToKey, generateIndexJS, keyToFilePath } from "../governor/builder.js";
 
 // ── 1. generateIndexJS ──────────────────────────────────────
 
@@ -16,6 +16,7 @@ describe("generateIndexJS", () => {
     // Imports
     expect(code).toContain("import { Kernel } from './kernel.js'");
     expect(code).toContain("import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox } from './hook-communication.js'");
+    expect(code).toContain("import { parseJobOutput } from './lib/parse-job-output.js'");
     expect(code).toContain("import * as session from './userspace.js'");
     expect(code).toContain("import * as kv_query from './tools/kv_query.js'");
     expect(code).toContain("import * as web_fetch from './tools/web_fetch.js'");
@@ -39,6 +40,9 @@ describe("generateIndexJS", () => {
     expect(code).toContain("new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS })");
     expect(code).toContain("await kernel.runScheduled()");
     expect(code).toContain("async fetch(request, env, ctx)");
+    expect(code).toContain("url.pathname === '/__wake'");
+    expect(code).toContain("jobMatch && request.method === 'POST'");
+    expect(code).toContain("callback_missing_output");
     expect(code).toContain("handleCommand(K, channel, inbound)");
     expect(code).toContain("ingestInbound(channel, inbound)");
   });
@@ -71,6 +75,17 @@ describe("generateIndexJS", () => {
     }
     expect(depth).toBe(0);
   });
+
+  it("sanitizes module identifiers that contain hyphens", () => {
+    const code = generateIndexJS({
+      tools: [],
+      providers: ["email-relay"],
+      channels: [],
+    });
+
+    expect(code).toContain("import * as email_relay from './providers/email-relay.js'");
+    expect(code).toContain("'provider:email-relay': email_relay,");
+  });
 });
 
 // ── 2. keyToFilePath ─────────────────────────────────────────
@@ -96,10 +111,36 @@ describe("keyToFilePath", () => {
     expect(keyToFilePath("hook:session:code")).toBe("userspace.js");
   });
 
+  it("maps kernel source code keys to root paths", () => {
+    expect(keyToFilePath("kernel:source:kernel.js")).toBe("kernel.js");
+    expect(keyToFilePath("kernel:source:hook-communication.js")).toBe("hook-communication.js");
+    expect(keyToFilePath("kernel:source:authority-policy.js")).toBe("authority-policy.js");
+  });
+
   it("returns null for non-code keys", () => {
     expect(keyToFilePath("config:defaults")).toBeNull();
     expect(keyToFilePath("tool:kv_query:meta")).toBeNull();
     expect(keyToFilePath("prompt:act")).toBeNull();
+  });
+});
+
+describe("filePathToKey", () => {
+  it("maps root code paths back to code keys", () => {
+    expect(filePathToKey("userspace.js")).toBe("hook:session:code");
+    expect(filePathToKey("reflect.js")).toBe("hook:reflect:code");
+    expect(filePathToKey("kernel.js")).toBe("kernel:source:kernel.js");
+    expect(filePathToKey("authority-policy.js")).toBe("kernel:source:authority-policy.js");
+  });
+
+  it("maps module paths back to code keys", () => {
+    expect(filePathToKey("tools/kv_query.js")).toBe("tool:kv_query:code");
+    expect(filePathToKey("providers/llm.js")).toBe("provider:llm:code");
+    expect(filePathToKey("channels/slack.js")).toBe("channel:slack:code");
+  });
+
+  it("returns null for non-code paths", () => {
+    expect(filePathToKey("prompts/plan.md")).toBeNull();
+    expect(filePathToKey("README.md")).toBeNull();
   });
 });
 

@@ -1,0 +1,26 @@
+{
+  "question": "Critique the attached explicit algorithm draft for how deep-reflect should create and manage identification:* entries. Your job is to find ambiguity, circularity, semantic overlap, hidden failure modes, or rules that are still too vague for deep-reflect to apply reliably. Focus especially on whether the algorithm sharply distinguishes identification from principle, desire, tactic, and experience; whether the creation gates are sufficient and non-circular; whether the revision and retirement rules are operational; and whether any rule is likely to create accidental or overclaimed identifications. If useful, propose a revised algorithm or sharper wording.",
+  "notes": [
+    "Treat this as a concrete rule review, not a broad architecture redesign.",
+    "Prefer explicit algorithmic corrections over philosophy.",
+    "The target is something deep-reflect could actually follow later."
+  ],
+  "files": [
+    {
+      "path": "docs/superpowers/plans/2026-04-09-identification-algorithm-draft.md",
+      "kind": "spec"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-04-09-cognitive-upgrade-identity-personality-thought.md",
+      "kind": "spec"
+    },
+    {
+      "path": "prompts/deep_reflect.md",
+      "kind": "prompt"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-04-07-cognitive-framework-v2.md",
+      "kind": "spec"
+    }
+  ]
+}

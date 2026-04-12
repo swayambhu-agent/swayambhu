@@ -38,6 +38,21 @@ describe("buildTar", () => {
     const magic = new TextDecoder().decode(tar.slice(257, 262));
     expect(magic).toBe("ustar");
   });
+
+  it("stores long paths using the ustar prefix field", () => {
+    const name = "review_note/userspace_review/x_liveprobe_1775906260280/d1/000/parked-external-block-reopened-without-transition.json";
+    const tar = buildTar([{ name, content: '{"ok":true}' }]);
+    const basename = new TextDecoder().decode(tar.slice(0, 100)).replace(/\0.*$/, "");
+    const prefix = new TextDecoder().decode(tar.slice(345, 500)).replace(/\0.*$/, "");
+    expect(`${prefix}/${basename}`).toBe(name);
+    expect(basename).toBe("parked-external-block-reopened-without-transition.json");
+    expect(prefix).toBe("review_note/userspace_review/x_liveprobe_1775906260280/d1/000");
+  });
+
+  it("throws when a path cannot fit in ustar name fields", () => {
+    const longBasename = "x".repeat(101);
+    expect(() => buildTar([{ name: longBasename, content: "x" }])).toThrow("tar entry path too long");
+  });
 });
 
 describe("packAndEncode", () => {

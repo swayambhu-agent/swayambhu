@@ -5,6 +5,7 @@
 
 import { Kernel } from './kernel.js';
 import { runTurn, ingestInbound, ingestInternal, handleCommand, createOutboxItem, checkOutbox, trySuppressTrivialAcknowledgement, settleOutboxAttempt } from './hook-communication.js';
+import { parseJobOutput } from './lib/parse-job-output.js';
 
 // Hook modules (mutable policy — agent can propose changes)
 import * as session from './userspace.js';
@@ -63,6 +64,14 @@ const PROVIDERS = {
   email: send_email,
   whatsapp: send_whatsapp,
 };
+
+function decodeCallbackBase64(value) {
+  const normalized = String(value || "").replace(/\s+/g, "");
+  if (!normalized) return null;
+  const binary = atob(normalized);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
 
 const CHANNELS = { slack: slackAdapter, whatsapp: whatsappAdapter };
 
@@ -352,6 +361,45 @@ export default {
       job.completed_at = now;
       job.callback_received_at = now;
       job.exit_code = exitCode;
+
+      const hasOutputArtifact = typeof payload?.output_base64 === "string" && payload.output_base64.trim();
+      const hasLabArtifact = typeof payload?.lab_result_base64 === "string" && payload.lab_result_base64.trim();
+      const jobResult = {
+        job_id: jobId,
+        type: job.type,
+        result: null,
+        callback_error: null,
+        lab_result_error: null,
+      };
+
+      if (hasOutputArtifact) {
+        let rawOutput;
+        try {
+          rawOutput = decodeCallbackBase64(payload.output_base64);
+        } catch {
+          jobResult.callback_error = "invalid_output_base64";
+        }
+        if (rawOutput != null) {
+          const { payload: parsedResult, meta } = parseJobOutput(rawOutput);
+          jobResult.result = parsedResult || { raw_output: rawOutput.slice(0, 5000) };
+          if (meta) jobResult.meta = meta;
+        }
+      } else {
+        jobResult.callback_error = "callback_missing_output";
+      }
+
+      if (hasLabArtifact) {
+        try {
+          jobResult.lab_result = JSON.parse(decodeCallbackBase64(payload.lab_result_base64));
+        } catch {
+          jobResult.lab_result_error = "invalid_lab_result_base64";
+        }
+      }
+
+      const resultKey = `job_result:${jobId}`;
+      job.result_key = resultKey;
+      await env.KV.put(resultKey, JSON.stringify(jobResult));
+
       await env.KV.put(`job:${jobId}`, JSON.stringify(job));
 
       const kernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });

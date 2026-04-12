@@ -116,16 +116,19 @@ describe("recordDeployment", () => {
     // KV: version key
     const stored = JSON.parse(kv._store.get("deploy:version:v_test_1"));
     expect(stored.version_id).toBe("v_test_1");
+    expect(stored.deploy_mode).toBe("cloudflare");
 
     // KV: current pointer
     const current = JSON.parse(kv._store.get("deploy:current"));
     expect(current.version_id).toBe("v_test_1");
+    expect(current.deploy_mode).toBe("cloudflare");
 
     // KV: history
     const history = JSON.parse(kv._store.get("deploy:history"));
     expect(history).toHaveLength(1);
     expect(history[0].version_id).toBe("v_test_1");
     expect(history[0].changed_count).toBe(2);
+    expect(history[0].deploy_mode).toBe("cloudflare");
   });
 
   it("prepends to history (newest first)", async () => {
@@ -148,6 +151,18 @@ describe("recordDeployment", () => {
     expect(history[0].version_id).toBe("v_11");
     // Oldest kept should be v_2
     expect(history[9].version_id).toBe("v_2");
+  });
+
+  it("records local deploy mode distinctly", async () => {
+    await recordDeployment(kv, "v_local", ["hook:session:code"], {}, { deploy_mode: "local" });
+
+    const stored = JSON.parse(kv._store.get("deploy:version:v_local"));
+    const current = JSON.parse(kv._store.get("deploy:current"));
+    const history = JSON.parse(kv._store.get("deploy:history"));
+
+    expect(stored.deploy_mode).toBe("local");
+    expect(current.deploy_mode).toBe("local");
+    expect(history[0].deploy_mode).toBe("local");
   });
 });
 
@@ -177,6 +192,24 @@ describe("deploy", () => {
   it("throws on missing credentials", async () => {
     await expect(deploy({}, { "index.js": "export default {}" }))
       .rejects.toThrow("Missing CF_ACCOUNT_ID or CF_API_TOKEN");
+  });
+
+  it("supports explicit local deploy mode without Cloudflare credentials", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn();
+    try {
+      const result = await deploy(
+        { GOVERNOR_DEPLOY_MODE: "local" },
+        { "index.js": "export default {}", "kernel.js": "class Kernel {}" },
+      );
+
+      expect(result.mode).toBe("local");
+      expect(result.files_count).toBe(2);
+      expect(result.main_module).toBe("index.js");
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
   it("sends correct request to CF API", async () => {
@@ -225,6 +258,7 @@ describe("deploy", () => {
       // Result
       expect(result.id).toBe("script_123");
       expect(result.etag).toBe("etag_abc");
+      expect(result.mode).toBe("cloudflare");
       expect(result.deployed_at).toBeTruthy();
     } finally {
       globalThis.fetch = origFetch;

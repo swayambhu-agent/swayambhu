@@ -4,6 +4,26 @@ Date: 2026-04-07
 
 Status: Draft
 
+## Staleness Note (2026-04-12)
+
+This document is partially stale against the live code base.
+
+Concrete drift:
+
+- it still treats `code_stage_requests` as part of the generic review-role
+  mutation surface
+- the current runtime has already moved code-change application onto the
+  governed DR-2 lab path, with `userspace_review` remaining read-only and
+  authoring/staging happening in adjacent lab steps
+- the live runtime now has concrete `dr2:*` lifecycle state and dispatch logic
+  in `userspace.js`, so this document should not be used as the source of
+  truth for current self-modification plumbing
+
+Use these documents instead for the live runtime shape:
+
+- `docs/superpowers/specs/2026-04-10-dr1-dr2-self-modification-handoff-design.md`
+- `docs/superpowers/specs/2026-04-12-authority-policy-refactor-and-proto-dr3.md`
+
 ## Purpose
 
 This document defines how Swayambhu should review and improve itself at the
@@ -119,6 +139,12 @@ Alias in transition language:
 
 Is current userspace functioning well under its current architecture?
 
+Working definition:
+
+- detect whether recent behavior remains coherent with states userspace itself
+  already established
+- repair that incoherence from inside the current architecture when possible
+
 ### Scope
 
 - evaluates actual sessions and recent outcomes
@@ -146,6 +172,8 @@ Is current userspace functioning well under its current architecture?
 - redesigning the userspace architecture
 - replacing the ontology
 - proposing large code-level restructures of userspace
+- explaining the root structural cause once the problem no longer fits cleanly
+  inside current first-order buckets
 
 ## Role 2: Userspace Review
 
@@ -156,6 +184,13 @@ Alias in transition language:
 ### Core question
 
 How should current userspace be improved?
+
+Working definition:
+
+- explain why a flagged divergence became locally reasonable under current
+  userspace
+- identify the smallest structural correction that operational review cannot
+  produce cleanly from inside the current architecture
 
 ### Scope
 
@@ -189,6 +224,20 @@ That means:
 
 - first identify the behavioral defect or opportunity from outcomes
 - then inspect code/prompt/config to localize cause and propose change
+
+The review boundary should stay sharp:
+
+- `DR-1` says what diverged: an earlier declared state versus later behavior
+  that no longer fits it
+- `DR-2` says why that divergence became locally reasonable under current
+  userspace
+
+Useful default cause checks for `DR-2` are:
+
+- malformed or cross-layer declared state
+- stale or incomplete world/state model
+- wrong or missing lifecycle/transition model
+- self-sustaining action pattern independent of progress
 
 ### Allowed changes
 

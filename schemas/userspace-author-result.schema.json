@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["hypothesis", "candidate_changes", "validation", "limits"],
+  "properties": {
+    "review_note_key": {
+      "type": ["string", "null"]
+    },
+    "hypothesis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["kv_put", "kv_patch", "kv_delete", "code_patch"]
+          },
+          "key": { "type": "string" },
+          "value_json": { "type": "string" },
+          "old_string": { "type": "string" },
+          "new_string": { "type": "string" },
+          "target": { "type": "string" },
+          "deliberation": { "type": "string" }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["static_commands", "continuation"],
+      "properties": {
+        "static_commands": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "continuation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "max_sessions", "max_cash_cost"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "max_sessions": { "type": "integer", "minimum": 1 },
+            "max_cash_cost": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_wall_time_minutes"],
+      "properties": {
+        "max_wall_time_minutes": { "type": "number", "minimum": 1 }
+      }
+    },
+    "reasons_not_to_change": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

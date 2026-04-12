@@ -2,7 +2,9 @@
 // Pure functions (detectCompletion, chooseStrategy) are unit-testable.
 // runObserve orchestrates shell commands and is integration-tested only.
 
-import { execSync, spawn } from "child_process";
+import { execFileSync, execSync } from "child_process";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { saveRun } from "./state.mjs";
 import { getDefaultServiceUrls, restartServices } from "./services.mjs";
@@ -100,21 +102,31 @@ export async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_M
   } = deps;
   const deadline = Date.now() + timeoutMs;
   const beforeSet = new Set(beforeIds);
-  const beforeExecutions = await readLastExecutionsFn();
+  const safeRead = async (label, reader, fallback = null) => {
+    try {
+      return await reader();
+    } catch (error) {
+      stdout.write("\n");
+      log(`[OBSERVE] ${label} read failed: ${error.message}`);
+      return fallback;
+    }
+  };
+
+  const beforeExecutions = await safeRead("kernel:last_executions", readLastExecutionsFn, []);
   const beforeExecutionSet = new Set(beforeExecutions.map((execution) => execution.id));
 
   // Phase 1: poll cache:session_ids for a new session ID (session started)
   let newId = null;
   while (Date.now() < deadline) {
-    const currentIds = await readSessionIdsFn();
-    newId = currentIds.find(id => !beforeSet.has(id));
+    const currentIds = await safeRead("cache:session_ids", readSessionIdsFn, null);
+    newId = currentIds?.find(id => !beforeSet.has(id));
     if (newId) {
       stdout.write("\n");
       log(`[OBSERVE] Session started: ${newId}`);
       break;
     }
-    const executions = await readLastExecutionsFn();
-    const execution = executions.find((entry) => !beforeExecutionSet.has(entry.id));
+    const executions = await safeRead("kernel:last_executions", readLastExecutionsFn, null);
+    const execution = executions?.find((entry) => !beforeExecutionSet.has(entry.id));
     if (execution) {
       newId = execution.id;
       stdout.write("\n");
@@ -138,13 +150,23 @@ export async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_M
   // Phase 2: poll kernel:last_executions for terminal outcome with this ID
   // (session completed — clean, crash, or killed)
   while (Date.now() < deadline) {
-    const executions = await readLastExecutionsFn();
-    const completed = executions.find(e => e.id === newId);
+    const executions = await safeRead("kernel:last_executions", readLastExecutionsFn, null);
+    const completed = executions?.find(e => e.id === newId);
     if (completed) {
       log(`[OBSERVE] Session completed: ${newId} (outcome: ${completed.outcome})`);
       // Brief delay for KV writes to propagate through dashboard cache
       await sleepFn(5000);
       return newId;
+    }
+    const supersedingExecution = executions?.find((entry) =>
+      !beforeExecutionSet.has(entry.id) && entry.id !== newId);
+    if (supersedingExecution) {
+      log(
+        `[OBSERVE] Session ${newId} was superseded by completed execution ` +
+        `${supersedingExecution.id} (outcome: ${supersedingExecution.outcome})`,
+      );
+      await sleepFn(5000);
+      return supersedingExecution.id;
     }
     const elapsedSec = Math.round((timeoutMs - (deadline - Date.now())) / 1000);
     const remainingSec = Math.max(0, Math.round((deadline - Date.now()) / 1000));
@@ -162,23 +184,36 @@ export async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_M
 }
 
 function runAnalysis() {
-  const out = execSync(
-    `node ${join(ROOT, "scripts/analyze-sessions.mjs")} --last 1 --source dashboard`,
-    {
-      encoding: "utf8",
-      timeout: 60_000,
-      cwd: ROOT,
-      env: {
-        ...process.env,
-        SWAYAMBHU_DASHBOARD_URL: DASHBOARD_URL,
-        SWAYAMBHU_PATRON_KEY: DASHBOARD_KEY,
-      },
-    },
-  ).trim();
+  const tempDir = mkdtempSync(join(tmpdir(), "swayambhu-observe-"));
+  const outPath = join(tempDir, "analysis.json");
   try {
-    return JSON.parse(out);
-  } catch {
-    return { raw: out };
+    execFileSync(
+      "node",
+      [
+        join(ROOT, "scripts/analyze-sessions.mjs"),
+        "--last", "1",
+        "--source", "dashboard",
+        "--out", outPath,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          SWAYAMBHU_DASHBOARD_URL: DASHBOARD_URL,
+          SWAYAMBHU_PATRON_KEY: DASHBOARD_KEY,
+        },
+      },
+    );
+    const out = readFileSync(outPath, "utf8").trim();
+    try {
+      return JSON.parse(out);
+    } catch {
+      return { raw: out };
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -186,23 +221,19 @@ async function assertDashboardAvailable() {
   await fetchJson(`${DASHBOARD_URL}/health`, { timeoutMs: 10_000 });
 }
 
-function triggerRequest(spec) {
+async function triggerRequest(spec) {
   const method = spec?.method || "GET";
   const body = spec?.body ? JSON.stringify(spec.body) : null;
-  const child = spawn(process.execPath, [
-    "--input-type=module",
-    "-e",
-    `await fetch(${JSON.stringify(spec.url)}, ${JSON.stringify({
-      method,
-      headers: body ? { "Content-Type": "application/json" } : {},
-      body,
-    })});`,
-  ], {
-    cwd: ROOT,
-    detached: true,
-    stdio: "ignore",
+  const response = await fetch(spec.url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body,
+    signal: AbortSignal.timeout(30_000),
   });
-  child.unref();
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`wake trigger failed (${response.status}): ${text || response.statusText}`);
+  }
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -235,10 +266,10 @@ export async function runObserve({
     await assertDashboardAvailable();
     const beforeIds = await readSessionIds();
 
-    // /__wake runs the session asynchronously via the kernel fetch endpoint.
-    // Fire it in a detached child so observe can poll independently.
+    // /__wake returns immediately after queueing the execution, so a direct
+    // fetch is simpler and more reliable than a detached child process.
     console.log(`[OBSERVE] Triggering session (${beforeIds.length} sessions before)`);
-    triggerRequest(strategy.trigger);
+    await triggerRequest(strategy.trigger);
 
     // Poll until a new session ID appears in cache:session_ids (10 min timeout).
     // This only moves when the act lifecycle actually starts.

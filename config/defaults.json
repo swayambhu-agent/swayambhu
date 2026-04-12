@@ -77,8 +77,47 @@
     "ttl_minutes": 60,
     "max_stale_sessions": 5
   },
+  "dr2": {
+    "enabled": false,
+    "cooldown_sessions": 3,
+    "review_runner": "codex",
+    "adversarial_runner": "claude",
+    "author_runner": "codex",
+    "review_timeout_ms": 600000,
+    "adversarial_timeout_ms": 600000,
+    "author_timeout_ms": 600000,
+    "adversarial_max_rounds": 3,
+    "timeout_minutes": 30,
+    "source_ref": "current",
+    "repo_dir": "/home/swami/swayambhu/repo",
+    "max_processed_note_keys": 50
+  },
+  "dr3": {
+    "review_runner": "codex",
+    "adversarial_runner": "claude",
+    "author_runner": "codex",
+    "review_timeout_ms": 600000,
+    "adversarial_timeout_ms": 600000,
+    "author_timeout_ms": 600000,
+    "lab_timeout_ms": 600000,
+    "adversarial_max_rounds": 3,
+    "source_ref": "current",
+    "allow_authority_widening": false
+  },
+  "identity": {
+    "enabled": false,
+    "max_planner_items": 5,
+    "environment_roots": ["/home/swami", "/home/swayambhu"],
+    "working_body_prefixes": [
+      "/home/swami/swayambhu",
+      "/home/swami/swayambhu/repo",
+      "/home/swayambhu/reasoning",
+      "/home/swayambhu/jobs"
+    ]
+  },
   "jobs": {
     "base_url": "https://akash.swayambhu.dev",
+    "callback_url": "https://swayambhu.dev",
     "base_dir": "/home/swayambhu/jobs",
     "runner": "codex",
     "runner_model": "gpt-5.4",

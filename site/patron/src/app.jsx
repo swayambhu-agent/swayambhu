@@ -4,6 +4,7 @@ import { HB_NORMAL, HB_HIDDEN } from './lib/config.js';
 import LoginScreen from './components/LoginScreen.jsx';
 import TimelineTab, { ContextPanel, DraggableDivider } from './components/TimelineTab.jsx';
 import ReflectionsTab from './components/ReflectionsTab.jsx';
+import Dr2Tab from './components/Dr2Tab.jsx';
 import MindTab from './components/MindTab.jsx';
 import ChatTab from './components/ChatTab.jsx';
 import ContactsTab from './components/ContactsTab.jsx';
@@ -179,7 +180,8 @@ export default function App() {
     { id: 'chat', label: 'Chat' },
     { id: 'contacts', label: 'Contacts' },
     { id: 'kv', label: 'Index' },
-    { id: 'reflections', label: 'Deep Reflect' },
+    { id: 'reflections', label: 'DR-1' },
+    { id: 'dr2', label: 'DR-2' },
     { id: 'mutations', label: 'Modifications' },
     { id: 'mind', label: 'Mind' },
   ];
@@ -312,6 +314,9 @@ export default function App() {
         </div>
         <div style={{ display: activeTab === 'reflections' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
           <ReflectionsTab patronKey={patronKey} reflectionsRev={reflectionsRev} />
+        </div>
+        <div style={{ display: activeTab === 'dr2' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
+          <Dr2Tab patronKey={patronKey} reflectionsRev={reflectionsRev} />
         </div>
         <div style={{ display: activeTab === 'mutations' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
           <MutationsTab patronKey={patronKey} />

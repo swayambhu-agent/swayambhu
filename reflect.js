@@ -1,6 +1,6 @@
 // Swayambhu — Reflection Policy
 // Session reflect, deep reflect (recursive, depth-aware), scheduling, default prompts.
-// Mutable — the agent can stage changes to this file via K.stageCode().
+// Mutable — runtime code changes should flow through DR-2 lab validation.
 //
 // Receives K (kernel interface) for all kernel interactions.
 // getMaxSteps and getReflectModel logic inlined (cognitive policy, not kernel).
@@ -13,6 +13,15 @@ function isValidISODate(str) {
   if (!str || typeof str !== 'string') return false;
   const d = new Date(str);
   return !isNaN(d.getTime()) && str.length >= 10;
+}
+
+function normalizeCarryForwardDesireKey(desireKey, validDesireKeys) {
+  if (desireKey == null) return { valid: true, value: undefined, clear: true };
+  if (typeof desireKey !== "string") return { valid: false, attempted: desireKey };
+  const trimmed = desireKey.trim();
+  if (!trimmed) return { valid: true, value: undefined, clear: true };
+  if (validDesireKeys.has(trimmed)) return { valid: true, value: trimmed };
+  return { valid: false, attempted: trimmed };
 }
 
 // ── Pattern manifest ────────────────────────────────────────
@@ -86,6 +95,7 @@ export async function executeReflect(K, state, step) {
   const initialContext = JSON.stringify({
     karma,
     sessionCost,
+    active_desire_keys: Object.keys(state.desires || {}),
     carry_forward: lastReflect?.carry_forward || [],
   });
 
@@ -159,6 +169,7 @@ export async function executeReflect(K, state, step) {
 
   const nowIso = new Date().toISOString();
   const defaultExpiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+  const validDesireKeys = new Set(Object.keys(state.desires || {}));
 
   let carry_forward = (prevLastReflect?.carry_forward || []).map(item => ({ ...item }));
   if (output.carry_forward_updates) {
@@ -172,6 +183,18 @@ export async function executeReflect(K, state, step) {
         missedCarryForward.push(update);
         continue;
       }
+      let desireKeyUpdate = null;
+      if ("desire_key" in update) {
+        desireKeyUpdate = normalizeCarryForwardDesireKey(update.desire_key, validDesireKeys);
+        if (!desireKeyUpdate.valid) {
+          await K.karmaRecord({
+            event: "carry_forward_invalid_desire_key_ignored",
+            source: "update",
+            id: update.id,
+            desire_key: desireKeyUpdate.attempted,
+          });
+        }
+      }
       Object.assign(existing, {
         ...("item" in update ? { item: update.item } : {}),
         ...("why" in update ? { why: update.why } : {}),
@@ -179,10 +202,17 @@ export async function executeReflect(K, state, step) {
         ...("status" in update ? { status: update.status } : {}),
         ...("updated_at" in update ? { updated_at: update.updated_at } : { updated_at: nowIso }),
         ...("expires_at" in update ? { expires_at: update.expires_at } : {}),
-        ...("desire_key" in update ? { desire_key: update.desire_key } : {}),
         ...("result" in update ? { result: update.result } : {}),
         ...("reason" in update ? { reason: update.reason } : {}),
+        ...("blocked_on" in update ? { blocked_on: update.blocked_on } : {}),
+        ...("wake_condition" in update ? { wake_condition: update.wake_condition } : {}),
       });
+      if (!existing.blocked_on) delete existing.blocked_on;
+      if (!existing.wake_condition) delete existing.wake_condition;
+      if (desireKeyUpdate?.valid) {
+        if (desireKeyUpdate.clear) delete existing.desire_key;
+        else existing.desire_key = desireKeyUpdate.value;
+      }
       if (update.status === "done") existing.done_session = sessionId;
     }
     if (missedCarryForward.length) {
@@ -191,11 +221,22 @@ export async function executeReflect(K, state, step) {
   }
   if (output.new_carry_forward) {
     for (const item of output.new_carry_forward) {
+      const { desire_key: _rawDesireKey, ...itemWithoutDesireKey } = item;
+      const desireKeyResult = normalizeCarryForwardDesireKey(item.desire_key, validDesireKeys);
+      if (!desireKeyResult.valid) {
+        await K.karmaRecord({
+          event: "carry_forward_invalid_desire_key_ignored",
+          source: "new",
+          id: item.id,
+          desire_key: desireKeyResult.attempted,
+        });
+      }
+      const normalizedDesireKey = desireKeyResult.valid ? desireKeyResult.value : undefined;
       // Dedup: skip if an active item with the same desire_key already exists
-      const existingActive = item.desire_key &&
+      const existingActive = normalizedDesireKey &&
         carry_forward.find(cf =>
           cf.status === "active" &&
-          cf.desire_key === item.desire_key &&
+          cf.desire_key === normalizedDesireKey &&
           cf.id !== item.id
         );
       if (existingActive) {
@@ -203,12 +244,13 @@ export async function executeReflect(K, state, step) {
           event: "carry_forward_dedup_skipped",
           new_id: item.id,
           existing_id: existingActive.id,
-          desire_key: item.desire_key,
+          desire_key: normalizedDesireKey,
         });
         continue;
       }
       carry_forward.push({
-        ...item,
+        ...itemWithoutDesireKey,
+        ...(normalizedDesireKey ? { desire_key: normalizedDesireKey } : {}),
         status: item.status || "active",
         created_at: item.created_at || nowIso,
         updated_at: item.updated_at || nowIso,
@@ -695,7 +737,7 @@ Examine your karma, your act prompt, your patterns. Produce a JSON object:
 }
 
 kv_operations: write to any key including system keys (config, prompts, pattern:*, desire:*). Principle keys are immutable — cannot be written.
-Code changes: use K.stageCode() + K.signalDeploy() — not kv_operations.
+Code changes are not allowed here — escalate structural/runtime issues via meta_policy_notes for userspace_review.
 Required: reflection, note_to_future_self. Everything else optional.`;
   }
 

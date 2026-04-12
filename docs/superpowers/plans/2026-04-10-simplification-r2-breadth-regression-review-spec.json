@@ -1,0 +1,50 @@
+{
+  "question": "After removing the dead breadth-maintenance prompt logic from plan.md, outward proactivity was preserved, but the agent began pursuing several unrelated outward threads under one broad desire (`desire:establish-outward-service-surface`). Did this simplification expose a deeper missing architectural layer such as active-aim narrowing or participation-mode selection, or does it indicate some other more fundamental gap? What is the smallest general correction consistent with elegance, simplicity, and low special-case prompting?",
+  "notes": [
+    "Do not recommend restoring the deleted breadth-scaffolding verbatim unless you think the simpler architecture genuinely cannot support the behavior.",
+    "The standard is: small general rules, rich emergent behavior, no repo-specific etiquette, no prompt bloat.",
+    "We want to understand what the removed text had been compensating for, not just recreate the compensation."
+  ],
+  "files": [
+    {
+      "path": "/home/swami/swayambhu/dev-loop/simplification-r2-plan-breadth-prune/runs/1775820627113-6/observation.json",
+      "kind": "trace"
+    },
+    {
+      "path": "/home/swami/swayambhu/dev-loop/simplification-r2-plan-breadth-prune/runs/1775820912968-7/observation.json",
+      "kind": "trace"
+    },
+    {
+      "path": "/home/swami/swayambhu/dev-loop/simplification-r2-plan-breadth-prune/runs/1775821559378-8/observation.json",
+      "kind": "trace"
+    },
+    {
+      "path": "/home/swami/swayambhu/dev-loop/simplification-r2-plan-breadth-prune/runs/1775821675023-9/observation.json",
+      "kind": "trace"
+    },
+    {
+      "path": "prompts/plan.md",
+      "kind": "prompt"
+    },
+    {
+      "path": "prompts/reflect.md",
+      "kind": "prompt"
+    },
+    {
+      "path": "userspace.js",
+      "kind": "code"
+    },
+    {
+      "path": "reflect.js",
+      "kind": "code"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-04-10-r11-baseline.md",
+      "kind": "baseline"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-04-07-cognitive-framework-v2.md",
+      "kind": "spec"
+    }
+  ]
+}

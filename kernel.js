@@ -13,6 +13,14 @@
 // The agent's identity is its KV data, not the kernel. The kernel is
 // disposable infrastructure that can be redeployed without losing anything.
 
+import {
+  BOOTSTRAP_KEY_TIERS,
+  BOOTSTRAP_WRITE_POLICY,
+  KNOWN_WRITE_CONTEXTS,
+  mergeKeyTiers,
+  mergeWritePolicy,
+} from "./authority-policy.js";
+
 class Kernel {
   constructor(env, opts = {}) {
     this.env = env;
@@ -39,8 +47,9 @@ class Kernel {
     this.lastWorkingSnapshotted = false; // Only snapshot provider once per session
     this.privilegedWriteCount = 0; // Counter for privileged writes (system + contact keys)
     this._alertConfigCache = undefined; // undefined = not loaded, null = doesn't exist
-    this.keyTiers = null;      // Loaded from kernel:key_tiers at boot; falls back to DEFAULT_KEY_TIERS
-    this.principles = null;    // Cached generic principles (loaded at boot, immutable by agent)
+    this.keyTiers = null;      // Loaded from kernel:key_tiers at boot; falls back to BOOTSTRAP_KEY_TIERS
+    this.writePolicy = null;   // Loaded from kernel:write_policy at boot; falls back to BOOTSTRAP_WRITE_POLICY
+    this.principles = null;    // Cached generic principles (loaded at boot, write-protected by policy)
     // Tactics loaded by userspace, not kernel — they're agent-managed heuristics, not safety invariants
     this.patronId = null;      // Contact slug of patron (loaded at boot)
     this.patronContact = null; // Full patron contact record (loaded at boot)
@@ -58,21 +67,24 @@ class Kernel {
   // - kernel_only: safety state the agent must not touch (audit logs, quarantine,
   //   execution tracking). Modifying these would let the agent disable its own
   //   safety mechanisms.
-  // - protected: agent-modifiable via kvWriteGated in deep-reflect context,
+  // - lifecycle: runtime-owned coordination state. Agent cognition should not
+  //   be able to forge or rewrite scheduler / review / promotion bookkeeping.
+  // - protected: agent-modifiable via kvWriteGated under authority policy,
   //   with old values captured in karma for rollback.
-  static DEFAULT_KEY_TIERS = {
-    immutable: ["dharma", "patron:public_key"],
-    kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
-    protected: [
-      "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
-      "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-      "secret:*", "pattern:*", "skill:*", "task:*",
-      "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-      "desire:*", "principle:*", "tactic:*",
-    ],
-  };
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
+
+  static get DEFAULT_KEY_TIERS() {
+    return BOOTSTRAP_KEY_TIERS;
+  }
+
+  static mergeKeyTiers(loadedTiers) {
+    return mergeKeyTiers(loadedTiers);
+  }
+
+  static mergeWritePolicy(loadedPolicy) {
+    return mergeWritePolicy(loadedPolicy);
+  }
 
   parseToolList(value) {
     return new Set(
@@ -127,17 +139,22 @@ class Kernel {
   }
 
   isImmutableKey(key) {
-    return this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).immutable);
+    return this._matchesTierPattern(key, (this.keyTiers || BOOTSTRAP_KEY_TIERS).immutable);
   }
 
   isKernelOnly(key) {
-    return this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).kernel_only);
+    return this._matchesTierPattern(key, (this.keyTiers || BOOTSTRAP_KEY_TIERS).kernel_only);
+  }
+
+  isLifecycleKey(key) {
+    return this._matchesTierPattern(key, (this.keyTiers || BOOTSTRAP_KEY_TIERS).lifecycle || []);
   }
 
   isSystemKey(key) {
     return this.isImmutableKey(key)
       || this.isKernelOnly(key)
-      || this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).protected);
+      || this.isLifecycleKey(key)
+      || this._matchesTierPattern(key, (this.keyTiers || BOOTSTRAP_KEY_TIERS).protected);
   }
 
   // ── SSH Ed25519 key parsing ───────────────────────────────
@@ -160,7 +177,8 @@ class Kernel {
   // ── Principles (generic, immutable) ──────────────────────
 
   async loadEagerConfig() {
-    this.keyTiers = await this.kvGet("kernel:key_tiers") || Kernel.DEFAULT_KEY_TIERS;
+    this.keyTiers = mergeKeyTiers(await this.kvGet("kernel:key_tiers"));
+    this.writePolicy = mergeWritePolicy(await this.kvGet("kernel:write_policy"));
     this.defaults = await this.kvGet("config:defaults");
     this.modelsConfig = await this.kvGet("config:models");
     this.modelCapabilities = await this.kvGet("config:model_capabilities");
@@ -466,16 +484,37 @@ class Kernel {
   async kvWriteSafe(key, value, metadata) {
     if (this.isImmutableKey(key)) throw new Error(`Cannot overwrite "${key}" — immutable key`);
     if (this.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
-    if (this.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
+    if (this.isLifecycleKey(key)) throw new Error(`Blocked: lifecycle key "${key}" — use writeLifecycleState`);
+    if (this.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with an allowed privileged context`);
     return this.kvWrite(key, value, metadata);
   }
 
   async kvDeleteSafe(key) {
     if (this.isImmutableKey(key)) throw new Error(`Cannot delete "${key}" — immutable key`);
     if (this.isKernelOnly(key)) throw new Error(`Blocked: kernel-only key "${key}"`);
-    if (this.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with deep-reflect context`);
+    if (this.isLifecycleKey(key)) throw new Error(`Blocked: lifecycle key "${key}" — use deleteLifecycleState`);
+    if (this.isSystemKey(key)) throw new Error(`Blocked: system key "${key}" — use kvWriteGated with an allowed privileged context`);
     if (this.touchedKeys) this.touchedKeys.add(key);
     return this.kv.delete(key);
+  }
+
+  async writeLifecycleState(key, value, metadata = {}) {
+    if (!this.isLifecycleKey(key)) {
+      throw new Error(`"${key}" is not a lifecycle key`);
+    }
+    await this.kvWrite(key, value, metadata);
+    await this.karmaRecord({ event: "lifecycle_write", key, value });
+    return { ok: true };
+  }
+
+  async deleteLifecycleState(key) {
+    if (!this.isLifecycleKey(key)) {
+      throw new Error(`"${key}" is not a lifecycle key`);
+    }
+    if (this.touchedKeys) this.touchedKeys.add(key);
+    await this.kv.delete(key);
+    await this.karmaRecord({ event: "lifecycle_delete", key });
+    return { ok: true };
   }
 
   // kvWritePrivileged — REMOVED. Functionality moved to kvWriteGated with context-based permissions.
@@ -509,7 +548,8 @@ class Kernel {
       kvWriteSafe: async (key, value, metadata) => kernel.kvWriteSafe(key, value, metadata),
       kvDeleteSafe: async (key) => kernel.kvDeleteSafe(key),
       kvWriteGated: async (op, context) => kernel.kvWriteGated(op, context),
-      updatePatternStrength: async (key, newStrength) => kernel.updatePatternStrength(key, newStrength),
+      writeLifecycleState: async (key, value, metadata) => kernel.writeLifecycleState(key, value, metadata),
+      deleteLifecycleState: async (key) => kernel.deleteLifecycleState(key),
 
       // Agent loop
       runAgentTurn: async (opts) => kernel.runAgentTurn(opts),
@@ -583,7 +623,7 @@ class Kernel {
       // getSessionCount removed — userspace reads session_counter directly via kvGet
       mergeDefaults: async (defaults, overrides) => kernel.mergeDefaults(defaults, overrides),
       isSystemKey: async (key) => kernel.isSystemKey(key),
-      getSystemKeyPatterns: async () => kernel.keyTiers || Kernel.DEFAULT_KEY_TIERS,
+      getSystemKeyPatterns: async () => kernel.keyTiers || BOOTSTRAP_KEY_TIERS,
 
       // KV operation gating — context-based permissions
       // (kvWriteGated already exposed above in KV writes section)
@@ -617,6 +657,10 @@ class Kernel {
   async kvWriteGated(op, context) {
     const key = op.key;
 
+    if (!KNOWN_WRITE_CONTEXTS.has(context)) {
+      return { ok: false, error: `Unknown kvWriteGated context "${context}"` };
+    }
+
     // Reject malformed pattern keys — LLM output sometimes uses slashes instead of colons
     if (key.startsWith('pattern:') && key.includes('/')) {
       return { ok: false, error: `Invalid pattern key format: ${key} — use colons, not slashes` };
@@ -632,31 +676,33 @@ class Kernel {
       return { ok: false, error: `Cannot write kernel key "${key}"` };
     }
 
-    // 3. Always blocked — code keys go through K.stageCode()
+    // 3. Always blocked — lifecycle keys are runtime-owned
+    if (this.isLifecycleKey(key)) {
+      return { ok: false, error: `Cannot write lifecycle key "${key}"` };
+    }
+
+    // 4. Always blocked — code keys go through K.stageCode()
     if (Kernel.isCodeKey(key)) {
       return { ok: false, error: `Code key "${key}" requires K.stageCode()` };
     }
 
-    // 4. Contact keys — allowed in all contexts (with approval gating)
+    // 5. Contact keys — allowed in all recognized contexts (with approval gating)
     if (key.startsWith("contact:") || key.startsWith("contact_platform:")) {
       return this._gateContact(op);
     }
 
-    // 5. System keys — deep-reflect only
+    // 6. System keys — governed by authority policy
     if (this.isSystemKey(key)) {
-      if (context !== "deep-reflect") {
-        return { ok: false, error: `Cannot write system key "${key}" during ${context} — note in session_summary for deep reflect` };
-      }
-      return this._gateSystem(op);
+      return this._gateSystem(op, context);
     }
 
-    // 6. Agent keys — check protection
+    // 7. Agent keys — check protection
     const { value: existing, metadata } = await this.kvGetWithMeta(key);
     if (existing !== null && !metadata?.unprotected) {
       return { ok: false, error: `Cannot overwrite protected key "${key}"` };
     }
 
-    // 7. Unprotected or new agent key — direct write
+    // 8. Unprotected or new agent key — direct write
     return this._kvWriteDirect(op);
   }
 
@@ -671,15 +717,57 @@ class Kernel {
     }
 
     if (key.startsWith("contact_platform:")) {
-      if (op.op === "patch" && op.new_string?.includes('"approved"')) {
-        return { ok: false, error: `Cannot patch "approved" field on platform bindings — use the dashboard` };
+      if (op.op === "patch") {
+        const currentValue = await this.kvGet(key);
+        const currentText = typeof currentValue === "string"
+          ? currentValue
+          : (currentValue && typeof currentValue === "object" ? JSON.stringify(currentValue) : null);
+        if (typeof currentText !== "string") {
+          return { ok: false, error: `patch: key "${key}" is not patchable` };
+        }
+        if (!currentText.includes(op.old_string)) {
+          return { ok: false, error: `patch: old_string not found in "${key}"` };
+        }
+        if (currentText.indexOf(op.old_string) !== currentText.lastIndexOf(op.old_string)) {
+          return { ok: false, error: `patch: old_string matches multiple locations in "${key}"` };
+        }
+        const patchedText = currentText.replace(op.old_string, op.new_string);
+        let writeValue = patchedText;
+        try {
+          const before = JSON.parse(currentText);
+          const after = JSON.parse(patchedText);
+          if (
+            before && after
+            && typeof before === "object" && !Array.isArray(before)
+            && typeof after === "object" && !Array.isArray(after)
+            && Object.prototype.hasOwnProperty.call(after, "approved")
+            && after.approved !== before.approved
+          ) {
+            return { ok: false, error: `Cannot patch "approved" field on platform bindings — use the dashboard` };
+          }
+          writeValue = after;
+        } catch {
+          return { ok: false, error: `Platform binding patch must preserve valid JSON object structure` };
+        }
+
+        const { value: oldValue } = await this.kvGetWithMeta(key);
+        if (this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
+          return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
+        }
+        await this.kvWrite(key, writeValue, op.metadata);
+        await this.karmaRecord({
+          event: "privileged_write", key, old_value: oldValue,
+          new_value: writeValue, op: op.op,
+        });
+        this.privilegedWriteCount++;
+        return { ok: true };
       }
       if (op.op === "delete") {
         const existing = await this.kvGet(key);
         if (existing?.approved) {
           return { ok: false, error: `Deletion of approved platform bindings is patron-only` };
         }
-      } else if (op.op !== "patch") {
+      } else {
         if (op.value?.approved === true) {
           return { ok: false, error: `Setting approved: true on platform bindings is patron-only` };
         }
@@ -693,6 +781,10 @@ class Kernel {
     // Snapshot old value for karma
     const { value: oldValue } = await this.kvGetWithMeta(key);
 
+    if (this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
+      return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
+    }
+
     // Execute via raw write (bypasses system key check in kvWriteSafe)
     if (op.op === "delete") {
       await this.kv.delete(key);
@@ -701,7 +793,9 @@ class Kernel {
       if (typeof current !== "string") return { ok: false, error: `patch: key "${key}" is not a string` };
       if (!current.includes(op.old_string)) return { ok: false, error: `patch: old_string not found in "${key}"` };
       if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) return { ok: false, error: `patch: old_string matches multiple locations in "${key}"` };
-      await this.kvWrite(key, current.replace(op.old_string, op.new_string), op.metadata);
+      const patched = current.replace(op.old_string, op.new_string);
+      await this.kvWrite(key, patched, op.metadata);
+      op.value = patched;
     } else {
       await this.kvWrite(key, op.value, op.metadata);
     }
@@ -715,99 +809,61 @@ class Kernel {
     return { ok: true };
   }
 
-  // ── Mechanical pattern strength update (act/eval path) ──────
-
-  // Dedicated primitive for EMA strength updates on pattern:* keys.
-  // This is a mechanical operation — it only patches the `strength` field and
-  // does NOT consume the privileged write budget (which is for DR/reflect-level
-  // structural changes). Using kvWriteGated("act") for this would be silently
-  // blocked because pattern:* is a system key requiring "deep-reflect" context.
-  async updatePatternStrength(key, newStrength) {
-    if (!key.startsWith("pattern:")) {
-      return { ok: false, error: `updatePatternStrength only applies to pattern:* keys, got "${key}"` };
-    }
-    const existing = await this.kvGet(key);
-    if (existing === null) return { ok: false, error: `Pattern not found: ${key}` };
-    if (typeof existing !== "object" || !("pattern" in existing)) {
-      return { ok: false, error: `Invalid pattern schema at "${key}"` };
-    }
-    const clamped = Math.max(0, Math.min(1, newStrength));
-    const updated = { ...existing, strength: clamped };
-    await this.kvWrite(key, updated);
-    await this.karmaRecord({ event: "pattern_strength_updated", key, old: existing.strength, new: clamped });
-    return { ok: true };
+  _getWritePolicy() {
+    return this.writePolicy || BOOTSTRAP_WRITE_POLICY;
   }
 
-  // ── System key gating (deep-reflect only) ────────────────
+  _matchesWriteRule(key, rule) {
+    if (!rule || typeof rule.match !== "string") return false;
+    if (rule.match === "*") return true;
+    return this._matchesTierPattern(key, [rule.match]);
+  }
 
-  async _gateSystem(op) {
-    const key = op.key;
+  _resolveWriteRule(key) {
+    const rules = this._getWritePolicy()?.rules;
+    if (!Array.isArray(rules)) return null;
+    return rules.find((rule) => this._matchesWriteRule(key, rule)) || null;
+  }
 
-    // Only put/delete/patch supported for system keys
-    if (!["put", "delete", "patch"].includes(op.op)) {
-      return { ok: false, error: `Unsupported op "${op.op}" for system key "${key}"` };
-    }
-
-    // Principle changes require deliberation — high friction to prevent casual modification.
-    // Why: principles are injected into every LLM call and shape all behavior.
-    // A careless change here has global impact.
-    if (key.startsWith("principle:")) {
-      if (!op.deliberation || op.deliberation.length < 200) {
-        return { ok: false, error: `Principle changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
-      }
-    }
-
-    // Model capabilities are separated from config:models to prevent
-    // self-escalation — a single write can't both add a model and grant it
-    // communication or principle-writing powers. The deliberation requirement
-    // forces careful reasoning about capability changes.
-    if (key === "config:model_capabilities") {
-      if (!op.deliberation || op.deliberation.length < 200) {
-        return { ok: false, error: `Model capability changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
-      }
-    }
-
-    // Prompt changes require deliberation — prompts are read live and shape
-    // all LLM behavior. Deleting prompt:deep_reflect would halt DR entirely.
-    if (key.startsWith("prompt:") && (!op.deliberation || op.deliberation.length < 200)) {
-      return { ok: false, error: `Prompt changes require deliberation (min 200 chars, got ${op.deliberation?.length || 0})` };
-    }
-
-    // Per-session limit
-    if (this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
-      return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
-    }
-
-    // Snapshot old value
-    const { value: oldValue } = await this.kvGetWithMeta(key);
-
-    // Execute
+  async _applyProtectedWrite(op) {
     if (op.op === "delete") {
-      await this.kv.delete(key);
-    } else if (op.op === "patch") {
-      const current = await this.kvGet(key);
-      if (typeof current !== "string") return { ok: false, error: `patch: key "${key}" is not a string` };
-      if (!current.includes(op.old_string)) return { ok: false, error: `patch: old_string not found in "${key}"` };
-      if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) return { ok: false, error: `patch: old_string matches multiple locations in "${key}"` };
-      await this.kvWrite(key, current.replace(op.old_string, op.new_string), op.metadata);
-    } else {
-      await this.kvWrite(key, op.value, op.metadata);
+      await this.kv.delete(op.key);
+      return { newValue: null };
     }
+    if (op.op === "patch") {
+      const current = await this.kvGet(op.key);
+      if (typeof current !== "string") return { error: `patch: key "${op.key}" is not a string` };
+      if (!current.includes(op.old_string)) return { error: `patch: old_string not found in "${op.key}"` };
+      if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) {
+        return { error: `patch: old_string matches multiple locations in "${op.key}"` };
+      }
+      const patched = current.replace(op.old_string, op.new_string);
+      await this.kvWrite(op.key, patched, op.metadata);
+      return { newValue: patched };
+    }
+    if (op.op === "field_merge") {
+      if (!op.fields || typeof op.fields !== "object" || Array.isArray(op.fields)) {
+        return { error: `field_merge: fields must be an object for "${op.key}"` };
+      }
+      const current = await this.kvGet(op.key);
+      if (current === null) return { error: `field_merge: key_not_found "${op.key}"` };
+      if (!current || typeof current !== "object" || Array.isArray(current)) {
+        return { error: `field_merge: key "${op.key}" is not an object` };
+      }
+      const merged = { ...current, ...op.fields };
+      await this.kvWrite(op.key, merged, op.metadata);
+      return { newValue: merged };
+    }
+    await this.kvWrite(op.key, op.value, op.metadata);
+    return { newValue: op.value };
+  }
 
-    // Karma after successful write
-    await this.karmaRecord({
-      event: "privileged_write", key, old_value: oldValue,
-      new_value: op.value, op: op.op,
-    });
-    this.privilegedWriteCount++;
-
-    // Alert on hook: key writes
+  async _runPostWriteHooks(key) {
     if (key.startsWith("hook:")) {
       await this.sendKernelAlert("hook_write",
         `Privileged write to ${key} in execution ${this.executionId}`);
     }
 
-    // Auto-reload cached config
     const configKeys = ["config:defaults", "config:models", "config:tool_registry", "config:model_capabilities"];
     if (configKeys.includes(key)) {
       if (key === "config:defaults") this.defaults = await this.kvGet("config:defaults");
@@ -815,7 +871,64 @@ class Kernel {
       if (key === "config:tool_registry") this.toolRegistry = await this.kvGet("config:tool_registry");
       if (key === "config:model_capabilities") this.modelCapabilities = await this.kvGet("config:model_capabilities");
     }
+  }
 
+  // ── System key gating (policy-driven) ────────────────
+
+  async _gateSystem(op, context) {
+    const key = op.key;
+    const rule = this._resolveWriteRule(key);
+    if (!rule) {
+      return { ok: false, error: `No write policy rule for protected key "${key}"` };
+    }
+    const opRule = rule.ops?.[op.op];
+    if (!opRule) {
+      return { ok: false, error: `Unsupported op "${op.op}" for protected key "${key}"` };
+    }
+    if (!Array.isArray(opRule.contexts) || !opRule.contexts.includes(context)) {
+      return { ok: false, error: `Cannot write protected key "${key}" during ${context}` };
+    }
+    if (opRule.requires_deliberation) {
+      const minChars = Number(opRule.min_deliberation_chars || 0);
+      const actual = op.deliberation?.length || 0;
+      if (!op.deliberation || actual < minChars) {
+        return { ok: false, error: `Protected write to "${key}" requires deliberation (min ${minChars} chars, got ${actual})` };
+      }
+    }
+    if (op.op === "field_merge") {
+      const allowed = Array.isArray(opRule.allowed_fields) ? opRule.allowed_fields : [];
+      const requested = Object.keys(op.fields || {});
+      if (requested.length === 0) {
+        return { ok: false, error: `field_merge: no fields provided for "${key}"` };
+      }
+      const invalid = requested.filter((field) => !allowed.includes(field));
+      if (invalid.length > 0) {
+        return { ok: false, error: `field_merge: fields not allowed for "${key}": ${invalid.join(", ")}` };
+      }
+    }
+    if (opRule.budget_class === "privileged" && this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
+      return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
+    }
+    const { value: oldValue } = await this.kvGetWithMeta(key);
+    const applied = await this._applyProtectedWrite(op);
+    if (applied.error) {
+      return { ok: false, error: applied.error };
+    }
+
+    await this.karmaRecord({
+      event: opRule.budget_class === "mechanical" ? "mechanical_write" : "privileged_write",
+      key,
+      old_value: oldValue,
+      new_value: applied.newValue,
+      fields: op.op === "field_merge" ? op.fields : undefined,
+      op: op.op,
+      context,
+      budget_class: opRule.budget_class,
+    });
+    if (opRule.budget_class === "privileged") {
+      this.privilegedWriteCount++;
+    }
+    await this._runPostWriteHooks(key);
     return { ok: true };
   }
 
@@ -841,8 +954,12 @@ class Kernel {
       case "rename": {
         const { value, metadata } = await this.kvGetWithMeta(op.key);
         if (value === null) return { ok: false, error: `rename: key "${op.key}" does not exist` };
-        await this.kvWriteSafe(op.value, value, metadata);
-        await this.kvDeleteSafe(op.key);
+        try {
+          await this.kvWriteSafe(op.value, value, metadata);
+          await this.kvDeleteSafe(op.key);
+        } catch (error) {
+          return { ok: false, error: error.message };
+        }
         return { ok: true };
       }
       default:
@@ -855,7 +972,10 @@ class Kernel {
   static CODE_KEY_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
 
   static isCodeKey(key) {
-    return Kernel.CODE_KEY_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code');
+    return (Kernel.CODE_KEY_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code'))
+      || key === "kernel:source:kernel.js"
+      || key === "kernel:source:hook-communication.js"
+      || key === "kernel:source:authority-policy.js";
   }
 
   async stageCode(targetKey, code) {
@@ -1192,6 +1312,7 @@ class Kernel {
   async executeAdapter(adapterKey, input, secretOverrides) {
     const mod = this.PROVIDERS[adapterKey];
     if (!mod) throw new Error(`Unknown adapter: ${adapterKey}`);
+    const timeoutMs = Number.isFinite(Number(mod.meta?.timeout_ms)) ? Number(mod.meta.timeout_ms) : 0;
 
     // Constitutional safety: self-contained contact check for person-targeted adapters
     // Kernel derives recipient from the actual args — does NOT trust caller metadata
@@ -1225,10 +1346,56 @@ class Kernel {
     }
     if (secretOverrides) Object.assign(secrets, secretOverrides);
 
-    const ctx = { ...input, secrets, fetch: (...args) => fetch(...args) };
+    const mergeSignals = (primary, fallback) => {
+      if (!primary) return fallback;
+      if (!fallback) return primary;
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any([primary, fallback]);
+      }
+      const merged = new AbortController();
+      const forwardAbort = (signal) => {
+        if (!merged.signal.aborted) merged.abort(signal.reason);
+      };
+      if (primary.aborted) forwardAbort(primary);
+      else primary.addEventListener("abort", () => forwardAbort(primary), { once: true });
+      if (fallback.aborted) forwardAbort(fallback);
+      else fallback.addEventListener("abort", () => forwardAbort(fallback), { once: true });
+      return merged.signal;
+    };
+
+    const adapterController = timeoutMs > 0 ? new AbortController() : null;
+    const ctx = {
+      ...input,
+      secrets,
+      fetch: (resource, init = {}) => fetch(resource, {
+        ...init,
+        signal: mergeSignals(init.signal, adapterController?.signal || null),
+      }),
+    };
     const fn = mod.execute || mod.call || mod.check;
     if (!fn) throw new Error(`Adapter ${adapterKey} has no callable function`);
-    return fn(ctx);
+
+    const adapterPromise = Promise.resolve().then(() => fn(ctx));
+    void adapterPromise.catch(() => {});
+
+    let timeoutId = null;
+    let timeoutPromise = null;
+    if (timeoutMs > 0) {
+      timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          adapterController?.abort(new Error(`Adapter ${adapterKey} timed out after ${timeoutMs}ms`));
+          reject(new Error(`Adapter ${adapterKey} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      });
+    }
+
+    try {
+      return await (timeoutPromise
+        ? Promise.race([adapterPromise, timeoutPromise])
+        : adapterPromise);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   }
 
   async checkBalance(args) {
@@ -2177,12 +2344,16 @@ class Kernel {
       session:    { type: "session", format: "json" },
       tooldata:   { type: "tooldata", format: fmt },
       reflect:    { type: "reflect_output", format: "json" },
+      dr:         { type: "lifecycle", format: "json" },
+      dr2:        { type: "lifecycle", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
       pattern:  { type: "pattern", format: "json" },
       kernel:     { type: "kernel", format: "json" },
       sealed:     { type: "sealed", format: "json" },
       principle:  { type: "principle", format: "text" },
+      identification: { type: "identification", format: "json" },
+      review_note: { type: "review_note", format: "json" },
     };
     const finalMetadata = {
       ...defaults[prefix],

@@ -146,3 +146,27 @@ if (typeof raw === "string") {
 **Root cause:** `note_to_future_self` mixed empirical claims (which go stale) with orientation (which persists). Once an empirical claim was written as a behavioral directive, nothing in the system forced re-verification.
 
 **Fix:** Added `assessments` field to deep reflect output — structured empirical claims about the world, each with a `reverify_by_session` expiry. Session reflect checks assessment TTLs and plans re-verification probes when they expire. `note_to_future_self` is now orientation-only in deep reflect.
+
+## Act-phase cycle timeout does not abort runaway act loops
+
+**Status:** Unfixed — confirmed in dev-loop variant testing
+
+**Symptom:** A session can start, enter `actPhase`, and continue replanning / taking tool actions long past the intended per-cycle timeout. In the read-path-barrier experiment, session `x_1775691289534_wadiki` ran into a runaway investigation sequence and was only killed by the outer execution limit after 141s, even though the userspace cycle timeout is 120s.
+
+**Root cause:** `userspace.js` creates a per-cycle `AbortController` in the outer act loop, but `actPhase()` does not accept or pass that signal into `K.runAgentTurn()`. So the timeout exists in the caller but does not constrain the actual act execution path.
+
+**Fix considerations:** Thread the cycle abort signal through `actPhase()` into `K.runAgentTurn()` and any subordinate tool / LLM calls. If the cycle times out mid-act, stop further replanning in that session and record a bounded failure outcome instead of letting the session continue until the outer execution watchdog kills it.
+
+**Observed in:** Sequential experiment run `read-path-barrier`, cycle 21, session `x_1775691289534_wadiki`.
+
+## Computer tool can wedge on broad filesystem scans with huge output
+
+**Status:** Unfixed — confirmed in dev-loop variant testing
+
+**Symptom:** A broad `computer` command such as recursive `grep` over `/home`, `/root`, or `/srv` can start successfully but never produce a `tool_complete` event. The session then appears hung until the outer execution timeout kills it.
+
+**Root cause:** The agent can issue unbounded shell searches that produce enormous output from historical dev-loop artifacts, archives, and logs. The local compute path appears able to start these commands, but the response path can stall or become impractically large. In the failed run, the last tool call was `grep -r "base_usdc" /home /root /srv ...` followed by a second recursive `grep` under `/home/swayambhu`, and the tool never completed.
+
+**Fix considerations:** Add guardrails around `computer` shell usage for recursive filesystem scans (restrict roots, require `head`/`find -maxdepth`/tight globs, cap output aggressively, or reject pathological commands before execution). Also ensure the compute provider returns a bounded failure if output or runtime exceeds safe limits.
+
+**Observed in:** Sequential experiment run `read-path-barrier`, cycle 21, session `x_1775691289534_wadiki`.

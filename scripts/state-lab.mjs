@@ -7,12 +7,15 @@ import { execFileSync, spawn } from "child_process";
 import { cp, mkdir, readFile, readdir, readlink, stat, symlink, writeFile } from "fs/promises";
 import { existsSync, readFileSync } from "fs";
 import { basename, dirname, extname, join, relative, resolve } from "path";
+import { createHash } from "crypto";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { Kernel } from "../kernel.js";
+import { filePathToKey, keyToFilePath } from "../governor/builder.js";
 import * as llm_balance from "../providers/llm_balance.js";
 import * as wallet_balance from "../providers/wallet_balance.js";
 import { writeReasoningArtifacts } from "../lib/reasoning.js";
+import { normalizeMetaPolicyNotes, persistMetaPolicyNotes } from "../meta-policy.js";
 import { DEFAULT_LOCAL_STATE_DIR, dispose, getKV, root as REPO_ROOT } from "./shared.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -219,6 +222,7 @@ export function buildStartEnv(metadata) {
   return {
     SWAYAMBHU_PERSIST_DIR: metadata.state_dir,
     SWAYAMBHU_PRE_TRIGGER_SNAPSHOT_DIR: metadata.pre_trigger_snapshot_dir,
+    SWAYAMBHU_RUNTIME_WORKSPACE: metadata.runtime_workspace_dir || join(dirname(metadata.state_dir), "runtime-workspace"),
     SWAYAMBHU_KERNEL_PORT: String(metadata.ports.kernel),
     SWAYAMBHU_DASHBOARD_PORT: String(metadata.ports.dashboard),
     SWAYAMBHU_GOVERNOR_PORT: String(metadata.ports.governor),
@@ -354,8 +358,9 @@ async function copyStateTree(sourceDir, destDir) {
 const LAB_CODE_TARGETS = {
   "hook:session:code": "userspace.js",
   "hook:reflect:code": "reflect.js",
-  "hook:communication:code": "hook-communication.js",
+  "kernel:source:hook-communication.js": "hook-communication.js",
   "kernel:source:kernel.js": "kernel.js",
+  "kernel:source:authority-policy.js": "authority-policy.js",
 };
 
 function slugifyLabName(input) {
@@ -373,17 +378,121 @@ export function buildLabBranchName(hypothesisPath, now = new Date()) {
   return sanitizeName(`lab-${slugifyLabName(base)}-${date}`);
 }
 
-function shouldCopyWorkspacePath(srcPath) {
+export function shouldCopyWorkspacePath(srcPath) {
   const rel = relative(REPO_ROOT, srcPath);
   if (!rel || rel === "") return true;
-  const top = rel.split("/")[0];
-  return ![
+  const segments = rel.split("/").filter(Boolean);
+  return !segments.some((segment) => [
     ".git",
     "node_modules",
     "local-state",
     ".wrangler",
     "coverage",
-  ].includes(top);
+  ].includes(segment));
+}
+
+function promptKeyToWorkspacePath(key) {
+  if (!key.startsWith("prompt:")) return null;
+  const name = key.slice("prompt:".length);
+  return name ? `prompts/${name}.md` : null;
+}
+
+async function listKeysWithPrefix(kv, prefix) {
+  const keys = [];
+  let cursor;
+  do {
+    const result = await kv.list({ prefix, cursor });
+    keys.push(...result.keys.map((entry) => entry.name));
+    cursor = result.list_complete ? undefined : result.cursor;
+  } while (cursor);
+  return keys;
+}
+
+async function fetchDashboardJson(dashboardPort, path) {
+  const response = await fetch(`http://127.0.0.1:${dashboardPort}${path}`, {
+    headers: { "X-Patron-Key": process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test" },
+  });
+  if (!response.ok) throw new Error(`dashboard ${path} failed: ${response.status}`);
+  return response.json();
+}
+
+async function fetchDashboardTextKey(dashboardPort, key) {
+  const response = await fetch(`http://127.0.0.1:${dashboardPort}/kv/${encodeURIComponent(key)}`, {
+    headers: { "X-Patron-Key": process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test" },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`dashboard key ${key} failed: ${response.status}`);
+  const payload = await response.json();
+  return typeof payload.value === "string" ? payload.value : null;
+}
+
+async function resolveSourceMapOverlayKeys(sourceMap, { listByPrefix }) {
+  const overlayKeys = new Set();
+  for (const value of Object.values(sourceMap || {})) {
+    if (typeof value !== "string") continue;
+    if (!value.includes("*")) {
+      overlayKeys.add(value);
+      continue;
+    }
+    if (value === "tool:*:code") {
+      const keys = await listByPrefix("tool:");
+      for (const key of keys) if (keyToFilePath(key)) overlayKeys.add(key);
+      continue;
+    }
+    if (value === "provider:*:code") {
+      const keys = await listByPrefix("provider:");
+      for (const key of keys) if (keyToFilePath(key)) overlayKeys.add(key);
+      continue;
+    }
+    if (value === "channel:*:code") {
+      const keys = await listByPrefix("channel:");
+      for (const key of keys) if (keyToFilePath(key)) overlayKeys.add(key);
+      continue;
+    }
+  }
+  return [...overlayKeys];
+}
+
+export async function overlayWorkspaceFromSourceState({ workspaceDir, stateDir, dashboardPort = null }) {
+  const kv = dashboardPort ? null : await getKV({ stateDir });
+  try {
+    const sourceMap = dashboardPort
+      ? (await fetchDashboardJson(dashboardPort, `/kv/${encodeURIComponent("kernel:source_map")}`)).value || {}
+      : (await kv.get("kernel:source_map", "json")) || {};
+    const listByPrefix = dashboardPort
+      ? async (prefix) => {
+          const payload = await fetchDashboardJson(dashboardPort, `/kv?prefix=${encodeURIComponent(prefix)}`);
+          return (payload.keys || []).map((entry) => entry.key);
+        }
+      : async (prefix) => listKeysWithPrefix(kv, prefix);
+    const getText = dashboardPort
+      ? async (key) => fetchDashboardTextKey(dashboardPort, key)
+      : async (key) => kv.get(key, "text");
+
+    const directCodeKeys = await resolveSourceMapOverlayKeys(sourceMap, { listByPrefix });
+    const overlayKeys = [
+      ...new Set([
+        ...directCodeKeys,
+        "prompt:plan",
+        "prompt:act",
+        "prompt:review",
+        "prompt:reflect",
+        "prompt:deep_reflect",
+      ]),
+    ];
+
+    for (const key of overlayKeys) {
+      const relativePath = keyToFilePath(key) || promptKeyToWorkspacePath(key);
+      if (!relativePath) continue;
+      const value = await getText(key);
+      if (typeof value !== "string") continue;
+      const targetPath = join(workspaceDir, relativePath);
+      await mkdir(dirname(targetPath), { recursive: true });
+      await writeFile(targetPath, value, "utf8");
+    }
+  } finally {
+    await dispose();
+  }
 }
 
 async function prepareWorkspace(entry) {
@@ -399,6 +508,11 @@ async function prepareWorkspace(entry) {
   if (await pathExists(rootNodeModules) && !await pathExists(workspaceNodeModules)) {
     await symlink(rootNodeModules, workspaceNodeModules, "dir");
   }
+
+  await overlayWorkspaceFromSourceState({
+    workspaceDir,
+    stateDir: entry.metadata.state_dir,
+  });
 }
 
 function resolveLabTargetRelativePath(change) {
@@ -447,8 +561,11 @@ export async function applyWorkspaceCandidateChange(workspaceDir, change) {
 async function applyKvCandidateChange(stateDir, change) {
   const kv = await getKV({ stateDir });
   try {
+    const putValue = "value" in change
+      ? change.value
+      : ("value_json" in change ? JSON.parse(change.value_json) : undefined);
     if (change.type === "kv_put") {
-      await kv.put(change.key, JSON.stringify(change.value), { metadata: { format: "json", state_lab: true } });
+      await kv.put(change.key, JSON.stringify(putValue), { metadata: { format: "json", state_lab: true } });
       return { kind: "kv_put", key: change.key };
     }
     if (change.type === "kv_delete") {
@@ -490,8 +607,160 @@ async function applyCandidateChanges(entry, candidateChanges = []) {
   return applied;
 }
 
-async function runStaticValidation(entry, validation = {}, limits = {}) {
+async function syncWorkspaceCodeTargetsToBranchKv(entry, candidateChanges = []) {
+  const codeChanges = candidateChanges.filter(change => change?.type === "code_patch");
+  if (codeChanges.length === 0) return [];
+
+  const kv = await getKV({ stateDir: entry.metadata.state_dir });
+  const syncedTargets = [];
+  try {
+    for (const change of codeChanges) {
+      const relativePath = resolveLabTargetRelativePath(change);
+      const target = change.target || filePathToKey(relativePath);
+      if (!target) {
+        throw new Error(`Cannot map lab code change to live code key: ${relativePath}`);
+      }
+      const targetPath = resolveLabWorkspacePath(entry.paths.workspaceDir, change);
+      const code = await readFile(targetPath, "utf8");
+      await kv.put(target, code, {
+        metadata: { format: "text", state_lab: true },
+      });
+      syncedTargets.push(target);
+    }
+  } finally {
+    await dispose();
+  }
+  return syncedTargets;
+}
+
+function sha256Json(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function sha256Text(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function normalizeProcessOutput(value) {
+  return String(value || "")
+    .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line
+      .replace(/\b\d+ms\b/g, "<ms>")
+      .replace(/Start at\s+.+$/, "Start at <time>")
+      .replace(/Duration\s+\d+ms.*$/, "Duration <time>")
+      .replace(/(\s+)\d+ms$/g, "$1<ms>"))
+    .join("\n");
+}
+
+async function buildValidatedChanges(entry, candidateChanges = []) {
+  const kv_operations = [];
+  const code_stage_requests = [];
+
+  for (const change of candidateChanges) {
+    if (!change?.type) continue;
+
+    if (change.type === "kv_put") {
+      kv_operations.push({
+        op: "put",
+        key: change.key,
+        value: "value" in change ? change.value : JSON.parse(change.value_json),
+        ...(change.deliberation ? { deliberation: change.deliberation } : {}),
+      });
+      continue;
+    }
+
+    if (change.type === "kv_delete") {
+      kv_operations.push({ op: "delete", key: change.key });
+      continue;
+    }
+
+    if (change.type === "kv_patch") {
+      kv_operations.push({
+        op: "patch",
+        key: change.key,
+        old_string: change.old_string,
+        new_string: change.new_string,
+        ...(change.deliberation ? { deliberation: change.deliberation } : {}),
+      });
+      continue;
+    }
+
+    if (change.type === "code_patch") {
+      const relativePath = resolveLabTargetRelativePath(change);
+      const target = change.target || filePathToKey(relativePath);
+      if (!target) {
+        throw new Error(`Cannot map lab code change to live code key: ${relativePath}`);
+      }
+      const targetPath = resolveLabWorkspacePath(entry.paths.workspaceDir, change);
+      const code = await readFile(targetPath, "utf8");
+      code_stage_requests.push({ target, code });
+      continue;
+    }
+
+    throw new Error(`Unsupported candidate change type: ${change.type}`);
+  }
+
+  return {
+    kv_operations,
+    code_stage_requests,
+    deploy: code_stage_requests.length > 0,
+  };
+}
+
+function normalizeStaticCheckExpectation(value, fallback = "pass") {
+  if (value === true) return "pass";
+  if (value === false) return "fail";
+  if (value === "pass" || value === "fail" || value === "skip") return value;
+  return fallback;
+}
+
+export function normalizeStaticChecks(validation = {}) {
+  const explicitChecks = Array.isArray(validation?.static_checks) ? validation.static_checks : [];
   const commands = Array.isArray(validation.static_commands) ? validation.static_commands : [];
+  const normalizedCommands = commands
+    .filter((command) => typeof command === "string" && command.trim())
+    .map((command) => ({
+      command,
+      label: null,
+      source: "static_command",
+      expect: {
+        baseline: "pass",
+        candidate: "pass",
+      },
+    }));
+
+  const normalizedChecks = explicitChecks
+    .filter((check) => check && typeof check.command === "string" && check.command.trim())
+    .map((check) => ({
+      command: check.command,
+      label: typeof check.label === "string" && check.label.trim() ? check.label.trim() : null,
+      source: "static_check",
+      expect: {
+        baseline: normalizeStaticCheckExpectation(check?.expect?.baseline, "pass"),
+        candidate: normalizeStaticCheckExpectation(check?.expect?.candidate, "pass"),
+      },
+    }));
+
+  return [...normalizedCommands, ...normalizedChecks];
+}
+
+export function hasComparativeStaticChecks(validation = {}) {
+  return normalizeStaticChecks(validation).some((check) => (
+    check.expect?.baseline !== "pass" || check.expect?.candidate !== "pass"
+  ));
+}
+
+export function retargetStaticCommandToWorkspace(command, workspaceDir) {
+  if (typeof command !== "string" || !command.trim()) return command;
+  const repoRoot = resolve(REPO_ROOT);
+  const workspaceRoot = resolve(workspaceDir);
+  return command.split(repoRoot).join(workspaceRoot);
+}
+
+export async function runStaticValidation(entry, validation = {}, limits = {}, surface = "candidate") {
+  const checks = normalizeStaticChecks(validation);
   const timeoutMs = Math.max(60_000, (limits.max_wall_time_minutes || 30) * 60_000);
   const env = {
     ...process.env,
@@ -501,7 +770,22 @@ async function runStaticValidation(entry, validation = {}, limits = {}) {
   const results = [];
   let passed = true;
 
-  for (const command of commands) {
+  for (const check of checks) {
+    const command = retargetStaticCommandToWorkspace(check.command, entry.paths.workspaceDir);
+    const expectedOutcome = normalizeStaticCheckExpectation(check?.expect?.[surface], "pass");
+    if (expectedOutcome === "skip") {
+      results.push({
+        command,
+        label: check.label,
+        source: check.source,
+        expected_outcome: expectedOutcome,
+        actual_outcome: "skip",
+        matched: true,
+        skipped: true,
+      });
+      continue;
+    }
+
     try {
       const output = execFileSync("bash", ["-lc", command], {
         cwd: entry.paths.workspaceDir,
@@ -510,25 +794,251 @@ async function runStaticValidation(entry, validation = {}, limits = {}) {
         timeout: timeoutMs,
         stdio: ["ignore", "pipe", "pipe"],
       });
+      const matched = expectedOutcome === "pass";
+      passed = passed && matched;
       results.push({
         command,
-        ok: true,
+        label: check.label,
+        source: check.source,
+        ok: matched,
+        expected_outcome: expectedOutcome,
+        actual_outcome: "pass",
+        matched,
+        output_hash: sha256Text(output),
         output_tail: output.slice(-4000),
       });
     } catch (error) {
-      passed = false;
+      const stdout = String(error.stdout || "");
+      const stderr = String(error.stderr || "");
+      const failureSignature = [
+        normalizeProcessOutput(stdout),
+        normalizeProcessOutput(stderr),
+      ].join("\n---stderr---\n");
+      const matched = expectedOutcome === "fail";
+      passed = passed && matched;
       results.push({
         command,
-        ok: false,
+        label: check.label,
+        source: check.source,
+        ok: matched,
+        expected_outcome: expectedOutcome,
+        actual_outcome: "fail",
+        matched,
         exit_code: Number.isInteger(error.status) ? error.status : null,
-        stdout_tail: String(error.stdout || "").slice(-4000),
-        stderr_tail: String(error.stderr || "").slice(-4000),
+        failure_signature_hash: sha256Text(failureSignature),
+        stdout_hash: sha256Text(stdout),
+        stderr_hash: sha256Text(stderr),
+        stdout_tail: stdout.slice(-4000),
+        stderr_tail: stderr.slice(-4000),
       });
-      break;
     }
   }
 
   return { passed, commands: results };
+}
+
+function sameStaticFailureSignature(baselineCommand = {}, candidateCommand = {}) {
+  return baselineCommand.source === "static_command"
+    && candidateCommand.source === "static_command"
+    && baselineCommand.command === candidateCommand.command
+    && String(baselineCommand.label || "") === String(candidateCommand.label || "")
+    && baselineCommand.expected_outcome === "pass"
+    && candidateCommand.expected_outcome === "pass"
+    && baselineCommand.actual_outcome === "fail"
+    && candidateCommand.actual_outcome === "fail"
+    && (baselineCommand.exit_code ?? null) === (candidateCommand.exit_code ?? null)
+    && String(baselineCommand.failure_signature_hash || "") === String(candidateCommand.failure_signature_hash || "");
+}
+
+function buildStaticCommandKeys(commands = []) {
+  const seen = new Map();
+  return commands.map((command = {}) => {
+    // Baseline and candidate are keyed from the same normalized validation config,
+    // so command/source/label plus occurrence count is a stable pairing surface.
+    const base = [
+      command.source || "",
+      command.command || "",
+      command.label || "",
+    ].join("\u0000");
+    const occurrence = (seen.get(base) || 0) + 1;
+    seen.set(base, occurrence);
+    return `${base}\u0000${occurrence}`;
+  });
+}
+
+export function reconcileComparativeStaticValidation(
+  baselineValidation = { passed: false, commands: [] },
+  candidateValidation = { passed: false, commands: [] },
+  validation = {},
+) {
+  if (!hasComparativeStaticChecks(validation)) {
+    return {
+      baseline: baselineValidation,
+      candidate: candidateValidation,
+      neutralized_shared_failures: 0,
+    };
+  }
+
+  const baselineCommands = Array.isArray(baselineValidation?.commands)
+    ? baselineValidation.commands.map((command) => ({ ...command }))
+    : [];
+  const candidateCommands = Array.isArray(candidateValidation?.commands)
+    ? candidateValidation.commands.map((command) => ({ ...command }))
+    : [];
+  let neutralizedSharedFailures = 0;
+  const baselineKeys = buildStaticCommandKeys(baselineCommands);
+  const candidateKeys = buildStaticCommandKeys(candidateCommands);
+  const candidateIndexByKey = new Map(candidateKeys.map((key, index) => [key, index]));
+
+  for (let index = 0; index < baselineCommands.length; index += 1) {
+    const candidateIndex = candidateIndexByKey.get(baselineKeys[index]);
+    if (candidateIndex == null) continue;
+    const baselineCommand = baselineCommands[index];
+    const candidateCommand = candidateCommands[candidateIndex];
+    if (!sameStaticFailureSignature(baselineCommand, candidateCommand)) continue;
+
+    neutralizedSharedFailures += 1;
+    baselineCommands[index] = {
+      ...baselineCommand,
+      ok: true,
+      matched: true,
+      neutralized_shared_baseline_failure: true,
+    };
+    candidateCommands[candidateIndex] = {
+      ...candidateCommand,
+      ok: true,
+      matched: true,
+      neutralized_shared_baseline_failure: true,
+    };
+  }
+
+  const validationPassed = (commands) => commands.every((command) => (
+    command?.skipped === true || command?.matched === true
+  ));
+
+  return {
+    baseline: {
+      ...baselineValidation,
+      passed: validationPassed(baselineCommands),
+      commands: baselineCommands,
+    },
+    candidate: {
+      ...candidateValidation,
+      passed: validationPassed(candidateCommands),
+      commands: candidateCommands,
+    },
+    neutralized_shared_failures: neutralizedSharedFailures,
+  };
+}
+
+export function getContinuationConfig(validation = {}) {
+  const continuation = validation?.continuation || {};
+  return {
+    enabled: continuation.enabled === true,
+    maxSessions: Math.max(1, Number(continuation.max_sessions || 1)),
+    maxCashCost: Number.isFinite(Number(continuation.max_cash_cost))
+      ? Number(continuation.max_cash_cost)
+      : null,
+  };
+}
+
+export function isInfrastructureContinuationFailure(result = {}) {
+  const text = [result?.error, result?.stderr_tail, result?.stdout_tail]
+    .filter(Boolean)
+    .join("\n");
+  return /services failed to start|did not start within|service-start-.*\.log|port .* occupied/i.test(text);
+}
+
+async function runContinuationValidation(entry, validation = {}, limits = {}, candidateChanges = []) {
+  const continuation = getContinuationConfig(validation);
+  if (!continuation.enabled) {
+    return {
+      enabled: false,
+      passed: null,
+      base_dir: null,
+      summary: null,
+      stdout_tail: "",
+      stderr_tail: "",
+      error: null,
+    };
+  }
+
+  const syncedCodeTargets = await syncWorkspaceCodeTargetsToBranchKv(entry, candidateChanges);
+
+  const baseDir = join(entry.paths.base, "dev-loop");
+  const env = {
+    ...process.env,
+    ...buildStartEnv(entry.metadata),
+    SWAYAMBHU_DEV_LOOP_SERVICE_MODE: "default",
+  };
+  const timeoutMs = Math.max(180_000, (limits.max_wall_time_minutes || 30) * 60_000);
+  const command = `node scripts/dev-loop/batch-run.mjs --cycles ${continuation.maxSessions} --base-dir '${baseDir}' --label '${entry.name}-continuation'`;
+
+  try {
+    const stdout = execFileSync("bash", ["-lc", command], {
+      cwd: entry.paths.workspaceDir,
+      env,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return {
+      enabled: true,
+      passed: true,
+      base_dir: baseDir,
+      summary: await readJson(join(baseDir, "batch-summary.json")),
+      synced_code_targets: syncedCodeTargets,
+      stdout_tail: String(stdout || "").slice(-4000),
+      stderr_tail: "",
+      error: null,
+    };
+  } catch (error) {
+    let summary = null;
+    if (await pathExists(join(baseDir, "batch-summary.json"))) {
+      summary = await readJson(join(baseDir, "batch-summary.json"));
+    }
+    return {
+      enabled: true,
+      passed: false,
+      base_dir: baseDir,
+      summary,
+      synced_code_targets: syncedCodeTargets,
+      stdout_tail: String(error.stdout || "").slice(-4000),
+      stderr_tail: String(error.stderr || "").slice(-4000),
+      error: error.message,
+    };
+  }
+}
+
+export function summarizeBatchSummary(summary) {
+  if (!summary) return null;
+  return {
+    cycles: summary.cycles || 0,
+    totals: summary.totals || {},
+    remote_cleanup: summary.remote_cleanup || null,
+    completed_at: summary.completed_at || null,
+  };
+}
+
+export function compareContinuationSummaries(baselineSummary, candidateSummary) {
+  const baseline = summarizeBatchSummary(baselineSummary);
+  const candidate = summarizeBatchSummary(candidateSummary);
+  if (!baseline || !candidate) {
+    return { baseline, candidate, deltas: null };
+  }
+
+  const baselineTotals = baseline.totals || {};
+  const candidateTotals = candidate.totals || {};
+  const keys = new Set([...Object.keys(baselineTotals), ...Object.keys(candidateTotals)]);
+  const deltas = {};
+  for (const key of keys) {
+    const baseValue = Number(baselineTotals[key] || 0);
+    const candidateValue = Number(candidateTotals[key] || 0);
+    deltas[key] = candidateValue - baseValue;
+  }
+
+  return { baseline, candidate, deltas };
 }
 
 async function writeLabState(paths, state) {
@@ -579,6 +1089,7 @@ async function createBranchFromSource(sourceRef, name) {
     source_state_dir: source.stateDir,
     state_dir: target.stateDir,
     pre_trigger_snapshot_dir: target.preTriggerSnapshotDir,
+    runtime_workspace_dir: join(target.base, "runtime-workspace"),
     ports,
     recorded_balance_at: recorded.recorded_balance_at,
     recorded_balance_source: recorded.recorded_balance_source,
@@ -623,6 +1134,7 @@ async function materializeDrToBranch(branchEntry, payload, options = {}) {
     || `x_state_lab_dr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   kernel.executionId = executionId;
   kernel.keyTiers = await kernel.kvGet("kernel:key_tiers") || Kernel.DEFAULT_KEY_TIERS;
+  kernel.writePolicy = await kernel.kvGet("kernel:write_policy") || null;
   kernel.defaults = await kernel.kvGet("config:defaults");
 
   const state = await kernel.kvGet("dr:state:1") || {
@@ -664,6 +1176,7 @@ async function materializeDrToBranch(branchEntry, payload, options = {}) {
 
   const prevLastReflect = await kernel.kvGet("last_reflect");
   const carry_forward = payload.carry_forward || prevLastReflect?.carry_forward || [];
+  const metaPolicyNotes = normalizeMetaPolicyNotes(payload.meta_policy_notes);
 
   await kernel.kvWriteSafe(`reflect:1:${executionId}`, {
     reflection: payload.reflection,
@@ -673,7 +1186,16 @@ async function materializeDrToBranch(branchEntry, payload, options = {}) {
     timestamp: now,
     from_dr_generation: state.generation || 1,
     carry_forward,
+    meta_policy_notes: metaPolicyNotes,
   });
+
+  if (metaPolicyNotes.length > 0) {
+    await persistMetaPolicyNotes(kernel, metaPolicyNotes, {
+      sessionId: executionId,
+      depth: 1,
+      source: "deep_reflect",
+    });
+  }
 
   await kernel.kvWriteSafe("last_reflect", {
     session_summary: payload.reflection,
@@ -694,9 +1216,17 @@ async function materializeDrToBranch(branchEntry, payload, options = {}) {
     desires_changed: ops.filter((o) => o.key?.startsWith("desire:")).length,
     patterns_changed: ops.filter((o) => o.key?.startsWith("pattern:")).length,
     tactics_changed: ops.filter((o) => o.key?.startsWith("tactic:")).length,
+    meta_policy_notes: metaPolicyNotes.length,
     timestamp: now,
   }), { expirationTtl: 86400 });
   await kernel.karmaRecord({ event: "event_emitted", type: "dr_complete", key: eventKey });
+  if (metaPolicyNotes.length > 0) {
+    await kernel.karmaRecord({
+      event: "dr_meta_policy_notes_recorded",
+      count: metaPolicyNotes.length,
+      slugs: metaPolicyNotes.map((note) => note.slug).filter(Boolean),
+    });
+  }
 
   const desireCount = await loadDesireCount(kv);
   if (hadNoDesires && desireCount > 0) {
@@ -737,7 +1267,7 @@ async function materializeDrToBranch(branchEntry, payload, options = {}) {
     next_due_session: sessionCount + interval,
     next_due_date: new Date(Date.now() + intervalDays * 86400000).toISOString(),
   };
-  await kernel.kvDeleteSafe(`dr:result:${nextState.generation}`);
+  await kernel.deleteLifecycleState(`dr:result:${nextState.generation}`);
   if (inheritedJobId) {
     await kernel.kvDeleteSafe(`job:${inheritedJobId}`);
     await kernel.kvDeleteSafe(`job_result:${inheritedJobId}`);
@@ -747,7 +1277,7 @@ async function materializeDrToBranch(branchEntry, payload, options = {}) {
       reason: "materialized_dr_branch",
     });
   }
-  await kernel.kvWriteSafe("dr:state:1", nextState);
+  await kernel.writeLifecycleState("dr:state:1", nextState);
 
   return {
     executionId,
@@ -871,12 +1401,13 @@ async function cmdMaterializeDr(args) {
   }
 }
 
-async function loadLabHypothesis(hypothesisPath) {
+export async function loadLabHypothesis(hypothesisPath) {
   const resolved = resolve(hypothesisPath);
   const parsed = JSON.parse(await readFile(resolved, "utf8"));
   return {
     resolvedPath: resolved,
     payload: {
+      review_note_key: parsed?.review_note_key || null,
       hypothesis: parsed?.hypothesis || "lab-run",
       candidate_changes: Array.isArray(parsed?.candidate_changes) ? parsed.candidate_changes : [],
       validation: parsed?.validation || {},
@@ -893,8 +1424,12 @@ async function cmdLabRun(args) {
   }
 
   const { payload, resolvedPath } = await loadLabHypothesis(hypothesisPath);
-  const branchName = buildLabBranchName(resolvedPath);
-  const { source, entry } = await createBranchFromSource(sourceRef, branchName);
+  const branchStem = buildLabBranchName(resolvedPath);
+  const baselineName = sanitizeName(`${branchStem}-baseline`);
+  const candidateName = sanitizeName(`${branchStem}-candidate`);
+  const { source, entry: baselineEntry } = await createBranchFromSource(sourceRef, baselineName);
+  const { entry } = await createBranchFromSource(sourceRef, candidateName);
+  await prepareWorkspace(baselineEntry);
   await prepareWorkspace(entry);
 
   const startedAt = new Date().toISOString();
@@ -909,10 +1444,14 @@ async function cmdLabRun(args) {
     deadline_at: deadlineAt,
     consecutive_failures: 0,
     failure_reason: null,
+    baseline_branch: baselineEntry.name,
   });
 
   let appliedChanges = [];
+  let baselineStaticValidation = { passed: false, commands: [] };
   let staticValidation = { passed: false, commands: [] };
+  let baselineContinuation = { enabled: false, passed: null, summary: null };
+  let candidateContinuation = { enabled: false, passed: null, summary: null };
   try {
     appliedChanges = await applyCandidateChanges(entry, payload.candidate_changes);
     await writeLabState(entry.paths, {
@@ -925,48 +1464,21 @@ async function cmdLabRun(args) {
       deadline_at: deadlineAt,
       consecutive_failures: 0,
       failure_reason: null,
+      baseline_branch: baselineEntry.name,
     });
 
-    staticValidation = await runStaticValidation(entry, payload.validation, payload.limits);
+    baselineStaticValidation = await runStaticValidation(baselineEntry, payload.validation, payload.limits, "baseline");
+    staticValidation = await runStaticValidation(entry, payload.validation, payload.limits, "candidate");
+    const reconciledStaticValidation = reconcileComparativeStaticValidation(
+      baselineStaticValidation,
+      staticValidation,
+      payload.validation,
+    );
+    baselineStaticValidation = reconciledStaticValidation.baseline;
+    staticValidation = reconciledStaticValidation.candidate;
 
-    const report = {
-      branch: entry.name,
-      source_ref: source.ref,
-      workspace_dir: entry.paths.workspaceDir,
-      state_dir: entry.metadata.state_dir,
-      hypothesis_path: resolvedPath,
-      hypothesis: payload.hypothesis,
-      candidate_changes_requested: payload.candidate_changes,
-      candidate_changes_applied: appliedChanges,
-      static_validation: staticValidation,
-      promotion_recommendation: staticValidation.passed ? "needs_more_evidence" : "reject",
-      generated_at: new Date().toISOString(),
-    };
-    await writeLabReport(entry.paths, report);
-
-    const result = {
-      branch: entry.name,
-      source_ref: source.ref,
-      hypothesis: payload.hypothesis,
-      promotion_recommendation: staticValidation.passed ? "needs_more_evidence" : "reject",
-      comparison_summary: {
-        baseline: null,
-        candidate_static_validation: staticValidation,
-      },
-      validated_changes: [],
-      reasons_not_to_change: staticValidation.passed
-        ? [
-            "Stage A only runs static validation.",
-            "No bounded continuation or baseline/candidate comparison has run yet.",
-          ]
-        : [
-            "Static validation failed.",
-          ],
-      generated_at: new Date().toISOString(),
-    };
-    await writeLabResult(entry.paths, result);
     await writeLabState(entry.paths, {
-      status: staticValidation.passed ? "judging" : "rejected",
+      status: "running_continuations",
       branch: entry.name,
       source_ref: source.ref,
       hypothesis_path: resolvedPath,
@@ -974,10 +1486,116 @@ async function cmdLabRun(args) {
       updated_at: new Date().toISOString(),
       deadline_at: deadlineAt,
       consecutive_failures: 0,
-      failure_reason: staticValidation.passed ? null : "static_validation_failed",
+      failure_reason: null,
+      baseline_branch: baselineEntry.name,
+    });
+
+    baselineContinuation = baselineStaticValidation.passed
+      ? await runContinuationValidation(baselineEntry, payload.validation, payload.limits)
+      : { enabled: getContinuationConfig(payload.validation).enabled, passed: false, summary: null, error: "baseline_static_validation_failed" };
+    candidateContinuation = staticValidation.passed
+      ? await runContinuationValidation(entry, payload.validation, payload.limits, payload.candidate_changes)
+      : { enabled: getContinuationConfig(payload.validation).enabled, passed: false, summary: null, error: "candidate_static_validation_failed" };
+
+    const continuationComparison = compareContinuationSummaries(
+      baselineContinuation.summary,
+      candidateContinuation.summary,
+    );
+    const continuationEnabled = getContinuationConfig(payload.validation).enabled;
+    const continuationPassed = !continuationEnabled
+      || (baselineContinuation.passed === true && candidateContinuation.passed === true);
+    const validatedChanges = (baselineStaticValidation.passed && staticValidation.passed && continuationPassed)
+      ? await buildValidatedChanges(entry, payload.candidate_changes)
+      : null;
+    const infrastructureContinuationFailure = continuationEnabled
+      && (isInfrastructureContinuationFailure(baselineContinuation)
+        || isInfrastructureContinuationFailure(candidateContinuation));
+    const promotionRecommendation = validatedChanges
+      ? "stageable"
+      : (infrastructureContinuationFailure ? "inconclusive" : "reject");
+    const hypothesisHash = sha256Json({
+      hypothesis: payload.hypothesis,
+      candidate_changes: payload.candidate_changes,
+      validation: payload.validation,
+      limits: payload.limits,
+      review_note_key: payload.review_note_key || null,
+    });
+    const validatedChangesHash = validatedChanges ? sha256Json(validatedChanges) : null;
+
+    const report = {
+      branch: entry.name,
+      baseline_branch: baselineEntry.name,
+      source_ref: source.ref,
+      workspace_dir: entry.paths.workspaceDir,
+      state_dir: entry.metadata.state_dir,
+      baseline_workspace_dir: baselineEntry.paths.workspaceDir,
+      baseline_state_dir: baselineEntry.metadata.state_dir,
+      hypothesis_path: resolvedPath,
+      hypothesis: payload.hypothesis,
+      candidate_changes_requested: payload.candidate_changes,
+      candidate_changes_applied: appliedChanges,
+      baseline_static_validation: baselineStaticValidation,
+      static_validation: staticValidation,
+      neutralized_shared_static_failures: reconciledStaticValidation.neutralized_shared_failures,
+      baseline_continuation: baselineContinuation,
+      candidate_continuation: candidateContinuation,
+      continuation_comparison: continuationComparison,
+      promotion_recommendation: promotionRecommendation,
+      review_note_key: payload.review_note_key || null,
+      hypothesis_hash: hypothesisHash,
+      validated_changes_hash: validatedChangesHash,
+      validated_changes: validatedChanges,
+      generated_at: new Date().toISOString(),
+    };
+    await writeLabReport(entry.paths, report);
+
+    const result = {
+      branch: entry.name,
+      baseline_branch: baselineEntry.name,
+      source_ref: source.ref,
+      hypothesis: payload.hypothesis,
+      review_note_key: payload.review_note_key || null,
+      promotion_recommendation: promotionRecommendation,
+      comparison_summary: continuationComparison,
+      hypothesis_hash: hypothesisHash,
+      validated_changes_hash: validatedChangesHash,
+      validated_changes: validatedChanges,
+      reasons_not_to_change: promotionRecommendation === "stageable"
+        ? []
+        : [
+            ...(baselineStaticValidation.passed ? [] : ["Baseline static validation failed."]),
+            ...(staticValidation.passed ? [] : ["Candidate static validation failed."]),
+            ...(continuationEnabled && baselineContinuation.passed !== true
+              ? [isInfrastructureContinuationFailure(baselineContinuation)
+                ? "Baseline continuation infrastructure failed."
+                : "Baseline continuation failed."]
+              : []),
+            ...(continuationEnabled && candidateContinuation.passed !== true
+              ? [isInfrastructureContinuationFailure(candidateContinuation)
+                ? "Candidate continuation infrastructure failed."
+                : "Candidate continuation failed."]
+              : []),
+          ],
+      generated_at: new Date().toISOString(),
+    };
+    await writeLabResult(entry.paths, result);
+    await writeLabState(entry.paths, {
+      status: promotionRecommendation === "stageable"
+        ? "stageable"
+        : (promotionRecommendation === "inconclusive" ? "inconclusive" : "rejected"),
+      branch: entry.name,
+      source_ref: source.ref,
+      hypothesis_path: resolvedPath,
+      started_at: startedAt,
+      updated_at: new Date().toISOString(),
+      deadline_at: deadlineAt,
+      consecutive_failures: 0,
+      failure_reason: promotionRecommendation === "stageable" ? null : "validation_failed",
+      baseline_branch: baselineEntry.name,
     });
 
     console.log(`Lab run complete for ${entry.name}`);
+    console.log(`  baseline: branch:${baselineEntry.name}`);
     console.log(`  branch: branch:${entry.name}`);
     console.log(`  workspace: ${entry.paths.workspaceDir}`);
     console.log(`  report: ${entry.paths.labReportPath}`);
@@ -1070,6 +1688,10 @@ async function cmdStart(args) {
     ...buildStartEnv(ref.metadata),
   };
   const passthrough = args.slice(1);
+
+  if (passthrough.includes("--reset-all-state")) {
+    console.warn(`WARNING: --reset-all-state will wipe branch state for ${name} at ${ref.metadata.state_dir}`);
+  }
 
   console.log(`Starting branch ${name}`);
   console.log(`  state: ${ref.metadata.state_dir}`);

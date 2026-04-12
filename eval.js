@@ -127,7 +127,13 @@ Respond with ONLY a JSON array: [{"id":"...","direction":"...","confidence":0.0-
     signal,
   });
 
-  const parsed = JSON.parse(response.content);
+  let parsed;
+  try {
+    parsed = JSON.parse(response.content);
+  } catch (e) {
+    console.error("[eval] classifyWithLLM: JSON.parse failed:", e.message, "\nRaw response:", response.content?.slice?.(0, 500));
+    return pairs.map(p => ({ ...p, direction: "neutral", confidence: 0, surprise: 0 }));
+  }
   const pairMap = Object.fromEntries(pairs.map(p => [p.id, p]));
 
   return parsed.map(r => {

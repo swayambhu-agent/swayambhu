@@ -1,5 +1,9 @@
 // Dashboard patron config — edit these values to customize the dashboard.
 window.DASHBOARD_CONFIG = {
+  // Prefer same-origin API routing. The local dashboard server proxies /api to
+  // the active backend port, so the browser never needs direct access to it.
+  apiUrl: "/api",
+
   // Timezone for all displayed timestamps (IANA format).
   timezone: "Asia/Kolkata",
 

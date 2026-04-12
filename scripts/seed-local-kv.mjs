@@ -9,6 +9,7 @@
 import { readFileSync, readdirSync } from "fs";
 import { resolve } from "path";
 import { pathToFileURL } from "url";
+import { BOOTSTRAP_KEY_TIERS, BOOTSTRAP_WRITE_POLICY } from "../authority-policy.js";
 import { getKV, root, dispose } from "./shared.mjs";
 
 const importLocal = (rel) => import(pathToFileURL(resolve(root, rel)).href);
@@ -18,6 +19,15 @@ const readJSON = (rel) => JSON.parse(read(rel));
 const kv = await getKV();
 
 let count = 0;
+
+function readBooleanEnv(name) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return null;
+  const normalized = String(raw).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`Invalid boolean for ${name}: ${raw}`);
+}
 
 async function put(key, value, format = "json", description) {
   const val = typeof value === "object" && format === "json"
@@ -39,6 +49,11 @@ const defaultsConfig = readJSON("config/defaults.json");
 if (process.env.SWAYAMBHU_DEV_LOOP_JOBS_BASE_URL) {
   defaultsConfig.jobs = defaultsConfig.jobs || {};
   defaultsConfig.jobs.base_url = process.env.SWAYAMBHU_DEV_LOOP_JOBS_BASE_URL;
+}
+const identityEnabledOverride = readBooleanEnv("SWAYAMBHU_IDENTITY_ENABLED");
+if (identityEnabledOverride !== null) {
+  defaultsConfig.identity = defaultsConfig.identity || {};
+  defaultsConfig.identity.enabled = identityEnabledOverride;
 }
 
 const configMap = {
@@ -68,24 +83,27 @@ await put("wallets", wallets, "json", "Registered crypto wallets");
 const kernelConf = readJSON("config/kernel.json");
 await put("kernel:fallback_model", JSON.stringify(kernelConf.fallback_model), "json", "Fallback model for failed LLM calls");
 
-// Key tiers (kernel reads this at boot to enforce KV write protection)
-await put("kernel:key_tiers", {
-  immutable: ["dharma", "patron:public_key"],
-  kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
-  protected: [
-    "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
-    "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
-    "secret:*", "skill:*", "task:*",
-    "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-    "desire:*", "pattern:*", "principle:*", "tactic:*",
-  ],
-}, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
+// Authority policy (kernel reads these at boot to enforce generic write rules)
+await put("kernel:key_tiers", BOOTSTRAP_KEY_TIERS, "json", "KV write-protection tiers — authority policy, not kernel ontology");
+await put("kernel:write_policy", BOOTSTRAP_WRITE_POLICY, "json", "Authority policy for protected writes — contexts, ops, deliberation, and budgets");
+
+const now = new Date().toISOString();
+await put("identification:working-body", {
+  identification: "Operational body: memory continuity, tools, and tool affordances through which perception and action happen.",
+  strength: 0.8,
+  source: "constitutional_seed",
+  created_at: now,
+  last_reviewed_at: now,
+  last_exercised_at: null,
+}, "json", "Constitutional working-body identification seed");
 
 // Source map — tells the agent where its own infrastructure code lives.
 // kernel:* tier so the agent can read but not modify the pointers.
 await put("kernel:source_map", {
   kernel: "kernel:source:kernel.js",
   comms: "kernel:source:hook-communication.js",
+  authority_policy: "kernel:source:authority-policy.js",
+  userspace: "hook:session:code",
   act_library: "hook:act:code",
   reflection: "hook:reflect:code",
   tools: "tool:*:code",
@@ -109,7 +127,7 @@ await put("config:event_handlers", {
 // ── Providers (from providers/*.js) ───────────────────────────
 
 console.log("--- Providers ---");
-const providerFiles = ["llm", "llm_balance", "wallet_balance", "gmail", "compute"];
+const providerFiles = ["llm", "llm_balance", "wallet_balance", "gmail", "email-relay", "compute"];
 for (const name of providerFiles) {
   const mod = await importLocal(`providers/${name}.js`);
   await put(`provider:${name}:code`, read(`providers/${name}.js`), "text", `Provider source: ${name}`);
@@ -189,6 +207,7 @@ console.log("--- Principles ---");
 // ── Policy code (mutable — agent can stage changes via K.stageCode) ──
 
 console.log("--- Policy Code ---");
+await put("hook:session:code", read("userspace.js"), "text", "Userspace — session flow, DR dispatch, and cognitive policy");
 await put("hook:act:code", read("act.js"), "text", "Session policy — act flow, context building");
 await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy — session/deep reflect, scheduling");
 
@@ -197,6 +216,7 @@ await put("hook:reflect:code", read("reflect.js"), "text", "Reflection policy �
 console.log("--- Kernel Source ---");
 await put("kernel:source:kernel.js", read("kernel.js"), "text", "Kernel source");
 await put("kernel:source:hook-communication.js", read("hook-communication.js"), "text", "Communication handler source");
+await put("kernel:source:authority-policy.js", read("authority-policy.js"), "text", "Authority policy source");
 
 // ── Channel adapters ──────────────────────────────────────────
 

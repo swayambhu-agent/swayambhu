@@ -1,0 +1,30 @@
+{
+  "question": "Adversarially review the proposed identification implementation. Assume the goal is to catch conceptual mistakes before any live rollout. Critique the spec as sharply as possible. Look for: category confusion between identification and other layers; bad analogies to the human body; risks in seeding `identification:working-body`; ways the widening rule could drift, bloat, or collapse into self-referentiality; places where the algorithm is still circular or underspecified; runtime/prompt integration risks; and any reasons this should not be implemented yet. If the design is partly right, state exactly what should be kept versus changed.",
+  "notes": [
+    "This is an adversarial pre-implementation review, not a prompt to be agreeable.",
+    "Prefer high-signal objections over broad summaries.",
+    "Focus on the first implementable version, not an idealized future system."
+  ],
+  "files": [
+    {
+      "path": "/home/swami/swayambhu/repo/docs/superpowers/specs/2026-04-09-identification-implementation-spec.md",
+      "kind": "implementation_spec"
+    },
+    {
+      "path": "/home/swami/swayambhu/repo/docs/superpowers/plans/2026-04-09-identification-algorithm-draft.md",
+      "kind": "algorithm_draft"
+    },
+    {
+      "path": "/home/swami/swayambhu/repo/docs/superpowers/specs/2026-04-09-cognitive-upgrade-identity-personality-thought.md",
+      "kind": "research_spec"
+    },
+    {
+      "path": "/home/swami/swayambhu/repo/docs/superpowers/specs/2026-04-07-cognitive-framework-v2.md",
+      "kind": "framework_reference"
+    },
+    {
+      "path": "/home/swami/swayambhu/repo/prompts/deep_reflect.md",
+      "kind": "prompt_surface"
+    }
+  ]
+}

@@ -192,6 +192,10 @@ function InventoryList({ title, color, items, type, selected, onSelect, limit = 
 
 function getCenterEntity(data, selected) {
   if (!selected) return null;
+  return getCollectionForType(data, selected.type)?.find(entity => entity.key === selected.key) || null;
+}
+
+function getCollectionForType(data, type) {
   const collections = {
     principle: data.principles || [],
     desire: data.desires || [],
@@ -199,7 +203,7 @@ function getCenterEntity(data, selected) {
     pattern: data.patterns || [],
     experience: data.experiences || [],
   };
-  return collections[selected.type]?.find(entity => entity.key === selected.key) || null;
+  return collections[type] || [];
 }
 
 function getConnections(data, selected) {
@@ -381,7 +385,50 @@ function SelectedEntityBody({ entity, type }) {
   return null;
 }
 
-function DebuggerMindView({ data, selected, onSelect, connections, centerEntity, lastReflect }) {
+function SelectedEntityCard({ entity, type, selectedKey, onPrev, onNext, position, total }) {
+  if (!entity || !type) return null;
+
+  const color = typeColor(type);
+
+  return (
+    <div className="rounded-lg p-4" style={{ background: `${color}14`, border: `1px solid ${color}` }}>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div style={{ fontSize: 10, color, textTransform: 'uppercase', letterSpacing: 1 }}>
+          {type}
+          {typeof position === 'number' && typeof total === 'number' && total > 0 && (
+            <span className="ml-2 text-gray-500">{position + 1}/{total}</span>
+          )}
+        </div>
+        {typeof onPrev === 'function' && typeof onNext === 'function' && total > 1 && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onPrev}
+              className="flex h-7 w-7 items-center justify-center rounded border text-sm text-gray-300 transition hover:text-white"
+              style={{ borderColor: `${color}55`, background: `${color}12` }}
+              title="Previous item"
+            >
+              {'\u2190'}
+            </button>
+            <button
+              type="button"
+              onClick={onNext}
+              className="flex h-7 w-7 items-center justify-center rounded border text-sm text-gray-300 transition hover:text-white"
+              style={{ borderColor: `${color}55`, background: `${color}12` }}
+              title="Next item"
+            >
+              {'\u2192'}
+            </button>
+          </div>
+        )}
+      </div>
+      <SelectedEntityBody entity={entity} type={type} />
+      <div className="text-[11px] text-gray-600 mt-3 font-mono break-all">{selectedKey}</div>
+    </div>
+  );
+}
+
+function DebuggerMindView({ data, selected, onSelect, connections, centerEntity, lastReflect, onPrevSelected, onNextSelected, selectedPosition, selectedTotal }) {
   const activeCarryForward = (lastReflect?.carry_forward || []).filter(isCarryForwardActive);
   const validationItems = [
     data.operator_health?.sessions_since_dr === 0
@@ -481,13 +528,15 @@ function DebuggerMindView({ data, selected, onSelect, connections, centerEntity,
           <div className="space-y-3 min-w-0">
             {selected && centerEntity ? (
               <>
-                <div className="rounded-lg p-4" style={{ background: `${typeColor(selected.type)}14`, border: `1px solid ${typeColor(selected.type)}` }}>
-                  <div style={{ fontSize: 10, color: typeColor(selected.type), textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>
-                    {selected.type}
-                  </div>
-                  <SelectedEntityBody entity={centerEntity} type={selected.type} />
-                  <div className="text-[11px] text-gray-600 mt-3 font-mono break-all">{selected.key}</div>
-                </div>
+                <SelectedEntityCard
+                  entity={centerEntity}
+                  type={selected.type}
+                  selectedKey={selected.key}
+                  onPrev={onPrevSelected}
+                  onNext={onNextSelected}
+                  position={selectedPosition}
+                  total={selectedTotal}
+                />
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="rounded border border-border bg-bg-panel/50 p-3">
@@ -596,7 +645,7 @@ function DebuggerMindView({ data, selected, onSelect, connections, centerEntity,
   );
 }
 
-function MobileMindExplorer({ data, selected, onSelect, connections, centerEntity }) {
+function MobileMindExplorer({ data, selected, onSelect, connections, centerEntity, onPrevSelected, onNextSelected, selectedPosition, selectedTotal }) {
   const sections = [
     { label: 'Principles', type: 'principle', items: data.principles, color: '#f59e0b' },
     { label: 'Desires', type: 'desire', items: data.desires, color: '#a78bfa' },
@@ -677,13 +726,15 @@ function MobileMindExplorer({ data, selected, onSelect, connections, centerEntit
 
         {selected && centerEntity ? (
           <div className="space-y-3">
-            <div className="rounded-lg p-4" style={{ background: `${typeColor(selected.type)}18`, border: `1px solid ${typeColor(selected.type)}` }}>
-              <div style={{ fontSize: 10, color: typeColor(selected.type), textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>
-                {selected.type}
-              </div>
-              <SelectedEntityBody entity={centerEntity} type={selected.type} />
-              <div className="text-[11px] text-gray-600 mt-3 font-mono break-all">{selected.key}</div>
-            </div>
+            <SelectedEntityCard
+              entity={centerEntity}
+              type={selected.type}
+              selectedKey={selected.key}
+              onPrev={onPrevSelected}
+              onNext={onNextSelected}
+              position={selectedPosition}
+              total={selectedTotal}
+            />
             {renderConnectionList(connections.upstream, 'Upstream')}
             {renderConnectionList(connections.downstream, 'Downstream')}
           </div>
@@ -697,7 +748,7 @@ function MobileMindExplorer({ data, selected, onSelect, connections, centerEntit
   );
 }
 
-function MindGraphExplorer({ data, selected, onSelect }) {
+function MindGraphExplorer({ data, selected, onSelect, onPrevSelected, onNextSelected, selectedPosition, selectedTotal }) {
   const { principles = [], tactics = [], patterns = [], desires = [], experiences = [] } = data;
 
   // Build connection map for the selected entity
@@ -791,11 +842,17 @@ function MindGraphExplorer({ data, selected, onSelect }) {
 
   const renderCenterNode = () => {
     if (!selected || !centerEntity) return null;
-    const col = typeColor(selected.type);
     return (
-      <div className="rounded-lg p-4" style={{ background: `${col}18`, border: `2px solid ${col}`, maxWidth: 300 }}>
-        <div style={{ fontSize: 10, color: col, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>{selected.type}</div>
-        <SelectedEntityBody entity={centerEntity} type={selected.type} />
+      <div style={{ maxWidth: 300 }}>
+        <SelectedEntityCard
+          entity={centerEntity}
+          type={selected.type}
+          selectedKey={selected.key}
+          onPrev={onPrevSelected}
+          onNext={onNextSelected}
+          position={selectedPosition}
+          total={selectedTotal}
+        />
       </div>
     );
   };
@@ -808,6 +865,10 @@ function MindGraphExplorer({ data, selected, onSelect }) {
         onSelect={onSelect}
         connections={connections}
         centerEntity={centerEntity}
+        onPrevSelected={onPrevSelected}
+        onNextSelected={onNextSelected}
+        selectedPosition={selectedPosition}
+        selectedTotal={selectedTotal}
       />
 
       <div className="hidden md:flex flex-1 overflow-hidden">
@@ -913,6 +974,14 @@ export default function MindTab({ patronKey }) {
   const [viewMode, setViewMode] = useState('debugger');
   const connections = useMemo(() => data ? getConnections(data, selected) : { upstream: [], downstream: [] }, [data, selected]);
   const centerEntity = useMemo(() => data ? getCenterEntity(data, selected) : null, [data, selected]);
+  const selectedCollection = useMemo(() => {
+    if (!data || !selected) return [];
+    return getCollectionForType(data, selected.type);
+  }, [data, selected]);
+  const selectedPosition = useMemo(() => {
+    if (!selected) return -1;
+    return selectedCollection.findIndex((entity) => entity.key === selected.key);
+  }, [selected, selectedCollection]);
 
   const loadData = useCallback(async () => {
     try {
@@ -937,6 +1006,15 @@ export default function MindTab({ patronKey }) {
       if (nextSelection) setSelected(nextSelection);
     }
   }, [data, selected]);
+
+  const stepSelected = useCallback((direction) => {
+    if (!selected || selectedPosition < 0 || selectedCollection.length < 2) return;
+    const nextIndex = (selectedPosition + direction + selectedCollection.length) % selectedCollection.length;
+    const nextEntity = selectedCollection[nextIndex];
+    if (nextEntity) {
+      setSelected({ type: selected.type, key: nextEntity.key });
+    }
+  }, [selected, selectedCollection, selectedPosition]);
 
   if (loading) return <div className="p-8 text-gray-500">Loading cognitive state...</div>;
   if (error) return <div className="p-8 text-red-400">Error: {error}</div>;
@@ -965,10 +1043,28 @@ export default function MindTab({ patronKey }) {
         </button>
       </div>
       {viewMode === 'graph' ? (
-        <MindGraphExplorer data={data} selected={selected} onSelect={setSelected} />
+        <MindGraphExplorer
+          data={data}
+          selected={selected}
+          onSelect={setSelected}
+          onPrevSelected={() => stepSelected(-1)}
+          onNextSelected={() => stepSelected(1)}
+          selectedPosition={selectedPosition}
+          selectedTotal={selectedCollection.length}
+        />
       ) : (
         <>
-          <MobileMindExplorer data={data} selected={selected} onSelect={setSelected} connections={connections} centerEntity={centerEntity} />
+          <MobileMindExplorer
+            data={data}
+            selected={selected}
+            onSelect={setSelected}
+            connections={connections}
+            centerEntity={centerEntity}
+            onPrevSelected={() => stepSelected(-1)}
+            onNextSelected={() => stepSelected(1)}
+            selectedPosition={selectedPosition}
+            selectedTotal={selectedCollection.length}
+          />
           <DebuggerMindView
             data={data}
             selected={selected}
@@ -976,6 +1072,10 @@ export default function MindTab({ patronKey }) {
             connections={connections}
             centerEntity={centerEntity}
             lastReflect={lastReflect}
+            onPrevSelected={() => stepSelected(-1)}
+            onNextSelected={() => stepSelected(1)}
+            selectedPosition={selectedPosition}
+            selectedTotal={selectedCollection.length}
           />
         </>
       )}

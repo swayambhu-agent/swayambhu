@@ -49,6 +49,10 @@ STATE_DIR="${SWAYAMBHU_PERSIST_DIR:-.wrangler/shared-state}"
 STATE_DIR="$(realpath -m "$STATE_DIR")"
 PRE_TRIGGER_SNAPSHOT_DIR="${SWAYAMBHU_PRE_TRIGGER_SNAPSHOT_DIR:-$(dirname "$STATE_DIR")/pre-trigger-snapshot}"
 PRE_TRIGGER_SNAPSHOT_DIR="$(realpath -m "$PRE_TRIGGER_SNAPSHOT_DIR")"
+RUNTIME_WORKSPACE="${SWAYAMBHU_RUNTIME_WORKSPACE:-}"
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  RUNTIME_WORKSPACE="$(realpath -m "$RUNTIME_WORKSPACE")"
+fi
 SPA_PORT="${SWAYAMBHU_SPA_PORT:-3001}"
 KERNEL_PORT="${SWAYAMBHU_KERNEL_PORT:-8787}"
 DASHBOARD_PORT="${SWAYAMBHU_DASHBOARD_PORT:-8790}"
@@ -272,16 +276,33 @@ if $RESET; then
   apply_overrides
 else
   echo "=== Preserving existing state (use --reset-all-state to wipe) ==="
-  echo "=== Syncing tool grants from source ==="
-  node scripts/sync-tool-grants.mjs
+  if $ISOLATED_START; then
+    echo "=== Preserving branch-local tool grants (isolated start) ==="
+  else
+    echo "=== Syncing tool grants from source ==="
+    node scripts/sync-tool-grants.mjs
+  fi
   echo "=== Resetting session schedule ==="
   node scripts/reset-schedule.mjs
 fi
 
 # ── 4. Start all services ─────────────────────────────────────
 echo ""
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  echo "=== Materializing runtime workspace from canonical KV ==="
+  node scripts/materialize-runtime-workspace.mjs "$RUNTIME_WORKSPACE"
+  if [[ ! -f "$RUNTIME_WORKSPACE/.materialized" ]]; then
+    echo "ERROR: runtime workspace materialization did not complete"
+    exit 1
+  fi
+fi
+
 echo "=== Starting kernel (port $KERNEL_PORT) ==="
-setsid npx wrangler dev -c wrangler.dev.toml --port "$KERNEL_PORT" --test-scheduled --persist-to "$STATE_DIR" &
+KERNEL_CMD=(npx wrangler dev -c wrangler.dev.toml --port "$KERNEL_PORT" --test-scheduled --persist-to "$STATE_DIR")
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  KERNEL_CMD=(npx wrangler dev "$RUNTIME_WORKSPACE/index.js" -c "$RUNTIME_WORKSPACE/wrangler.dev.toml" --cwd "$RUNTIME_WORKSPACE" --port "$KERNEL_PORT" --test-scheduled --persist-to "$STATE_DIR")
+fi
+setsid "${KERNEL_CMD[@]}" &
 PGIDS+=($!)
 
 echo "=== Starting dashboard API (port $DASHBOARD_PORT) ==="
@@ -297,7 +318,7 @@ PGIDS+=($!)
 
 if $GOVERNOR; then
   echo "=== Starting governor (port $GOVERNOR_PORT) ==="
-  setsid bash -c 'cd governor && exec npx wrangler dev --port "'"$GOVERNOR_PORT"'" --inspector-port "'"$GOVERNOR_INSPECTOR_PORT"'" --persist-to "'"$STATE_DIR"'"' &
+  setsid bash -c 'cd governor && exec npx wrangler dev --var GOVERNOR_DEPLOY_MODE:local --port "'"$GOVERNOR_PORT"'" --inspector-port "'"$GOVERNOR_INSPECTOR_PORT"'" --persist-to "'"$STATE_DIR"'"' &
   PGIDS+=($!)
 fi
 
@@ -305,6 +326,9 @@ fi
 echo ""
 echo "=== Waiting for services to start... ==="
 wait_service "kernel" "http://localhost:$KERNEL_PORT" 30
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  rm -rf "${RUNTIME_WORKSPACE}.prev"
+fi
 wait_service "dashboard API" "http://localhost:$DASHBOARD_PORT" 30
 
 # ── 6. Trigger session (if requested) ─────────────────────────
@@ -326,6 +350,9 @@ fi
 echo ""
 echo "=== Running ==="
 echo "  State dir:       $STATE_DIR"
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  echo "  Runtime workspace: $RUNTIME_WORKSPACE"
+fi
 echo "  Kernel:      http://localhost:$KERNEL_PORT"
 echo "  Dashboard API:  http://localhost:$DASHBOARD_PORT"
 echo "  Dashboard SPA:  http://localhost:$SPA_PORT/patron/"

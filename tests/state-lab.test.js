@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
@@ -10,9 +10,21 @@ import {
   allocateBranchPorts,
   buildLabBranchName,
   buildStartEnv,
+  compareContinuationSummaries,
+  getContinuationConfig,
+  isInfrastructureContinuationFailure,
+  loadLabHypothesis,
+  normalizeStaticChecks,
+  overlayWorkspaceFromSourceState,
+  reconcileComparativeStaticValidation,
+  retargetStaticCommandToWorkspace,
   resolveLabWorkspacePath,
+  runStaticValidation,
   sanitizeName,
+  shouldCopyWorkspacePath,
+  summarizeBatchSummary,
 } from "../scripts/state-lab.mjs";
+import { getKV, dispose } from "../scripts/shared.mjs";
 
 describe("state-lab helpers", () => {
   it("sanitizes valid names and rejects invalid ones", () => {
@@ -49,6 +61,7 @@ describe("state-lab helpers", () => {
 
   it("builds start env from branch metadata", () => {
     const env = buildStartEnv({
+      name: "codex",
       state_dir: "/tmp/state-lab/branches/codex/state",
       pre_trigger_snapshot_dir: "/tmp/state-lab/branches/codex/pre-trigger-snapshot",
       ports: {
@@ -64,6 +77,7 @@ describe("state-lab helpers", () => {
     expect(env).toEqual({
       SWAYAMBHU_PERSIST_DIR: "/tmp/state-lab/branches/codex/state",
       SWAYAMBHU_PRE_TRIGGER_SNAPSHOT_DIR: "/tmp/state-lab/branches/codex/pre-trigger-snapshot",
+      SWAYAMBHU_RUNTIME_WORKSPACE: "/tmp/state-lab/branches/codex/runtime-workspace",
       SWAYAMBHU_KERNEL_PORT: "8897",
       SWAYAMBHU_DASHBOARD_PORT: "8900",
       SWAYAMBHU_GOVERNOR_PORT: "8901",
@@ -73,6 +87,25 @@ describe("state-lab helpers", () => {
       SWAYAMBHU_GOVERNOR_ENABLED: "true",
       SWAYAMBHU_START_ISOLATED: "true",
     });
+  });
+
+  it("prefers explicit runtime workspace metadata when present", () => {
+    const env = buildStartEnv({
+      name: "codex",
+      state_dir: "/tmp/state-lab/branches/codex/state",
+      pre_trigger_snapshot_dir: "/tmp/state-lab/branches/codex/pre-trigger-snapshot",
+      runtime_workspace_dir: "/tmp/custom-runtime-workspace",
+      ports: {
+        kernel: 8897,
+        dashboard: 8900,
+        governor: 8901,
+        spa: 9011,
+        dashboard_inspector: 9340,
+        governor_inspector: 9341,
+      },
+    });
+
+    expect(env.SWAYAMBHU_RUNTIME_WORKSPACE).toBe("/tmp/custom-runtime-workspace");
   });
 
   it("exposes a fixed active-ui port", () => {
@@ -94,6 +127,13 @@ describe("state-lab helpers", () => {
     expect(() => resolveLabWorkspacePath(workspace, { path: "../evil.js" })).toThrow("escapes workspace");
   });
 
+  it("skips transient workspace directories at any depth", () => {
+    expect(shouldCopyWorkspacePath("/home/swami/swayambhu/repo/userspace.js")).toBe(true);
+    expect(shouldCopyWorkspacePath("/home/swami/swayambhu/repo/.wrangler/tmp/bundle-abc")).toBe(false);
+    expect(shouldCopyWorkspacePath("/home/swami/swayambhu/repo/dashboard-api/.wrangler/tmp/bundle-abc")).toBe(false);
+    expect(shouldCopyWorkspacePath("/home/swami/swayambhu/repo/site/patron/node_modules/react/index.js")).toBe(false);
+  });
+
   it("applies workspace patch and write candidate changes", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "state-lab-test-"));
     try {
@@ -113,5 +153,492 @@ describe("state-lab helpers", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("overlays branch code-key state into a prepared workspace before lab patches apply", async () => {
+    const base = await mkdtemp(join(tmpdir(), "state-lab-overlay-"));
+    const stateDir = join(base, "state");
+    const workspace = join(base, "workspace");
+    try {
+      await mkdir(join(workspace, "prompts"), { recursive: true });
+      await writeFile(join(workspace, "userspace.js"), "repo userspace\n", "utf8");
+      await writeFile(join(workspace, "prompts", "reflect.md"), "repo reflect\n", "utf8");
+      await mkdir(stateDir, { recursive: true });
+
+      const kv = await getKV({ stateDir });
+      try {
+        await kv.put("kernel:source_map", JSON.stringify({
+          userspace: "hook:session:code",
+        }), { metadata: { format: "json" } });
+        await kv.put("hook:session:code", "branch userspace\n", { metadata: { format: "text" } });
+        await kv.put("prompt:reflect", "branch reflect\n", { metadata: { format: "text" } });
+      } finally {
+        await dispose();
+      }
+
+      await overlayWorkspaceFromSourceState({ workspaceDir: workspace, stateDir });
+
+      expect(await readFile(join(workspace, "userspace.js"), "utf8")).toBe("branch userspace\n");
+      expect(await readFile(join(workspace, "prompts", "reflect.md"), "utf8")).toBe("branch reflect\n");
+
+      await applyWorkspaceCandidateChange(workspace, {
+        target: "hook:session:code",
+        old_string: "branch userspace",
+        new_string: "patched userspace",
+      });
+      expect(await readFile(join(workspace, "userspace.js"), "utf8")).toContain("patched userspace");
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves review note provenance when loading a lab hypothesis", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "state-lab-hypothesis-"));
+    const hypothesisPath = join(workspace, "hypothesis.json");
+    try {
+      await writeFile(hypothesisPath, JSON.stringify({
+        review_note_key: "review_note:userspace_review:x_wait:d1:000:waiting-state-derived-too-narrowly",
+        hypothesis: "Carry blocked state structurally.",
+        candidate_changes: [{ type: "kv_patch", key: "prompt:reflect" }],
+        validation: { continuation: { enabled: false } },
+        limits: { max_wall_time_minutes: 20 },
+      }, null, 2), "utf8");
+
+      const loaded = await loadLabHypothesis(hypothesisPath);
+      expect(loaded.payload.review_note_key).toBe(
+        "review_note:userspace_review:x_wait:d1:000:waiting-state-derived-too-narrowly",
+      );
+      expect(loaded.payload.hypothesis).toBe("Carry blocked state structurally.");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes continuation config with safe defaults", () => {
+    expect(getContinuationConfig({})).toEqual({
+      enabled: false,
+      maxSessions: 1,
+      maxCashCost: null,
+    });
+    expect(getContinuationConfig({
+      continuation: {
+        enabled: true,
+        max_sessions: 5,
+        max_cash_cost: 0.75,
+      },
+    })).toEqual({
+      enabled: true,
+      maxSessions: 5,
+      maxCashCost: 0.75,
+    });
+  });
+
+  it("classifies service-start failures as infrastructure continuation failures", () => {
+    expect(isInfrastructureContinuationFailure({
+      error: "Services failed to start in 120s (kernel 9457, dashboard 9460). See /tmp/service-start.log",
+    })).toBe(true);
+    expect(isInfrastructureContinuationFailure({
+      error: "candidate regression observed",
+      stderr_tail: "assertion failed in userspace.test.js",
+    })).toBe(false);
+  });
+
+  it("normalizes comparative static checks and keeps static_commands as pass/pass defaults", () => {
+    expect(normalizeStaticChecks({
+      static_commands: ["npm test -- tests/userspace.test.js"],
+    })).toEqual([
+      {
+        command: "npm test -- tests/userspace.test.js",
+        label: null,
+        source: "static_command",
+        expect: {
+          baseline: "pass",
+          candidate: "pass",
+        },
+      },
+    ]);
+
+    expect(normalizeStaticChecks({
+      static_checks: [
+        {
+          command: "npx vitest run tests/userspace.test.js -t waiting-state",
+          label: "waiting-state regression",
+          expect: {
+            baseline: "fail",
+            candidate: "pass",
+          },
+        },
+      ],
+    })).toEqual([
+      {
+        command: "npx vitest run tests/userspace.test.js -t waiting-state",
+        label: "waiting-state regression",
+        source: "static_check",
+        expect: {
+          baseline: "fail",
+          candidate: "pass",
+        },
+      },
+    ]);
+
+    expect(normalizeStaticChecks({
+      static_commands: ["npm test -- tests/state-lab.test.js"],
+      static_checks: [
+        {
+          command: "npx vitest run tests/userspace.test.js -t waiting-state",
+          expect: {
+            baseline: "fail",
+            candidate: "pass",
+          },
+        },
+      ],
+    })).toEqual([
+      {
+        command: "npm test -- tests/state-lab.test.js",
+        label: null,
+        source: "static_command",
+        expect: {
+          baseline: "pass",
+          candidate: "pass",
+        },
+      },
+      {
+        command: "npx vitest run tests/userspace.test.js -t waiting-state",
+        label: null,
+        source: "static_check",
+        expect: {
+          baseline: "fail",
+          candidate: "pass",
+        },
+      },
+    ]);
+  });
+
+  it("retargets repo-root static commands to the candidate workspace", () => {
+    expect(retargetStaticCommandToWorkspace(
+      "node --check /home/swami/swayambhu/repo/userspace.js",
+      "/tmp/lab/workspace",
+    )).toBe("node --check /tmp/lab/workspace/userspace.js");
+
+    expect(retargetStaticCommandToWorkspace(
+      "rg -n \"foo\" /home/swami/swayambhu/repo/userspace.js && node /home/swami/swayambhu/repo/index.js",
+      "/tmp/lab/workspace",
+    )).toBe("rg -n \"foo\" /tmp/lab/workspace/userspace.js && node /tmp/lab/workspace/index.js");
+  });
+
+  it("treats matched baseline-fail/candidate-pass static checks as successful validation", async () => {
+    const base = await mkdtemp(join(tmpdir(), "state-lab-static-check-"));
+    const baselineWorkspace = join(base, "baseline");
+    const candidateWorkspace = join(base, "candidate");
+    const metadata = {
+      state_dir: join(base, "state"),
+      pre_trigger_snapshot_dir: join(base, "snapshot"),
+      ports: {
+        kernel: 8897,
+        dashboard: 8900,
+        governor: 8901,
+        spa: 9011,
+        dashboard_inspector: 9340,
+        governor_inspector: 9341,
+      },
+    };
+
+    try {
+      await mkdir(baselineWorkspace, { recursive: true });
+      await mkdir(candidateWorkspace, { recursive: true });
+      await writeFile(join(baselineWorkspace, "state.txt"), "before\n", "utf8");
+      await writeFile(join(candidateWorkspace, "state.txt"), "after\n", "utf8");
+
+      const validation = {
+        static_checks: [
+          {
+            command: "grep -q after state.txt",
+            expect: {
+              baseline: "fail",
+              candidate: "pass",
+            },
+          },
+        ],
+      };
+
+      const baselineResult = await runStaticValidation({
+        paths: { workspaceDir: baselineWorkspace },
+        metadata,
+      }, validation, { max_wall_time_minutes: 1 }, "baseline");
+      const candidateResult = await runStaticValidation({
+        paths: { workspaceDir: candidateWorkspace },
+        metadata,
+      }, validation, { max_wall_time_minutes: 1 }, "candidate");
+
+      expect(baselineResult.passed).toBe(true);
+      expect(baselineResult.commands[0]).toMatchObject({
+        expected_outcome: "fail",
+        actual_outcome: "fail",
+        matched: true,
+      });
+
+      expect(candidateResult.passed).toBe(true);
+      expect(candidateResult.commands[0]).toMatchObject({
+        expected_outcome: "pass",
+        actual_outcome: "pass",
+        matched: true,
+      });
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("neutralizes identical shared baseline failures when a comparative static check is present", async () => {
+    const base = await mkdtemp(join(tmpdir(), "state-lab-shared-static-"));
+    const baselineWorkspace = join(base, "baseline");
+    const candidateWorkspace = join(base, "candidate");
+    const metadata = {
+      state_dir: join(base, "state"),
+      pre_trigger_snapshot_dir: join(base, "snapshot"),
+      ports: {
+        kernel: 8897,
+        dashboard: 8900,
+        governor: 8901,
+        spa: 9011,
+        dashboard_inspector: 9340,
+        governor_inspector: 9341,
+      },
+    };
+
+    try {
+      await mkdir(baselineWorkspace, { recursive: true });
+      await mkdir(candidateWorkspace, { recursive: true });
+      await writeFile(join(candidateWorkspace, "state.txt"), "after\n", "utf8");
+
+      const validation = {
+        static_commands: ["grep -q shared missing.txt"],
+        static_checks: [
+          {
+            command: "grep -q after state.txt",
+            expect: {
+              baseline: "fail",
+              candidate: "pass",
+            },
+          },
+        ],
+      };
+
+      const baselineResult = await runStaticValidation({
+        paths: { workspaceDir: baselineWorkspace },
+        metadata,
+      }, validation, { max_wall_time_minutes: 1 }, "baseline");
+      const candidateResult = await runStaticValidation({
+        paths: { workspaceDir: candidateWorkspace },
+        metadata,
+      }, validation, { max_wall_time_minutes: 1 }, "candidate");
+
+      expect(baselineResult.passed).toBe(false);
+      expect(candidateResult.passed).toBe(false);
+
+      const reconciled = reconcileComparativeStaticValidation(
+        baselineResult,
+        candidateResult,
+        validation,
+      );
+
+      expect(reconciled.neutralized_shared_failures).toBe(1);
+      expect(reconciled.baseline.passed).toBe(true);
+      expect(reconciled.candidate.passed).toBe(true);
+      expect(reconciled.baseline.commands[0]).toMatchObject({
+        actual_outcome: "fail",
+        matched: true,
+        neutralized_shared_baseline_failure: true,
+      });
+      expect(reconciled.candidate.commands[0]).toMatchObject({
+        actual_outcome: "fail",
+        matched: true,
+        neutralized_shared_baseline_failure: true,
+      });
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("does not neutralize shared failures when there is no comparative static check", async () => {
+    const baselineResult = {
+      passed: false,
+      commands: [{
+        command: "npm test -- tests/userspace.test.js",
+        source: "static_command",
+        expected_outcome: "pass",
+        actual_outcome: "fail",
+        matched: false,
+        exit_code: 1,
+        failure_signature_hash: "same",
+        stdout_hash: "same",
+        stderr_hash: "same",
+      }],
+    };
+    const candidateResult = {
+      passed: false,
+      commands: [{
+        command: "npm test -- tests/userspace.test.js",
+        source: "static_command",
+        expected_outcome: "pass",
+        actual_outcome: "fail",
+        matched: false,
+        exit_code: 1,
+        failure_signature_hash: "same",
+        stdout_hash: "same",
+        stderr_hash: "same",
+      }],
+    };
+
+    const reconciled = reconcileComparativeStaticValidation(
+      baselineResult,
+      candidateResult,
+      { static_commands: ["npm test -- tests/userspace.test.js"] },
+    );
+
+    expect(reconciled.neutralized_shared_failures).toBe(0);
+    expect(reconciled.baseline.passed).toBe(false);
+    expect(reconciled.candidate.passed).toBe(false);
+  });
+
+  it("does not neutralize shared failures for explicit static_checks", () => {
+    const baselineResult = {
+      passed: false,
+      commands: [{
+        command: "npx vitest run tests/userspace.test.js -t targeted-fix",
+        label: "targeted-fix",
+        source: "static_check",
+        expected_outcome: "pass",
+        actual_outcome: "fail",
+        matched: false,
+        exit_code: 1,
+        failure_signature_hash: "same",
+        stdout_hash: "same",
+        stderr_hash: "same",
+      }],
+    };
+    const candidateResult = {
+      passed: false,
+      commands: [{
+        command: "npx vitest run tests/userspace.test.js -t targeted-fix",
+        label: "targeted-fix",
+        source: "static_check",
+        expected_outcome: "pass",
+        actual_outcome: "fail",
+        matched: false,
+        exit_code: 1,
+        failure_signature_hash: "same",
+        stdout_hash: "same",
+        stderr_hash: "same",
+      }],
+    };
+
+    const reconciled = reconcileComparativeStaticValidation(
+      baselineResult,
+      candidateResult,
+      {
+        static_checks: [
+          { command: "npx vitest run tests/userspace.test.js -t targeted-fix" },
+          {
+            command: "grep -q after state.txt",
+            expect: { baseline: "fail", candidate: "pass" },
+          },
+        ],
+      },
+    );
+
+    expect(reconciled.neutralized_shared_failures).toBe(0);
+    expect(reconciled.baseline.passed).toBe(false);
+    expect(reconciled.candidate.passed).toBe(false);
+  });
+
+  it("runs static commands against the candidate workspace even when the author used repo-root paths", async () => {
+    const base = await mkdtemp(join(tmpdir(), "state-lab-static-paths-"));
+    const workspace = join(base, "workspace");
+    const metadata = {
+      state_dir: join(base, "state"),
+      pre_trigger_snapshot_dir: join(base, "snapshot"),
+      ports: {
+        kernel: 8897,
+        dashboard: 8900,
+        governor: 8901,
+        spa: 9011,
+        dashboard_inspector: 9340,
+        governor_inspector: 9341,
+      },
+    };
+
+    try {
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, "userspace.js"), "export const candidate = true;\n", "utf8");
+
+      const validation = {
+        static_checks: [
+          {
+            command: "rg -n \"candidate\" /home/swami/swayambhu/repo/userspace.js",
+            expect: {
+              candidate: "pass",
+            },
+          },
+        ],
+      };
+
+      const result = await runStaticValidation({
+        paths: { workspaceDir: workspace },
+        metadata,
+      }, validation, { max_wall_time_minutes: 1 }, "candidate");
+
+      expect(result.passed).toBe(true);
+      expect(result.commands[0]).toMatchObject({
+        command: `rg -n "candidate" ${workspace}/userspace.js`,
+        actual_outcome: "pass",
+        matched: true,
+      });
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("summarizes batch results for lab comparison", () => {
+    expect(summarizeBatchSummary(null)).toBeNull();
+    expect(summarizeBatchSummary({
+      cycles: 3,
+      totals: { total_issues: 4, meta_policy_notes_total: 1 },
+      remote_cleanup: { status: "ok" },
+      completed_at: "2026-04-09T00:00:00.000Z",
+    })).toEqual({
+      cycles: 3,
+      totals: { total_issues: 4, meta_policy_notes_total: 1 },
+      remote_cleanup: { status: "ok" },
+      completed_at: "2026-04-09T00:00:00.000Z",
+    });
+  });
+
+  it("computes candidate-minus-baseline deltas for continuation summaries", () => {
+    const comparison = compareContinuationSummaries(
+      {
+        cycles: 3,
+        totals: {
+          total_issues: 5,
+          tactic_smuggling: 2,
+          meta_policy_notes_total: 0,
+        },
+      },
+      {
+        cycles: 3,
+        totals: {
+          total_issues: 2,
+          tactic_smuggling: 0,
+          meta_policy_notes_total: 1,
+        },
+      },
+    );
+
+    expect(comparison.baseline.cycles).toBe(3);
+    expect(comparison.candidate.cycles).toBe(3);
+    expect(comparison.deltas).toEqual({
+      total_issues: -3,
+      tactic_smuggling: -2,
+      meta_policy_notes_total: 1,
+    });
   });
 });

@@ -1156,6 +1156,40 @@ This framework deprecates the following assumptions from the old model:
    list.
 5. Under what evidence threshold would a compiled constitution actually be
    safer or clearer than the current dharma + principles floor?
+6. How should the framework represent domain-entry uncertainty and situated
+   competence, so that legitimate responsibility does not automatically justify
+   direct intervention in unfamiliar domains?
+
+## Flagged Gap: Responsibility vs Competence
+
+Recent external-surface episodes point to a missing distinction that this v2
+spec does not yet model explicitly.
+
+The current stack can explain how concern widens:
+
+- normative floor
+- standing desires
+- active aims
+- tactics
+
+But it does not yet explain how the system should behave when concern is
+legitimate and the domain is still unfamiliar.
+
+That missing layer is not just about authority. It is also about competence and
+participation mode:
+
+- responsibility says the system should not look away
+- competence says what forms of action are actually grounded here
+- participation mode says whether the next right step is to observe, learn,
+  reproduce, propose, patch elsewhere, mutate in place, or author directly
+
+This should be treated as a real follow-on architecture gap, not as something
+to patch with repo-specific etiquette or prompt-only exceptions. A later design
+pass should decide whether this belongs as:
+
+- a new explicit layer
+- a typed condition feeding tactic selection and action ranking
+- or a domain-entry state derived from experience and current evidence
 
 ## Bottom Line
 

@@ -1553,6 +1553,7 @@ describe("config-driven key tiers", () => {
     kernel.kv._store.set("kernel:key_tiers", JSON.stringify({
       immutable: ["dharma"],
       kernel_only: ["karma:*", "sealed:*", "event:*", "kernel:*"],
+      lifecycle: ["dr:*", "dr2:*"],
       protected: ["config:*", "prompt:*", "principle:*"],
     }));
     await kernel.loadEagerConfig();
@@ -1560,11 +1561,42 @@ describe("config-driven key tiers", () => {
     expect(kernel.keyTiers.immutable).toContain("dharma");
   });
 
+  it("reads write policy from kernel:write_policy at boot", async () => {
+    const { kernel } = makeKernel({
+      "kernel:write_policy": JSON.stringify({
+        version: 1,
+        rules: [
+          { match: "pattern:*", ops: { field_merge: { contexts: ["act"], allowed_fields: ["strength"], budget_class: "mechanical" } } },
+        ],
+      }),
+    });
+    await kernel.loadEagerConfig();
+    expect(kernel.writePolicy).toBeDefined();
+    expect(kernel.writePolicy.rules[0].match).toBe("pattern:*");
+  });
+
+  it("merges loaded tiers with new defaults so older state stores inherit new patterns", async () => {
+    const { kernel } = makeKernel();
+    kernel.kv._store.set("kernel:key_tiers", JSON.stringify({
+      immutable: ["dharma"],
+      kernel_only: ["karma:*", "sealed:*", "event:*", "kernel:*"],
+      protected: ["config:*", "prompt:*", "principle:*"],
+    }));
+
+    await kernel.loadEagerConfig();
+
+    expect(kernel.isLifecycleKey("dr:state:1")).toBe(true);
+    expect(kernel.isLifecycleKey("dr2:state:1")).toBe(true);
+    expect(kernel.isLifecycleKey("dr3:state:1")).toBe(true);
+    expect(kernel.isSystemKey("review_note:userspace_review:test")).toBe(true);
+  });
+
   it("isSystemKey uses loaded tiers", () => {
     const { kernel } = makeKernel();
     kernel.keyTiers = {
       immutable: ["dharma"],
       kernel_only: ["karma:*"],
+      lifecycle: ["dr:*"],
       protected: ["config:*", "custom:*"],
     };
     expect(kernel.isSystemKey("custom:foo")).toBe(true);
@@ -1582,6 +1614,7 @@ describe("config-driven key tiers", () => {
     kernel.keyTiers = {
       immutable: ["dharma", "patron:public_key"],
       kernel_only: [],
+      lifecycle: ["dr:*"],
       protected: ["principle:*"],
     };
     expect(kernel.isImmutableKey("dharma")).toBe(true);
@@ -1589,6 +1622,18 @@ describe("config-driven key tiers", () => {
     expect(kernel.isSystemKey("principle:honesty")).toBe(true);
     expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
     expect(kernel.isImmutableKey("config:defaults")).toBe(false);
+  });
+
+  it("does not seed identification:working-body at boot", async () => {
+    const { kernel, env } = makeKernel({
+      "config:defaults": JSON.stringify({
+        identity: { enabled: true, max_planner_items: 5 },
+      }),
+    });
+
+    await kernel.loadEagerConfig();
+
+    expect(await env.KV.get("identification:working-body")).toBeNull();
   });
 });
 
@@ -1611,6 +1656,12 @@ describe("kvWriteSafe", () => {
     const { kernel } = makeKernel();
     await expect(kernel.kvWriteSafe("config:defaults", {}))
       .rejects.toThrow("system key");
+  });
+
+  it("blocks lifecycle keys", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvWriteSafe("dr:state:1", {}))
+      .rejects.toThrow("lifecycle key");
   });
 
   it("allows non-system keys", async () => {
@@ -1681,6 +1732,12 @@ describe("kvDeleteSafe", () => {
       .rejects.toThrow("system key");
   });
 
+  it("blocks lifecycle keys", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvDeleteSafe("dr2:result:1"))
+      .rejects.toThrow("lifecycle key");
+  });
+
   it("allows non-system keys", async () => {
     const { kernel } = makeKernel();
     await kernel.kvDeleteSafe("tooldata:mykey");
@@ -1745,6 +1802,16 @@ describe("kvWriteGated", () => {
     expect(result.error).toMatch(/kernel key/);
   });
 
+  it("blocks lifecycle keys", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "dr2:state:1", value: {} }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/lifecycle key/);
+  });
+
   it("allows system keys with snapshot", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
@@ -1791,11 +1858,112 @@ describe("kvWriteGated", () => {
     expect(env.KV.delete).toHaveBeenCalledWith("prompt:test_prompt");
     expect(kernel.privilegedWriteCount).toBe(1);
   });
+
+  it("allows review_note:* writes in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "review_note:userspace_review:x:d1:000:test", value: { summary: "x" } },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("allows protected non-code writes in userspace-review context", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "config:defaults", value: { updated: true } },
+      "userspace-review"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("fails closed for protected namespaces without an explicit write policy rule", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "skill:test-skill", value: { name: "test-skill" } },
+      "deep-reflect",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("No write policy rule");
+  });
+
+  it("allows field_merge on pattern:* in act context without consuming privileged budget", async () => {
+    const { kernel, env } = makeKernel({
+      "pattern:test": JSON.stringify({ pattern: "Observed regularity", strength: 0.4 }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { op: "field_merge", key: "pattern:test", fields: { strength: 0.7 } },
+      "act",
+    );
+    expect(result.ok).toBe(true);
+    expect(kernel.privilegedWriteCount).toBe(0);
+    const stored = JSON.parse(await env.KV.get("pattern:test"));
+    expect(stored.strength).toBe(0.7);
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "mechanical_write", key: "pattern:test", budget_class: "mechanical" }),
+    );
+  });
+
+  it("blocks reflect context from writing protected keys", async () => {
+    const { kernel } = makeKernel({
+      "pattern:test": JSON.stringify({ pattern: "Observed regularity", strength: 0.4 }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { op: "field_merge", key: "pattern:test", fields: { strength: 0.7 } },
+      "reflect",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/during reflect/);
+  });
+
+  it("fails field_merge when the target key does not exist", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { op: "field_merge", key: "pattern:missing", fields: { strength: 0.7 } },
+      "act",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/key_not_found/);
+  });
+
+  it("returns a clean error when rename targets a protected destination", async () => {
+    const { kernel, env } = makeKernel({
+      "scratch:rename_me": JSON.stringify({ data: true }),
+    });
+    env.KV._meta.set("scratch:rename_me", { unprotected: true });
+    const result = await kernel.kvWriteGated(
+      { op: "rename", key: "scratch:rename_me", value: "config:defaults" },
+      "reflect",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/system key|allowed privileged context/);
+  });
 });
 
 // ── 15b. kvWriteGated contact and platform binding write rules ─────────────
 
 describe("kvWriteGated contact write rules", () => {
+  it("checks the privileged cap before contact writes", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.privilegedWriteCount = 50;
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "contact:alice", value: { name: "Alice" } }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Privileged write limit/);
+  });
+
   it("allows put to an existing contact", async () => {
     const { kernel } = makeKernel({
       "contact:alice": JSON.stringify({ name: "Alice" }),
@@ -1835,6 +2003,13 @@ describe("kvWriteGated contact write rules", () => {
       { op: "patch", key: "contact:alice", old_string: "old tea", new_string: "green tea" }, "deep-reflect"
     );
     expect(kernel.privilegedWriteCount).toBe(1);
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "privileged_write",
+        key: "contact:alice",
+        new_value: "Alice likes green tea",
+      }),
+    );
   });
 });
 
@@ -1902,6 +2077,17 @@ describe("kvWriteGated platform binding write rules", () => {
     kernel.env.KV._store.set("contact_platform:email:alice@example.com", '{"slug":"alice","approved":false}');
     const result = await kernel.kvWriteGated(
       { op: "patch", key: "contact_platform:email:alice@example.com", old_string: '"approved":false', new_string: '"approved":true' }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Cannot patch "approved" field on platform bindings/);
+  });
+
+  it("blocks patch that flips approved without explicitly naming the field in new_string", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.env.KV._store.set("contact_platform:email:alice@example.com", '{"slug":"alice","approved":false}');
+    const result = await kernel.kvWriteGated(
+      { op: "patch", key: "contact_platform:email:alice@example.com", old_string: "false", new_string: "true" }, "deep-reflect"
     );
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/Cannot patch "approved" field on platform bindings/);
@@ -2505,6 +2691,49 @@ describe("executeAdapter contact safety", () => {
         secrets: { OPENROUTER_API_KEY: "kv-test-key" },
       }),
     );
+  });
+
+  it("times out long-running adapters using meta.timeout_ms", async () => {
+    const adapter = {
+      meta: { timeout_ms: 10, secrets: [] },
+      execute: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { ok: true };
+      }),
+    };
+    const { kernel } = makeKernel({}, { PROVIDERS: { "provider:slow": adapter } });
+
+    await expect(kernel.executeAdapter("provider:slow", {}))
+      .rejects.toThrow("Adapter provider:slow timed out after 10ms");
+  });
+
+  it("passes an abortable fetch into adapters with timeout_ms", async () => {
+    let seenSignal = null;
+    const adapter = {
+      meta: { timeout_ms: 5000, secrets: [] },
+      execute: vi.fn(async ({ fetch }) => {
+        await fetch("https://example.test/provider");
+        return { ok: true };
+      }),
+    };
+    const { kernel } = makeKernel({}, { PROVIDERS: { "provider:fetcher": adapter } });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (_input, init = {}) => {
+      seenSignal = init.signal;
+      return {
+        ok: true,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ ok: true }),
+      };
+    });
+
+    try {
+      const result = await kernel.executeAdapter("provider:fetcher", {});
+      expect(result).toEqual({ ok: true });
+      expect(seenSignal).toBeInstanceOf(AbortSignal);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
@@ -3667,6 +3896,33 @@ function createTestKernel() {
   return kernel;
 }
 
+describe("lifecycle state writes", () => {
+  it("writeLifecycleState writes lifecycle keys", async () => {
+    const kernel = createTestKernel();
+    await kernel.writeLifecycleState("dr2:state:1", { status: "idle" });
+    const value = await kernel.kvGet("dr2:state:1");
+    expect(value).toEqual({ status: "idle" });
+    expect(kernel.karma).toContainEqual(
+      expect.objectContaining({ event: "lifecycle_write", key: "dr2:state:1" }),
+    );
+  });
+
+  it("writeLifecycleState rejects non-lifecycle keys", async () => {
+    const kernel = createTestKernel();
+    await expect(kernel.writeLifecycleState("config:defaults", {}))
+      .rejects.toThrow("not a lifecycle key");
+  });
+
+  it("deleteLifecycleState records karma", async () => {
+    const kernel = createTestKernel();
+    await kernel.writeLifecycleState("dr2:state:1", { status: "idle" });
+    await kernel.deleteLifecycleState("dr2:state:1");
+    expect(kernel.karma).toContainEqual(
+      expect.objectContaining({ event: "lifecycle_delete", key: "dr2:state:1" }),
+    );
+  });
+});
+
 describe("code staging", () => {
   it("stageCode writes to code_staging: prefix", async () => {
     const kernel = createTestKernel();
@@ -3674,6 +3930,17 @@ describe("code staging", () => {
     const staged = await kernel.kvGet("code_staging:tool:kv_query:code");
     expect(staged).toEqual({
       code: "export function execute() {}",
+      staged_at: expect.any(String),
+      execution_id: kernel.executionId,
+    });
+  });
+
+  it("stageCode accepts kernel authority surfaces", async () => {
+    const kernel = createTestKernel();
+    await kernel.stageCode("kernel:source:authority-policy.js", "export const x = 1;\n");
+    const staged = await kernel.kvGet("code_staging:kernel:source:authority-policy.js");
+    expect(staged).toEqual({
+      code: "export const x = 1;\n",
       staged_at: expect.any(String),
       execution_id: kernel.executionId,
     });
@@ -3934,5 +4201,66 @@ describe("tactics", () => {
     });
 
     expect(capturedMessages[0].content).not.toContain("[TACTICS]");
+  });
+});
+
+describe("identifications", () => {
+  it("identification:* keys are writable via kvWriteGated in deep-reflect", async () => {
+    const { kernel } = makeKernel({
+      "config:defaults": JSON.stringify({
+        identity: { enabled: true },
+      }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      {
+        key: "identification:patron-continuity",
+        op: "put",
+        value: {
+          identification: "Ongoing patron relationship and unfinished follow-through.",
+          strength: 0.3,
+          source: "deep_reflect",
+        },
+      },
+      "deep-reflect",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("updates last_exercised_at through field_merge in act context", async () => {
+    const { kernel, env } = makeKernel({
+      "config:defaults": JSON.stringify({
+        identity: { enabled: true },
+      }),
+      "identification:patron-continuity": JSON.stringify({
+        identification: "Ongoing patron relationship and unfinished follow-through.",
+        strength: 0.5,
+        last_exercised_at: null,
+      }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+
+    const timestamp = "2026-04-09T16:00:00.000Z";
+    const result = await kernel.kvWriteGated(
+      {
+        key: "identification:patron-continuity",
+        op: "field_merge",
+        fields: { last_exercised_at: timestamp },
+      },
+      "act",
+    );
+
+    expect(result.ok).toBe(true);
+    const updated = JSON.parse(await env.KV.get("identification:patron-continuity"));
+    expect(updated.last_exercised_at).toBe(timestamp);
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "mechanical_write",
+        key: "identification:patron-continuity",
+        budget_class: "mechanical",
+      }),
+    );
   });
 });

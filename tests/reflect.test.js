@@ -10,8 +10,12 @@ describe("reflect prompt contract", () => {
     expect(prompt).toContain("carry_forward_updates");
     expect(prompt).toContain("new_carry_forward");
     expect(prompt).toContain("carry_forward");
+    expect(prompt).toContain("active_desire_keys");
+    expect(prompt).toContain("non-self surface");
     expect(prompt).toContain("7-day TTL");
     expect(prompt).toContain("at most 5 items active");
+    expect(prompt).toContain("blocked_on");
+    expect(prompt).toContain("wake_condition");
   });
 
   it("describes deep-reflect carry-forward hygiene", () => {
@@ -38,6 +42,11 @@ describe("executeReflect carry-forward merge", () => {
   const state = {
     defaults: {
       reflect: { model: "test-model", effort: "medium", max_output_tokens: 1000 },
+    },
+    desires: {
+      "desire:d_help": {
+        description: "Help concretely",
+      },
     },
   };
 
@@ -175,6 +184,63 @@ describe("executeReflect carry-forward merge", () => {
     expect(lastReflect.new_carry_forward).toBeUndefined();
   });
 
+  it("preserves structured waiting fields on refreshed carry-forward items", async () => {
+    const K = makeReflectK(
+      {
+        carry_forward: [
+          {
+            id: "s_prev:cf1",
+            item: "Wait for patron confirmation",
+            why: "The next step depends on patron input.",
+            priority: "high",
+            status: "active",
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+            expires_at: "2026-04-08T00:00:00.000Z",
+          },
+        ],
+      },
+      {
+        session_summary: "Session summary",
+        note_to_future_self: "Keep going",
+        next_act_context: { load_keys: [], reason: "none" },
+        carry_forward_updates: [
+          {
+            id: "s_prev:cf1",
+            status: "active",
+            blocked_on: "explicit patron confirmation",
+            wake_condition: "the patron sends confirmation",
+            updated_at: "2026-04-05T12:00:00.000Z",
+          },
+        ],
+      },
+    );
+
+    await executeReflect(K, state, state.defaults.reflect);
+
+    const lastReflect = await K.kvGet("last_reflect");
+    const item = lastReflect.carry_forward.find(entry => entry.id === "s_prev:cf1");
+    expect(item.blocked_on).toBe("explicit patron confirmation");
+    expect(item.wake_condition).toBe("the patron sends confirmation");
+  });
+
+  it("passes active desire keys into session reflect context", async () => {
+    const K = makeReflectK(
+      { carry_forward: [] },
+      {
+        session_summary: "Session summary",
+        note_to_future_self: "Keep going",
+        next_act_context: { load_keys: [], reason: "none" },
+      },
+    );
+
+    await executeReflect(K, state, state.defaults.reflect);
+
+    const args = K.runAgentLoop.mock.calls[0][0];
+    const initialContext = JSON.parse(args.initialContext);
+    expect(initialContext.active_desire_keys).toEqual(["desire:d_help"]);
+  });
+
   it("logs missed carry-forward updates", async () => {
     const K = makeReflectK(
       {
@@ -238,6 +304,98 @@ describe("executeReflect carry-forward merge", () => {
     const lastReflect = await K.kvGet("last_reflect");
     expect(lastReflect.carry_forward[0].status).toBe("expired");
     expect(lastReflect.carry_forward[0].updated_at).toBe("2026-04-05T12:00:00.000Z");
+  });
+
+  it("ignores invalid desire keys on new carry-forward items", async () => {
+    const K = makeReflectK(
+      {
+        carry_forward: [
+          {
+            id: "s_prev:cf1",
+            item: "Existing thread",
+            why: "Still relevant",
+            priority: "high",
+            status: "active",
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+            expires_at: "2026-04-08T00:00:00.000Z",
+            desire_key: "desire:missing",
+          },
+        ],
+      },
+      {
+        session_summary: "Session summary",
+        note_to_future_self: "Keep going",
+        next_act_context: { load_keys: [], reason: "none" },
+        new_carry_forward: [
+          {
+            id: "s_test:cf1",
+            item: "New thread",
+            why: "Should survive",
+            priority: "medium",
+            desire_key: "desire:missing",
+          },
+        ],
+      },
+    );
+
+    await executeReflect(K, state, state.defaults.reflect);
+
+    const lastReflect = await K.kvGet("last_reflect");
+    expect(lastReflect.carry_forward).toHaveLength(2);
+    const newItem = lastReflect.carry_forward.find(item => item.id === "s_test:cf1");
+    expect(newItem.desire_key).toBeUndefined();
+    expect(K.karmaRecord).toHaveBeenCalledWith({
+      event: "carry_forward_invalid_desire_key_ignored",
+      source: "new",
+      id: "s_test:cf1",
+      desire_key: "desire:missing",
+    });
+  });
+
+  it("ignores invalid desire keys on carry-forward updates", async () => {
+    const K = makeReflectK(
+      {
+        carry_forward: [
+          {
+            id: "s_prev:cf1",
+            item: "Existing thread",
+            why: "Still relevant",
+            priority: "high",
+            status: "active",
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+            expires_at: "2026-04-08T00:00:00.000Z",
+            desire_key: "desire:d_help",
+          },
+        ],
+      },
+      {
+        session_summary: "Session summary",
+        note_to_future_self: "Keep going",
+        next_act_context: { load_keys: [], reason: "none" },
+        carry_forward_updates: [
+          {
+            id: "s_prev:cf1",
+            status: "active",
+            updated_at: "2026-04-05T12:00:00.000Z",
+            desire_key: "desire:missing",
+          },
+        ],
+      },
+    );
+
+    await executeReflect(K, state, state.defaults.reflect);
+
+    const lastReflect = await K.kvGet("last_reflect");
+    const item = lastReflect.carry_forward.find(entry => entry.id === "s_prev:cf1");
+    expect(item.desire_key).toBe("desire:d_help");
+    expect(K.karmaRecord).toHaveBeenCalledWith({
+      event: "carry_forward_invalid_desire_key_ignored",
+      source: "update",
+      id: "s_prev:cf1",
+      desire_key: "desire:missing",
+    });
   });
 
   it("synthesizes minimal bootstrap reflect output without calling the LLM", async () => {

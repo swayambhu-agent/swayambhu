@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Dump all session data from KV for analysis.
-// Usage: node scripts/analyze-sessions.mjs [--last N]
-// Outputs structured JSON to stdout.
+// Usage: node scripts/analyze-sessions.mjs [--last N] [--out /path/to/file.json]
+// Outputs structured JSON to stdout by default, or writes it to --out.
 
+import { writeFile } from "fs/promises";
 import { getKV, dispose } from './shared.mjs';
 const lastN = process.argv.includes('--last')
   ? parseInt(process.argv[process.argv.indexOf('--last') + 1], 10) || 5
@@ -10,6 +11,9 @@ const lastN = process.argv.includes('--last')
 const source = process.argv.includes('--source')
   ? process.argv[process.argv.indexOf('--source') + 1]
   : 'kv';
+const outputPath = process.argv.includes('--out')
+  ? process.argv[process.argv.indexOf('--out') + 1]
+  : null;
 const dashboardUrl = process.env.SWAYAMBHU_DASHBOARD_URL || 'http://localhost:8790';
 const dashboardKey = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || 'test';
 
@@ -67,11 +71,15 @@ async function listAll(prefix) {
 
 async function getAll(prefix) {
   const keys = await listAll(prefix);
+  return getMany(keys.map((entry) => entry.name));
+}
+
+async function getMany(keys) {
   const results = {};
   if (keys.length === 0) return results;
 
   if (source === 'dashboard') {
-    for (const batch of chunk(keys.map((k) => k.name), 50)) {
+    for (const batch of chunk(keys, 50)) {
       const data = await fetchJson(
         `${dashboardUrl}/kv/multi?keys=${batch.map(encodeURIComponent).join(',')}`,
       );
@@ -82,12 +90,19 @@ async function getAll(prefix) {
 
   for (const k of keys) {
     try {
-      results[k.name] = await kv.get(k.name, 'json');
+      results[k] = await kv.get(k, 'json');
     } catch {
-      results[k.name] = await kv.get(k.name, 'text');
+      results[k] = await kv.get(k, 'text');
     }
   }
   return results;
+}
+
+async function getReflections() {
+  const keys = (await listAll('reflect:'))
+    .map((entry) => entry.name)
+    .filter((name) => /^reflect:\d+:/.test(name));
+  return getMany(keys);
 }
 
 async function get(key) {
@@ -110,7 +125,7 @@ if (source !== 'dashboard') {
 const [
   karmaKeys, desires, patterns, experiences, actions,
   drState, defaults, lastReflect, reflections, jobs,
-  tactics, promptAct, promptReflect, promptPlan, promptDeepReflect,
+  tactics, identifications, promptAct, promptReflect, promptPlan, promptDeepReflect, reviewNotes,
 ] = await Promise.all([
   listAll('karma:'),
   getAll('desire:'),
@@ -120,13 +135,15 @@ const [
   get('dr:state:1'),
   get('config:defaults'),
   get('last_reflect'),
-  getAll('reflect:1:'),
+  getReflections(),
   getAll('job:'),
   getAll('tactic:'),
+  getAll('identification:'),
   get('prompt:act'),
   get('prompt:reflect'),
   get('prompt:plan'),
   get('prompt:deep_reflect'),
+  getAll('review_note:'),
 ]);
 
 // Load karma records (last N)
@@ -166,9 +183,11 @@ const output = {
   desires,
   patterns,
   tactics,
+  identifications,
   experiences,
   actions,
   reflections,
+  review_notes: reviewNotes,
   jobs,
   last_reflect: lastReflect,
   prompts: {
@@ -180,7 +199,12 @@ const output = {
   karma,
 };
 
-console.log(JSON.stringify(output, null, 2));
+const rendered = JSON.stringify(output, null, 2);
+if (outputPath) {
+  await writeFile(outputPath, rendered, "utf8");
+} else {
+  console.log(rendered);
+}
 if (kv) {
   await dispose();
 }

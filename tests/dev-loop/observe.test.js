@@ -105,6 +105,67 @@ describe("pollForNewSession", () => {
     vi.useRealTimers();
   });
 
+  it("tolerates transient dashboard read failures while polling for completion", async () => {
+    vi.useFakeTimers();
+    const restartServicesFn = vi.fn(async () => {});
+    const readSessionIdsFn = vi.fn()
+      .mockResolvedValueOnce(["sess-1", "sess-2"])
+      .mockResolvedValue(["sess-1", "sess-2"]);
+    const readLastExecutionsFn = vi.fn()
+      .mockResolvedValueOnce([{ id: "sess-1", outcome: "clean" }])
+      .mockRejectedValueOnce(new Error("HTTP 500 from /kv/multi"))
+      .mockResolvedValueOnce([{ id: "sess-1", outcome: "clean" }, { id: "sess-2", outcome: "clean" }]);
+    const log = vi.fn();
+
+    const promise = pollForNewSession(["sess-1"], 20_000, {
+      readSessionIdsFn,
+      readLastExecutionsFn,
+      restartServicesFn,
+      stdout: { write: vi.fn() },
+      log,
+      sleepFn: vi.fn(async () => {}),
+    });
+
+    await expect(promise).resolves.toBe("sess-2");
+    expect(restartServicesFn).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("[OBSERVE] Session started: sess-2");
+    expect(log).toHaveBeenCalledWith("[OBSERVE] kernel:last_executions read failed: HTTP 500 from /kv/multi");
+    expect(log).toHaveBeenCalledWith("[OBSERVE] Session completed: sess-2 (outcome: clean)");
+    vi.useRealTimers();
+  });
+
+  it("accepts a newer completed execution when the started session id is superseded", async () => {
+    vi.useFakeTimers();
+    const restartServicesFn = vi.fn(async () => {});
+    const readSessionIdsFn = vi.fn()
+      .mockResolvedValueOnce(["sess-1", "sess-2"])
+      .mockResolvedValue(["sess-1", "sess-2"]);
+    const readLastExecutionsFn = vi.fn()
+      .mockResolvedValueOnce([{ id: "sess-1", outcome: "clean" }])
+      .mockResolvedValueOnce([
+        { id: "exec-3", outcome: "clean" },
+        { id: "sess-1", outcome: "clean" },
+      ]);
+    const log = vi.fn();
+
+    const promise = pollForNewSession(["sess-1"], 20_000, {
+      readSessionIdsFn,
+      readLastExecutionsFn,
+      restartServicesFn,
+      stdout: { write: vi.fn() },
+      log,
+      sleepFn: vi.fn(async () => {}),
+    });
+
+    await expect(promise).resolves.toBe("exec-3");
+    expect(restartServicesFn).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("[OBSERVE] Session started: sess-2");
+    expect(log).toHaveBeenCalledWith(
+      "[OBSERVE] Session sess-2 was superseded by completed execution exec-3 (outcome: clean)",
+    );
+    vi.useRealTimers();
+  });
+
   it("restarts services before failing when no new session starts", async () => {
     vi.useFakeTimers();
     const restartServicesFn = vi.fn(async () => {});

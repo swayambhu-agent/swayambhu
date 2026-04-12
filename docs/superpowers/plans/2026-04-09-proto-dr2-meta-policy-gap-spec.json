@@ -1,0 +1,54 @@
+{
+  "question": "What root userspace constraint is causing runtime/meta-policy findings to be smuggled into tactic, carry_forward, experience observation, or code-stage requests, and what is the smallest userspace-review hypothesis that should be tested next?",
+  "notes": [
+    "This is a read-only proto-DR-2 review for the deferred issue #5.",
+    "Work trace-first, then use prompt/code to localize the structural gap.",
+    "Do not treat this as an operational-review prompt-tuning problem unless the evidence supports that."
+  ],
+  "files": [
+    {
+      "path": "docs/superpowers/research/2026-04-09-variant-smuggling-audit.md",
+      "kind": "analysis"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-04-07-userspace-review-roles.md",
+      "kind": "doc"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-04-07-dr2-lab-runtime-design.md",
+      "kind": "doc"
+    },
+    {
+      "path": "prompts/deep_reflect.md",
+      "kind": "prompt"
+    },
+    {
+      "path": "prompts/reflect.md",
+      "kind": "prompt"
+    },
+    {
+      "path": "userspace.js",
+      "kind": "code"
+    },
+    {
+      "path": "reflect.js",
+      "kind": "code"
+    },
+    {
+      "path": "scripts/dev-loop/classify.mjs",
+      "kind": "code"
+    },
+    {
+      "path": "/home/swami/swayambhu/dev-loop/variant-series-2026-04-09T02-18-54-581Z/read-path-barrier/runs/1775701510409-10-a1/observation.json",
+      "kind": "trace"
+    },
+    {
+      "path": "/home/swami/swayambhu/dev-loop/variant-series-2026-04-09T02-18-54-581Z/write-path-support-gate/analysis.json",
+      "kind": "analysis"
+    },
+    {
+      "path": "/home/swami/swayambhu/dev-loop/read-write-hygiene-20-rerun/batch-summary.json",
+      "kind": "analysis"
+    }
+  ]
+}

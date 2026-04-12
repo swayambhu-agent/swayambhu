@@ -180,7 +180,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
     ? `'${esc(workdir)}/exit_code'`
     : "exit_code";
   const callbackLine = callbackUrl && callbackSecret
-    ? `printf '{"exit_code":%s}' "$EXIT" | curl -fsS --max-time 15 -X POST '${esc(callbackUrl)}' -H 'Content-Type: application/json' -H 'X-Job-Callback-Secret: ${esc(callbackSecret)}' --data-binary @- > /dev/null 2>&1 || true`
+    ? `node -e "const fs=require('fs');const payload={exit_code:Number(process.argv[1])};for(const [file,key] of [['${esc(`${workdir}/output.json`)}','output_base64'],['${esc(`${workdir}/lab-result.json`)}','lab_result_base64']]){try{const stat=fs.statSync(file);if(stat.isFile()&&stat.size<=1048576){payload[key]=fs.readFileSync(file).toString('base64')}}catch{}}process.stdout.write(JSON.stringify(payload));" "$EXIT" | curl -fsS --max-time 15 -X POST '${esc(callbackUrl)}' -H 'Content-Type: application/json' -H 'X-Job-Callback-Secret: ${esc(callbackSecret)}' --data-binary @- > /dev/null 2>&1 || true`
     : null;
 
   // Build inner script (plain shell text — will be base64-encoded)
