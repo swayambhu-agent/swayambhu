@@ -107,7 +107,9 @@ async function performDeploy(kv, env) {
   const deployResult = await deploy(env, files);
 
   // 8. Record deployment
-  await recordDeployment(kv, versionId, changedKeys, codeHashes);
+  await recordDeployment(kv, versionId, changedKeys, codeHashes, {
+    deploy_mode: deployResult.mode,
+  });
 
   // 9. Sync to GitHub (best-effort — failure never blocks deploy)
   let gitSync = null;
@@ -126,6 +128,7 @@ async function performDeploy(kv, env) {
     version_id: versionId,
     changed_keys: changedKeys,
     files_count: Object.keys(files).length,
+    deploy: deployResult,
     git_sync: gitSync,
   };
 }
