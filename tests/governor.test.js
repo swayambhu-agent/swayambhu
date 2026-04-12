@@ -95,6 +95,12 @@ describe("keyToFilePath", () => {
     expect(keyToFilePath("hook:session:code")).toBe("userspace.js");
   });
 
+  it("maps kernel source keys to root paths", () => {
+    expect(keyToFilePath("kernel:source:kernel.js")).toBe("kernel.js");
+    expect(keyToFilePath("kernel:source:hook-communication.js")).toBe("hook-communication.js");
+    expect(keyToFilePath("kernel:source:authority-policy.js")).toBe("authority-policy.js");
+  });
+
   it("returns null for non-code keys", () => {
     expect(keyToFilePath("config:defaults")).toBeNull();
     expect(keyToFilePath("tool:kv_query:meta")).toBeNull();

@@ -1117,8 +1117,9 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
   it("isImmutableKey matches exact keys and wildcards", () => {
     const { kernel } = makeKernel();
     expect(kernel.isImmutableKey("dharma")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty")).toBe(false);
+    expect(kernel.isSystemKey("principle:honesty")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(false);
     expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
     expect(kernel.isImmutableKey("config:defaults")).toBe(false);
   });
@@ -1146,8 +1147,9 @@ describe("config-driven key tiers", () => {
   it("reads key tiers from kernel:key_tiers at boot", async () => {
     const { kernel } = makeKernel();
     kernel.kv._store.set("kernel:key_tiers", JSON.stringify({
-      immutable: ["dharma", "principle:*"],
+      immutable: ["dharma"],
       kernel_only: ["karma:*", "sealed:*", "event:*", "kernel:*"],
+      lifecycle: ["dr:*", "dr2:*"],
       protected: ["config:*", "prompt:*"],
     }));
     await kernel.loadEagerConfig();
@@ -1155,11 +1157,42 @@ describe("config-driven key tiers", () => {
     expect(kernel.keyTiers.immutable).toContain("dharma");
   });
 
+  it("reads write policy from kernel:write_policy at boot", async () => {
+    const { kernel } = makeKernel({
+      "kernel:write_policy": JSON.stringify({
+        version: 1,
+        rules: [
+          { match: "pattern:*", ops: { field_merge: { contexts: ["act"], allowed_fields: ["strength"], budget_class: "mechanical" } } },
+        ],
+      }),
+    });
+    await kernel.loadEagerConfig();
+    expect(kernel.writePolicy).toBeDefined();
+    expect(kernel.writePolicy.rules[0].match).toBe("pattern:*");
+  });
+
+  it("merges loaded tiers with new defaults so older state stores inherit new patterns", async () => {
+    const { kernel } = makeKernel();
+    kernel.kv._store.set("kernel:key_tiers", JSON.stringify({
+      immutable: ["dharma"],
+      kernel_only: ["karma:*", "sealed:*", "event:*", "kernel:*"],
+      protected: ["config:*", "prompt:*", "principle:*"],
+    }));
+
+    await kernel.loadEagerConfig();
+
+    expect(kernel.isLifecycleKey("dr:state:1")).toBe(true);
+    expect(kernel.isLifecycleKey("dr2:state:1")).toBe(true);
+    expect(kernel.isLifecycleKey("dr3:state:1")).toBe(true);
+    expect(kernel.isSystemKey("review_note:userspace_review:test")).toBe(true);
+  });
+
   it("isSystemKey uses loaded tiers", () => {
     const { kernel } = makeKernel();
     kernel.keyTiers = {
       immutable: ["dharma"],
       kernel_only: ["karma:*"],
+      lifecycle: ["dr:*"],
       protected: ["config:*", "custom:*"],
     };
     expect(kernel.isSystemKey("custom:foo")).toBe(true);
@@ -1175,13 +1208,15 @@ describe("config-driven key tiers", () => {
   it("isImmutableKey matches exact keys and wildcards", () => {
     const { kernel } = makeKernel();
     kernel.keyTiers = {
-      immutable: ["dharma", "principle:*", "patron:public_key"],
+      immutable: ["dharma", "patron:public_key"],
       kernel_only: [],
-      protected: [],
+      lifecycle: ["dr:*"],
+      protected: ["principle:*"],
     };
     expect(kernel.isImmutableKey("dharma")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty")).toBe(false);
+    expect(kernel.isSystemKey("principle:honesty")).toBe(true);
+    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(false);
     expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
     expect(kernel.isImmutableKey("config:defaults")).toBe(false);
   });
@@ -1206,6 +1241,12 @@ describe("kvWriteSafe", () => {
     const { kernel } = makeKernel();
     await expect(kernel.kvWriteSafe("config:defaults", {}))
       .rejects.toThrow("system key");
+  });
+
+  it("blocks lifecycle keys", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvWriteSafe("dr:state:1", {}))
+      .rejects.toThrow("lifecycle key");
   });
 
   it("allows non-system keys", async () => {
@@ -1276,6 +1317,12 @@ describe("kvDeleteSafe", () => {
       .rejects.toThrow("system key");
   });
 
+  it("blocks lifecycle keys", async () => {
+    const { kernel } = makeKernel();
+    await expect(kernel.kvDeleteSafe("dr2:result:1"))
+      .rejects.toThrow("lifecycle key");
+  });
+
   it("allows non-system keys", async () => {
     const { kernel } = makeKernel();
     await kernel.kvDeleteSafe("tooldata:mykey");
@@ -1340,6 +1387,16 @@ describe("kvWriteGated", () => {
     expect(result.error).toMatch(/kernel key/);
   });
 
+  it("blocks lifecycle keys", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "dr2:state:1", value: {} }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/lifecycle key/);
+  });
+
   it("allows system keys with snapshot", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
@@ -1379,11 +1436,46 @@ describe("kvWriteGated", () => {
       "prompt:test_prompt": JSON.stringify({ text: "hello" }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.kvWriteGated(
-      { op: "delete", key: "prompt:test_prompt" }, "deep-reflect"
+    const result = await kernel.kvWriteGated(
+      {
+        op: "delete",
+        key: "prompt:test_prompt",
+        deliberation: "This prompt is obsolete after the authority-policy split. Keeping it around would create ambiguity about the active prompt surface, dilute review discipline, and make later authority audits harder because two prompt candidates would appear valid even though only one is actually in use by the runtime.",
+      },
+      "deep-reflect"
     );
-    expect(env.KV.delete).toHaveBeenCalledWith("prompt:test_prompt");
+    expect(result.ok).toBe(true);
+    expect(await env.KV.get("prompt:test_prompt")).toBeNull();
     expect(kernel.privilegedWriteCount).toBe(1);
+  });
+
+  it("allows review_note:* writes in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "review_note:userspace_review:x:d1:000:test", value: { summary: "x" } },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("allows field_merge on pattern:* in act context without consuming privileged budget", async () => {
+    const { kernel, env } = makeKernel({
+      "pattern:test": JSON.stringify({ pattern: "Observed regularity", strength: 0.4 }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { op: "field_merge", key: "pattern:test", fields: { strength: 0.7 } },
+      "act",
+    );
+    expect(result.ok).toBe(true);
+    expect(kernel.privilegedWriteCount).toBe(0);
+    const stored = JSON.parse(await env.KV.get("pattern:test"));
+    expect(stored.strength).toBe(0.7);
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "mechanical_write", key: "pattern:test", budget_class: "mechanical" }),
+    );
   });
 });
 
@@ -2141,7 +2233,7 @@ describe("principles (generic)", () => {
     expect(sysContent).toContain("[discipline]\nBe disciplined.\n[/discipline]");
   });
 
-  it("kvWriteGated rejects principle: writes as immutable", async () => {
+  it("kvWriteGated requires deliberation for principle: writes", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     const result = await kernel.kvWriteGated(
@@ -2149,13 +2241,13 @@ describe("principles (generic)", () => {
       "deep-reflect"
     );
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("immutable");
+    expect(result.error).toContain("requires deliberation");
   });
 
-  it("kvWriteSafe blocks principle: keys as immutable", async () => {
+  it("kvWriteSafe blocks principle: keys as system state", async () => {
     const { kernel } = makeKernel();
     await expect(kernel.kvWriteSafe("principle:honesty", "new value"))
-      .rejects.toThrow("immutable");
+      .rejects.toThrow("system key");
   });
 
   it("non-principle system key writes succeed without warning", async () => {
@@ -3113,6 +3205,33 @@ function createTestKernel() {
   return kernel;
 }
 
+describe("lifecycle state writes", () => {
+  it("writeLifecycleState writes lifecycle keys", async () => {
+    const kernel = createTestKernel();
+    await kernel.writeLifecycleState("dr2:state:1", { status: "idle" });
+    const value = await kernel.kvGet("dr2:state:1");
+    expect(value).toEqual({ status: "idle" });
+    expect(kernel.karma).toContainEqual(
+      expect.objectContaining({ event: "lifecycle_write", key: "dr2:state:1" }),
+    );
+  });
+
+  it("writeLifecycleState rejects non-lifecycle keys", async () => {
+    const kernel = createTestKernel();
+    await expect(kernel.writeLifecycleState("config:defaults", {}))
+      .rejects.toThrow("not a lifecycle key");
+  });
+
+  it("deleteLifecycleState records karma", async () => {
+    const kernel = createTestKernel();
+    await kernel.writeLifecycleState("dr2:state:1", { status: "idle" });
+    await kernel.deleteLifecycleState("dr2:state:1");
+    expect(kernel.karma).toContainEqual(
+      expect.objectContaining({ event: "lifecycle_delete", key: "dr2:state:1" }),
+    );
+  });
+});
+
 describe("code staging", () => {
   it("stageCode writes to code_staging: prefix", async () => {
     const kernel = createTestKernel();
@@ -3120,6 +3239,17 @@ describe("code staging", () => {
     const staged = await kernel.kvGet("code_staging:tool:kv_query:code");
     expect(staged).toEqual({
       code: "export function execute() {}",
+      staged_at: expect.any(String),
+      execution_id: kernel.executionId,
+    });
+  });
+
+  it("stageCode accepts kernel authority surfaces", async () => {
+    const kernel = createTestKernel();
+    await kernel.stageCode("kernel:source:authority-policy.js", "export const x = 1;\n");
+    const staged = await kernel.kvGet("code_staging:kernel:source:authority-policy.js");
+    expect(staged).toEqual({
+      code: "export const x = 1;\n",
       staged_at: expect.any(String),
       execution_id: kernel.executionId,
     });
@@ -3292,6 +3422,42 @@ describe("pulse integration", () => {
 });
 
 describe("identifications", () => {
+  it("updates last_exercised_at through field_merge in act context", async () => {
+    const { kernel, env } = makeKernel({
+      "config:defaults": JSON.stringify({
+        identity: { enabled: true },
+      }),
+      "identification:patron-continuity": JSON.stringify({
+        identification: "Ongoing patron relationship and unfinished follow-through.",
+        strength: 0.5,
+        last_exercised_at: null,
+      }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+
+    const timestamp = "2026-04-09T16:00:00.000Z";
+    const result = await kernel.kvWriteGated(
+      {
+        key: "identification:patron-continuity",
+        op: "field_merge",
+        fields: { last_exercised_at: timestamp },
+      },
+      "act",
+    );
+
+    expect(result.ok).toBe(true);
+    const updated = JSON.parse(await env.KV.get("identification:patron-continuity"));
+    expect(updated.last_exercised_at).toBe(timestamp);
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "mechanical_write",
+        key: "identification:patron-continuity",
+        budget_class: "mechanical",
+      }),
+    );
+  });
+
   it("updates last_exercised_at through the dedicated kernel primitive", async () => {
     const { kernel, env } = makeKernel({
       "config:defaults": JSON.stringify({

@@ -10,6 +10,9 @@ function keyToVarName(key) {
 }
 
 export function keyToFilePath(key) {
+  if (key === 'kernel:source:kernel.js') return 'kernel.js';
+  if (key === 'kernel:source:hook-communication.js') return 'hook-communication.js';
+  if (key === 'kernel:source:authority-policy.js') return 'authority-policy.js';
   if (!key.endsWith(':code')) return null;
   if (key === 'hook:act:code') return 'act.js';
   if (key === 'hook:session:code') return 'userspace.js';
@@ -75,6 +78,9 @@ export async function readCodeFromKV(kv) {
 
   const commCode = await kv.get('kernel:source:hook-communication.js', 'text');
   if (commCode) files['hook-communication.js'] = commCode;
+
+  const authorityPolicyCode = await kv.get('kernel:source:authority-policy.js', 'text');
+  if (authorityPolicyCode) files['authority-policy.js'] = authorityPolicyCode;
 
   return { files, metadata };
 }

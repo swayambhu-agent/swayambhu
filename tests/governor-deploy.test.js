@@ -28,6 +28,7 @@ describe("readCodeFromKV", () => {
       // Kernel source (immutable)
       "kernel:source:kernel.js": "class Kernel {}",
       "kernel:source:hook-communication.js": "export function handleChat() {}",
+      "kernel:source:authority-policy.js": "export const BOOTSTRAP_KEY_TIERS = {}",
       // Non-code keys (should be ignored by readCodeFromKV)
       "config:defaults": JSON.stringify({ schedule: {} }),
       "prompt:act": "You are...",
@@ -45,6 +46,7 @@ describe("readCodeFromKV", () => {
     expect(files["act.js"]).toBe("export async function runAct() {}");
     expect(files["kernel.js"]).toBe("class Kernel {}");
     expect(files["hook-communication.js"]).toBe("export function handleChat() {}");
+    expect(files["authority-policy.js"]).toBe("export const BOOTSTRAP_KEY_TIERS = {}");
   });
 
   it("populates metadata arrays correctly", async () => {

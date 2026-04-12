@@ -80,14 +80,15 @@ await put("kernel:fallback_model", JSON.stringify(kernelConf.fallback_model), "j
 
 // Key tiers (kernel reads this at boot to enforce KV write protection)
 await put("kernel:key_tiers", {
-  immutable: ["dharma", "principle:*", "patron:public_key"],
+  immutable: ["dharma", "patron:public_key"],
   kernel_only: ["karma:*", "sealed:*", "event:*", "event_dead:*", "kernel:*", "patron:direct"],
+  lifecycle: ["dr:*", "dr2:*", "dr3:*"],
   protected: [
     "config:*", "prompt:*", "tool:*", "provider:*", "channel:*",
     "hook:*", "contact:*", "contact_platform:*", "code_staging:*",
     "secret:*", "skill:*", "task:*",
     "providers", "wallets", "patron:contact", "patron:identity_snapshot",
-    "desire:*", "pattern:*", "principle:*", "tactic:*", "identification:*",
+    "desire:*", "pattern:*", "principle:*", "tactic:*", "identification:*", "review_note:*",
   ],
 }, "json", "KV write-protection tiers — kernel-only, agent cannot modify");
 
@@ -190,6 +191,7 @@ await put("hook:act:code", read("act.js"), "text", "Session policy — act flow,
 console.log("--- Kernel Source ---");
 await put("kernel:source:kernel.js", read("kernel.js"), "text", "Kernel source");
 await put("kernel:source:hook-communication.js", read("hook-communication.js"), "text", "Communication handler source");
+await put("kernel:source:authority-policy.js", read("authority-policy.js"), "text", "Authority policy source");
 
 // ── Channel adapters ──────────────────────────────────────────
 
