@@ -11,13 +11,22 @@ import {
   mergeAuthorityValidation,
 } from "../authority-review.js";
 import {
+  buildAuthorityAuthorPrompt,
+  buildAuthorityChallengePrompt,
+  buildAuthorityOverview,
+  buildAuthorityReviewPrompt,
+  buildAuthorityRevisePrompt,
+  normalizeAuthorityChallengePayload,
+  normalizeAuthorityReviewPayload,
+  parseAuthorityJsonLoose,
+} from "../lib/authority-review/harness.js";
+import {
   loadDotEnv,
   nowTimestamp,
   runSelectedRunner,
   slugifyLabel,
 } from "../lib/userspace-review/cli.js";
 import { normalizeAuthorPayload } from "../lib/userspace-review/payloads.js";
-import { parseJobOutput } from "../lib/parse-job-output.js";
 import { collectDirectSourceKeys, normalizeSpec, targetRelativePathForSource } from "../lib/userspace-review/spec.js";
 import { getKV, dispose as disposeKV } from "./shared.mjs";
 import {
@@ -143,68 +152,6 @@ function usage() {
   ].join("\n"));
 }
 
-function buildOverview(spec, manifest) {
-  return [
-    "# Authority Review Overview",
-    "",
-    "## Question",
-    spec.question,
-    "",
-    ...(spec.notes.length
-      ? ["## Notes", ...spec.notes.map((note) => `- ${note}`), ""]
-      : []),
-    "## Included Evidence",
-    ...manifest.map((entry) => `- ${entry.kind}: ${entry.relative_path} (from ${entry.source_path})`),
-    "",
-    "Read the behaviorally direct evidence first, then inspect authority policy and kernel surfaces.",
-  ].join("\n");
-}
-
-function buildReviewPrompt(basePrompt) {
-  return [
-    "You are running inside the Swayambhu proto-DR-3 authority review harness.",
-    "The current working directory is an isolated review bundle.",
-    `Start with ${join("context", "overview.md")} and ${join("context", "manifest.json")}.`,
-    "All evidence files are copied under context/files/.",
-    "Do not modify files. Do not browse the web. Respond with JSON only.",
-    "",
-    basePrompt.trim(),
-  ].join("\n\n");
-}
-
-function buildChallengePrompt(basePrompt, reviewResultPath, contextManifestPath) {
-  return [
-    basePrompt.trim(),
-    "",
-    `Review result path: ${reviewResultPath}`,
-    `Original context manifest path: ${contextManifestPath}`,
-    "Read both files first and test whether this really belongs in constitutional review.",
-    "Respond with JSON only.",
-  ].join("\n");
-}
-
-function buildRevisePrompt(basePrompt, reviewResultPath, challengeResultPath, contextManifestPath) {
-  return [
-    basePrompt.trim(),
-    "",
-    `Prior review result path: ${reviewResultPath}`,
-    `Adversarial review result path: ${challengeResultPath}`,
-    `Original context manifest path: ${contextManifestPath}`,
-    "Read all three before revising.",
-    "Respond with JSON only.",
-  ].join("\n");
-}
-
-function buildAuthorPrompt(basePrompt, reviewResultPath) {
-  return [
-    basePrompt.trim(),
-    "",
-    `Review result path: ${reviewResultPath}`,
-    "Read that JSON first, then inspect only the authority surfaces needed to materialize the smallest candidate change set.",
-    "Respond with JSON only.",
-  ].join("\n");
-}
-
 function runCommand(command, args, { cwd, stdinText = null, timeoutMs = 600000 } = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, { cwd, env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] });
@@ -245,66 +192,6 @@ function writeArtifactLogs(runDir, name, result) {
   ]);
 }
 
-function parseJsonLoose(raw) {
-  const parsed = parseJobOutput(raw || "");
-  if (parsed?.payload && typeof parsed.payload === "object") return { payload: parsed.payload, meta: parsed.meta || null };
-  try {
-    const direct = JSON.parse(raw || "");
-    if (direct && typeof direct === "object") return { payload: direct, meta: null };
-  } catch {}
-  const fenceMatch = String(raw || "").match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-  if (fenceMatch) {
-    try {
-      const payload = JSON.parse(fenceMatch[1].trim());
-      return { payload, meta: null };
-    } catch {}
-  }
-  return { payload: null, meta: null };
-}
-
-function looksLikeAuthorityReviewPayload(payload) {
-  return !!(
-    payload
-    && payload.review_role === "authority_review"
-    && typeof payload.question === "string"
-    && typeof payload.hypothesis === "string"
-    && typeof payload.root_constraint === "string"
-    && typeof payload.why_userspace_review_cannot_fix_it === "string"
-    && typeof payload.authority_effect === "string"
-    && Array.isArray(payload.required_invariant_checks)
-    && Array.isArray(payload.evidence)
-    && Array.isArray(payload.proposed_changes)
-    && Array.isArray(payload.migration_plan)
-    && payload.validation && typeof payload.validation === "object"
-    && typeof payload.promotion_recommendation === "string"
-    && Array.isArray(payload.reasons_not_to_change)
-    && typeof payload.confidence === "number"
-  );
-}
-
-function looksLikeAuthorityChallengePayload(payload) {
-  return !!(
-    payload
-    && payload.review_role === "authority_review_adversarial"
-    && typeof payload.review_result_path === "string"
-    && ["pass", "revise", "reject"].includes(payload.verdict)
-    && typeof payload.summary === "string"
-    && Array.isArray(payload.agreements)
-    && Array.isArray(payload.major_concerns)
-    && Array.isArray(payload.required_changes)
-    && Array.isArray(payload.reasons_not_to_change)
-    && typeof payload.confidence === "number"
-  );
-}
-
-function normalizeAuthorityReviewPayload(payload) {
-  return looksLikeAuthorityReviewPayload(payload) ? payload : null;
-}
-
-function normalizeAuthorityChallengePayload(payload) {
-  return looksLikeAuthorityChallengePayload(payload) ? payload : null;
-}
-
 function parseResultPath(stdout, suffix) {
   const match = String(stdout || "").match(new RegExp(`result:\\s*(.+${suffix.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")})`));
   return match?.[1]?.trim() || null;
@@ -336,7 +223,7 @@ async function copyContextFiles(runDir, spec, specDir) {
     notes: spec.notes,
     files: manifest,
   }, null, 2), "utf8");
-  await writeFile(join(contextDir, "overview.md"), buildOverview(spec, manifest), "utf8");
+  await writeFile(join(contextDir, "overview.md"), buildAuthorityOverview(spec, manifest), "utf8");
   return { contextDir, manifest };
 }
 
@@ -518,7 +405,7 @@ async function main(argv = process.argv.slice(2)) {
     }
 
     const { contextDir } = await copyContextFiles(runDir, spec, specDir);
-    const reviewPrompt = buildReviewPrompt(await readFile(join(ROOT, "prompts", "authority_review.md"), "utf8"));
+    const reviewPrompt = buildAuthorityReviewPrompt(await readFile(join(ROOT, "prompts", "authority_review.md"), "utf8"));
     await writeFile(join(runDir, "prompt.authority-review.md"), reviewPrompt, "utf8");
 
     const review = await runSelectedRunner({
@@ -529,14 +416,14 @@ async function main(argv = process.argv.slice(2)) {
       claudeOptions: {
         cwd: runDir,
         extraArgs: ["--no-session-persistence"],
-        parseRawOutput: parseJsonLoose,
+        parseRawOutput: parseAuthorityJsonLoose,
         normalizePayload: normalizeAuthorityReviewPayload,
       },
       codexOptions: {
         cwd: runDir,
         commandCwd: ROOT,
         outputSchemaPath: REVIEW_SCHEMA_PATH,
-        parseRawOutput: parseJsonLoose,
+        parseRawOutput: parseAuthorityJsonLoose,
         normalizePayload: normalizeAuthorityReviewPayload,
       },
       geminiOptions: {
@@ -571,7 +458,7 @@ async function main(argv = process.argv.slice(2)) {
     let currentReviewResultPath = reviewResultPath;
 
     for (let round = 1; round <= Math.max(1, Number(args.adversarialMaxRounds || 1)); round += 1) {
-      const challengePrompt = buildChallengePrompt(
+      const challengePrompt = buildAuthorityChallengePrompt(
         await readFile(join(ROOT, "prompts", "authority_review_adversarial.md"), "utf8"),
         currentReviewResultPath,
         reviewArtifact.context_manifest_path,
@@ -586,13 +473,13 @@ async function main(argv = process.argv.slice(2)) {
         claudeOptions: {
           cwd: ROOT,
           extraArgs: ["--no-session-persistence"],
-          parseRawOutput: parseJsonLoose,
+          parseRawOutput: parseAuthorityJsonLoose,
           normalizePayload: normalizeAuthorityChallengePayload,
         },
         codexOptions: {
           cwd: ROOT,
           commandCwd: ROOT,
-          parseRawOutput: parseJsonLoose,
+          parseRawOutput: parseAuthorityJsonLoose,
           normalizePayload: normalizeAuthorityChallengePayload,
         },
         geminiOptions: {
@@ -645,7 +532,7 @@ async function main(argv = process.argv.slice(2)) {
         return;
       }
 
-      const revisePrompt = buildRevisePrompt(
+      const revisePrompt = buildAuthorityRevisePrompt(
         await readFile(join(ROOT, "prompts", "authority_review_revise.md"), "utf8"),
         currentReviewResultPath,
         challengeArtifactPath,
@@ -661,14 +548,14 @@ async function main(argv = process.argv.slice(2)) {
         claudeOptions: {
           cwd: ROOT,
           extraArgs: ["--no-session-persistence"],
-          parseRawOutput: parseJsonLoose,
+          parseRawOutput: parseAuthorityJsonLoose,
           normalizePayload: normalizeAuthorityReviewPayload,
         },
         codexOptions: {
           cwd: ROOT,
           commandCwd: ROOT,
           outputSchemaPath: REVIEW_SCHEMA_PATH,
-          parseRawOutput: parseJsonLoose,
+          parseRawOutput: parseAuthorityJsonLoose,
           normalizePayload: normalizeAuthorityReviewPayload,
         },
         geminiOptions: {
@@ -699,7 +586,7 @@ async function main(argv = process.argv.slice(2)) {
       sourceRef: args.sourceRef,
       workspaceDir: join(runDir, "author-workspace"),
     });
-    const authorPrompt = buildAuthorPrompt(
+    const authorPrompt = buildAuthorityAuthorPrompt(
       await readFile(join(ROOT, "prompts", "authority_lab_author.md"), "utf8"),
       currentReviewResultPath,
     );
