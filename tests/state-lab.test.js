@@ -10,21 +10,23 @@ import {
   allocateBranchPorts,
   buildLabBranchName,
   buildStartEnv,
-  compareContinuationSummaries,
-  getContinuationConfig,
-  isInfrastructureContinuationFailure,
   loadLabHypothesis,
-  normalizeStaticChecks,
   overlayWorkspaceFromSourceState,
-  reconcileComparativeStaticValidation,
-  retargetStaticCommandToWorkspace,
   resolveLabWorkspacePath,
   runStaticValidation,
   sanitizeName,
   shouldCopyWorkspacePath,
-  summarizeBatchSummary,
 } from "../scripts/state-lab.mjs";
-import { getKV, dispose } from "../scripts/shared.mjs";
+import {
+  compareContinuationSummaries,
+  getContinuationConfig,
+  isInfrastructureContinuationFailure,
+  normalizeStaticChecks,
+  reconcileComparativeStaticValidation,
+  retargetStaticCommandToWorkspace,
+  summarizeBatchSummary,
+} from "../lib/state-lab/validation.js";
+import { getKV, dispose, root as REPO_ROOT } from "../scripts/shared.mjs";
 
 describe("state-lab helpers", () => {
   it("sanitizes valid names and rejects invalid ones", () => {
@@ -231,6 +233,17 @@ describe("state-lab helpers", () => {
       maxSessions: 5,
       maxCashCost: 0.75,
     });
+    expect(getContinuationConfig({
+      continuation: {
+        enabled: true,
+        max_sessions: "invalid",
+        max_cash_cost: "wat",
+      },
+    })).toEqual({
+      enabled: true,
+      maxSessions: 1,
+      maxCashCost: null,
+    });
   });
 
   it("classifies service-start failures as infrastructure continuation failures", () => {
@@ -315,13 +328,15 @@ describe("state-lab helpers", () => {
   });
 
   it("retargets repo-root static commands to the candidate workspace", () => {
+    const repoUserspace = join(REPO_ROOT, "userspace.js");
+    const repoIndex = join(REPO_ROOT, "index.js");
     expect(retargetStaticCommandToWorkspace(
-      "node --check /home/swami/swayambhu/repo/userspace.js",
+      `node --check ${repoUserspace}`,
       "/tmp/lab/workspace",
     )).toBe("node --check /tmp/lab/workspace/userspace.js");
 
     expect(retargetStaticCommandToWorkspace(
-      "rg -n \"foo\" /home/swami/swayambhu/repo/userspace.js && node /home/swami/swayambhu/repo/index.js",
+      `rg -n "foo" ${repoUserspace} && node ${repoIndex}`,
       "/tmp/lab/workspace",
     )).toBe("rg -n \"foo\" /tmp/lab/workspace/userspace.js && node /tmp/lab/workspace/index.js");
   });
@@ -574,7 +589,7 @@ describe("state-lab helpers", () => {
       const validation = {
         static_checks: [
           {
-            command: "rg -n \"candidate\" /home/swami/swayambhu/repo/userspace.js",
+            command: `rg -n "candidate" ${join(REPO_ROOT, "userspace.js")}`,
             expect: {
               candidate: "pass",
             },
