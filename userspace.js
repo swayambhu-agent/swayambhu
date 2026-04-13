@@ -2206,7 +2206,7 @@ async function dispatchDr2(K, defaults, reviewNoteKey) {
     "export SWAYAMBHU_USERSPACE_REVIEW_BUNDLE_DIR=\"$PWD\"",
     `cd '${esc(repoDir)}' || exit 1`,
     ...envPrefix,
-    `node scripts/dr2-lab-run.mjs ${args.map((arg) => `'${esc(arg)}'`).join(" ")}`,
+    `node lib/dr2-lab-run.js ${args.map((arg) => `'${esc(arg)}'`).join(" ")}`,
   ].join("\n");
 
   const result = await K.executeToolCall({

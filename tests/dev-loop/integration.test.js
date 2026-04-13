@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { initState, listProbes } from '../../scripts/dev-loop/state.mjs';
 import { runClassify } from '../../scripts/dev-loop/classify.mjs';
-import { routeProposal, generateApprovalId } from '../../scripts/dev-loop/decide.mjs';
+import { routeProposal, generateApprovalId } from '../../lib/dev-loop/decide.js';
 
 const TEST_DIR = join(import.meta.dirname, '../../.swayambhu/dev-loop-integration-test');
 

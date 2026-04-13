@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildDr3Defaults, loadRepoDr3Defaults, parseArgs } from "../scripts/dr3-lab-run.mjs";
+import { buildDr3Defaults, loadRepoDr3Defaults, parseArgs } from "../lib/dr3-lab-run.js";
 
 const DR3_ENV_KEYS = [
   "SWAYAMBHU_DR3_REVIEW_RUNNER",
