@@ -14,7 +14,7 @@ import {
   materializeAuthorWorkspace,
   persistLabResultCopies,
   persistOutputCopies,
-} from "../../scripts/dr2-lab-run.mjs";
+} from "../../lib/state-lab/review-jobs.js";
 import { getKV, dispose } from "../../scripts/shared.mjs";
 
 describe("userspace author normalization", () => {
@@ -215,6 +215,20 @@ describe("userspace author normalization", () => {
     expect(invocation.env).toEqual({
       SWAYAMBHU_PERSIST_DIR: join(stateLabDir, "branches", "test-branch", "state"),
     });
+  });
+
+  it("fails early when a branch source-ref has no state dir", async () => {
+    const base = await mkdtemp(join(tmpdir(), "userspace-author-missing-"));
+    try {
+      await expect(materializeAuthorWorkspace({
+        sourceRef: "branch:missing",
+        workspaceDir: join(base, "author-workspace"),
+        repoRoot: join(base, "repo"),
+        stateLabDir: join(base, "state-lab"),
+      })).rejects.toThrow("State dir not found");
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 
   it("keeps current-source review jobs on the default live input path", () => {

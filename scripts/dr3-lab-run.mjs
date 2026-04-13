@@ -33,7 +33,7 @@ import {
   materializeAuthorWorkspace,
   persistLabResultCopies,
   persistOutputCopies,
-} from "./dr2-lab-run.mjs";
+} from "../lib/state-lab/review-jobs.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
