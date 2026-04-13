@@ -102,7 +102,7 @@ export async function collectSeedEntries({
     "kv_manifest", "kv_query", "computer",
     "check_email", "send_email", "test_model",
     "web_search", "start_job", "collect_jobs",
-    "google_docs", "send_whatsapp", "request_message",
+    "google_docs", "publications_kb", "send_whatsapp", "request_message",
   ];
   const grantFields = ["secrets", "communication", "inbound", "provider"];
   const toolGrants = {};

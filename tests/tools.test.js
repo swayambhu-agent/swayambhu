@@ -20,6 +20,7 @@ import * as collect_jobs from "../tools/collect_jobs.js";
 import * as delegate_task from "../tools/delegate_task.js";
 import * as send_whatsapp from "../tools/send_whatsapp.js";
 import * as google_docs from "../tools/google_docs.js";
+import * as publications_kb from "../tools/publications_kb.js";
 import * as gnanetra from "../tools/gnanetra.js";
 import * as request_message from "../tools/request_message.js";
 import * as trigger_session from "../tools/trigger_session.js";
@@ -119,7 +120,7 @@ function mockKV(initial = {}) {
 const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
-  start_job, collect_jobs, delegate_task, send_whatsapp, google_docs, gnanetra, request_message,
+  start_job, collect_jobs, delegate_task, send_whatsapp, google_docs, publications_kb, gnanetra, request_message,
   trigger_session, update_request,
 };
 
@@ -1399,7 +1400,154 @@ describe("web_search", () => {
   });
 });
 
-// ── 11. channel:slack tests ────────────────────────────────
+// ── 11. publications_kb tests ─────────────────────────────
+
+describe("publications_kb", () => {
+  it("has expected meta fields", () => {
+    expect(publications_kb.meta.secrets).toEqual(["ISHA_PUBLICATIONS_PASSWORD"]);
+    expect(publications_kb.meta.kv_access).toBe("none");
+    expect(publications_kb.meta.timeout_ms).toBe(30000);
+  });
+
+  it("returns error when password is missing", async () => {
+    const result = await publications_kb.execute({
+      action: "search",
+      query: "identity",
+      secrets: {},
+      fetch: vi.fn(),
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("ISHA_PUBLICATIONS_PASSWORD");
+  });
+
+  it("searches publications and uses Cloudflare resolveOverride", async () => {
+    const f = mockFetch({
+      query: "identity responsibility",
+      sanitized_query: "identity responsibility",
+      page: 1,
+      per_page: 50,
+      total: 2,
+      results: [
+        {
+          contentid: "engc1",
+          title: " Talk One ",
+          published: "20240101",
+          type: "sgvideo",
+          language: "english",
+          info: "youtube",
+          length: 1000,
+          weight: 10,
+        },
+        {
+          contentid: "engc2",
+          title: "Talk Two",
+          published: "20240102",
+          type: "article",
+          language: "english",
+          info: "web",
+          length: 800,
+          weight: 8,
+        },
+      ],
+    });
+    const result = await publications_kb.execute({
+      action: "search",
+      query: "identity responsibility",
+      limit: 1,
+      secrets: { ISHA_PUBLICATIONS_PASSWORD: "pw" },
+      fetch: f,
+    });
+    expect(result.success).toBe(true);
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({
+      contentid: "engc1",
+      title: "Talk One",
+      type: "sgvideo",
+    });
+    const [url, opts] = f.mock.calls[0];
+    expect(url).toBe("https://publications.isha.in/api/search");
+    expect(opts.headers.Host).toBe("publications.isha.in");
+    expect(opts.cf.resolveOverride).toBe("74.225.238.109");
+    expect(JSON.parse(opts.body)).toMatchObject({
+      login: "swayambhu",
+      password: "pw",
+      query: "identity responsibility",
+      page: 1,
+    });
+  });
+
+  it("returns chunk details and strips highlight markup", async () => {
+    const f = mockFetch({
+      title: "Talk",
+      metadata: { speaker: "Sadhguru" },
+      content: "Hello <mark>world</mark>",
+      offset: 0,
+      next_offset: 120,
+      has_more: true,
+    });
+    const result = await publications_kb.execute({
+      action: "details",
+      contentid: "engc1",
+      query: "world",
+      secrets: { ISHA_PUBLICATIONS_PASSWORD: "pw" },
+      fetch: f,
+    });
+    expect(result.success).toBe(true);
+    expect(result.content).toBe("Hello world");
+    expect(result.has_more).toBe(true);
+  });
+
+  it("fetches multiple transcript chunks", async () => {
+    const f = mockFetchSequence([
+      {
+        status: 200,
+        json: {
+          title: "Talk",
+          metadata: { speaker: "Sadhguru" },
+          content: "Part 1 ",
+          offset: 0,
+          next_offset: 7,
+          has_more: true,
+        },
+      },
+      {
+        status: 200,
+        json: {
+          title: "Talk",
+          metadata: { speaker: "Sadhguru" },
+          content: "Part 2",
+          offset: 7,
+          next_offset: 0,
+          has_more: false,
+        },
+      },
+    ]);
+    const result = await publications_kb.execute({
+      action: "fetch",
+      contentid: "engc1",
+      query: "identity",
+      secrets: { ISHA_PUBLICATIONS_PASSWORD: "pw" },
+      fetch: f,
+    });
+    expect(result.success).toBe(true);
+    expect(result.content).toBe("Part 1 Part 2");
+    expect(result.chunks_fetched).toBe(2);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("rejects invalid actions", async () => {
+    const result = await publications_kb.execute({
+      action: "scan",
+      query: "identity",
+      secrets: { ISHA_PUBLICATIONS_PASSWORD: "pw" },
+      fetch: vi.fn(),
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("invalid action");
+  });
+});
+
+// ── 12. channel:slack tests ────────────────────────────────
 
 describe("channel:slack", () => {
   describe("config", () => {

@@ -132,6 +132,21 @@
         "content": "optional — plain text content to insert",
         "doc_id": "optional — document ID (required for update)"
       }
+    },
+    {
+      "name": "publications_kb",
+      "description": "Search the Isha publications knowledge base and retrieve transcript chunks for a specific content ID.",
+      "input": {
+        "action": "required — search | details | fetch",
+        "query": "required for search/details/fetch — search query or highlight query",
+        "contentid": "required for details/fetch — publications content ID",
+        "page": "optional — search page number (default 1)",
+        "limit": "optional — max search results to return (default 5, max 10)",
+        "offset": "optional — details chunk offset (default 0)",
+        "max_chars": "optional — details chunk size (default 6000, max 12000)",
+        "chunk_size": "optional — fetch chunk size (default 8000, max 12000)",
+        "max_chunks": "optional — fetch up to N chunks (default 8, max 8)"
+      }
     }
   ]
 }

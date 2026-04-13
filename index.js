@@ -30,6 +30,7 @@ import * as collect_jobs from './tools/collect_jobs.js';
 import * as delegate_task from './tools/delegate_task.js';
 import * as send_whatsapp from './tools/send_whatsapp.js';
 import * as google_docs from './tools/google_docs.js';
+import * as publications_kb from './tools/publications_kb.js';
 import * as gnanetra from './tools/gnanetra.js';
 import * as request_message from './tools/request_message.js';
 import * as trigger_session from './tools/trigger_session.js';
@@ -48,7 +49,7 @@ import * as compute from './providers/compute.js';
 const TOOLS = {
   send_slack, web_fetch, kv_manifest, kv_query,
   computer, check_email, send_email, test_model, web_search,
-  start_job, collect_jobs, delegate_task, send_whatsapp, google_docs, gnanetra,
+  start_job, collect_jobs, delegate_task, send_whatsapp, google_docs, publications_kb, gnanetra,
   request_message, trigger_session, update_request,
 };
 
