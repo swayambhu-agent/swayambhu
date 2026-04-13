@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { basename, dirname, extname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import {
+  loadDotEnv,
+  nowTimestamp,
+  runSelectedRunner,
+  slugifyLabel,
+} from "../lib/userspace-review/cli.js";
+import {
   buildReviewRevisePrompt as buildPrompt,
   looksLikeUserspaceReviewPayload,
 } from "../lib/userspace-review/payloads.js";
-import {
-  runClaudeJob,
-  runCodexJob,
-  runGeminiJob,
-} from "../lib/userspace-review/runners.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -26,36 +26,6 @@ const DEFAULT_CODEX_PROFILE = process.env.SWAYAMBHU_USERSPACE_REVIEW_CODEX_PROFI
 const DEFAULT_CLAUDE_MODEL = process.env.SWAYAMBHU_USERSPACE_REVIEW_CLAUDE_MODEL || "opus";
 const DEFAULT_CODEX_MODEL = process.env.SWAYAMBHU_USERSPACE_REVIEW_CODEX_MODEL || null;
 const DEFAULT_GEMINI_MODEL = process.env.SWAYAMBHU_USERSPACE_REVIEW_GEMINI_MODEL || "gemini-2.5-flash";
-
-function nowTimestamp() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-function slugify(input) {
-  const slug = String(input || "userspace-review-revise")
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-  return slug || "userspace-review-revise";
-}
-
-function loadDotEnv() {
-  const envPath = process.env.SWAYAMBHU_ENV_FILE || join(ROOT, ".env");
-  if (!existsSync(envPath)) return;
-  for (const line of readFileSync(envPath, "utf8").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq < 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (!process.env[key]) process.env[key] = value;
-  }
-}
 
 function parseArgs(argv) {
   const args = {
@@ -107,7 +77,7 @@ function usage() {
 export { buildPrompt, looksLikeUserspaceReviewPayload };
 
 async function main(argv = process.argv.slice(2)) {
-  loadDotEnv();
+  loadDotEnv(ROOT);
   const args = parseArgs(argv);
   if (args.help) {
     usage();
@@ -127,7 +97,7 @@ async function main(argv = process.argv.slice(2)) {
   if (!reviewArtifact?.context_manifest_path) throw new Error(`Review result has no context manifest: ${resolvedReviewResultPath}`);
 
   const labelSeed = args.label || basename(resolvedReviewResultPath, extname(resolvedReviewResultPath));
-  const runDir = join(REVISIONS_DIR, `${nowTimestamp()}-${slugify(labelSeed)}`);
+  const runDir = join(REVISIONS_DIR, `${nowTimestamp()}-${slugifyLabel(labelSeed, "userspace-review-revise")}`);
   await mkdir(runDir, { recursive: true });
 
   const basePrompt = await readFile(join(ROOT, "prompts", "userspace_review_revise.md"), "utf8");
@@ -135,37 +105,30 @@ async function main(argv = process.argv.slice(2)) {
   await writeFile(join(runDir, "prompt.userspace-review-revise.md"), prompt, "utf8");
 
   const startedAt = new Date().toISOString();
-  let result;
-  if (args.runner === "claude") {
-    result = await runClaudeJob({
-      prompt,
-      runDir,
-      timeoutMs: args.timeoutMs,
-      model: args.claudeModel,
+  const normalizePayload = (payload) => (looksLikeUserspaceReviewPayload(payload) ? payload : null);
+  const result = await runSelectedRunner({
+    runner: args.runner,
+    prompt,
+    runDir,
+    timeoutMs: args.timeoutMs,
+    claudeModel: args.claudeModel,
+    codexModel: args.codexModel,
+    codexProfile: args.codexProfile,
+    geminiModel: args.geminiModel,
+    claudeOptions: {
       cwd: ROOT,
-      normalizePayload: (payload) => (looksLikeUserspaceReviewPayload(payload) ? payload : null),
-    });
-  } else if (args.runner === "gemini") {
-    result = await runGeminiJob({
-      prompt,
-      runDir,
-      timeoutMs: args.timeoutMs,
-      model: args.geminiModel,
-      cwd: ROOT,
-      normalizePayload: (payload) => (looksLikeUserspaceReviewPayload(payload) ? payload : null),
-    });
-  } else {
-    result = await runCodexJob({
-      prompt,
-      runDir,
-      timeoutMs: args.timeoutMs,
-      model: args.codexModel,
-      profile: args.codexProfile,
+      normalizePayload,
+    },
+    codexOptions: {
       cwd: ROOT,
       outputSchemaPath: REVIEW_SCHEMA_PATH,
-      normalizePayload: (payload) => (looksLikeUserspaceReviewPayload(payload) ? payload : null),
-    });
-  }
+      normalizePayload,
+    },
+    geminiOptions: {
+      cwd: ROOT,
+      normalizePayload,
+    },
+  });
 
   const artifact = {
     review_role: "userspace_review",
