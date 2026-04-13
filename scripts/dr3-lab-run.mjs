@@ -10,9 +10,15 @@ import {
   classifyAuthorityReviewPlan,
   mergeAuthorityValidation,
 } from "../authority-review.js";
+import {
+  loadDotEnv,
+  nowTimestamp,
+  runSelectedRunner,
+  slugifyLabel,
+} from "../lib/userspace-review/cli.js";
+import { normalizeAuthorPayload } from "../lib/userspace-review/payloads.js";
 import { parseJobOutput } from "../lib/parse-job-output.js";
-import { normalizeAuthorPayload } from "./state-lab-userspace-author.mjs";
-import { collectDirectSourceKeys, normalizeSpec, targetRelativePathForSource } from "./state-lab-userspace-review.mjs";
+import { collectDirectSourceKeys, normalizeSpec, targetRelativePathForSource } from "../lib/userspace-review/spec.js";
 import { getKV, dispose as disposeKV } from "./shared.mjs";
 import {
   materializeAuthorWorkspace,
@@ -25,36 +31,6 @@ const ROOT = join(__dirname, "..");
 const STATE_LAB_DIR = process.env.SWAYAMBHU_STATE_LAB_DIR || "/home/swami/swayambhu/state-lab";
 const RUNS_DIR = join(STATE_LAB_DIR, "dr3-runs");
 const REVIEW_SCHEMA_PATH = join(ROOT, "schemas", "authority-review-result.schema.json");
-
-function nowTimestamp() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-function slugify(input) {
-  const slug = String(input || "authority-review")
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48);
-  return slug || "authority-review";
-}
-
-function loadDotEnv() {
-  const envPath = process.env.SWAYAMBHU_ENV_FILE || join(ROOT, ".env");
-  if (!existsSync(envPath)) return;
-  for (const line of readFileSync(envPath, "utf8").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq < 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (!process.env[key]) process.env[key] = value;
-  }
-}
 
 function parseNumberLike(value, fallback) {
   const parsed = Number(value);
@@ -321,69 +297,12 @@ function looksLikeAuthorityChallengePayload(payload) {
   );
 }
 
-async function runCodex({ prompt, runDir, timeoutMs, schemaPath, model = null, cwd = ROOT }) {
-  const stdoutPath = join(runDir, "codex.stdout.log");
-  const stderrPath = join(runDir, "codex.stderr.log");
-  const lastMessagePath = join(runDir, "codex.last-message.json");
-  const args = [
-    "exec", "-",
-    "-C", cwd,
-    "--skip-git-repo-check",
-    "--ephemeral",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "--output-last-message", lastMessagePath,
-    "--color", "never",
-  ];
-  if (schemaPath) args.push("--output-schema", schemaPath);
-  if (model) args.push("--model", model);
-
-  const result = await runCommand("codex", args, { cwd: ROOT, stdinText: prompt, timeoutMs });
-  await writeArtifactLogs(runDir, "codex", result);
-  let raw = "";
-  try {
-    raw = await readFile(lastMessagePath, "utf8");
-  } catch {
-    raw = "";
-  }
-  return { ...result, ...parseJsonLoose(raw), rawPath: lastMessagePath, stdoutPath, stderrPath };
+function normalizeAuthorityReviewPayload(payload) {
+  return looksLikeAuthorityReviewPayload(payload) ? payload : null;
 }
 
-async function runClaude({ prompt, runDir, timeoutMs, model = null, cwd = ROOT }) {
-  const rawPath = join(runDir, "claude.raw.json");
-  const stderrPath = join(runDir, "claude.stderr.log");
-  const args = ["-p", "--output-format", "json", "--dangerously-skip-permissions", "--no-session-persistence"];
-  if (model) args.push("--model", model);
-  const result = await runCommand("claude", args, { cwd, stdinText: prompt, timeoutMs });
-  await writeFile(rawPath, result.stdout || "", "utf8");
-  await writeFile(stderrPath, result.stderr || "", "utf8");
-  return { ...result, ...parseJsonLoose(result.stdout || ""), rawPath, stdoutPath: null, stderrPath };
-}
-
-async function runGemini({ prompt, runDir, timeoutMs, model = null, cwd = ROOT }) {
-  const stdoutPath = join(runDir, "gemini.stdout.json");
-  const stderrPath = join(runDir, "gemini.stderr.log");
-  const args = ["--prompt", prompt, "--output-format", "json", "--approval-mode", "yolo"];
-  if (model) args.push("--model", model);
-  const result = await runCommand("gemini", args, { cwd, timeoutMs });
-  await writeFile(stdoutPath, result.stdout || "", "utf8");
-  await writeFile(stderrPath, result.stderr || "", "utf8");
-  let payload = null;
-  let meta = null;
-  try {
-    const envelope = JSON.parse(result.stdout || "");
-    payload = JSON.parse(envelope?.response || "");
-    meta = envelope?.stats ? { stats: envelope.stats, session_id: envelope.session_id || null } : null;
-  } catch {
-    payload = null;
-    meta = null;
-  }
-  return { ...result, payload, meta, rawPath: stdoutPath, stdoutPath, stderrPath };
-}
-
-async function runModel(runner, params) {
-  if (runner === "claude") return runClaude(params);
-  if (runner === "gemini") return runGemini(params);
-  return runCodex(params);
+function normalizeAuthorityChallengePayload(payload) {
+  return looksLikeAuthorityChallengePayload(payload) ? payload : null;
 }
 
 function parseResultPath(stdout, suffix) {
@@ -566,7 +485,7 @@ async function emitReject({ runDir, reviewNoteKey, reviewResultPath = null, chal
 }
 
 async function main(argv = process.argv.slice(2)) {
-  loadDotEnv();
+  loadDotEnv(ROOT);
   const args = parseArgs(argv, buildDr3Defaults());
   if (args.help) {
     usage();
@@ -578,7 +497,7 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   const labelSeed = args.label || args.reviewNoteKey || basename(args.specPath, extname(args.specPath));
-  const runDir = join(RUNS_DIR, `${nowTimestamp()}-${slugify(labelSeed)}`);
+  const runDir = join(RUNS_DIR, `${nowTimestamp()}-${slugifyLabel(labelSeed, "authority-review")}`);
   await mkdir(runDir, { recursive: true });
 
   let reviewResultPath = null;
@@ -602,14 +521,30 @@ async function main(argv = process.argv.slice(2)) {
     const reviewPrompt = buildReviewPrompt(await readFile(join(ROOT, "prompts", "authority_review.md"), "utf8"));
     await writeFile(join(runDir, "prompt.authority-review.md"), reviewPrompt, "utf8");
 
-    const review = await runModel(args.reviewRunner, {
+    const review = await runSelectedRunner({
+      runner: args.reviewRunner,
       prompt: reviewPrompt,
       runDir,
       timeoutMs: args.reviewTimeoutMs,
-      schemaPath: REVIEW_SCHEMA_PATH,
-      cwd: runDir,
+      claudeOptions: {
+        cwd: runDir,
+        extraArgs: ["--no-session-persistence"],
+        parseRawOutput: parseJsonLoose,
+        normalizePayload: normalizeAuthorityReviewPayload,
+      },
+      codexOptions: {
+        cwd: runDir,
+        commandCwd: ROOT,
+        outputSchemaPath: REVIEW_SCHEMA_PATH,
+        parseRawOutput: parseJsonLoose,
+        normalizePayload: normalizeAuthorityReviewPayload,
+      },
+      geminiOptions: {
+        cwd: runDir,
+        normalizePayload: normalizeAuthorityReviewPayload,
+      },
     });
-    if (review.code !== 0 || !looksLikeAuthorityReviewPayload(review.payload)) {
+    if (review.exit_code !== 0 || !review.parse_ok || !review.payload) {
       throw new Error(`authority review failed: ${review.error || "parse failure"}`);
     }
 
@@ -621,11 +556,11 @@ async function main(argv = process.argv.slice(2)) {
       parse_ok: true,
       payload: review.payload,
       meta: review.meta || null,
-      raw_path: review.rawPath,
-      stdout_path: review.stdoutPath || null,
-      stderr_path: review.stderrPath || null,
+      raw_path: review.raw_path,
+      stdout_path: review.stdout_path || null,
+      stderr_path: review.stderr_path || null,
       timed_out: !!review.timed_out,
-      exit_code: review.code,
+      exit_code: review.exit_code,
       error: review.error || null,
       context_manifest_path: join(contextDir, "manifest.json"),
     };
@@ -643,14 +578,29 @@ async function main(argv = process.argv.slice(2)) {
       );
       const challengeRunDir = join(runDir, `challenge-r${round}`);
       await mkdir(challengeRunDir, { recursive: true });
-      const challenge = await runModel(args.adversarialRunner, {
+      const challenge = await runSelectedRunner({
+        runner: args.adversarialRunner,
         prompt: challengePrompt,
         runDir: challengeRunDir,
         timeoutMs: args.adversarialTimeoutMs,
-        schemaPath: null,
-        cwd: ROOT,
+        claudeOptions: {
+          cwd: ROOT,
+          extraArgs: ["--no-session-persistence"],
+          parseRawOutput: parseJsonLoose,
+          normalizePayload: normalizeAuthorityChallengePayload,
+        },
+        codexOptions: {
+          cwd: ROOT,
+          commandCwd: ROOT,
+          parseRawOutput: parseJsonLoose,
+          normalizePayload: normalizeAuthorityChallengePayload,
+        },
+        geminiOptions: {
+          cwd: ROOT,
+          normalizePayload: normalizeAuthorityChallengePayload,
+        },
       });
-      if (challenge.code !== 0 || !looksLikeAuthorityChallengePayload(challenge.payload)) {
+      if (challenge.exit_code !== 0 || !challenge.parse_ok || !challenge.payload) {
         throw new Error(`authority challenge failed: ${challenge.error || "parse failure"}`);
       }
       const challengeArtifactPath = join(runDir, `authority-challenge-r${round}.json`);
@@ -662,11 +612,11 @@ async function main(argv = process.argv.slice(2)) {
         parse_ok: true,
         payload: challenge.payload,
         meta: challenge.meta || null,
-        raw_path: challenge.rawPath,
-        stdout_path: challenge.stdoutPath || null,
-        stderr_path: challenge.stderrPath || null,
+        raw_path: challenge.raw_path,
+        stdout_path: challenge.stdout_path || null,
+        stderr_path: challenge.stderr_path || null,
         timed_out: !!challenge.timed_out,
-        exit_code: challenge.code,
+        exit_code: challenge.exit_code,
         error: challenge.error || null,
       }, null, 2), "utf8");
       challengeResultPaths.push(challengeArtifactPath);
@@ -703,14 +653,30 @@ async function main(argv = process.argv.slice(2)) {
       );
       const reviseRunDir = join(runDir, `review-revise-r${round}`);
       await mkdir(reviseRunDir, { recursive: true });
-      const revised = await runModel(args.reviewRunner, {
+      const revised = await runSelectedRunner({
+        runner: args.reviewRunner,
         prompt: revisePrompt,
         runDir: reviseRunDir,
         timeoutMs: args.reviewTimeoutMs,
-        schemaPath: REVIEW_SCHEMA_PATH,
-        cwd: ROOT,
+        claudeOptions: {
+          cwd: ROOT,
+          extraArgs: ["--no-session-persistence"],
+          parseRawOutput: parseJsonLoose,
+          normalizePayload: normalizeAuthorityReviewPayload,
+        },
+        codexOptions: {
+          cwd: ROOT,
+          commandCwd: ROOT,
+          outputSchemaPath: REVIEW_SCHEMA_PATH,
+          parseRawOutput: parseJsonLoose,
+          normalizePayload: normalizeAuthorityReviewPayload,
+        },
+        geminiOptions: {
+          cwd: ROOT,
+          normalizePayload: normalizeAuthorityReviewPayload,
+        },
       });
-      if (revised.code !== 0 || !looksLikeAuthorityReviewPayload(revised.payload)) {
+      if (revised.exit_code !== 0 || !revised.parse_ok || !revised.payload) {
         throw new Error(`authority review revise failed: ${revised.error || "parse failure"}`);
       }
       currentReviewPayload = revised.payload;
@@ -718,11 +684,11 @@ async function main(argv = process.argv.slice(2)) {
       await writeFile(currentReviewResultPath, JSON.stringify({
         ...reviewArtifact,
         payload: currentReviewPayload,
-        raw_path: revised.rawPath,
-        stdout_path: revised.stdoutPath || null,
-        stderr_path: revised.stderrPath || null,
+        raw_path: revised.raw_path,
+        stdout_path: revised.stdout_path || null,
+        stderr_path: revised.stderr_path || null,
         timed_out: !!revised.timed_out,
-        exit_code: revised.code,
+        exit_code: revised.exit_code,
         error: revised.error || null,
       }, null, 2), "utf8");
     }
@@ -739,15 +705,27 @@ async function main(argv = process.argv.slice(2)) {
     );
     const authorRunDir = join(runDir, "author");
     await mkdir(authorRunDir, { recursive: true });
-    const author = await runModel(args.authorRunner, {
+    const author = await runSelectedRunner({
+      runner: args.authorRunner,
       prompt: authorPrompt,
       runDir: authorRunDir,
       timeoutMs: args.authorTimeoutMs,
-      schemaPath: null,
-      cwd: authorWorkspace,
+      claudeOptions: {
+        cwd: authorWorkspace,
+        normalizePayload: normalizeAuthorPayload,
+      },
+      codexOptions: {
+        cwd: authorWorkspace,
+        commandCwd: ROOT,
+        normalizePayload: normalizeAuthorPayload,
+      },
+      geminiOptions: {
+        cwd: authorWorkspace,
+        normalizePayload: normalizeAuthorPayload,
+      },
     });
-    const authorPayload = normalizeAuthorPayload(author.payload);
-    if (author.code !== 0 || !authorPayload) {
+    const authorPayload = author.payload;
+    if (author.exit_code !== 0 || !authorPayload) {
       throw new Error(`authority author failed: ${author.error || "parse failure"}`);
     }
     authorResultPath = join(runDir, "authority-author-result.json");
@@ -759,11 +737,11 @@ async function main(argv = process.argv.slice(2)) {
       parse_ok: true,
       payload: authorPayload,
       meta: author.meta || null,
-      raw_path: author.rawPath,
-      stdout_path: author.stdoutPath || null,
-      stderr_path: author.stderrPath || null,
+      raw_path: author.raw_path,
+      stdout_path: author.stdout_path || null,
+      stderr_path: author.stderr_path || null,
       timed_out: !!author.timed_out,
-      exit_code: author.code,
+      exit_code: author.exit_code,
       error: author.error || null,
     }, null, 2), "utf8");
 
