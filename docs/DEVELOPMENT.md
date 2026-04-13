@@ -44,6 +44,104 @@ source .env && bash scripts/start.sh --reset-all-state --trigger
 
 Watch stderr for `[KARMA]`, `[TOOL]`, `[LLM]`, `[HOOK]`, `[CHAT]` tagged output.
 
+### Local runtime endpoints
+
+- Kernel: `http://localhost:8787`
+- Dashboard API: `http://localhost:8790`
+- Dashboard UI: `http://localhost:3001/patron/`
+
+### Development loop: reset, start, burst, teardown
+
+Use this sequence when you want a clean local experiment run.
+
+#### 1. Full local reset and start
+
+```bash
+cd /home/swami/swayambhu/repo-tick-rescue
+source .env
+bash scripts/start.sh --reset-all-state --trigger
+```
+
+This does all of the following:
+
+- archives remote agent surfaces before the local reset
+- deletes local persisted Worker state
+- re-seeds KV from the repo sources
+- starts the local kernel, dashboard API, and dashboard UI
+- triggers one immediate session
+
+#### 2. Run a bounded burst of immediate sessions
+
+Use the native burst control when you want many sessions back-to-back without
+waiting for the normal schedule interval.
+
+```bash
+curl -sS -X POST http://localhost:8787/__burst \
+  -H 'Content-Type: application/json' \
+  -d '{"count":30,"actor":"swami","reason":"local_architecture_test"}'
+```
+
+Notes:
+
+- `count` must currently be between `1` and `30`
+- the runtime decrements the burst count after each completed session
+- when the burst is exhausted, normal schedule cadence resumes automatically
+- the response includes:
+  - `requested`
+  - `executed`
+  - `remaining`
+  - `stalled`
+  - optional `error`
+
+Example with a smaller burst:
+
+```bash
+curl -sS -X POST http://localhost:8787/__burst \
+  -H 'Content-Type: application/json' \
+  -d '{"count":5,"actor":"swami","reason":"quick_regression_check"}'
+```
+
+#### 3. Teardown local and/or remote experiment state
+
+Use the unified teardown command when you want to wipe experiment surfaces
+without manually cleaning local state dirs and remote compute scratch space.
+
+Reset both local and remote:
+
+```bash
+cd /home/swami/swayambhu/repo-tick-rescue
+source .env
+node scripts/teardown-experiment.mjs --scope all
+```
+
+Reset only local state:
+
+```bash
+node scripts/teardown-experiment.mjs --scope local
+```
+
+Reset only remote compute scratch surfaces:
+
+```bash
+node scripts/teardown-experiment.mjs --scope remote
+```
+
+What local teardown removes:
+
+- persisted Worker state dir
+- pre-trigger snapshot dir
+- local dev services listening on the configured ports
+
+What remote teardown resets:
+
+- `/home/swayambhu/workspace`
+- `/home/swayambhu/reasoning`
+- `/home/swayambhu/jobs`
+- pending `.kv_store_pending*` scratch surfaces
+
+The remote reset uses the existing authenticated compute path, so `source .env`
+must provide the required Access and compute credentials.
+
 ### Switching models for cheap testing
 
 The seed script seeds the canonical production models (Claude Opus / Sonnet /
