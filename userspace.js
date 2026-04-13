@@ -240,6 +240,34 @@ function extractWakeProvenance(events = []) {
   };
 }
 
+function isBootstrapImmediateWake(wake) {
+  return wake?.origin === "internal"
+    && wake?.context?.bootstrap_fast === true
+    && wake?.context?.immediate === true;
+}
+
+function shouldQueueBootstrapImmediateWake({ desireCount, drState }) {
+  return desireCount === 0
+    && (drState?.generation || 0) === 0
+    && (drState?.status || "idle") === "idle";
+}
+
+async function hasPendingBootstrapImmediateWake(K) {
+  const list = await K.kvList({ prefix: "event:", limit: 50 });
+  for (const entry of list.keys || []) {
+    const event = await K.kvGet(entry.name);
+    if (
+      event?.type === "wake"
+      && event?.origin === "internal"
+      && event?.trigger?.context?.bootstrap_fast === true
+      && event?.trigger?.context?.immediate === true
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getOperatingBalanceUsd(balances) {
   let total = 0;
   let found = false;
@@ -1501,15 +1529,17 @@ async function actCycle(K, { crashData, balances, events }) {
   const schedule = await K.kvGet("session_schedule");
   const wake = extractWakeProvenance(events);
   const externalWake = wake?.origin === "external";
+  const bootstrapImmediateWake = isBootstrapImmediateWake(wake);
+  const bypassScheduleGate = externalWake || bootstrapImmediateWake;
   if (schedule?.next_session_after) {
-    if (!externalWake && Date.now() < new Date(schedule.next_session_after).getTime()) {
+    if (!bypassScheduleGate && Date.now() < new Date(schedule.next_session_after).getTime()) {
       return { skipped: true };
     }
   }
-  if (externalWake && schedule?.next_session_after && Date.now() < new Date(schedule.next_session_after).getTime()) {
+  if (bypassScheduleGate && schedule?.next_session_after && Date.now() < new Date(schedule.next_session_after).getTime()) {
     await K.karmaRecord({
       event: "schedule_gate_bypassed",
-      reason: "external_wake",
+      reason: externalWake ? "external_wake" : "internal_immediate_wake",
       scheduled_for: schedule.next_session_after,
       wake_origin: wake?.origin,
       wake_actor: wake?.actor,
@@ -2974,5 +3004,37 @@ export async function run(K, { crashData, balances, events }) {
     await dr2Cycle(K, { phase: "post", events });
   } catch (e) {
     await K.karmaRecord({ event: "dr2_cycle_error", phase: "post", error: e.message, stack: e.stack?.slice(0, 500) });
+  }
+
+  try {
+    const finalDrState = await K.kvGet("dr:state:1") || { status: "idle", generation: 0 };
+    const finalDesireCount = Object.keys(await loadDesires(K)).length;
+    if (
+      shouldQueueBootstrapImmediateWake({
+        desireCount: finalDesireCount,
+        drState: finalDrState,
+      })
+      && !(await hasPendingBootstrapImmediateWake(K))
+    ) {
+      await K.emitEvent("wake", {
+        origin: "internal",
+        trigger: {
+          actor: "bootstrap_fast",
+          context: {
+            bootstrap_fast: true,
+            immediate: true,
+            reason: "pre_dr_bootstrap",
+          },
+        },
+      });
+      await K.karmaRecord({
+        event: "bootstrap_fast_wake_enqueued",
+        desire_count: finalDesireCount,
+        dr_status: finalDrState.status,
+        dr_generation: finalDrState.generation || 0,
+      });
+    }
+  } catch (e) {
+    await K.karmaRecord({ event: "bootstrap_fast_wake_error", error: e.message, stack: e.stack?.slice(0, 500) });
   }
 }

@@ -118,6 +118,33 @@ class Kernel {
     return this.getDeniedTools().has(name);
   }
 
+  isImmediateWakeEvent(event) {
+    return event?.type === "wake"
+      && event?.origin === "internal"
+      && event?.trigger?.context?.immediate === true;
+  }
+
+  async hasPendingImmediateWake() {
+    const list = await this.kv.list({ prefix: "event:", limit: 50 });
+    for (const entry of list.keys || []) {
+      const event = await this.kvGet(entry.name);
+      if (this.isImmediateWakeEvent(event)) return true;
+    }
+    return false;
+  }
+
+  buildContinuationKernel() {
+    return new Kernel(this.env, {
+      ctx: this.ctx,
+      TOOLS: this.TOOLS,
+      HOOKS: this.HOOKS,
+      PROVIDERS: this.PROVIDERS,
+      CHANNELS: this.CHANNELS,
+      EVENT_HANDLERS: this._eventHandlers,
+      mode: this.mode,
+    });
+  }
+
   getToolBlockReason(name) {
     if (this.toolProfile) {
       return `Tool "${name}" is unavailable in ${this.toolProfile} profile`;
@@ -1037,7 +1064,7 @@ class Kernel {
 
   // ── Hook dispatch (scheduled entry point) ─────────────────
 
-  async runScheduled() {
+  async runScheduled({ continuationDepth = 0 } = {}) {
     // 1. Execution lock — prevent overlapping executions
     const active = await this.kvGet("kernel:active_execution");
     if (active?.started_at) {
@@ -1074,6 +1101,12 @@ class Kernel {
     } else {
       await this.runFallbackSession();
     }
+
+    if (continuationDepth >= 12) return;
+    if (!(await this.hasPendingImmediateWake())) return;
+
+    const continuation = this.buildContinuationKernel();
+    await continuation.runScheduled({ continuationDepth: continuationDepth + 1 });
   }
 
   // Hook safety tripwire: 3 consecutive crashes trigger rollback.

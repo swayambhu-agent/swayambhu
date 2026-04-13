@@ -2200,6 +2200,32 @@ describe("session lock", () => {
     // Should have proceeded
     expect(kernel.runTick).toHaveBeenCalled();
   });
+
+  it("continues immediately with a fresh kernel when an internal immediate wake is pending", async () => {
+    const { kernel, env } = makeKernel();
+    const continuation = makeKernel().kernel;
+
+    kernel.checkHookSafety = vi.fn(async () => true);
+    continuation.checkHookSafety = vi.fn(async () => true);
+
+    kernel.runTick = vi.fn(async () => {
+      await env.KV.delete("kernel:active_execution");
+    });
+    continuation.runTick = vi.fn(async () => {
+      await continuation.kv.delete("kernel:active_execution");
+    });
+
+    kernel.hasPendingImmediateWake = vi.fn(async () => true);
+    continuation.hasPendingImmediateWake = vi.fn(async () => false);
+    kernel.buildContinuationKernel = vi.fn(() => continuation);
+
+    await kernel.runScheduled();
+
+    expect(kernel.runTick).toHaveBeenCalledTimes(1);
+    expect(kernel.buildContinuationKernel).toHaveBeenCalledTimes(1);
+    expect(continuation.runTick).toHaveBeenCalledTimes(1);
+    expect(continuation.executionId).not.toBe(kernel.executionId);
+  });
 });
 
 // ── 18. updateExecutionOutcome ────────────────────────────────

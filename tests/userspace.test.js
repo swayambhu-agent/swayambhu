@@ -227,6 +227,50 @@ describe("session with empty desires", () => {
     expect(actionWrites).toHaveLength(0);
   });
 
+  it("bypasses the schedule gate for an internal bootstrap immediate wake", async () => {
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    K = makeMockK({
+      session_schedule: {
+        next_session_after: future,
+        interval_seconds: 3600,
+        no_action_streak: 1,
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        deep_reflect: { ttl_minutes: 120 },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+
+    await run(K, {
+      crashData: null,
+      balances: {},
+      events: [{
+        type: "wake",
+        origin: "internal",
+        trigger: {
+          actor: "bootstrap_fast",
+          context: { bootstrap_fast: true, immediate: true },
+        },
+      }],
+      schedule: {},
+    });
+
+    expect(await K.kvGet("session_counter")).toBe(1);
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "schedule_gate_bypassed",
+        reason: "internal_immediate_wake",
+        wake_origin: "internal",
+        wake_actor: "bootstrap_fast",
+      }),
+    );
+  });
+
   it("runs planning when a pending request exists even if desires are empty", async () => {
     K = makeMockK({
       "session_request:req_1": {
