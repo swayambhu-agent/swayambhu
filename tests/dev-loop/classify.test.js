@@ -12,7 +12,8 @@ import {
   auditMetaPolicyNotes,
   auditKarma,
   dedup,
-} from "../../scripts/dev-loop/classify.mjs";
+} from "../../lib/dev-loop/classify.js";
+// Pure classification logic now lives in lib/dev-loop/classify.js.
 
 // ── fingerprint ────────────────────────────────────────────
 
