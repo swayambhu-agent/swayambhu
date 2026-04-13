@@ -195,6 +195,23 @@ node scripts/cloudflare/push-seeds-kv.mjs \
 The script is safe to re-run. It overwrites keys deterministically from the
 same seed manifest.
 
+## Teardown
+
+Cloudflare teardown deletes all keys in the target KV namespace and resets the
+remote compute surfaces.
+
+Staging:
+
+```bash
+npm run teardown:cloudflare
+```
+
+Production:
+
+```bash
+npm run teardown:cloudflare:prod
+```
+
 ## Staging deploy sequence
 
 1. Push staging secrets.

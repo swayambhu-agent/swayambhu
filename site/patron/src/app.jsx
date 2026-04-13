@@ -30,6 +30,9 @@ export default function App() {
     const pct = Math.max(20, Math.min(80, ((clientX - rect.left) / rect.width) * 100));
     setLeftPct(pct);
   }, []);
+  const handleLogout = useCallback(() => {
+    window.location.href = `${window.location.origin}/cdn-cgi/access/logout`;
+  }, []);
 
   // Load health + balances, poll every 10s
   const loadHealth = useCallback(async () => {

@@ -11,6 +11,7 @@ export async function api(path, _legacyKey = null, timeoutMs = 8000) {
   try {
     const res = await fetch(`${API_URL}${path}`, {
       signal: ctrl.signal,
+      credentials: 'include',
     });
     if (res.status === 401) throw new Error('UNAUTHORIZED');
     return await res.json();

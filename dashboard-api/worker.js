@@ -1,15 +1,30 @@
 // Swayambhu Dashboard API — stateless KV reader for patron dashboard
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+function corsHeaders(request) {
+  const origin = request.headers.get("Origin") || "";
+  const allowed = new Set([
+    "https://swayambhu.dev",
+    "https://staging.swayambhu.dev",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+  ]);
 
-function json(data, status = 200) {
+  return {
+    ...(allowed.has(origin) ? { "Access-Control-Allow-Origin": origin } : {}),
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Credentials": "true",
+    "Vary": "Origin",
+  };
+}
+
+function json(data, status = 200, request = null) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    headers: {
+      "Content-Type": "application/json",
+      ...(request ? corsHeaders(request) : {}),
+    },
   });
 }
 
@@ -127,16 +142,17 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const reply = (data, status = 200) => json(data, status, request);
 
     // CORS preflight — no auth
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
+      return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
 
     // GET /pulse — lightweight change indicator, no auth (no sensitive data)
     if (path === "/pulse") {
       const pulse = await env.KV.get("kernel:pulse", "json");
-      return json(pulse || { v: 1, n: 0, changed: [] });
+      return reply(pulse || { v: 1, n: 0, changed: [] });
     }
 
     // GET /reflections — public, no auth required
@@ -157,12 +173,12 @@ export default {
           };
         })
       );
-      return json({ reflections: reflections.filter(Boolean) });
+      return reply({ reflections: reflections.filter(Boolean) });
     }
 
     // All other routes require auth
     if (!auth(request)) {
-      return json({ error: "unauthorized" }, 401);
+      return reply({ error: "unauthorized" }, 401);
     }
 
     // GET /health — system status snapshot
@@ -175,7 +191,7 @@ export default {
           env.KV.get("kernel:active_session", "text"),
           env.KV.get("session", "text"),
         ]);
-      return json({ sessionCounter, schedule, lastReflect, session: activeSession || session });
+      return reply({ sessionCounter, schedule, lastReflect, session: activeSession || session });
     }
 
     // GET /mind — cognitive state snapshot (patterns, desires, experiences, operator health)
@@ -270,7 +286,7 @@ export default {
         } : null,
       };
 
-      return json({ principles, tactics, patterns, desires, experiences, operator_health: operatorHealth });
+      return reply({ principles, tactics, patterns, desires, experiences, operator_health: operatorHealth });
     }
 
     // GET /deep-reflect/:sessionId — structured DR execution data
@@ -280,7 +296,7 @@ export default {
 
       // Load DR output
       const drOutput = await env.KV.get(`reflect:1:${drSessionId}`, "json");
-      if (!drOutput) return json({ error: "DR session not found" }, 404);
+      if (!drOutput) return reply({ error: "DR session not found" }, 404);
 
       // Load DR karma
       const drKarma = await env.KV.get(`karma:${drSessionId}`, "json");
@@ -347,7 +363,7 @@ export default {
         }
       }
 
-      return json({
+      return reply({
         session_id: drSessionId,
         accumulation: {
           act_sessions: actSessions.length,
@@ -413,7 +429,7 @@ export default {
       // Sort by session ID (contains timestamp) — newest last
       sessions.sort((a, b) => a.id.localeCompare(b.id));
 
-      return json({ sessions });
+      return reply({ sessions });
     }
 
     // GET /requests — durable work request list + status summary
@@ -457,7 +473,7 @@ export default {
         rejected: filtered.filter((item) => item.status === "rejected").length,
       };
 
-      return json({ summary, requests: filtered });
+      return reply({ summary, requests: filtered });
     }
 
     // ── Chat helpers ──────────────────────────────────────────
@@ -503,7 +519,7 @@ export default {
           };
         })
       );
-      return json({ chats: chats.filter(Boolean).sort((a, b) =>
+      return reply({ chats: chats.filter(Boolean).sort((a, b) =>
         (b.last_activity || "").localeCompare(a.last_activity || "")
       ) });
     }
@@ -513,9 +529,9 @@ export default {
     if (chatMatch) {
       const chatKey = `chat:${chatMatch[1]}:${chatMatch[2]}`;
       const data = await env.KV.get(chatKey, "json");
-      if (!data) return json({ error: "not found" }, 404);
+      if (!data) return reply({ error: "not found" }, 404);
       const participants = await resolveParticipants(env, data.messages);
-      return json({ key: chatKey, chat: data, participants });
+      return reply({ key: chatKey, chat: data, participants });
     }
 
     // GET /kv — key listing, optional ?prefix= filter
@@ -524,13 +540,13 @@ export default {
       const prefix = url.searchParams.get("prefix") || undefined;
       const allKeys = await kvListAll(env.KV, { prefix });
       const keys = allKeys.map(k => ({ key: k.name, metadata: k.metadata }));
-      return json({ keys });
+      return reply({ keys });
     }
 
     // GET /kv/multi — batch read: ?keys=key1,key2,key3
     if (path === "/kv/multi") {
       const raw = url.searchParams.get("keys");
-      if (!raw) return json({ error: "missing ?keys param" }, 400);
+      if (!raw) return reply({ error: "missing ?keys param" }, 400);
       const keyList = raw.split(",").map((k) => decodeURIComponent(k.trim()));
       const results = {};
       await Promise.all(
@@ -544,7 +560,7 @@ export default {
           results[key] = value;
         })
       );
-      return json(results);
+      return reply(results);
     }
 
     // GET /direct — check pending patron direct messages in inbox
@@ -557,14 +573,14 @@ export default {
           if (val) patronItems.push(val);
         }
       }
-      return json({ pending: patronItems.length > 0, messages: patronItems });
+      return reply({ pending: patronItems.length > 0, messages: patronItems });
     }
 
     // POST /direct — send a direct message to the agent via inbox (consumed on next session)
     if (path === "/direct" && request.method === "POST") {
       const body = await request.json().catch(() => null);
       if (!body?.message || typeof body.message !== "string" || !body.message.trim()) {
-        return json({ error: "message required" }, 400);
+        return reply({ error: "message required" }, 400);
       }
       const ts = Date.now().toString().padStart(15, '0');
       await env.KV.put(`inbox:${ts}:patron:direct`, JSON.stringify({
@@ -574,7 +590,7 @@ export default {
         summary: body.message.trim().slice(0, 300),
         timestamp: new Date().toISOString(),
       }), { expirationTtl: 86400 });
-      return json({ ok: true });
+      return reply({ ok: true });
     }
 
     // DELETE /direct — clear pending patron direct messages from inbox
@@ -585,7 +601,7 @@ export default {
           await env.KV.delete(k.name);
         }
       }
-      return json({ ok: true });
+      return reply({ ok: true });
     }
 
     // GET /quarantine — list quarantined inbound messages (sealed:* keys, patron-only)
@@ -597,26 +613,26 @@ export default {
           return value ? { key: k.name, ...value } : null;
         })
       );
-      return json({ items: items.filter(Boolean).sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || "")) });
+      return reply({ items: items.filter(Boolean).sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || "")) });
     }
 
     // POST /contacts — create a new contact record
     if (path === "/contacts" && request.method === "POST") {
       const body = await request.json().catch(() => null);
       if (!body?.slug || !body?.name) {
-        return json({ error: "missing required fields: slug, name" }, 400);
+        return reply({ error: "missing required fields: slug, name" }, 400);
       }
       if (body.platforms && (typeof body.platforms !== "object" || Array.isArray(body.platforms))) {
-        return json({ error: "platforms must be an object (e.g. { email: 'user@example.com' })" }, 400);
+        return reply({ error: "platforms must be an object (e.g. { email: 'user@example.com' })" }, 400);
       }
       const platforms = body.platforms || {};
       const invalidPlatforms = Object.entries(platforms).filter(([k, v]) => !k || !v || typeof v !== "string");
       if (invalidPlatforms.length) {
-        return json({ error: `invalid platform entries: ${invalidPlatforms.map(([k]) => k || "(empty)").join(", ")}` }, 400);
+        return reply({ error: `invalid platform entries: ${invalidPlatforms.map(([k]) => k || "(empty)").join(", ")}` }, 400);
       }
       const contactKey = `contact:${body.slug}`;
       const existing = await env.KV.get(contactKey, "json");
-      if (existing) return json({ error: `contact "${body.slug}" already exists` }, 409);
+      if (existing) return reply({ error: `contact "${body.slug}" already exists` }, 409);
 
       const contact = {
         name: body.name,
@@ -638,7 +654,7 @@ export default {
         });
       }
 
-      return json({ ok: true, slug: body.slug, contact });
+      return reply({ ok: true, slug: body.slug, contact });
     }
 
     // DELETE /quarantine/:key — remove a quarantine entry after patron review
@@ -646,10 +662,10 @@ export default {
     if (quarantineMatch && request.method === "DELETE") {
       const key = decodeURIComponent(quarantineMatch[1]);
       if (!key.startsWith("sealed:quarantine:")) {
-        return json({ error: "can only delete quarantine entries" }, 400);
+        return reply({ error: "can only delete quarantine entries" }, 400);
       }
       await env.KV.delete(key);
-      return json({ ok: true });
+      return reply({ ok: true });
     }
 
     // PATCH /contact-platform/:platform/:id/approve — set approval on a platform binding
@@ -659,11 +675,11 @@ export default {
       const platformId = decodeURIComponent(platformApproveMatch[2]);
       const platformKey = `contact_platform:${platform}:${platformId}`;
       const existing = await env.KV.get(platformKey, "json");
-      if (!existing) return json({ error: `platform binding "${platform}:${platformId}" not found` }, 404);
+      if (!existing) return reply({ error: `platform binding "${platform}:${platformId}" not found` }, 404);
 
       const body = await request.json().catch(() => null);
       if (body?.approved === undefined || typeof body.approved !== "boolean") {
-        return json({ error: "body must include { approved: true|false }" }, 400);
+        return reply({ error: "body must include { approved: true|false }" }, 400);
       }
 
       existing.approved = body.approved;
@@ -673,7 +689,7 @@ export default {
         metadata: { type: "contact_platform", format: "json", updated_at: new Date().toISOString() },
       });
 
-      return json({ ok: true, platform, platformId, slug: existing.slug, approved: body.approved });
+      return reply({ ok: true, platform, platformId, slug: existing.slug, approved: body.approved });
     }
 
     // GET /kv/:key — single key read
@@ -681,14 +697,14 @@ export default {
     if (kvMatch && path !== "/kv/multi") {
       const key = decodeURIComponent(kvMatch[1]);
       const { value, metadata } = await env.KV.getWithMetadata(key, "text");
-      if (value === null) return json({ error: "not found" }, 404);
+      if (value === null) return reply({ error: "not found" }, 404);
       const format = metadata?.format || "json";
       if (format === "json") {
-        try { return json({ key, value: JSON.parse(value), type: "json" }); } catch {}
+        try { return reply({ key, value: JSON.parse(value), type: "json" }); } catch {}
       }
-      return json({ key, value, type: "text" });
+      return reply({ key, value, type: "text" });
     }
 
-    return json({ error: "not found" }, 404);
+    return reply({ error: "not found" }, 404);
   },
 };

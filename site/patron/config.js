@@ -1,5 +1,8 @@
 // Dashboard patron config — edit these values to customize the dashboard.
 window.DASHBOARD_CONFIG = {
+  // Dashboard API origin.
+  apiUrl: "https://api.swayambhu.dev",
+
   // Timezone for all displayed timestamps (IANA format).
   timezone: "Asia/Kolkata",
 
