@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 
-import { spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { cp, mkdir, readFile, writeFile } from "fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import { keyToFilePath } from "../governor/builder.js";
-import { parseJobOutput } from "../lib/parse-job-output.js";
 import {
   normalizeSpec,
   targetRelativePathForSource,
@@ -17,6 +15,11 @@ import {
   buildReviewPrompt as buildPrompt,
   extractJsonFromString,
 } from "../lib/userspace-review/spec.js";
+import {
+  runClaudeJob,
+  runCodexJob,
+  runGeminiJob,
+} from "../lib/userspace-review/runners.js";
 import { getDefaultServiceUrls } from "./dev-loop/services.mjs";
 import { getKV, dispose as disposeKV } from "./shared.mjs";
 
@@ -351,147 +354,6 @@ async function copyContextFiles(runDir, spec, specDir) {
   return { contextDir, manifest };
 }
 
-function runCommand(command, args, { cwd, stdinText = null, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-  return new Promise((resolvePromise) => {
-    const child = spawn(command, args, { cwd, env: { ...process.env } });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5000).unref();
-    }, timeoutMs);
-
-    if (stdinText != null) child.stdin.end(stdinText);
-    else child.stdin.end();
-
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolvePromise({ code, stdout, stderr, timed_out: timedOut });
-    });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      resolvePromise({ code: null, stdout, stderr, error: error.message, timed_out: timedOut });
-    });
-  });
-}
-
-async function runClaude({ prompt, runDir, timeoutMs, model }) {
-  const promptPath = join(runDir, "prompt.userspace-review.md");
-  const rawPath = join(runDir, "claude.raw.json");
-  const stderrPath = join(runDir, "claude.stderr.log");
-  const args = [
-    "-p", prompt,
-    "--output-format", "json",
-    "--dangerously-skip-permissions",
-    "--no-session-persistence",
-  ];
-  if (model) args.push("--model", model);
-
-  const result = await runCommand("claude", args, { cwd: runDir, timeoutMs });
-  await writeFile(rawPath, result.stdout || "", "utf8");
-  await writeFile(stderrPath, result.stderr || "", "utf8");
-  const parsed = parseJobOutput(result.stdout || "");
-  return {
-    runner: "claude",
-    exit_code: result.code,
-    timed_out: !!result.timed_out,
-    parse_ok: !!parsed.payload,
-    payload: parsed.payload,
-    meta: parsed.meta,
-    raw_path: rawPath,
-    stderr_path: stderrPath,
-    error: result.error || null,
-  };
-}
-
-async function runCodex({ prompt, runDir, timeoutMs, model, profile }) {
-  const promptPath = join(runDir, "prompt.userspace-review.md");
-  const stdoutPath = join(runDir, "codex.stdout.log");
-  const stderrPath = join(runDir, "codex.stderr.log");
-  const lastMessagePath = join(runDir, "codex.last-message.json");
-  const resolvedProfile = profile || DEFAULT_CODEX_PROFILE;
-  const args = ["exec", "-"];
-  if (resolvedProfile) args.push("--profile", resolvedProfile);
-  args.push(
-    "-C", runDir,
-    "--skip-git-repo-check",
-    "--ephemeral",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "--output-schema", REVIEW_SCHEMA_PATH,
-    "--output-last-message", lastMessagePath,
-    "--color", "never",
-  );
-  if (model) args.push("--model", model);
-
-  const result = await runCommand("codex", args, { cwd: ROOT, stdinText: prompt, timeoutMs });
-  await writeFile(stdoutPath, result.stdout || "", "utf8");
-  await writeFile(stderrPath, result.stderr || "", "utf8");
-
-  let rawLastMessage = "";
-  try {
-    rawLastMessage = await readFile(lastMessagePath, "utf8");
-  } catch {
-    rawLastMessage = "";
-  }
-  const parsed = parseJobOutput(rawLastMessage || "");
-  return {
-    runner: "codex",
-    exit_code: result.code,
-    timed_out: !!result.timed_out,
-    parse_ok: !!parsed.payload,
-    payload: parsed.payload,
-    meta: parsed.meta,
-    raw_path: lastMessagePath,
-    stdout_path: stdoutPath,
-    stderr_path: stderrPath,
-    error: result.error || null,
-  };
-}
-
-async function runGemini({ prompt, runDir, timeoutMs, model }) {
-  const stdoutPath = join(runDir, "gemini.stdout.json");
-  const stderrPath = join(runDir, "gemini.stderr.log");
-  const args = [
-    "--prompt", prompt,
-    "--output-format", "json",
-    "--approval-mode", "yolo",
-  ];
-  if (model) args.push("--model", model);
-
-  const result = await runCommand("gemini", args, { cwd: runDir, timeoutMs });
-  await writeFile(stdoutPath, result.stdout || "", "utf8");
-  await writeFile(stderrPath, result.stderr || "", "utf8");
-
-  let envelope = null;
-  let payload = null;
-  try {
-    envelope = JSON.parse(result.stdout || "");
-    payload = extractJsonFromString(envelope?.response || "");
-  } catch {
-    envelope = null;
-    payload = null;
-  }
-
-  return {
-    runner: "gemini",
-    exit_code: result.code,
-    timed_out: !!result.timed_out,
-    parse_ok: !!payload,
-    payload,
-    meta: envelope?.stats ? { stats: envelope.stats, session_id: envelope.session_id || null } : null,
-    raw_path: stdoutPath,
-    stdout_path: stdoutPath,
-    stderr_path: stderrPath,
-    error: result.error || null,
-  };
-}
-
 async function main(argv = process.argv.slice(2)) {
   loadDotEnv();
   const args = parseArgs(argv);
@@ -536,11 +398,35 @@ async function main(argv = process.argv.slice(2)) {
   const startedAt = new Date().toISOString();
   let result;
   if (args.runner === "claude") {
-    result = await runClaude({ prompt, runDir, timeoutMs: args.timeoutMs, model: args.claudeModel });
+    result = await runClaudeJob({
+      prompt,
+      runDir,
+      timeoutMs: args.timeoutMs,
+      model: args.claudeModel,
+      cwd: runDir,
+      promptMode: "arg",
+      extraArgs: ["--no-session-persistence"],
+    });
   } else if (args.runner === "gemini") {
-    result = await runGemini({ prompt, runDir, timeoutMs: args.timeoutMs, model: args.geminiModel });
+    result = await runGeminiJob({
+      prompt,
+      runDir,
+      timeoutMs: args.timeoutMs,
+      model: args.geminiModel,
+      cwd: runDir,
+      parseEnvelopeResponse: extractJsonFromString,
+    });
   } else {
-    result = await runCodex({ prompt, runDir, timeoutMs: args.timeoutMs, model: args.codexModel, profile: args.codexProfile });
+    result = await runCodexJob({
+      prompt,
+      runDir,
+      timeoutMs: args.timeoutMs,
+      model: args.codexModel,
+      profile: args.codexProfile,
+      cwd: runDir,
+      commandCwd: ROOT,
+      outputSchemaPath: REVIEW_SCHEMA_PATH,
+    });
   }
 
   const artifact = {

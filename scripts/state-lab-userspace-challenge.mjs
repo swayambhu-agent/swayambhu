@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 
-import { spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { basename, dirname, extname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
-import { parseJobOutput } from "../lib/parse-job-output.js";
 import {
   buildChallengePrompt as buildPrompt,
   normalizeChallengePayload,
   extractNormalizedChallengePayload,
 } from "../lib/userspace-review/payloads.js";
+import {
+  runClaudeJob,
+  runCodexJob,
+  runGeminiJob,
+} from "../lib/userspace-review/runners.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -100,142 +103,6 @@ function usage() {
 
 export { buildPrompt, normalizeChallengePayload, extractNormalizedChallengePayload };
 
-function runCommand(command, args, { cwd, stdinText, timeoutMs }) {
-  return new Promise((resolvePromise) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let finished = false;
-    const timer = setTimeout(() => {
-      if (finished) return;
-      child.kill("SIGKILL");
-      finished = true;
-      resolvePromise({ code: null, stdout, stderr, timed_out: true, error: `timed out after ${timeoutMs}ms` });
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", (error) => {
-      if (finished) return;
-      clearTimeout(timer);
-      finished = true;
-      resolvePromise({ code: null, stdout, stderr, timed_out: false, error: error.message });
-    });
-    child.on("close", (code) => {
-      if (finished) return;
-      clearTimeout(timer);
-      finished = true;
-      resolvePromise({ code, stdout, stderr, timed_out: false, error: code === 0 ? null : `exit ${code}` });
-    });
-
-    if (stdinText) child.stdin.write(stdinText);
-    child.stdin.end();
-  });
-}
-
-async function runCodex({ prompt, runDir, timeoutMs, model, profile, cwd }) {
-  const stdoutPath = join(runDir, "codex.stdout.log");
-  const stderrPath = join(runDir, "codex.stderr.log");
-  const lastMessagePath = join(runDir, "codex.last-message.json");
-  const resolvedProfile = profile || DEFAULT_CODEX_PROFILE;
-  const args = ["exec", "-"];
-  if (resolvedProfile) args.push("--profile", resolvedProfile);
-  args.push(
-    "-C", cwd,
-    "--skip-git-repo-check",
-    "--ephemeral",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "--output-last-message", lastMessagePath,
-    "--color", "never",
-  );
-  if (model) args.push("--model", model);
-
-  const result = await runCommand("codex", args, { cwd, stdinText: prompt, timeoutMs });
-  await writeFile(stdoutPath, result.stdout || "", "utf8");
-  await writeFile(stderrPath, result.stderr || "", "utf8");
-
-  let rawLastMessage = "";
-  try {
-    rawLastMessage = await readFile(lastMessagePath, "utf8");
-  } catch {
-    rawLastMessage = "";
-  }
-  const parsed = parseJobOutput(rawLastMessage || "");
-  return {
-    runner: "codex",
-    exit_code: result.code,
-    timed_out: !!result.timed_out,
-    parse_ok: !!normalizeChallengePayload(parsed.payload),
-    payload: normalizeChallengePayload(parsed.payload),
-    meta: parsed.meta,
-    raw_path: lastMessagePath,
-    stdout_path: stdoutPath,
-    stderr_path: stderrPath,
-    error: result.error || null,
-  };
-}
-
-async function runClaude({ prompt, runDir, timeoutMs, model, cwd }) {
-  const rawPath = join(runDir, "claude.raw.json");
-  const stderrPath = join(runDir, "claude.stderr.log");
-  const args = ["-p", "--output-format", "json", "--dangerously-skip-permissions"];
-  if (model) args.push("--model", model);
-  const result = await runCommand("claude", args, { cwd, stdinText: prompt, timeoutMs });
-  await writeFile(rawPath, result.stdout || "", "utf8");
-  await writeFile(stderrPath, result.stderr || "", "utf8");
-  const parsed = extractNormalizedChallengePayload(result.stdout || "");
-  return {
-    runner: "claude",
-    exit_code: result.code,
-    timed_out: !!result.timed_out,
-    parse_ok: !!parsed.payload,
-    payload: parsed.payload,
-    meta: parsed.meta,
-    raw_path: rawPath,
-    stdout_path: null,
-    stderr_path: stderrPath,
-    error: result.error || null,
-  };
-}
-
-async function runGemini({ prompt, runDir, timeoutMs, model, cwd }) {
-  const stdoutPath = join(runDir, "gemini.stdout.json");
-  const stderrPath = join(runDir, "gemini.stderr.log");
-  const args = ["--prompt", prompt, "--output-format", "json", "--approval-mode", "yolo"];
-  if (model) args.push("--model", model);
-  const result = await runCommand("gemini", args, { cwd, timeoutMs });
-  await writeFile(stdoutPath, result.stdout || "", "utf8");
-  await writeFile(stderrPath, result.stderr || "", "utf8");
-
-  let envelope = null;
-  let payload = null;
-  try {
-    envelope = JSON.parse(result.stdout || "");
-    payload = JSON.parse(envelope?.response || "");
-  } catch {
-    envelope = null;
-    payload = null;
-  }
-
-  return {
-    runner: "gemini",
-    exit_code: result.code,
-    timed_out: !!result.timed_out,
-    parse_ok: !!normalizeChallengePayload(payload),
-    payload: normalizeChallengePayload(payload),
-    meta: envelope?.stats ? { stats: envelope.stats, session_id: envelope.session_id || null } : null,
-    raw_path: stdoutPath,
-    stdout_path: stdoutPath,
-    stderr_path: stderrPath,
-    error: result.error || null,
-  };
-}
-
 async function main(argv = process.argv.slice(2)) {
   loadDotEnv();
   const args = parseArgs(argv);
@@ -264,11 +131,33 @@ async function main(argv = process.argv.slice(2)) {
   const startedAt = new Date().toISOString();
   let result;
   if (args.runner === "claude") {
-    result = await runClaude({ prompt, runDir, timeoutMs: args.timeoutMs, model: args.claudeModel, cwd: ROOT });
+    result = await runClaudeJob({
+      prompt,
+      runDir,
+      timeoutMs: args.timeoutMs,
+      model: args.claudeModel,
+      cwd: ROOT,
+      parseRawOutput: extractNormalizedChallengePayload,
+    });
   } else if (args.runner === "gemini") {
-    result = await runGemini({ prompt, runDir, timeoutMs: args.timeoutMs, model: args.geminiModel, cwd: ROOT });
+    result = await runGeminiJob({
+      prompt,
+      runDir,
+      timeoutMs: args.timeoutMs,
+      model: args.geminiModel,
+      cwd: ROOT,
+      normalizePayload: normalizeChallengePayload,
+    });
   } else {
-    result = await runCodex({ prompt, runDir, timeoutMs: args.timeoutMs, model: args.codexModel, profile: args.codexProfile, cwd: ROOT });
+    result = await runCodexJob({
+      prompt,
+      runDir,
+      timeoutMs: args.timeoutMs,
+      model: args.codexModel,
+      profile: args.codexProfile,
+      cwd: ROOT,
+      normalizePayload: normalizeChallengePayload,
+    });
   }
 
   const artifact = {
