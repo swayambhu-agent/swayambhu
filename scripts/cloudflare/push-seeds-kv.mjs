@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Seed a remote Cloudflare KV namespace using the same manifest as local dev.
 
-import { collectSeedEntries } from "./seed-data.mjs";
+import { collectSeedEntries } from "./assemble-seeds.mjs";
 import { parseTargetEnv } from "./target-env.mjs";
 
 function parseArgs(argv) {
@@ -39,7 +39,7 @@ const namespaceId =
 const apiToken = process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN;
 
 if (!accountId || !namespaceId || !apiToken) {
-  console.error("Usage: CLOUDFLARE_API_TOKEN=... node scripts/cloudflare/push-kv.mjs [--env staging|prod] [--prod] --account-id <id> --namespace-id <id> [--dry-run]");
+  console.error("Usage: CLOUDFLARE_API_TOKEN=... node scripts/cloudflare/push-seeds-kv.mjs [--env staging|prod] [--prod] --account-id <id> --namespace-id <id> [--dry-run]");
   process.exit(1);
 }
 

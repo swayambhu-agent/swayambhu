@@ -6,8 +6,8 @@
     "test": "vitest run",
     "setup:cloudflare": "node scripts/cloudflare/setup.mjs",
     "setup:cloudflare:prod": "node scripts/cloudflare/setup.mjs --env prod --prod",
-    "push:cloudflare:kv": "node scripts/cloudflare/push-kv.mjs",
-    "push:cloudflare:kv:prod": "node scripts/cloudflare/push-kv.mjs --env prod --prod",
+    "push:cloudflare:kv": "node scripts/cloudflare/push-seeds-kv.mjs",
+    "push:cloudflare:kv:prod": "node scripts/cloudflare/push-seeds-kv.mjs --env prod --prod",
     "build:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --minify && npx @tailwindcss/cli -i site/patron/src/input.css -o site/patron/app.css --minify",
     "watch:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --watch"
   },
