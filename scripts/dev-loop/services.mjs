@@ -3,9 +3,13 @@
 // Supports the default local stack and the active state-lab branch.
 
 import { spawn } from "child_process";
-import { existsSync, openSync, readFileSync } from "fs";
+import { existsSync, openSync } from "fs";
 import { join } from "path";
 
+import {
+  getDefaultServiceUrls,
+  resolveLocalServiceConfig,
+} from "../../lib/local-services.js";
 import { STATE_DIR } from "./state.mjs";
 
 const REPO_ROOT = join(import.meta.dirname, "../..");
@@ -47,31 +51,16 @@ export async function waitForRestartBoundary(config, timeoutMs = 60_000) {
   );
 }
 
-function readActiveBranch() {
-  if (!existsSync(ACTIVE_UI_PATH)) {
-    throw new Error(`No active state-lab branch found at ${ACTIVE_UI_PATH}`);
-  }
-  return JSON.parse(readFileSync(ACTIVE_UI_PATH, "utf8"));
-}
-
 function resolveServiceConfig() {
-  if (DEFAULT_SERVICE_MODE === "state_lab_active") {
-    const active = readActiveBranch();
-    return {
-      mode: "state_lab_active",
-      branch: active.branch,
-      kernelPort: active.kernel_port,
-      dashboardPort: active.dashboard_port,
-      logPath: join(STATE_DIR, `service-start-${active.branch}.log`),
-    };
-  }
-
+  const base = resolveLocalServiceConfig({
+    serviceMode: DEFAULT_SERVICE_MODE,
+    activeUiPath: ACTIVE_UI_PATH,
+  });
   return {
-    mode: "default",
-    branch: null,
-    kernelPort: Number(process.env.SWAYAMBHU_KERNEL_PORT || 8787),
-    dashboardPort: Number(process.env.SWAYAMBHU_DASHBOARD_PORT || 8790),
-    logPath: join(STATE_DIR, "service-start-default.log"),
+    ...base,
+    logPath: base.mode === "state_lab_active"
+      ? join(STATE_DIR, `service-start-${base.branch}.log`)
+      : join(STATE_DIR, "service-start-default.log"),
   };
 }
 
@@ -168,12 +157,4 @@ export function getServiceMode() {
 
 export function getActiveServiceConfig() {
   return resolveServiceConfig();
-}
-
-export function getDefaultServiceUrls() {
-  const config = resolveServiceConfig();
-  return {
-    kernelUrl: `http://localhost:${config.kernelPort}`,
-    dashboardUrl: `http://localhost:${config.dashboardPort}`,
-  };
 }

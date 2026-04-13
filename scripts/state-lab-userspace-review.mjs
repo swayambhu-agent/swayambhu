@@ -20,7 +20,7 @@ import {
   buildReviewPrompt as buildPrompt,
   extractJsonFromString,
 } from "../lib/userspace-review/spec.js";
-import { getDefaultServiceUrls } from "./dev-loop/services.mjs";
+import { getDefaultServiceUrls } from "../lib/local-services.js";
 import { getKV, dispose as disposeKV } from "./shared.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
