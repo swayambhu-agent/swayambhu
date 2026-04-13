@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   extractNormalizedChallengePayload,
   normalizeChallengePayload,
-} from "../../scripts/state-lab-userspace-challenge.mjs";
-import { buildPrompt, looksLikeUserspaceReviewPayload } from "../../scripts/state-lab-userspace-review-revise.mjs";
+  buildReviewRevisePrompt as buildPrompt,
+  looksLikeUserspaceReviewPayload,
+} from "../../lib/userspace-review/payloads.js";
 
 describe("userspace challenge normalization", () => {
   it("accepts a valid adversarial review payload", () => {

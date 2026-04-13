@@ -7,6 +7,10 @@ import { basename, dirname, extname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import { parseJobOutput } from "../lib/parse-job-output.js";
+import {
+  buildReviewRevisePrompt as buildPrompt,
+  looksLikeUserspaceReviewPayload,
+} from "../lib/userspace-review/payloads.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -97,32 +101,7 @@ function usage() {
   console.log("Usage:\n  node scripts/state-lab-userspace-review-revise.mjs --review-result <userspace-review-result.json> --challenge-result <userspace-challenge-result.json> [--label <name>] [--runner codex|claude|gemini]");
 }
 
-export function buildPrompt(basePrompt, reviewResultPath, challengeResultPath, contextManifestPath) {
-  return [
-    basePrompt.trim(),
-    "",
-    `Prior review result path: ${reviewResultPath}`,
-    `Adversarial review result path: ${challengeResultPath}`,
-    `Original context manifest path: ${contextManifestPath}`,
-    "Read all three before revising. Use the original evidence bundle to resolve the adversarial concerns.",
-    "Return only the inner `userspace_review` payload object that matches the standard userspace review schema.",
-    "Respond with JSON only.",
-  ].join("\n");
-}
-
-export function looksLikeUserspaceReviewPayload(payload) {
-  if (!payload || typeof payload !== "object") return false;
-  return payload.review_role === "userspace_review"
-    && typeof payload.question === "string"
-    && typeof payload.hypothesis === "string"
-    && typeof payload.root_constraint === "string"
-    && Array.isArray(payload.evidence)
-    && Array.isArray(payload.proposed_changes)
-    && typeof payload.validation === "object"
-    && typeof payload.limits === "object"
-    && Array.isArray(payload.reasons_not_to_change)
-    && typeof payload.confidence === "number";
-}
+export { buildPrompt, looksLikeUserspaceReviewPayload };
 
 function runCommand(command, args, { cwd, stdinText, timeoutMs }) {
   return new Promise((resolvePromise) => {

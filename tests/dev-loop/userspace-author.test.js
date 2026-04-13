@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeAuthorPayload,
   normalizeCandidateChanges,
-} from "../../scripts/state-lab-userspace-author.mjs";
+} from "../../lib/userspace-review/payloads.js";
+// Pure author payload normalization now lives in lib/userspace-review/payloads.js.
 import {
   buildReviewInvocation,
   materializeAuthorWorkspace,
@@ -42,6 +43,36 @@ describe("userspace author normalization", () => {
       {
         type: "kv_patch",
         key: "prompt:reflect",
+        patches: [
+          { search: "first", replace: "one" },
+          { old_string: "second", new_string: "two" },
+        ],
+      },
+    ]);
+
+    expect(changes).toEqual([
+      {
+        type: "kv_patch",
+        key: "prompt:reflect",
+        old_string: "first",
+        new_string: "one",
+      },
+      {
+        type: "kv_patch",
+        key: "prompt:reflect",
+        old_string: "second",
+        new_string: "two",
+      },
+    ]);
+  });
+
+  it("lets per-patch search/replace override top-level defaults", () => {
+    const changes = normalizeCandidateChanges([
+      {
+        type: "kv_patch",
+        key: "prompt:reflect",
+        search: "fallback-old",
+        replace: "fallback-new",
         patches: [
           { search: "first", replace: "one" },
           { old_string: "second", new_string: "two" },

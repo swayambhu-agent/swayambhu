@@ -7,6 +7,12 @@ import { basename, dirname, extname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import { parseJobOutput } from "../lib/parse-job-output.js";
+import {
+  buildAuthorPrompt as buildPrompt,
+  normalizePatchLikeChange,
+  normalizeCandidateChanges,
+  normalizeAuthorPayload,
+} from "../lib/userspace-review/payloads.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -96,85 +102,7 @@ function usage() {
   console.log("Usage:\n  node scripts/state-lab-userspace-author.mjs --review-result <userspace-review-result.json> [--workspace-root <path>] [--label <name>] [--runner codex|claude|gemini]");
 }
 
-function buildPrompt(basePrompt, reviewResultPath) {
-  return [
-    basePrompt.trim(),
-    "",
-    `Review result path: ${reviewResultPath}`,
-    "Read that JSON file first, then inspect only the target files needed to materialize the smallest candidate change set.",
-    "Respond with JSON only.",
-  ].join("\n");
-}
-
-export function normalizePatchLikeChange(change) {
-  if (!change || typeof change !== "object") return [];
-  const base = { ...change };
-  delete base.patches;
-  if (typeof base.search === "string" && typeof base.old_string !== "string") {
-    base.old_string = base.search;
-  }
-  if (typeof base.replace === "string" && typeof base.new_string !== "string") {
-    base.new_string = base.replace;
-  }
-  delete base.search;
-  delete base.replace;
-
-  const patchList = Array.isArray(change.patches) ? change.patches : null;
-  if (!patchList || patchList.length === 0) {
-    return [base];
-  }
-
-  return patchList.map((patch) => {
-    const normalized = { ...base };
-    if (typeof patch?.search === "string" && typeof normalized.old_string !== "string") {
-      normalized.old_string = patch.search;
-    } else if (typeof patch?.old_string === "string" && typeof normalized.old_string !== "string") {
-      normalized.old_string = patch.old_string;
-    }
-    if (typeof patch?.replace === "string" && typeof normalized.new_string !== "string") {
-      normalized.new_string = patch.replace;
-    } else if (typeof patch?.new_string === "string" && typeof normalized.new_string !== "string") {
-      normalized.new_string = patch.new_string;
-    }
-    return normalized;
-  });
-}
-
-export function normalizeCandidateChanges(candidateChanges) {
-  if (!Array.isArray(candidateChanges)) return null;
-  const normalized = [];
-  for (const rawChange of candidateChanges) {
-    if (!rawChange || typeof rawChange !== "object" || typeof rawChange.type !== "string") return null;
-
-    if (rawChange.type === "kv_patch" || rawChange.type === "code_patch") {
-      const expanded = normalizePatchLikeChange(rawChange);
-      for (const change of expanded) {
-        if (change.type === "kv_patch" && typeof change.key !== "string") return null;
-        if (change.type === "code_patch" && typeof change.target !== "string" && typeof change.file !== "string") {
-          return null;
-        }
-        normalized.push(change);
-      }
-      continue;
-    }
-
-    normalized.push(rawChange);
-  }
-  return normalized;
-}
-
-export function normalizeAuthorPayload(payload) {
-  if (!payload || typeof payload !== "object") return null;
-  if (typeof payload.hypothesis !== "string") return null;
-  const candidateChanges = normalizeCandidateChanges(payload.candidate_changes);
-  if (!candidateChanges) return null;
-  if (!payload.validation || typeof payload.validation !== "object") return null;
-  if (!payload.limits || typeof payload.limits !== "object") return null;
-  return {
-    ...payload,
-    candidate_changes: candidateChanges,
-  };
-}
+export { buildPrompt, normalizePatchLikeChange, normalizeCandidateChanges, normalizeAuthorPayload };
 
 function runCommand(command, args, { cwd, stdinText, timeoutMs }) {
   return new Promise((resolvePromise) => {

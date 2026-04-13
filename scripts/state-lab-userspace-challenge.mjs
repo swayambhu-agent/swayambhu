@@ -7,6 +7,11 @@ import { basename, dirname, extname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 import { parseJobOutput } from "../lib/parse-job-output.js";
+import {
+  buildChallengePrompt as buildPrompt,
+  normalizeChallengePayload,
+  extractNormalizedChallengePayload,
+} from "../lib/userspace-review/payloads.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -93,72 +98,7 @@ function usage() {
   console.log("Usage:\n  node scripts/state-lab-userspace-challenge.mjs --review-result <userspace-review-result.json> [--label <name>] [--runner codex|claude|gemini]");
 }
 
-function buildPrompt(basePrompt, reviewResultPath, contextManifestPath) {
-  return [
-    basePrompt.trim(),
-    "",
-    `Review result path: ${reviewResultPath}`,
-    `Original context manifest path: ${contextManifestPath}`,
-    "Read both files first. Use the original evidence bundle to test whether the review is actually justified.",
-    "Respond with JSON only.",
-  ].join("\n");
-}
-
-export function normalizeChallengePayload(payload) {
-  if (!payload || typeof payload !== "object") return null;
-  if (payload.review_role !== "userspace_review_adversarial") return null;
-  if (typeof payload.review_result_path !== "string") return null;
-  if (!["pass", "revise", "reject"].includes(payload.verdict)) return null;
-  if (typeof payload.summary !== "string") return null;
-  if (!Array.isArray(payload.agreements)) return null;
-  if (!Array.isArray(payload.major_concerns)) return null;
-  if (!Array.isArray(payload.required_changes)) return null;
-  if (!Array.isArray(payload.reasons_not_to_change)) return null;
-  if (typeof payload.confidence !== "number") return null;
-  return payload;
-}
-
-function buildClaudeMeta(envelope) {
-  if (!envelope || typeof envelope !== "object") return null;
-  return {
-    session_id: envelope.session_id || null,
-    total_cost_usd: envelope.total_cost_usd || null,
-    usage: envelope.usage || null,
-    stop_reason: envelope.stop_reason || null,
-    duration_ms: envelope.duration_ms || null,
-  };
-}
-
-export function extractNormalizedChallengePayload(raw) {
-  const parsed = parseJobOutput(raw || "");
-  const direct = normalizeChallengePayload(parsed.payload);
-  if (direct) {
-    return { payload: direct, meta: parsed.meta };
-  }
-
-  let envelope = null;
-  try {
-    envelope = JSON.parse(raw || "");
-  } catch {
-    envelope = null;
-  }
-  const resultText = typeof envelope?.result === "string" ? envelope.result : "";
-  const fenceRegex = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/gi;
-  let match;
-  while ((match = fenceRegex.exec(resultText)) !== null) {
-    try {
-      const candidate = JSON.parse(match[1].trim());
-      const normalized = normalizeChallengePayload(candidate);
-      if (normalized) {
-        return { payload: normalized, meta: parsed.meta || buildClaudeMeta(envelope) };
-      }
-    } catch {
-      // Keep scanning later fenced blocks.
-    }
-  }
-
-  return { payload: null, meta: parsed.meta || buildClaudeMeta(envelope) };
-}
+export { buildPrompt, normalizeChallengePayload, extractNormalizedChallengePayload };
 
 function runCommand(command, args, { cwd, stdinText, timeoutMs }) {
   return new Promise((resolvePromise) => {

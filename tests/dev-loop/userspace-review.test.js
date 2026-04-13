@@ -7,7 +7,8 @@ import {
   extractJsonFromString,
   normalizeSpec,
   targetRelativePathForSource,
-} from "../../scripts/state-lab-userspace-review.mjs";
+} from "../../lib/userspace-review/spec.js";
+// Pure review-spec helpers now live in lib/userspace-review/spec.js.
 
 describe("normalizeSpec", () => {
   it("accepts mixed string/object file entries and normalizes notes", () => {
@@ -31,7 +32,7 @@ describe("normalizeSpec", () => {
 
 describe("targetRelativePathForSource", () => {
   it("maps repo-local files under repo/", () => {
-    const rel = targetRelativePathForSource("/home/swami/swayambhu/repo/userspace.js", 0);
+    const rel = targetRelativePathForSource(`${process.cwd()}/userspace.js`, 0);
     expect(rel).toBe("repo/userspace.js");
   });
 
