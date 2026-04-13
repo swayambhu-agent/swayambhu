@@ -27,6 +27,7 @@ import {
   buildLabBranchName,
   loadLabHypothesis,
   overlayWorkspaceFromSourceState,
+  resolveLabTargetRelativePath,
   resolveLabWorkspacePath,
   shouldCopyWorkspacePath,
 } from "../lib/state-lab/workspace.js";

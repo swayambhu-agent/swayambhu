@@ -25,6 +25,7 @@ import {
   buildLabBranchName,
   loadLabHypothesis,
   overlayWorkspaceFromSourceState,
+  resolveLabTargetRelativePath,
   resolveLabWorkspacePath,
   shouldCopyWorkspacePath,
 } from "../lib/state-lab/workspace.js";
@@ -128,6 +129,8 @@ describe("state-lab helpers", () => {
   it("resolves workspace targets and blocks path escape", async () => {
     const workspace = "/tmp/lab-workspace";
     expect(resolveLabWorkspacePath(workspace, { path: "userspace.js" })).toBe("/tmp/lab-workspace/userspace.js");
+    expect(resolveLabWorkspacePath(workspace, { target: "hook:session:code" })).toBe("/tmp/lab-workspace/userspace.js");
+    expect(resolveLabTargetRelativePath({ target: "kernel:source:authority-policy.js" })).toBe("authority-policy.js");
     expect(() => resolveLabWorkspacePath(workspace, { path: "../evil.js" })).toThrow("escapes workspace");
   });
 
