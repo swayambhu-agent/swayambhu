@@ -7,20 +7,33 @@ function makeEnv(initial = {}, metadata = {}) {
   for (const [key, meta] of Object.entries(metadata)) {
     KV._meta.set(key, meta);
   }
-  return { KV, PATRON_KEY: "test" };
+  return { KV };
 }
 
-async function fetchJson(path, env) {
+async function fetchJson(path, env, init = {}) {
   const response = await worker.fetch(
-    new Request(`http://localhost${path}`, {
-      headers: { "X-Patron-Key": "test" },
-    }),
+    new Request(`http://localhost${path}`, init),
     env,
   );
   return response.json();
 }
 
+async function fetchResponse(url, env, init = {}) {
+  return worker.fetch(new Request(url, init), env);
+}
+
 describe("dashboard API", () => {
+  it("requires Cloudflare Access headers for non-local authenticated routes", async () => {
+    const env = makeEnv();
+    const response = await fetchResponse("https://api.swayambhu.dev/health", env);
+    expect(response.status).toBe(401);
+
+    const authed = await fetchResponse("https://api.swayambhu.dev/health", env, {
+      headers: { "Cf-Access-Authenticated-User-Email": "swami@example.com" },
+    });
+    expect(authed.status).toBe(200);
+  });
+
   it("/sessions distinguishes act, deep_reflect, and event_only executions", async () => {
     const env = makeEnv(
       {

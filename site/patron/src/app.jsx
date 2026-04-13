@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from './lib/api.js';
 import { HB_NORMAL, HB_HIDDEN } from './lib/config.js';
-import LoginScreen from './components/LoginScreen.jsx';
 import TimelineTab, { ContextPanel, DraggableDivider } from './components/TimelineTab.jsx';
 import ReflectionsTab from './components/ReflectionsTab.jsx';
 import Dr2Tab from './components/Dr2Tab.jsx';
@@ -14,7 +13,8 @@ import DirectMessageBar from './components/DirectMessageBar.jsx';
 import RequestsTab from './components/RequestsTab.jsx';
 
 export default function App() {
-  const [patronKey, setPatronKey] = useState(() => sessionStorage.getItem('patronKey'));
+  const patronKey = null;
+  const [authError, setAuthError] = useState(null);
   const [health, setHealth] = useState(null);
   const [mindCounts, setMindCounts] = useState(null);
   const [balances, setBalances] = useState(null);
@@ -31,24 +31,11 @@ export default function App() {
     setLeftPct(pct);
   }, []);
 
-  const handleLogin = (key) => {
-    sessionStorage.setItem('patronKey', key);
-    setPatronKey(key);
-  };
-
-  const handleLogout = () => {
-    sessionStorage.removeItem('patronKey');
-    setPatronKey(null);
-    setHealth(null);
-    setBalances(null);
-    setRequestSummary(null);
-  };
-
-  // Load health + balances on auth, poll every 10s
+  // Load health + balances, poll every 10s
   const loadHealth = useCallback(async () => {
-    if (!patronKey) return;
     try {
       const h = await api('/health', patronKey);
+      setAuthError(null);
       setHealth(h);
       const tryLoadBalances = async (sid) => {
         if (!sid) return false;
@@ -70,7 +57,7 @@ export default function App() {
         } catch {}
       }
     } catch (err) {
-      if (err.message === 'UNAUTHORIZED') handleLogout();
+      if (err.message === 'UNAUTHORIZED') setAuthError('Cloudflare Access authentication required for the patron dashboard.');
     }
   }, [patronKey]);
 
@@ -102,8 +89,6 @@ export default function App() {
   const [requestsRev, setRequestsRev] = useState(0);
 
   useEffect(() => {
-    if (!patronKey) return;
-
     // Load initial data on mount
     loadHealth();
     loadMindCounts();
@@ -172,7 +157,17 @@ export default function App() {
     return () => clearInterval(iv);
   }, [health?.schedule?.next_session_after]);
 
-  if (!patronKey) return <LoginScreen onLogin={handleLogin} />;
+  if (authError && !health) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-6">
+        <div className="bg-bg-panel border border-border rounded-lg p-8 w-full max-w-lg">
+          <h1 className="text-accent font-bold text-lg tracking-widest mb-2">SWAYAMBHU</h1>
+          <p className="text-gray-300 text-sm mb-2">Patron Dashboard</p>
+          <p className="text-red-400 text-sm">{authError}</p>
+        </div>
+      </div>
+    );
+  }
 
   const tabs = [
     { id: 'timeline', label: 'Runs' },

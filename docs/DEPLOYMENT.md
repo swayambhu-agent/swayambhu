@@ -150,17 +150,10 @@ bash scripts/cloudflare/push-secrets.sh
 bash scripts/cloudflare/push-secrets.sh --env prod --prod
 ```
 
-### Staging dashboard
+### Dashboard auth
 
-```bash
-bash scripts/cloudflare/push-secrets.sh --dashboard
-```
-
-### Production dashboard
-
-```bash
-bash scripts/cloudflare/push-secrets.sh --dashboard --env prod --prod
-```
+No separate dashboard password secret is needed. The dashboard is protected by
+Cloudflare Access at the edge.
 
 ### Optional governor
 

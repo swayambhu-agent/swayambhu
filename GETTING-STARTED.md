@@ -47,7 +47,7 @@ The script is interactive — it prompts you at each step, lets you skip what yo
 
 ### Verify it's working
 
-- Open `http://localhost:3001/patron/` — enter `test` as the patron key
+- Open `http://localhost:3001/patron/`
 - **Timeline tab** should show the first session
 - **KV Explorer** should show 70+ keys
 - Send a Slack DM to the bot (if Slack is configured with a tunnel)
@@ -89,7 +89,6 @@ The push script reads your `.env` and pushes each secret to Cloudflare:
 
 ```bash
 bash scripts/cloudflare/push-secrets.sh              # staging worker secrets
-bash scripts/cloudflare/push-secrets.sh --dashboard   # staging dashboard patron key
 ```
 
 ### Update Slack webhook URL
@@ -148,9 +147,6 @@ Edit `dashboard-api/wrangler.toml` — same KV namespace ID:
 name = "swayambhu-dashboard-api"
 main = "worker.js"
 compatibility_date = "2025-06-01"
-
-[vars]
-PATRON_KEY = "test"
 
 [[kv_namespaces]]
 binding = "KV"

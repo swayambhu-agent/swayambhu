@@ -3,7 +3,6 @@
 #
 # Usage:
 #   bash scripts/cloudflare/push-secrets.sh
-#   bash scripts/cloudflare/push-secrets.sh --dashboard
 #   bash scripts/cloudflare/push-secrets.sh --governor
 #   bash scripts/cloudflare/push-secrets.sh --env prod --prod
 
@@ -20,7 +19,6 @@ PROD_CONFIRMED=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dashboard) TARGET="dashboard" ;;
     --governor) TARGET="governor" ;;
     --prod) PROD_CONFIRMED=1 ;;
     --env)
@@ -73,19 +71,6 @@ fi
 set -a
 source "$ENV_FILE"
 set +a
-
-if [ "$TARGET" = "dashboard" ]; then
-  echo ""
-  echo "Pushing secrets to $(bold 'dashboard-api') worker ($TARGET_ENV)..."
-  echo ""
-  printf "  Enter patron key: "
-  read -rs PATRON_KEY
-  echo ""
-  echo -n "$PATRON_KEY" | npx wrangler secret put PATRON_KEY --cwd "$ROOT/dashboard-api" "${WRANGLER_ENV_ARGS[@]}"
-  green "  ✓ PATRON_KEY set"
-  echo ""
-  exit 0
-fi
 
 push_secret_group() {
   local title="$1"
@@ -140,11 +125,3 @@ push_secret_group "runtime" "$ROOT" \
   COMPUTER_API_KEY \
   WALLET_ADDRESS \
   WALLET_PRIVATE_KEY
-
-echo "Don't forget to also push the dashboard patron key:"
-if [ "$TARGET_ENV" = "prod" ]; then
-  echo "  bash scripts/cloudflare/push-secrets.sh --dashboard --env prod --prod"
-else
-  echo "  bash scripts/cloudflare/push-secrets.sh --dashboard"
-fi
-echo ""

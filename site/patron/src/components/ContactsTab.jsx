@@ -51,7 +51,7 @@ export default function ContactsTab({ patronKey }) {
     try {
       await fetch(`${API_URL}/contact-platform/${encodeURIComponent(binding.platform)}/${encodeURIComponent(binding.platformId)}/approve`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'X-Patron-Key': patronKey },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ approved: newApproved }),
       });
       await load();

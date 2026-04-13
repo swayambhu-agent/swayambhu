@@ -4,13 +4,12 @@ export { API_URL };
 // ── API helpers ───────────────────────────────────────────
 export const kvReadCount = { current: 0 };
 
-export async function api(path, key, timeoutMs = 8000) {
+export async function api(path, _legacyKey = null, timeoutMs = 8000) {
   kvReadCount.current++;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`${API_URL}${path}`, {
-      headers: { 'X-Patron-Key': key },
       signal: ctrl.signal,
     });
     if (res.status === 401) throw new Error('UNAUTHORIZED');

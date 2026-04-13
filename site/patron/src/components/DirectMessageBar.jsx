@@ -9,7 +9,6 @@ export default function DirectMessageBar({ patronKey }) {
   const [sending, setSending] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!patronKey) return;
     try {
       const d = await api('/direct', patronKey);
       setPending(d.pending ? d.message : null);
@@ -29,7 +28,7 @@ export default function DirectMessageBar({ patronKey }) {
     try {
       await fetch(`${API_URL}/direct`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Patron-Key': patronKey },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: draft.trim() }),
       });
       setDraft('');
@@ -43,7 +42,6 @@ export default function DirectMessageBar({ patronKey }) {
     try {
       await fetch(`${API_URL}/direct`, {
         method: 'DELETE',
-        headers: { 'X-Patron-Key': patronKey },
       });
       setPending(null);
       setDraft('');

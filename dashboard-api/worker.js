@@ -3,7 +3,7 @@
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Patron-Key",
+  "Access-Control-Allow-Headers": "Content-Type",
 };
 
 function json(data, status = 200) {
@@ -13,9 +13,17 @@ function json(data, status = 200) {
   });
 }
 
-function auth(request, env) {
-  const key = request.headers.get("X-Patron-Key");
-  return key && key === env.PATRON_KEY;
+function auth(request) {
+  const url = new URL(request.url);
+  const host = url.hostname.toLowerCase();
+  if (host === "localhost" || host === "127.0.0.1") return true;
+
+  return Boolean(
+    request.headers.get("Cf-Access-Authenticated-User-Email")
+      || request.headers.get("CF-Access-Authenticated-User-Email")
+      || request.headers.get("Cf-Access-Jwt-Assertion")
+      || request.headers.get("CF-Access-Jwt-Assertion")
+  );
 }
 
 async function kvListAll(kv, opts = {}) {
@@ -153,7 +161,7 @@ export default {
     }
 
     // All other routes require auth
-    if (!auth(request, env)) {
+    if (!auth(request)) {
       return json({ error: "unauthorized" }, 401);
     }
 

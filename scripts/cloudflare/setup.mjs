@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { randomBytes } from "crypto";
 import { resolve } from "path";
 import { spawnSync } from "child_process";
 import {
@@ -78,7 +77,6 @@ Required operator env vars:
 
 Useful optional env vars:
   ACCESS_EMAILS
-  PATRON_KEY
   CF_ACCESS_AUTH_DOMAIN
   SITE_DOMAIN
 `);
@@ -164,10 +162,6 @@ function run(command, args, options = {}) {
   if (proc.status !== 0) {
     fail(`command failed: ${printable}`);
   }
-}
-
-function randomSecret(bytes = 24) {
-  return randomBytes(bytes).toString("hex");
 }
 
 async function cf(path, { method = "GET", body, headers = {}, expected = [200] } = {}) {
@@ -450,7 +444,6 @@ main = "worker.js"
 compatibility_date = "2025-06-01"
 
 [vars]
-PATRON_KEY = "bootstrap-placeholder"
 ACCESS_EMAILS = ${tomlString(accessEmails.join(","))}
 
 [[kv_namespaces]]
@@ -584,7 +577,6 @@ async function main() {
     buildDashboardConfig({ dashboardName, kvNamespaceId, apiHost, accessEmails })
   );
 
-  const patronKey = process.env.PATRON_KEY || randomSecret();
   const runtimeSecrets = [
     "OPENROUTER_API_KEY",
     "BRAVE_SEARCH_API_KEY",
@@ -603,7 +595,6 @@ async function main() {
   for (const secret of runtimeSecrets) {
     pushSecret(runtimeConfigPath, secret, process.env[secret], root);
   }
-  pushSecret(dashboardConfigPath, "PATRON_KEY", patronKey, resolve(root, "dashboard-api"));
 
   section("Seed KV");
   run(
