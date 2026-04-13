@@ -1,6 +1,5 @@
 // Observe stage — trigger an agent session and collect results.
-// Pure functions (detectCompletion, chooseStrategy) are unit-testable.
-// runObserve orchestrates shell commands and is integration-tested only.
+// Reusable polling/strategy logic lives in lib/dev-loop/observe.js.
 
 import { execFileSync, execSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
@@ -8,51 +7,22 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { saveRun } from "./state.mjs";
 import { getDefaultServiceUrls, restartServices } from "./services.mjs";
+import {
+  detectCompletion,
+  chooseStrategy,
+  pollForNewSession,
+} from "../../lib/dev-loop/observe.js";
 
 const ROOT = join(import.meta.dirname, "../..");
 const DEFAULT_URLS = getDefaultServiceUrls();
 const KERNEL_URL = process.env.SWAYAMBHU_KERNEL_URL || DEFAULT_URLS.kernelUrl;
 const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || DEFAULT_URLS.dashboardUrl;
 const DASHBOARD_KEY = process.env.SWAYAMBHU_PATRON_KEY || process.env.PATRON_KEY || "test";
-const OBSERVE_TIMEOUT_MS = 900_000; // 15 minutes
-const POLL_INTERVAL_MS = 10_000;
-
-// ── Pure functions ──────────────────────────────────────────
-
-export function detectCompletion(beforeCount, afterCount) {
-  return afterCount > beforeCount;
-}
-
-export function chooseStrategy({ probes, cycle, codeChanged, coldStart }) {
-  const wakeTrigger = {
-    url: `${KERNEL_URL}/__wake`,
-    method: "POST",
-    body: {
-      actor: "dev_loop",
-      context: { intent: "probe", debug_mode: true },
-    },
-  };
-
-  if (cycle === 0 || codeChanged || coldStart) {
-    return {
-      type: "cold_start",
-      // Full reset handled by runObserve: stop workers, wipe, seed, restart.
-      setup: "cold_start_sequence",
-      trigger: wakeTrigger,
-    };
-  }
-  return {
-    type: "accumulate",
-    setup: [],
-    trigger: wakeTrigger,
-  };
-}
-
-// ── Helpers ─────────────────────────────────────────────────
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+export {
+  detectCompletion,
+  chooseStrategy,
+  pollForNewSession,
+};
 
 async function fetchJson(url, options = {}) {
   const controller = new AbortController();
@@ -89,98 +59,6 @@ async function readLastExecutions() {
   const keys = encodeURIComponent("kernel:last_executions");
   const data = await fetchJson(`${DASHBOARD_URL}/kv/multi?keys=${keys}`);
   return Array.isArray(data["kernel:last_executions"]) ? data["kernel:last_executions"] : [];
-}
-
-export async function pollForNewSession(beforeIds, timeoutMs = OBSERVE_TIMEOUT_MS, deps = {}) {
-  const {
-    readSessionIdsFn = readSessionIds,
-    readLastExecutionsFn = readLastExecutions,
-    restartServicesFn = restartServices,
-    sleepFn = sleep,
-    stdout = process.stdout,
-    log = console.log,
-  } = deps;
-  const deadline = Date.now() + timeoutMs;
-  const beforeSet = new Set(beforeIds);
-  const safeRead = async (label, reader, fallback = null) => {
-    try {
-      return await reader();
-    } catch (error) {
-      stdout.write("\n");
-      log(`[OBSERVE] ${label} read failed: ${error.message}`);
-      return fallback;
-    }
-  };
-
-  const beforeExecutions = await safeRead("kernel:last_executions", readLastExecutionsFn, []);
-  const beforeExecutionSet = new Set(beforeExecutions.map((execution) => execution.id));
-
-  // Phase 1: poll cache:session_ids for a new session ID (session started)
-  let newId = null;
-  while (Date.now() < deadline) {
-    const currentIds = await safeRead("cache:session_ids", readSessionIdsFn, null);
-    newId = currentIds?.find(id => !beforeSet.has(id));
-    if (newId) {
-      stdout.write("\n");
-      log(`[OBSERVE] Session started: ${newId}`);
-      break;
-    }
-    const executions = await safeRead("kernel:last_executions", readLastExecutionsFn, null);
-    const execution = executions?.find((entry) => !beforeExecutionSet.has(entry.id));
-    if (execution) {
-      newId = execution.id;
-      stdout.write("\n");
-      log(`[OBSERVE] Execution started without session cache entry: ${newId}`);
-      break;
-    }
-    const elapsedSec = Math.round((timeoutMs - (deadline - Date.now())) / 1000);
-    const remainingSec = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-    stdout.write(
-      `\r[OBSERVE] Waiting for session to start... ${elapsedSec}s elapsed, ${remainingSec}s left`,
-    );
-    await sleepFn(POLL_INTERVAL_MS);
-  }
-
-  if (!newId) {
-    stdout.write("\n");
-    await restartServicesFn();
-    throw new Error(`No new session started within ${timeoutMs / 1000}s`);
-  }
-
-  // Phase 2: poll kernel:last_executions for terminal outcome with this ID
-  // (session completed — clean, crash, or killed)
-  while (Date.now() < deadline) {
-    const executions = await safeRead("kernel:last_executions", readLastExecutionsFn, null);
-    const completed = executions?.find(e => e.id === newId);
-    if (completed) {
-      log(`[OBSERVE] Session completed: ${newId} (outcome: ${completed.outcome})`);
-      // Brief delay for KV writes to propagate through dashboard cache
-      await sleepFn(5000);
-      return newId;
-    }
-    const supersedingExecution = executions?.find((entry) =>
-      !beforeExecutionSet.has(entry.id) && entry.id !== newId);
-    if (supersedingExecution) {
-      log(
-        `[OBSERVE] Session ${newId} was superseded by completed execution ` +
-        `${supersedingExecution.id} (outcome: ${supersedingExecution.outcome})`,
-      );
-      await sleepFn(5000);
-      return supersedingExecution.id;
-    }
-    const elapsedSec = Math.round((timeoutMs - (deadline - Date.now())) / 1000);
-    const remainingSec = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-    stdout.write(
-      `\r[OBSERVE] Session ${newId} running... ${elapsedSec}s elapsed, ${remainingSec}s left`,
-    );
-    await sleepFn(POLL_INTERVAL_MS);
-  }
-
-  stdout.write("\n");
-  await restartServicesFn();
-  throw new Error(
-    `Session ${newId} started but did not complete within ${timeoutMs / 1000}s`,
-  );
 }
 
 function runAnalysis() {
@@ -273,7 +151,11 @@ export async function runObserve({
 
     // Poll until a new session ID appears in cache:session_ids (10 min timeout).
     // This only moves when the act lifecycle actually starts.
-    const newSessionId = await pollForNewSession(beforeIds);
+    const newSessionId = await pollForNewSession(beforeIds, undefined, {
+      readSessionIdsFn: readSessionIds,
+      readLastExecutionsFn: readLastExecutions,
+      restartServicesFn: restartServices,
+    });
 
     // Collect analysis data
     const analysis = runAnalysis();
