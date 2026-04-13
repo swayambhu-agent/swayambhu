@@ -263,6 +263,109 @@ async function advanceSessionSchedule(env, defaults, advanceSeconds) {
   }
 }
 
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload, null, 2), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function parseBurstCount(value) {
+  const count = Number(value);
+  return Number.isInteger(count) && count > 0 ? count : null;
+}
+
+async function runScheduledWithTimeout(kernel, timeoutMs) {
+  let timer = null;
+  try {
+    await Promise.race([
+      kernel.runScheduled(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`burst_session_timeout:${timeoutMs}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function runBurstSessions(env, ctx, { count, actor, reason, timeoutMs }) {
+  const defaults = await env.KV.get("config:defaults", "json");
+  const schedule = await env.KV.get("session_schedule", "json");
+  const intervalSeconds = schedule?.interval_seconds || defaults?.schedule?.interval_seconds || 21600;
+  const noActionStreak = schedule?.no_action_streak || 0;
+  const requested = count;
+  const startedAt = Date.now();
+  const totalTimeoutMs = Math.min(requested * timeoutMs, 15 * 60_000);
+
+  await env.KV.put("session_schedule", JSON.stringify({
+    ...(schedule || {}),
+    next_session_after: new Date(Date.now() - 1000).toISOString(),
+    interval_seconds: intervalSeconds,
+    no_action_streak: noActionStreak,
+    burst_remaining: requested,
+    burst_origin: actor,
+    burst_reason: reason,
+  }));
+
+  const result = {
+    requested,
+    executed: 0,
+    remaining: requested,
+    actor,
+    reason,
+    stalled: false,
+  };
+
+  let previousRemaining = requested;
+  for (let iteration = 0; iteration < requested; iteration++) {
+    if (Date.now() - startedAt > totalTimeoutMs) {
+      result.stalled = true;
+      result.error = `burst_total_timeout:${totalTimeoutMs}`;
+      return result;
+    }
+
+    const eventKernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+    const eventInterface = eventKernel.buildKernelInterface();
+    await eventInterface.emitEvent("wake", {
+      origin: "external",
+      trigger: {
+        actor,
+        context: {
+          mode: "burst",
+          reason,
+          requested,
+          iteration: iteration + 1,
+        },
+      },
+    });
+
+    const burstKernel = new Kernel(env, { ctx, TOOLS, HOOKS, PROVIDERS, CHANNELS, EVENT_HANDLERS });
+    try {
+      await runScheduledWithTimeout(burstKernel, timeoutMs);
+    } catch (error) {
+      result.stalled = true;
+      result.error = error?.message || String(error);
+      return result;
+    }
+    result.executed += 1;
+
+    const updatedSchedule = await env.KV.get("session_schedule", "json");
+    const remaining = parseBurstCount(updatedSchedule?.burst_remaining) || 0;
+    result.remaining = remaining;
+    if (remaining <= 0) {
+      return result;
+    }
+    if (remaining >= previousRemaining) {
+      result.stalled = true;
+      return result;
+    }
+    previousRemaining = remaining;
+  }
+
+  return result;
+}
+
 async function conversationHasAssistantReplyAfter(K, conversationId, eventTimestamp) {
   const conv = await K.kvGet(conversationId);
   if (!conv?.messages?.length) return false;
@@ -473,6 +576,52 @@ export default {
       else await runWake();
 
       return new Response("wake queued", { status: 202 });
+    }
+
+    if (url.pathname === "/__burst" && request.method === "POST") {
+      let payload = {};
+      try {
+        payload = await request.json();
+      } catch {
+        return new Response("Invalid JSON", { status: 400 });
+      }
+
+      const count = parseBurstCount(payload?.count);
+      if (!count || count > 30) {
+        return jsonResponse({ ok: false, error: "count must be an integer between 1 and 30" }, 400);
+      }
+      const timeoutMs = Number.isInteger(Number(payload?.timeout_ms))
+        ? Math.max(1_000, Math.min(600_000, Number(payload.timeout_ms)))
+        : 120_000;
+
+      const actor = typeof payload?.actor === "string" && payload.actor.trim()
+        ? payload.actor.trim()
+        : "external";
+      const reason = typeof payload?.reason === "string" && payload.reason.trim()
+        ? payload.reason.trim()
+        : "burst";
+
+      const activeBurst = await env.KV.get("kernel:active_burst", "json");
+      const activeBurstAge = activeBurst?.started_at
+        ? Date.now() - new Date(activeBurst.started_at).getTime()
+        : null;
+      if (activeBurst?.started_at && Number.isFinite(activeBurstAge) && activeBurstAge < timeoutMs * count) {
+        return jsonResponse({ ok: false, error: "burst already active" }, 409);
+      }
+
+      await env.KV.put("kernel:active_burst", JSON.stringify({
+        started_at: new Date().toISOString(),
+        actor,
+        reason,
+        count,
+      }));
+
+      try {
+        const result = await runBurstSessions(env, ctx, { count, actor, reason, timeoutMs });
+        return jsonResponse({ ok: true, ...result }, 200);
+      } finally {
+        await env.KV.delete("kernel:active_burst");
+      }
     }
 
     const match = url.pathname.match(/^\/channel\/(\w+)$/);

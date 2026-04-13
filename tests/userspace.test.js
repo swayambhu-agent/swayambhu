@@ -141,6 +141,53 @@ describe("session with empty desires", () => {
     expect(sessionSchedule.no_action_streak).toBe(1);
   });
 
+  it("consumes burst mode and schedules the next session immediately", async () => {
+    K = makeMockK({
+      session_schedule: {
+        next_session_after: new Date(Date.now() - 1000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 0,
+        burst_remaining: 3,
+        burst_origin: "operator",
+        burst_reason: "overnight_test",
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+
+    evaluateAction.mockResolvedValueOnce({
+      sigma: 1,
+      alpha: {},
+      salience: 0,
+      eval_method: "pipeline",
+      tool_outcomes: [],
+      plan_success_criteria: null,
+      patterns_relied_on: [],
+      pattern_scores: {},
+    });
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const sessionSchedule = await K.kvGet("session_schedule");
+    expect(sessionSchedule.burst_remaining).toBe(2);
+    expect(sessionSchedule.burst_origin).toBe("operator");
+    expect(sessionSchedule.burst_reason).toBe("overnight_test");
+    expect(new Date(sessionSchedule.next_session_after).getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "burst_session_progress",
+        remaining: 2,
+        immediate_next: true,
+      }),
+    );
+  });
+
   it("waits for bootstrap DR before starting another session when DR is still running", async () => {
     const now = new Date().toISOString();
     K = makeMockK({

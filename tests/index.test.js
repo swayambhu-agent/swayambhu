@@ -313,6 +313,80 @@ describe("external wake endpoint", () => {
   });
 });
 
+describe("burst endpoint", () => {
+  it("runs a bounded burst of sessions back-to-back", async () => {
+    const env = makeEnv({
+      "config:defaults": {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model", max_output_tokens: 1000 },
+        session_budget: { max_cost: 0.5, max_duration_seconds: 600, reflect_reserve_pct: 0.33 },
+        schedule: { interval_seconds: 21600 },
+        execution: { max_steps: { act: 1, reflect: 1, deep_reflect: 1 } },
+      },
+      "config:event_handlers": {
+        handlers: {},
+        deferred: {},
+      },
+      "session_schedule": {
+        next_session_after: new Date(Date.now() + 3600_000).toISOString(),
+        interval_seconds: 21600,
+        no_action_streak: 0,
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/__burst", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count: 2, actor: "test", reason: "burst_test" }),
+      }),
+      env,
+      { waitUntil() {} },
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.ok).toBe(true);
+    expect(payload.requested).toBe(2);
+    expect(payload.executed).toBe(2);
+    expect(payload.remaining).toBe(0);
+
+    const sessionCounter = JSON.parse(env.KV._store.get("session_counter"));
+    expect(sessionCounter).toBe(2);
+    const schedule = JSON.parse(env.KV._store.get("session_schedule"));
+    expect(schedule.burst_remaining).toBeUndefined();
+  });
+
+  it("rejects concurrent bursts", async () => {
+    const env = makeEnv({
+      "kernel:active_burst": {
+        started_at: new Date().toISOString(),
+        actor: "test",
+        reason: "already_running",
+        count: 2,
+      },
+      "config:defaults": {
+        schedule: { interval_seconds: 21600 },
+      },
+    });
+
+    const response = await worker.fetch(
+      new Request("http://localhost/__burst", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count: 2 }),
+      }),
+      env,
+      { waitUntil() {} },
+    );
+
+    expect(response.status).toBe(409);
+    const payload = await response.json();
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toBe("burst already active");
+  });
+});
+
 describe("inbound fast path", () => {
   it("handles trivial acknowledgements immediately while a session lock is active", async () => {
     const slackSecret = "slack_secret";

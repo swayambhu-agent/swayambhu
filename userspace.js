@@ -300,6 +300,63 @@ function buildPlannerCircumstances(events, balances, crashData, pendingRequests,
   return circumstances;
 }
 
+function normalizeBurstSchedule(schedule) {
+  const remaining = Number(schedule?.burst_remaining || 0);
+  return Number.isFinite(remaining) && remaining > 0
+    ? Math.floor(remaining)
+    : 0;
+}
+
+function buildNextSessionSchedule({
+  currentSchedule,
+  defaults,
+  circumstances,
+  cyclesRun,
+  sessionCount,
+  desireCount,
+}) {
+  let scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
+  const idleInterval = defaults?.schedule?.idle_interval_seconds || 1800;
+  const explorationUnlockStreak = defaults?.schedule?.exploration_unlock_streak || 3;
+  const isBootstrapNoAction = cyclesRun === 0
+    && sessionCount === 0
+    && desireCount === 0;
+  const burstRemaining = normalizeBurstSchedule(currentSchedule);
+
+  let noActionStreak = 0;
+  if (cyclesRun === 0) {
+    noActionStreak = (currentSchedule?.no_action_streak || 0) + 1;
+    const capacityHealthy = circumstances?.capacity?.healthy === true;
+    if (!isBootstrapNoAction && capacityHealthy && noActionStreak >= explorationUnlockStreak) {
+      scheduleInterval = Math.min(scheduleInterval, idleInterval);
+    }
+  }
+
+  const nextBurstRemaining = burstRemaining > 0 ? burstRemaining - 1 : 0;
+  const nextSchedule = {
+    next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
+    interval_seconds: scheduleInterval,
+    no_action_streak: cyclesRun === 0 ? noActionStreak : 0,
+  };
+
+  if (nextBurstRemaining > 0) {
+    nextSchedule.next_session_after = new Date().toISOString();
+    nextSchedule.burst_remaining = nextBurstRemaining;
+    if (typeof currentSchedule?.burst_origin === "string" && currentSchedule.burst_origin.trim()) {
+      nextSchedule.burst_origin = currentSchedule.burst_origin;
+    }
+    if (typeof currentSchedule?.burst_reason === "string" && currentSchedule.burst_reason.trim()) {
+      nextSchedule.burst_reason = currentSchedule.burst_reason;
+    }
+  }
+
+  return {
+    nextSchedule,
+    burstConsumed: burstRemaining > 0,
+    nextBurstRemaining,
+  };
+}
+
 function selectRequestsForAutoReconcile(pendingRequests = [], respondedRequestIds = new Set()) {
   const unresolved = pendingRequests.filter((request) => !respondedRequestIds.has(request.id));
   if (unresolved.length === 0) return [];
@@ -1823,35 +1880,23 @@ async function actCycle(K, { crashData, balances, events }) {
   }
 
   // Schedule next session
-  let scheduleInterval = defaults?.schedule?.interval_seconds || 21600;
-  const idleInterval = defaults?.schedule?.idle_interval_seconds || 1800;
-  const explorationUnlockStreak = defaults?.schedule?.exploration_unlock_streak || 3;
-  const isBootstrapNoAction = cyclesRun === 0
-    && sessionCount === 0
-    && Object.keys(desires).length === 0;
-
-  // Repeated no_action under healthy capacity should become cheaper/faster rather
-  // than deepening into long dormancy. Preserve the default cadence for
-  // bootstrap or genuinely constrained states.
-  if (cyclesRun === 0) {
-    const currentSchedule = await K.kvGet("session_schedule");
-    const streak = (currentSchedule?.no_action_streak || 0) + 1;
-    const capacityHealthy = circumstances?.capacity?.healthy === true;
-    if (!isBootstrapNoAction && capacityHealthy && streak >= explorationUnlockStreak) {
-      scheduleInterval = Math.min(scheduleInterval, idleInterval);
-    }
-    // Persist streak for next session
-    await K.kvWriteSafe("session_schedule", {
-      next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
-      interval_seconds: scheduleInterval,
-      no_action_streak: streak,
-    });
-  } else {
-    // Active session: reset streak
-    await K.kvWriteSafe("session_schedule", {
-      next_session_after: new Date(Date.now() + scheduleInterval * 1000).toISOString(),
-      interval_seconds: scheduleInterval,
-      no_action_streak: 0,
+  const currentSchedule = await K.kvGet("session_schedule");
+  const { nextSchedule, burstConsumed, nextBurstRemaining } = buildNextSessionSchedule({
+    currentSchedule,
+    defaults,
+    circumstances,
+    cyclesRun,
+    sessionCount,
+    desireCount: Object.keys(desires).length,
+  });
+  await K.kvWriteSafe("session_schedule", nextSchedule);
+  if (burstConsumed) {
+    await K.karmaRecord({
+      event: "burst_session_progress",
+      burst_origin: currentSchedule?.burst_origin || null,
+      burst_reason: currentSchedule?.burst_reason || null,
+      remaining: nextBurstRemaining,
+      immediate_next: nextBurstRemaining > 0,
     });
   }
 
