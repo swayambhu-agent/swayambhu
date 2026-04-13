@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildDr3Defaults, loadRepoDr3Defaults } from "../scripts/dr3-lab-run.mjs";
+import { buildDr3Defaults, loadRepoDr3Defaults, parseArgs } from "../scripts/dr3-lab-run.mjs";
 
 const DR3_ENV_KEYS = [
   "SWAYAMBHU_DR3_REVIEW_RUNNER",
@@ -37,5 +37,11 @@ describe("dr3-lab-run defaults", () => {
     expect(defaults.reviewRunner).toBe("claude");
     expect(defaults.allowAuthorityWidening).toBe(true);
     expect(defaults.labTimeoutMs).toBe(600000);
+  });
+
+  it("rejects missing flag values explicitly", () => {
+    const defaults = buildDr3Defaults();
+    expect(() => parseArgs(["--spec"], defaults)).toThrow("Missing value for --spec");
+    expect(() => parseArgs(["--review-note-key"], defaults)).toThrow("Missing value for --review-note-key");
   });
 });
