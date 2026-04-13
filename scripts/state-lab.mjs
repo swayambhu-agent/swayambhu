@@ -13,23 +13,21 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { Kernel } from "../kernel.js";
 import { filePathToKey, keyToFilePath } from "../governor/builder.js";
 import {
-  compareContinuationSummaries,
-  getContinuationConfig,
   hasComparativeStaticChecks,
-  isInfrastructureContinuationFailure,
   normalizeStaticChecks,
-  reconcileComparativeStaticValidation,
   retargetStaticCommandToWorkspace,
   summarizeBatchSummary,
 } from "../lib/state-lab/validation.js";
 import {
   applyWorkspaceCandidateChange,
-  buildLabBranchName,
   loadLabHypothesis,
   materializeStateLabWorkspace,
   resolveLabTargetRelativePath,
   resolveLabWorkspacePath,
 } from "../lib/state-lab/workspace.js";
+import {
+  runLabRun as runLabRunCommand,
+} from "../lib/state-lab/lab-run.js";
 import * as llm_balance from "../providers/llm_balance.js";
 import * as wallet_balance from "../providers/wallet_balance.js";
 import { writeReasoningArtifacts } from "../lib/reasoning.js";
@@ -456,10 +454,6 @@ async function syncWorkspaceCodeTargetsToBranchKv(entry, candidateChanges = []) 
   return syncedTargets;
 }
 
-function sha256Json(value) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
 function sha256Text(value) {
   return createHash("sha256").update(String(value || "")).digest("hex");
 }
@@ -617,80 +611,6 @@ export async function runStaticValidation(entry, validation = {}, limits = {}, s
   return { passed, commands: results };
 }
 
-
-async function runContinuationValidation(entry, validation = {}, limits = {}, candidateChanges = []) {
-  const continuation = getContinuationConfig(validation);
-  if (!continuation.enabled) {
-    return {
-      enabled: false,
-      passed: null,
-      base_dir: null,
-      summary: null,
-      stdout_tail: "",
-      stderr_tail: "",
-      error: null,
-    };
-  }
-
-  const syncedCodeTargets = await syncWorkspaceCodeTargetsToBranchKv(entry, candidateChanges);
-
-  const baseDir = join(entry.paths.base, "dev-loop");
-  const env = {
-    ...process.env,
-    ...buildStartEnv(entry.metadata),
-    SWAYAMBHU_DEV_LOOP_SERVICE_MODE: "default",
-  };
-  const timeoutMs = Math.max(180_000, (limits.max_wall_time_minutes || 30) * 60_000);
-  const command = `node scripts/dev-loop/batch-run.mjs --cycles ${continuation.maxSessions} --base-dir '${baseDir}' --label '${entry.name}-continuation'`;
-
-  try {
-    const stdout = execFileSync("bash", ["-lc", command], {
-      cwd: entry.paths.workspaceDir,
-      env,
-      encoding: "utf8",
-      timeout: timeoutMs,
-      maxBuffer: 10 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return {
-      enabled: true,
-      passed: true,
-      base_dir: baseDir,
-      summary: await readJson(join(baseDir, "batch-summary.json")),
-      synced_code_targets: syncedCodeTargets,
-      stdout_tail: String(stdout || "").slice(-4000),
-      stderr_tail: "",
-      error: null,
-    };
-  } catch (error) {
-    let summary = null;
-    if (await pathExists(join(baseDir, "batch-summary.json"))) {
-      summary = await readJson(join(baseDir, "batch-summary.json"));
-    }
-    return {
-      enabled: true,
-      passed: false,
-      base_dir: baseDir,
-      summary,
-      synced_code_targets: syncedCodeTargets,
-      stdout_tail: String(error.stdout || "").slice(-4000),
-      stderr_tail: String(error.stderr || "").slice(-4000),
-      error: error.message,
-    };
-  }
-}
-
-async function writeLabState(paths, state) {
-  await writeFile(paths.labStatePath, JSON.stringify(state, null, 2), "utf8");
-}
-
-async function writeLabReport(paths, report) {
-  await writeFile(paths.labReportPath, JSON.stringify(report, null, 2), "utf8");
-}
-
-async function writeLabResult(paths, result) {
-  await writeFile(paths.labResultPath, JSON.stringify(result, null, 2), "utf8");
-}
 
 async function deriveRecordedBalances(source) {
   if (source.metadata?.recorded_balances) {
@@ -1041,205 +961,19 @@ async function cmdMaterializeDr(args) {
 }
 
 async function cmdLabRun(args) {
-  const sourceRef = args[0];
-  const hypothesisPath = args[1];
-  if (!sourceRef || !hypothesisPath) {
-    throw new Error("lab-run requires <source-ref> <hypothesis-path>");
-  }
-
-  const { payload, resolvedPath } = await loadLabHypothesis(hypothesisPath);
-  const branchStem = buildLabBranchName(resolvedPath);
-  const baselineName = sanitizeName(`${branchStem}-baseline`);
-  const candidateName = sanitizeName(`${branchStem}-candidate`);
-  const { source, entry: baselineEntry } = await createBranchFromSource(sourceRef, baselineName);
-  const { entry } = await createBranchFromSource(sourceRef, candidateName);
-  await prepareWorkspace(baselineEntry);
-  await prepareWorkspace(entry);
-
-  const startedAt = new Date().toISOString();
-  const deadlineAt = new Date(Date.now() + ((payload.limits.max_wall_time_minutes || 30) * 60_000)).toISOString();
-  await writeLabState(entry.paths, {
-    status: "preparing",
-    branch: entry.name,
-    source_ref: source.ref,
-    hypothesis_path: resolvedPath,
-    started_at: startedAt,
-    updated_at: startedAt,
-    deadline_at: deadlineAt,
-    consecutive_failures: 0,
-    failure_reason: null,
-    baseline_branch: baselineEntry.name,
+  await runLabRunCommand(args, {
+    applyCandidateChanges,
+    buildStartEnv,
+    buildValidatedChanges,
+    createBranchFromSource,
+    loadLabHypothesis,
+    pathExists,
+    prepareWorkspace,
+    readJson,
+    runStaticValidation,
+    sanitizeName,
+    syncWorkspaceCodeTargetsToBranchKv,
   });
-
-  let appliedChanges = [];
-  let baselineStaticValidation = { passed: false, commands: [] };
-  let staticValidation = { passed: false, commands: [] };
-  let baselineContinuation = { enabled: false, passed: null, summary: null };
-  let candidateContinuation = { enabled: false, passed: null, summary: null };
-  try {
-    appliedChanges = await applyCandidateChanges(entry, payload.candidate_changes);
-    await writeLabState(entry.paths, {
-      status: "validating_static",
-      branch: entry.name,
-      source_ref: source.ref,
-      hypothesis_path: resolvedPath,
-      started_at: startedAt,
-      updated_at: new Date().toISOString(),
-      deadline_at: deadlineAt,
-      consecutive_failures: 0,
-      failure_reason: null,
-      baseline_branch: baselineEntry.name,
-    });
-
-    baselineStaticValidation = await runStaticValidation(baselineEntry, payload.validation, payload.limits, "baseline");
-    staticValidation = await runStaticValidation(entry, payload.validation, payload.limits, "candidate");
-    const reconciledStaticValidation = reconcileComparativeStaticValidation(
-      baselineStaticValidation,
-      staticValidation,
-      payload.validation,
-    );
-    baselineStaticValidation = reconciledStaticValidation.baseline;
-    staticValidation = reconciledStaticValidation.candidate;
-
-    await writeLabState(entry.paths, {
-      status: "running_continuations",
-      branch: entry.name,
-      source_ref: source.ref,
-      hypothesis_path: resolvedPath,
-      started_at: startedAt,
-      updated_at: new Date().toISOString(),
-      deadline_at: deadlineAt,
-      consecutive_failures: 0,
-      failure_reason: null,
-      baseline_branch: baselineEntry.name,
-    });
-
-    baselineContinuation = baselineStaticValidation.passed
-      ? await runContinuationValidation(baselineEntry, payload.validation, payload.limits)
-      : { enabled: getContinuationConfig(payload.validation).enabled, passed: false, summary: null, error: "baseline_static_validation_failed" };
-    candidateContinuation = staticValidation.passed
-      ? await runContinuationValidation(entry, payload.validation, payload.limits, payload.candidate_changes)
-      : { enabled: getContinuationConfig(payload.validation).enabled, passed: false, summary: null, error: "candidate_static_validation_failed" };
-
-    const continuationComparison = compareContinuationSummaries(
-      baselineContinuation.summary,
-      candidateContinuation.summary,
-    );
-    const continuationEnabled = getContinuationConfig(payload.validation).enabled;
-    const continuationPassed = !continuationEnabled
-      || (baselineContinuation.passed === true && candidateContinuation.passed === true);
-    const validatedChanges = (baselineStaticValidation.passed && staticValidation.passed && continuationPassed)
-      ? await buildValidatedChanges(entry, payload.candidate_changes)
-      : null;
-    const infrastructureContinuationFailure = continuationEnabled
-      && (isInfrastructureContinuationFailure(baselineContinuation)
-        || isInfrastructureContinuationFailure(candidateContinuation));
-    const promotionRecommendation = validatedChanges
-      ? "stageable"
-      : (infrastructureContinuationFailure ? "inconclusive" : "reject");
-    const hypothesisHash = sha256Json({
-      hypothesis: payload.hypothesis,
-      candidate_changes: payload.candidate_changes,
-      validation: payload.validation,
-      limits: payload.limits,
-      review_note_key: payload.review_note_key || null,
-    });
-    const validatedChangesHash = validatedChanges ? sha256Json(validatedChanges) : null;
-
-    const report = {
-      branch: entry.name,
-      baseline_branch: baselineEntry.name,
-      source_ref: source.ref,
-      workspace_dir: entry.paths.workspaceDir,
-      state_dir: entry.metadata.state_dir,
-      baseline_workspace_dir: baselineEntry.paths.workspaceDir,
-      baseline_state_dir: baselineEntry.metadata.state_dir,
-      hypothesis_path: resolvedPath,
-      hypothesis: payload.hypothesis,
-      candidate_changes_requested: payload.candidate_changes,
-      candidate_changes_applied: appliedChanges,
-      baseline_static_validation: baselineStaticValidation,
-      static_validation: staticValidation,
-      neutralized_shared_static_failures: reconciledStaticValidation.neutralized_shared_failures,
-      baseline_continuation: baselineContinuation,
-      candidate_continuation: candidateContinuation,
-      continuation_comparison: continuationComparison,
-      promotion_recommendation: promotionRecommendation,
-      review_note_key: payload.review_note_key || null,
-      hypothesis_hash: hypothesisHash,
-      validated_changes_hash: validatedChangesHash,
-      validated_changes: validatedChanges,
-      generated_at: new Date().toISOString(),
-    };
-    await writeLabReport(entry.paths, report);
-
-    const result = {
-      branch: entry.name,
-      baseline_branch: baselineEntry.name,
-      source_ref: source.ref,
-      hypothesis: payload.hypothesis,
-      review_note_key: payload.review_note_key || null,
-      promotion_recommendation: promotionRecommendation,
-      comparison_summary: continuationComparison,
-      hypothesis_hash: hypothesisHash,
-      validated_changes_hash: validatedChangesHash,
-      validated_changes: validatedChanges,
-      reasons_not_to_change: promotionRecommendation === "stageable"
-        ? []
-        : [
-            ...(baselineStaticValidation.passed ? [] : ["Baseline static validation failed."]),
-            ...(staticValidation.passed ? [] : ["Candidate static validation failed."]),
-            ...(continuationEnabled && baselineContinuation.passed !== true
-              ? [isInfrastructureContinuationFailure(baselineContinuation)
-                ? "Baseline continuation infrastructure failed."
-                : "Baseline continuation failed."]
-              : []),
-            ...(continuationEnabled && candidateContinuation.passed !== true
-              ? [isInfrastructureContinuationFailure(candidateContinuation)
-                ? "Candidate continuation infrastructure failed."
-                : "Candidate continuation failed."]
-              : []),
-          ],
-      generated_at: new Date().toISOString(),
-    };
-    await writeLabResult(entry.paths, result);
-    await writeLabState(entry.paths, {
-      status: promotionRecommendation === "stageable"
-        ? "stageable"
-        : (promotionRecommendation === "inconclusive" ? "inconclusive" : "rejected"),
-      branch: entry.name,
-      source_ref: source.ref,
-      hypothesis_path: resolvedPath,
-      started_at: startedAt,
-      updated_at: new Date().toISOString(),
-      deadline_at: deadlineAt,
-      consecutive_failures: 0,
-      failure_reason: promotionRecommendation === "stageable" ? null : "validation_failed",
-      baseline_branch: baselineEntry.name,
-    });
-
-    console.log(`Lab run complete for ${entry.name}`);
-    console.log(`  baseline: branch:${baselineEntry.name}`);
-    console.log(`  branch: branch:${entry.name}`);
-    console.log(`  workspace: ${entry.paths.workspaceDir}`);
-    console.log(`  report: ${entry.paths.labReportPath}`);
-    console.log(`  result: ${entry.paths.labResultPath}`);
-    console.log(`  verdict: ${result.promotion_recommendation}`);
-    return;
-  } catch (error) {
-    await writeLabState(entry.paths, {
-      status: "failed",
-      branch: entry.name,
-      source_ref: source.ref,
-      hypothesis_path: resolvedPath,
-      started_at: startedAt,
-      updated_at: new Date().toISOString(),
-      deadline_at: deadlineAt,
-      consecutive_failures: 1,
-      failure_reason: error.message,
-    });
-    throw error;
-  }
 }
 
 async function cmdPromote(args) {
