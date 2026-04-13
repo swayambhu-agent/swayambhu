@@ -4,7 +4,7 @@
 // balances inside each branch, and starts branch-local services on unique ports.
 
 import { execFileSync, spawn } from "child_process";
-import { cp, mkdir, readFile, readdir, readlink, stat, symlink, writeFile } from "fs/promises";
+import { cp, mkdir, readFile, readdir, readlink, stat, writeFile } from "fs/promises";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, relative, resolve } from "path";
 import { createHash } from "crypto";
@@ -26,10 +26,9 @@ import {
   applyWorkspaceCandidateChange,
   buildLabBranchName,
   loadLabHypothesis,
-  overlayWorkspaceFromSourceState,
+  materializeStateLabWorkspace,
   resolveLabTargetRelativePath,
   resolveLabWorkspacePath,
-  shouldCopyWorkspacePath,
 } from "../lib/state-lab/workspace.js";
 import * as llm_balance from "../providers/llm_balance.js";
 import * as wallet_balance from "../providers/wallet_balance.js";
@@ -375,21 +374,9 @@ async function copyStateTree(sourceDir, destDir) {
 }
 
 async function prepareWorkspace(entry) {
-  const { workspaceDir } = entry.paths;
-  await mkdir(dirname(workspaceDir), { recursive: true });
-  await cp(REPO_ROOT, workspaceDir, {
-    recursive: true,
-    filter: shouldCopyWorkspacePath,
-  });
-
-  const rootNodeModules = join(REPO_ROOT, "node_modules");
-  const workspaceNodeModules = join(workspaceDir, "node_modules");
-  if (await pathExists(rootNodeModules) && !await pathExists(workspaceNodeModules)) {
-    await symlink(rootNodeModules, workspaceNodeModules, "dir");
-  }
-
-  await overlayWorkspaceFromSourceState({
-    workspaceDir,
+  await materializeStateLabWorkspace({
+    workspaceDir: entry.paths.workspaceDir,
+    repoRoot: REPO_ROOT,
     stateDir: entry.metadata.state_dir,
   });
 }
