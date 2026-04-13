@@ -1,0 +1,23 @@
+[Unit]
+Description=Swayambhu Compute Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=swayambhu-svc
+Group=swayambhu-svc
+WorkingDirectory=/srv/swayambhu/repo
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/swayambhu/compute.env
+ExecStart=/usr/bin/node /srv/swayambhu/repo/services/compute-gateway.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp /var/tmp /run /srv/swayambhu
+
+[Install]
+WantedBy=multi-user.target

@@ -1,156 +1,330 @@
-# Dev to Prod Deployment
+# Deployment
 
-## What changes between dev and prod
+Swayambhu should be operated with three tiers:
 
-| Aspect | Dev | Prod |
-|--------|-----|------|
-| Entry point | `index.js` (hand-written, imports from disk) | `index.js` (governor-generated, statically compiled) |
-| Config | `wrangler.dev.toml` | `wrangler.toml` |
-| Tools/hooks | Imported directly (static imports) | Statically compiled into worker by governor |
-| Provider cascade | Direct `fetch()` to OpenRouter (fallback tier) | Three-tier cascade (dynamic → last working → kernel fallback) |
-| KV storage | Local SQLite (`.wrangler/shared-state/`) | Cloudflare KV namespace |
-| Secrets | `.env` file sourced into shell | `wrangler secret put` per secret |
-| Dashboard auth | `PATRON_KEY = "test"` in `wrangler.toml` | `wrangler secret put PATRON_KEY` with real value |
+- `local` for development and most testing
+- `staging` on Cloudflare for one full dress rehearsal
+- `prod` on Cloudflare for live traffic
 
-## Staging: local prod-mode with tunnel
+Do not create a separate Cloudflare `dev` environment unless you actually
+need another public integration surface. Local already covers the fast loop.
 
-Before deploying to CF, validate everything locally using the kernel
-behind a Cloudflare Tunnel.
+## Environment model
 
-### Setup
+### Local
 
-The server runs a `cloudflared` tunnel (config at `~/.cloudflared/config.yml`).
-Add an ingress rule for the runtime:
+- Runtime: `wrangler.dev.toml`
+- KV: local Miniflare state in `.wrangler/shared-state/`
+- Dashboard API: local `wrangler dev`
+- Static site: `node scripts/dev-serve.mjs`
+- Inference/Akash: local or remote, as needed for feature testing
 
-```yaml
-ingress:
-  - hostname: swayambhu.dev
-    service: http://localhost:8787
+### Cloudflare staging
+
+- Runtime: `wrangler.toml --env staging`
+- Dashboard API: `dashboard-api/wrangler.toml --env staging`
+- KV: dedicated staging namespace
+- Secrets: dedicated staging secrets
+- Static site: deploy `site/` with staging API base at `staging.swayambhu.dev`
+- Patron UI: `staging.swayambhu.dev/patron/`
+- Public reflections: `staging.swayambhu.dev/reflections/`
+- Dashboard API: `api-staging.swayambhu.dev`
+- Runtime/webhook worker: `agent-staging.swayambhu.dev`
+
+### Cloudflare production
+
+- Runtime: `wrangler.toml`
+- Dashboard API: `dashboard-api/wrangler.toml`
+- KV: dedicated production namespace
+- Secrets: dedicated production secrets
+- Static site: deploy `site/` with production API base at `swayambhu.dev`
+- Patron UI: `swayambhu.dev/patron/`
+- Public reflections: `swayambhu.dev/reflections/`
+- Dashboard API: `api.swayambhu.dev`
+- Runtime/webhook worker: `agent.swayambhu.dev`
+
+This is the canonical domain layout. Do not create separate `patron-*`
+subdomains unless there is a concrete operational reason to split the host
+later.
+
+## Required config cleanup before deploy
+
+The repo now assumes:
+
+- Runtime entrypoint is `index.js`
+- Static site API origins come from config files, not hardcoded `workers.dev` URLs
+- Remote KV is seeded via `scripts/cloudflare/seed-kv.mjs`
+- Prod bootstrap can be automated with `npm run setup:cloudflare:prod`
+
+## One-shot prod bootstrap
+
+For a fresh Cloudflare account with only production enabled, the bootstrap
+script will:
+
+- verify account/token access
+- ensure a `workers.dev` subdomain exists
+- create or reuse the production KV namespace
+- push Worker secrets from local env files
+- seed remote KV
+- build the site in Access-auth mode
+- deploy runtime Worker, dashboard API Worker, and Pages site
+- attach the apex Pages custom domain
+- create the Cloudflare Access app protecting `/patron/*` and `api.*`
+
+Run it with:
+
+```bash
+npm run setup:cloudflare:prod
 ```
 
-Add a CNAME DNS record in Cloudflare: `swayambhu.dev` → `<tunnel-id>.cfargotunnel.com`
-(proxied). Restart `cloudflared` to pick up the config.
+Expected env files:
 
-### Validation stages
+- `.env.patron.prod` for operator credentials such as `CF_API_TOKEN`, `CF_ACCOUNT_ID`
+- `.env.prod` for runtime secrets such as `OPENROUTER_API_KEY`
 
-1. **Full runtime** — run `wrangler dev` with `wrangler.toml`,
-   trigger `/__scheduled` manually, watch `wrangler tail` for `[TOOL]` `[LLM]` `[HOOK]`
-2. **Slack webhook** — point Slack Event Subscriptions to
-   `https://swayambhu.dev/channel/slack`, verify challenge + chat flow
-3. **Autonomous sessions** — let cron run, verify reflect scheduling
-4. **Reflection** — lower reflect interval, watch first depth-1 reflection
+Templates are provided at:
 
-### DNS cutover to CF Workers
+- `.env.patron.prod.example`
+- `.env.prod.example`
 
-When moving to production CF Workers, update the DNS:
-- Remove the tunnel CNAME for `swayambhu.dev`
-- Add a Custom Domain on the Worker in the CF dashboard (handles DNS automatically)
-- Or manually point the CNAME to the Worker's `*.workers.dev` subdomain
+Before first staging deploy:
 
-## Secrets management
+1. Put the real staging KV namespace ID in:
+   - `wrangler.toml` → `[env.staging]`
+   - `dashboard-api/wrangler.toml` → `[env.staging]`
+2. Confirm the production KV namespace ID in:
+   - `wrangler.toml`
+   - `dashboard-api/wrangler.toml`
 
-### Dev
+## Static site config
 
-All secrets live in `.env` at the repo root. Before running anything:
+The patron dashboard and public reflections page read their API base from:
+
+- `site/patron/config.js`
+- `site/reflections/config.js`
+
+Render those files for the target environment before deploying the static site:
+
+```bash
+SITE_API_BASE=https://api-staging.swayambhu.dev \
+npm run build:site
+```
+
+For production:
+
+```bash
+SITE_API_BASE=https://api.swayambhu.dev \
+npm run build:site
+```
+
+Local development does not need these env vars; the site falls back to
+`http://localhost:8790`.
+
+## Secrets
+
+### Local
+
+Load runtime secrets from `.env`:
 
 ```bash
 source .env
 ```
 
-Wrangler picks up env vars for the runtime worker. The dashboard API
-does NOT use `.env` — its only secret (`PATRON_KEY`) is hardcoded as
-`"test"` in `dashboard-api/wrangler.toml` for local dev.
-
-This is deliberate: the dashboard API is a read-only observer and should
-never have access to runtime secrets (API keys, wallet keys, bot tokens).
-Least privilege.
-
-### Prod
-
-Secrets are set individually per worker using `wrangler secret put`.
-
-**Runtime Worker** (from repo root):
+### Staging runtime
 
 ```bash
-wrangler secret put OPENROUTER_API_KEY
-wrangler secret put SLACK_BOT_TOKEN
-wrangler secret put SLACK_CHANNEL_ID
-wrangler secret put SLACK_SIGNING_SECRET
-wrangler secret put WALLET_ADDRESS
-wrangler secret put WALLET_PRIVATE_KEY
+bash scripts/cloudflare/push-secrets.sh --env staging
 ```
 
-These are listed as comments in `wrangler.toml` for reference. Cloudflare
-encrypts them at rest and injects them as `env.SECRET_NAME` at runtime.
-
-**Dashboard API** (from `dashboard-api/`):
+### Production runtime
 
 ```bash
-wrangler secret put PATRON_KEY
+bash scripts/cloudflare/push-secrets.sh
 ```
 
-This overrides the `"test"` placeholder in `dashboard-api/wrangler.toml`.
-The dashboard worker only receives `PATRON_KEY` — it has no access to
-runtime secrets. This isolation is enforced by Cloudflare: each worker
-has its own secret namespace.
-
-### Why two workers, not one
-
-The runtime and dashboard API are separate Cloudflare Workers with
-separate secret namespaces. This enforces least privilege at the platform
-level — the dashboard can read KV but cannot access API keys, wallet
-keys, or bot tokens, even if the dashboard code is compromised.
-
-## KV seeding
-
-The seed script (`scripts/seed-local-kv.mjs`) writes to local SQLite by
-default. To seed remote KV for a fresh prod deployment:
+### Staging dashboard
 
 ```bash
-# TODO: Add remote seeding support to seed-local-kv.mjs
-# For now, use wrangler kv commands directly:
-# wrangler kv key put --namespace-id <id> "key" "value"
+bash scripts/cloudflare/push-secrets.sh --dashboard --env staging
 ```
 
-Both workers share the same KV namespace (same `id` in both `wrangler.toml`
-files). This is how the dashboard reads runtime state.
+### Production dashboard
 
-## Deploying
+```bash
+bash scripts/cloudflare/push-secrets.sh --dashboard
+```
 
-### Runtime Worker
+### Optional governor
+
+Only set these if you are actually deploying the governor:
+
+```bash
+bash scripts/cloudflare/push-secrets.sh --governor --env staging
+bash scripts/cloudflare/push-secrets.sh --governor
+```
+
+## Remote KV seeding
+
+Remote KV seeding is now handled by:
+
+```bash
+node scripts/cloudflare/seed-kv.mjs --account-id <cf-account-id> --namespace-id <kv-namespace-id>
+```
+
+Requirements:
+
+- `CLOUDFLARE_API_TOKEN` or `CF_API_TOKEN`
+- `CF_ACCOUNT_ID`/`CLOUDFLARE_ACCOUNT_ID` or `--account-id`
+- explicit `--namespace-id`
+
+Optional:
+
+- `AKASH_INFERENCE_SECRET` or `INFERENCE_SECRET`
+
+Dry run:
+
+```bash
+CLOUDFLARE_API_TOKEN=... \
+node scripts/cloudflare/seed-kv.mjs \
+  --account-id <cf-account-id> \
+  --namespace-id <kv-namespace-id> \
+  --dry-run
+```
+
+The script is safe to re-run. It overwrites keys deterministically from the
+same seed manifest.
+
+## Staging deploy sequence
+
+1. Push staging secrets.
+2. Seed staging KV.
+3. Deploy staging runtime:
+
+```bash
+npx wrangler deploy --env staging
+```
+
+4. Deploy staging dashboard API:
+
+```bash
+cd dashboard-api
+npx wrangler deploy --env staging
+cd ..
+```
+
+5. Build static site with staging API base:
+
+```bash
+SITE_API_BASE=https://api-staging.swayambhu.dev \
+npm run build:site
+```
+
+6. Deploy the static site to `staging.swayambhu.dev`.
+7. Verify:
+   - cron fires
+   - Slack webhook challenge succeeds
+   - chat flow works
+   - dashboard auth works
+   - reflections load
+   - runtime writes are visible in the dashboard
+   - at least one scheduled session completes cleanly
+
+## Production cutover sequence
+
+1. Record rollback targets first:
+   - `wrangler deployments list`
+   - previous dashboard deployment
+   - previous static site deployment
+2. Push production secrets.
+3. Seed production KV.
+4. Deploy production runtime:
 
 ```bash
 npx wrangler deploy
 ```
 
-Uses `wrangler.toml`, which declares KV namespace binding and cron triggers.
-
-### Dashboard API
+5. Deploy production dashboard API:
 
 ```bash
-cd dashboard-api && npx wrangler deploy
+cd dashboard-api
+npx wrangler deploy
+cd ..
 ```
 
-### After code changes to tools/prompts
+6. Build static site with production API base:
 
-If you changed files that get seeded into KV (tools, providers,
-modules, prompts, config), you need to re-seed remote KV after deploying.
-The governor reads module source from KV to build the runtime.
+```bash
+SITE_API_BASE=https://api.swayambhu.dev \
+npm run build:site
+```
 
-## Checklist
+7. Deploy the static site.
+8. Validate `workers.dev` / temporary site URLs.
+9. Attach custom domains:
+   - `swayambhu.dev` for the Pages site
+   - `api.swayambhu.dev` for the dashboard API worker
+   - `agent.swayambhu.dev` for the runtime worker
+10. Switch Slack webhook and public links.
 
-### First deploy
+## Rollback
 
-1. Set all runtime secrets: `wrangler secret put <NAME>` for each
-2. Set dashboard API secret: `cd dashboard-api && wrangler secret put PATRON_KEY`
-3. Seed remote KV with tools, modules, prompts, config
-4. Deploy runtime: `npx wrangler deploy`
-5. Deploy dashboard: `cd dashboard-api && npx wrangler deploy`
-6. Verify cron is firing: check Cloudflare dashboard for Worker invocations
-7. Verify the agent runs: check karma logs in KV
+Before each production deploy, record the last known good deployment IDs for:
 
-### Subsequent deploys
+- runtime worker
+- dashboard API worker
+- static site
 
-1. Deploy code: `npx wrangler deploy` (and/or dashboard)
-2. Re-seed KV if tools/modules/prompts/config changed
-3. Secrets only need updating if values changed (`wrangler secret put`)
+Rollback means:
+
+1. restore the previous runtime deployment
+2. restore the previous dashboard deployment
+3. restore the previous static site deployment
+4. restore KV from backup only if the deploy included incompatible data changes
+
+Do not rely on the governor for first production launch. Keep the first
+cutover manual and boring.
+
+## Email Relay Service
+
+If Akash hosts the email relay, run it as the `swayambhu` Unix user via a
+user-scoped systemd unit, not as a root-managed system service.
+
+Files:
+
+- unit template: `services/systemd/swayambhu-email-gateway.service`
+- env template: `services/systemd/email-gateway.env.example`
+- installer: `scripts/install-email-gateway-user-service.sh`
+
+On the Akash server, as the `swayambhu` user:
+
+```bash
+bash scripts/install-email-gateway-user-service.sh --write-env-only
+```
+
+Fill in `~/.config/swayambhu/email-gateway.env`, then run:
+
+```bash
+bash scripts/install-email-gateway-user-service.sh
+```
+
+For a separate dev mailbox/service on the same machine:
+
+```bash
+bash scripts/install-email-gateway-user-service.sh --instance dev --write-env-only
+bash scripts/install-email-gateway-user-service.sh --instance dev
+```
+
+The service will be installed at:
+
+- `~/.config/systemd/user/swayambhu-email-gateway.service`
+
+For a named instance such as `dev`:
+
+- `~/.config/systemd/user/swayambhu-email-gateway-dev.service`
+- `~/.config/swayambhu/email-gateway-dev.env`
+
+Required relay env vars on that host:
+
+- `EMAIL_RELAY_SECRET`
+- `GMAIL_USER`
+- `GMAIL_APP_PASSWORD`

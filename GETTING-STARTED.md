@@ -88,8 +88,8 @@ cd dashboard-api && npx wrangler deploy && cd ..       # dashboard API
 The push script reads your `.env` and pushes each secret to Cloudflare:
 
 ```bash
-bash scripts/push-secrets.sh              # main worker secrets
-bash scripts/push-secrets.sh --dashboard   # dashboard patron key
+bash scripts/cloudflare/push-secrets.sh              # main worker secrets
+bash scripts/cloudflare/push-secrets.sh --dashboard   # dashboard patron key
 ```
 
 ### Update Slack webhook URL
@@ -261,7 +261,7 @@ Generate agent DID: `node scripts/generate-identity.js`
 |--------|---------|
 | `scripts/setup.sh` | Interactive first-time setup |
 | `scripts/start.sh` | Start all local services |
-| `scripts/push-secrets.sh` | Push `.env` secrets to production |
+| `scripts/cloudflare/push-secrets.sh` | Push `.env` secrets to production |
 | `scripts/read-kv.mjs` | Read KV keys / list by prefix |
 | `scripts/delete-kv.mjs <key>` | Delete a KV key |
 | `scripts/reset-schedule.mjs` | Force next session |
