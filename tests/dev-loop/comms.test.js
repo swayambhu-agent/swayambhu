@@ -3,7 +3,7 @@ import {
   formatApprovalMessage,
   parseReply,
   sendSlack,
-} from "../../scripts/dev-loop/comms.mjs";
+} from "../../scripts/operator/dev-loop/comms.mjs";
 
 afterEach(() => {
   vi.restoreAllMocks();

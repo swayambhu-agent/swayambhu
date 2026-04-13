@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseDotEnv,
   buildRemoteCleanupCommand,
-} from "../../scripts/dev-loop/remote-compute.mjs";
+} from "../../scripts/operator/dev-loop/remote-compute.mjs";
 
 describe("parseDotEnv", () => {
   it("parses simple dotenv content and strips surrounding quotes", () => {

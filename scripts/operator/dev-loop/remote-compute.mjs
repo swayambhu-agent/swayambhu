@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
-const ROOT = join(import.meta.dirname, "../..");
+const ROOT = join(import.meta.dirname, "../../..");
 const ENV_PATH = process.env.SWAYAMBHU_ENV_FILE || join(ROOT, ".env");
 const DEFAULT_BASE_URL = process.env.SWAYAMBHU_COMPUTE_BASE_URL
   || process.env.SWAYAMBHU_DEV_LOOP_JOBS_BASE_URL

@@ -4,9 +4,9 @@
 // CC analysis spawns a fresh `claude -p` process per cycle for stages 3-6.
 //
 // Usage:
-//   node scripts/dev-loop/loop.mjs              # run indefinitely
-//   node scripts/dev-loop/loop.mjs --once       # single cycle
-//   node scripts/dev-loop/loop.mjs --cold-start # first cycle uses --reset-all-state
+//   node scripts/operator/dev-loop/loop.mjs              # run indefinitely
+//   node scripts/operator/dev-loop/loop.mjs --once       # single cycle
+//   node scripts/operator/dev-loop/loop.mjs --cold-start # first cycle uses --reset-all-state
 
 import {
   STATE_DIR,
@@ -20,10 +20,10 @@ import {
 } from './state.mjs';
 import { runObserve } from './observe.mjs';
 import { runClassify } from './classify.mjs';
-import { buildContextFromAnalysis } from '../../lib/dev-loop/context.js';
+import { buildContextFromAnalysis } from '../../../lib/dev-loop/context.js';
 import { runVerify } from './verify.mjs';
 import { sendSlack, sendEmail, formatApprovalMessage, checkSlackReplies, checkEmailReplies } from './comms.mjs';
-import { generateApprovalId, routeProposal } from '../../lib/dev-loop/decide.js';
+import { generateApprovalId, routeProposal } from '../../../lib/dev-loop/decide.js';
 import { ensureServices, restartServices } from './services.mjs';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
@@ -31,11 +31,11 @@ import { createHash } from 'crypto';
 import { spawn, execSync, execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { collectReasoningArtifacts, writeReasoningArtifacts } from "../../lib/reasoning.js";
+import { collectReasoningArtifacts, writeReasoningArtifacts } from "../../../lib/reasoning.js";
 import { getDefaultServiceUrls } from './services.mjs';
 
 // Load .env so comms (Slack/email) work without manual `source .env`
-const __root = join(dirname(fileURLToPath(import.meta.url)), '../..');
+const __root = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const envPath = join(__root, '.env');
 if (existsSync(envPath)) {
   for (const line of readFileSync(envPath, 'utf-8').split('\n')) {

@@ -11,9 +11,9 @@ import {
   detectCompletion,
   chooseStrategy,
   pollForNewSession,
-} from "../../lib/dev-loop/observe.js";
+} from "../../../lib/dev-loop/observe.js";
 
-const ROOT = join(import.meta.dirname, "../..");
+const ROOT = join(import.meta.dirname, "../../..");
 const DEFAULT_URLS = getDefaultServiceUrls();
 const KERNEL_URL = process.env.SWAYAMBHU_KERNEL_URL || DEFAULT_URLS.kernelUrl;
 const DASHBOARD_URL = process.env.SWAYAMBHU_DASHBOARD_URL || DEFAULT_URLS.dashboardUrl;

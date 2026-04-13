@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { waitForRestartBoundary } from "../../scripts/dev-loop/services.mjs";
+import { waitForRestartBoundary } from "../../scripts/operator/dev-loop/services.mjs";
 
 describe("waitForRestartBoundary", () => {
   afterEach(() => {

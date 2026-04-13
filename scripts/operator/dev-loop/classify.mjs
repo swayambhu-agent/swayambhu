@@ -16,7 +16,7 @@ export {
   auditMetaPolicyNotes,
   auditKarma,
   dedup,
-} from "../../lib/dev-loop/classify.js";
+} from "../../../lib/dev-loop/classify.js";
 import {
   auditDesires,
   auditPatterns,
@@ -27,7 +27,7 @@ import {
   auditMetaPolicyNotes,
   auditKarma,
   dedup,
-} from "../../lib/dev-loop/classify.js";
+} from "../../../lib/dev-loop/classify.js";
 
 // ── Main ────────────────────────────────────────────────────
 

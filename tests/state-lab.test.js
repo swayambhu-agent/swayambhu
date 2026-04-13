@@ -10,7 +10,7 @@ import {
   buildStartEnv,
   runStaticValidation,
   sanitizeName,
-} from "../scripts/state-lab.mjs";
+} from "../scripts/operator/state-lab.mjs";
 import {
   compareContinuationSummaries,
   getContinuationConfig,

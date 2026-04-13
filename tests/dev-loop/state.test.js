@@ -12,7 +12,7 @@ import {
   moveQueue,
   saveRun,
   STATE_DIR,
-} from "../../scripts/dev-loop/state.mjs";
+} from "../../scripts/operator/dev-loop/state.mjs";
 
 const TEST_DIR = "/tmp/dev-loop-state-test";
 

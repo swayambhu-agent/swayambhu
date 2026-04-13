@@ -9,10 +9,12 @@ import { join } from "path";
 import {
   getDefaultServiceUrls,
   resolveLocalServiceConfig,
-} from "../../lib/local-services.js";
+} from "../../../lib/local-services.js";
 import { STATE_DIR } from "./state.mjs";
 
-const REPO_ROOT = join(import.meta.dirname, "../..");
+export { getDefaultServiceUrls } from "../../../lib/local-services.js";
+
+const REPO_ROOT = join(import.meta.dirname, "../../..");
 const DEFAULT_STATE_LAB_DIR = process.env.SWAYAMBHU_STATE_LAB_DIR || "/home/swami/swayambhu/state-lab";
 const ACTIVE_UI_PATH = join(DEFAULT_STATE_LAB_DIR, "active-ui.json");
 const DEFAULT_SERVICE_MODE = process.env.SWAYAMBHU_DEV_LOOP_SERVICE_MODE
@@ -86,7 +88,7 @@ function spawnManagedStart(config, { resetAllState = false } = {}) {
   let child;
 
   if (config.mode === "state_lab_active") {
-    const args = ["scripts/state-lab.mjs", "start", config.branch, "--no-governor"];
+    const args = ["scripts/operator/state-lab.mjs", "start", config.branch, "--no-governor"];
     if (resetAllState) args.push("--reset-all-state", "--yes");
     for (const override of overrides) args.push("--set", override);
     child = spawn("node", args, {

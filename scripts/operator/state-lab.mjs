@@ -10,29 +10,29 @@ import { dirname, join, relative, resolve } from "path";
 import { createHash } from "crypto";
 import { fileURLToPath, pathToFileURL } from "url";
 
-import { Kernel } from "../kernel.js";
-import { filePathToKey, keyToFilePath } from "../governor/builder.js";
+import { Kernel } from "../../kernel.js";
+import { filePathToKey, keyToFilePath } from "../../governor/builder.js";
 import {
   hasComparativeStaticChecks,
   normalizeStaticChecks,
   retargetStaticCommandToWorkspace,
   summarizeBatchSummary,
-} from "../lib/state-lab/validation.js";
+} from "../../lib/state-lab/validation.js";
 import {
   applyWorkspaceCandidateChange,
   loadLabHypothesis,
   materializeStateLabWorkspace,
   resolveLabTargetRelativePath,
   resolveLabWorkspacePath,
-} from "../lib/state-lab/workspace.js";
+} from "../../lib/state-lab/workspace.js";
 import {
   runLabRun as runLabRunCommand,
-} from "../lib/state-lab/lab-run.js";
-import * as llm_balance from "../providers/llm_balance.js";
-import * as wallet_balance from "../providers/wallet_balance.js";
-import { writeReasoningArtifacts } from "../lib/reasoning.js";
-import { normalizeMetaPolicyNotes, persistMetaPolicyNotes } from "../meta-policy.js";
-import { DEFAULT_LOCAL_STATE_DIR, dispose, getKV, root as REPO_ROOT } from "./shared.mjs";
+} from "../../lib/state-lab/lab-run.js";
+import * as llm_balance from "../../providers/llm_balance.js";
+import * as wallet_balance from "../../providers/wallet_balance.js";
+import { writeReasoningArtifacts } from "../../lib/reasoning.js";
+import { normalizeMetaPolicyNotes, persistMetaPolicyNotes } from "../../meta-policy.js";
+import { DEFAULT_LOCAL_STATE_DIR, dispose, getKV, root as REPO_ROOT } from "../shared.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STATE_LAB_DIR = "/home/swami/swayambhu/state-lab";
@@ -81,15 +81,15 @@ loadDotEnv();
 function usage() {
   console.log([
     "Usage:",
-    "  node scripts/state-lab.mjs save <snapshot-name> [--from <ref>]",
-    "  node scripts/state-lab.mjs branch <source-ref> <branch-name>",
-    "  node scripts/state-lab.mjs materialize-dr <source-ref> <branch-name> <payload-path> [--runner <codex|claude>]",
-    "  node scripts/state-lab.mjs lab-run <source-ref> <hypothesis-path>",
-    "  node scripts/state-lab.mjs promote <branch-name>",
-    "  node scripts/state-lab.mjs list",
-    "  node scripts/state-lab.mjs show <ref>",
-    "  node scripts/state-lab.mjs activate <branch-name>",
-    "  node scripts/state-lab.mjs start <branch-name> [start.sh args...]",
+    "  node scripts/operator/state-lab.mjs save <snapshot-name> [--from <ref>]",
+    "  node scripts/operator/state-lab.mjs branch <source-ref> <branch-name>",
+    "  node scripts/operator/state-lab.mjs materialize-dr <source-ref> <branch-name> <payload-path> [--runner <codex|claude>]",
+    "  node scripts/operator/state-lab.mjs lab-run <source-ref> <hypothesis-path>",
+    "  node scripts/operator/state-lab.mjs promote <branch-name>",
+    "  node scripts/operator/state-lab.mjs list",
+    "  node scripts/operator/state-lab.mjs show <ref>",
+    "  node scripts/operator/state-lab.mjs activate <branch-name>",
+    "  node scripts/operator/state-lab.mjs start <branch-name> [start.sh args...]",
     "",
     "Refs:",
     "  current",
@@ -279,7 +279,7 @@ async function ensureGatewayRunning(proxyKind, port) {
     throw new Error(`Port ${port} is occupied by a non-state-lab ${proxyKind} gateway process`);
   }
 
-  const child = spawn("node", ["scripts/state-lab-gateway.mjs"], {
+  const child = spawn("node", ["scripts/operator/state-lab-gateway.mjs"], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,

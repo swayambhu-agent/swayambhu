@@ -5,7 +5,7 @@ import { execSync } from "child_process";
 import { join } from "path";
 import { saveRun } from "./state.mjs";
 
-const ROOT = join(import.meta.dirname, "../..");
+const ROOT = join(import.meta.dirname, "../../..");
 
 // ── Shell wrappers ─────────────────────────────────────────
 

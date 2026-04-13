@@ -18,7 +18,7 @@ import * as reasoning from "../../lib/reasoning.js";
 
 describe("dev-loop reasoning prompt contract", () => {
   it("tells CC to read reasoning artifacts and emit artifact_candidate metadata", () => {
-    const prompt = readFileSync(new URL("../../scripts/dev-loop/cc-analyze.md", import.meta.url), "utf8");
+    const prompt = readFileSync(new URL("../../scripts/operator/dev-loop/cc-analyze.md", import.meta.url), "utf8");
 
     expect(prompt).toContain("/home/swayambhu/reasoning/INDEX.md");
     expect(prompt).toContain("artifact_candidate");
@@ -29,14 +29,14 @@ describe("dev-loop reasoning prompt contract", () => {
 
 describe("dev-loop reasoning integration", () => {
   it("imports permanent helpers from lib/reasoning.js", () => {
-    const loopSource = readFileSync(new URL("../../scripts/dev-loop/loop.mjs", import.meta.url), "utf8");
+    const loopSource = readFileSync(new URL("../../scripts/operator/dev-loop/loop.mjs", import.meta.url), "utf8");
 
-    expect(loopSource).toContain('from "../../lib/reasoning.js"');
-    expect(loopSource).not.toContain("scripts/dev-loop/reasoning");
+    expect(loopSource).toContain('from "../../../lib/reasoning.js"');
+    expect(loopSource).not.toContain("scripts/operator/dev-loop/reasoning");
   });
 
   it("compiles converged verdicts through the shared helper module", async () => {
-    const { maybeCompileReasoningArtifacts } = await import("../../scripts/dev-loop/loop.mjs");
+    const { maybeCompileReasoningArtifacts } = await import("../../scripts/operator/dev-loop/loop.mjs");
 
     await maybeCompileReasoningArtifacts("/tmp/run-1", {
       decisions: [

@@ -10,7 +10,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { STATE_DIR } from './state.mjs';
 import { getDefaultServiceUrls } from './services.mjs';
-import { parseJobOutput } from '../../lib/parse-job-output.js';
+import { parseJobOutput } from '../../../lib/parse-job-output.js';
 import {
   DR_CONTEXT_KEYS,
   rewriteReasoningPathRefs,
@@ -18,10 +18,10 @@ import {
   buildCompactSnapshotSummary,
   scoreDrPayload,
   compareScoredOutputs,
-} from '../../lib/dev-loop/dr-compare.js';
+} from '../../../lib/dev-loop/dr-compare.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, '../..');
+const ROOT = join(__dirname, '../../..');
 
 const envPath = join(ROOT, '.env');
 if (existsSync(envPath)) {
@@ -340,7 +340,7 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log('Usage: node scripts/dev-loop/dr-compare.mjs [--timestamp ID] [--reasoning-dir PATH] [--claude-model MODEL] [--codex-model MODEL] [--codex-profile PROFILE] [--timeout-ms N]');
+    console.log('Usage: node scripts/operator/dev-loop/dr-compare.mjs [--timestamp ID] [--reasoning-dir PATH] [--claude-model MODEL] [--codex-model MODEL] [--codex-profile PROFILE] [--timeout-ms N]');
     process.exit(0);
   }
 
