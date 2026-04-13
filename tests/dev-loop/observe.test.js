@@ -3,8 +3,8 @@ import {
   detectCompletion,
   chooseStrategy,
   pollForNewSession,
-} from "../../lib/dev-loop/observe.js";
-// Pure observe logic now lives in lib/dev-loop/observe.js.
+} from "../../lib/operator/dev-loop/observe.js";
+// Pure observe logic now lives in lib/operator/dev-loop/observe.js.
 
 // ── detectCompletion ────────────────────────────────────────
 

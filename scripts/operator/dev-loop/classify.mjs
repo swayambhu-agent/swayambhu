@@ -1,5 +1,5 @@
 // Classify stage — cognitive architecture audit and issue taxonomy.
-// Pure audit logic lives in lib/dev-loop/classify.js; this file keeps the
+// Pure audit logic lives in lib/operator/dev-loop/classify.js; this file keeps the
 // persistence/orchestration boundary.
 
 import { listProbes, saveProbe, saveRun } from "./state.mjs";
@@ -16,7 +16,7 @@ export {
   auditMetaPolicyNotes,
   auditKarma,
   dedup,
-} from "../../../lib/dev-loop/classify.js";
+} from "../../../lib/operator/dev-loop/classify.js";
 import {
   auditDesires,
   auditPatterns,
@@ -27,7 +27,7 @@ import {
   auditMetaPolicyNotes,
   auditKarma,
   dedup,
-} from "../../../lib/dev-loop/classify.js";
+} from "../../../lib/operator/dev-loop/classify.js";
 
 // ── Main ────────────────────────────────────────────────────
 

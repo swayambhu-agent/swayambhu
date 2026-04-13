@@ -5,7 +5,7 @@ import {
   scoreDrPayload,
   compareScoredOutputs,
   rewriteReasoningPathRefs,
-} from '../../lib/dev-loop/dr-compare.js';
+} from '../../lib/operator/dev-loop/dr-compare.js';
 
 describe('buildComparePrompt', () => {
   it('wraps the base prompt with local snapshot instructions', () => {

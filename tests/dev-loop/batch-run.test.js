@@ -4,7 +4,7 @@ import {
   parseArgs,
   summarizeClassification,
   summarizeProactivity,
-} from "../../lib/dev-loop/batch-run.js";
+} from "../../lib/operator/dev-loop/batch-run.js";
 
 describe("dev-loop batch-run helpers", () => {
   it("parses batch-run args", () => {

@@ -1,5 +1,5 @@
 // Observe stage — trigger an agent session and collect results.
-// Reusable polling/strategy logic lives in lib/dev-loop/observe.js.
+// Reusable polling/strategy logic lives in lib/operator/dev-loop/observe.js.
 
 import { execFileSync, execSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
@@ -11,7 +11,7 @@ import {
   detectCompletion,
   chooseStrategy,
   pollForNewSession,
-} from "../../../lib/dev-loop/observe.js";
+} from "../../../lib/operator/dev-loop/observe.js";
 
 const ROOT = join(import.meta.dirname, "../../..");
 const DEFAULT_URLS = getDefaultServiceUrls();

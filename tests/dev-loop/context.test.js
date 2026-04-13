@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildContextFromAnalysis } from '../../lib/dev-loop/context.js';
+import { buildContextFromAnalysis } from '../../lib/operator/dev-loop/context.js';
 
 const MOCK_ANALYSIS = {
   desires: {

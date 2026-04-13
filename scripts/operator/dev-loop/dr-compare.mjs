@@ -18,7 +18,7 @@ import {
   buildCompactSnapshotSummary,
   scoreDrPayload,
   compareScoredOutputs,
-} from '../../../lib/dev-loop/dr-compare.js';
+} from '../../../lib/operator/dev-loop/dr-compare.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../../..');

@@ -20,10 +20,10 @@ import {
 } from './state.mjs';
 import { runObserve } from './observe.mjs';
 import { runClassify } from './classify.mjs';
-import { buildContextFromAnalysis } from '../../../lib/dev-loop/context.js';
+import { buildContextFromAnalysis } from '../../../lib/operator/dev-loop/context.js';
 import { runVerify } from './verify.mjs';
 import { sendSlack, sendEmail, formatApprovalMessage, checkSlackReplies, checkEmailReplies } from './comms.mjs';
-import { generateApprovalId, routeProposal } from '../../../lib/dev-loop/decide.js';
+import { generateApprovalId, routeProposal } from '../../../lib/operator/dev-loop/decide.js';
 import { ensureServices, restartServices } from './services.mjs';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';

@@ -3,7 +3,7 @@ import {
   shouldAutoApply,
   routeProposal,
   generateApprovalId,
-} from "../../lib/dev-loop/decide.js";
+} from "../../lib/operator/dev-loop/decide.js";
 
 // ── routeProposal ─────────────────────────────────────────
 
