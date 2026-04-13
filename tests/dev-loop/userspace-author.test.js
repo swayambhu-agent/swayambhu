@@ -206,7 +206,7 @@ describe("userspace author normalization", () => {
     });
 
     expect(invocation.args).toEqual([
-      "scripts/state-lab-userspace-review.mjs",
+      "lib/userspace-review/review-run.js",
       "--review-note-key", "review_note:userspace_review:x_test:d0:000:demo",
       "--label", "dr2-demo",
       "--runner", "codex",
@@ -240,7 +240,7 @@ describe("userspace author normalization", () => {
     });
 
     expect(invocation.args).toEqual([
-      "scripts/state-lab-userspace-review.mjs",
+      "lib/userspace-review/review-run.js",
       "--review-note-key", "review_note:userspace_review:x_test:d0:000:demo",
       "--label", "dr2-demo",
       "--runner", "claude",
@@ -260,7 +260,7 @@ describe("userspace author normalization", () => {
       });
 
       expect(invocation.args).toEqual([
-        "scripts/state-lab-userspace-review.mjs",
+        "lib/userspace-review/review-run.js",
         "--review-note-key", "review_note:userspace_review:x_test:d0:000:demo",
         "--label", "dr2-demo",
         "--runner", "codex",
