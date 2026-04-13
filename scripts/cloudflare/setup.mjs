@@ -44,8 +44,8 @@ function printHelp() {
   console.log(`Cloudflare bootstrap for Swayambhu.
 
 Usage:
-  node scripts/cloudflare/bootstrap-prod.mjs [--env staging]
-  node scripts/cloudflare/bootstrap-prod.mjs --env prod --prod
+  node scripts/cloudflare/setup.mjs [--env staging]
+  node scripts/cloudflare/setup.mjs --env prod --prod
 
 Optional flags:
   --env <staging|prod>               Default: staging
