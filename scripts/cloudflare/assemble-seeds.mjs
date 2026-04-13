@@ -42,7 +42,7 @@ export async function collectSeedEntries({
     const value = readJSON(file);
     if (key === "config:defaults") {
       if (jobsBaseUrl || target.jobsBaseUrl) value.jobs.base_url = jobsBaseUrl || target.jobsBaseUrl;
-      if (jobsBaseDir) value.jobs.base_dir = jobsBaseDir;
+      if (jobsBaseDir || target.jobsBaseDir) value.jobs.base_dir = jobsBaseDir || target.jobsBaseDir;
       if (emailRelayUrl || target.emailRelayUrl) {
         value.email = {
           ...(value.email || {}),
@@ -169,7 +169,7 @@ export async function collectSeedEntries({
 
   const defaults = readJSON("config/defaults.json");
   if (jobsBaseUrl || target.jobsBaseUrl) defaults.jobs.base_url = jobsBaseUrl || target.jobsBaseUrl;
-  if (jobsBaseDir) defaults.jobs.base_dir = jobsBaseDir;
+  if (jobsBaseDir || target.jobsBaseDir) defaults.jobs.base_dir = jobsBaseDir || target.jobsBaseDir;
   if (emailRelayUrl || target.emailRelayUrl) {
     defaults.email = {
       ...(defaults.email || {}),

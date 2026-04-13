@@ -112,13 +112,14 @@
       "/home/swami/swayambhu",
       "/home/swami/swayambhu/repo",
       "/home/swayambhu/reasoning",
-      "/home/swayambhu/jobs"
+      "/home/swayambhu/jobs",
+      "/srv/swayambhu/jobs"
     ]
   },
   "jobs": {
     "base_url": "https://akash.swayambhu.dev",
     "callback_url": "https://swayambhu.dev",
-    "base_dir": "/home/swayambhu/jobs",
+    "base_dir": "/srv/swayambhu/jobs",
     "runner": "codex",
     "runner_model": "gpt-5.4",
     "cc_model": "opus",

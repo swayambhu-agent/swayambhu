@@ -271,6 +271,98 @@ describe("session with empty desires", () => {
     );
   });
 
+  it("queues another immediate bootstrap wake when first DR dispatch fails", async () => {
+    K = makeMockK({
+      session_schedule: {
+        next_session_after: new Date(Date.now() - 1000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 0,
+      },
+      "dr:state:1": {
+        status: "idle",
+        generation: 0,
+        consecutive_failures: 0,
+      },
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        deep_reflect: { ttl_minutes: 120 },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+    K.executeToolCall = vi.fn(async () => ({ ok: false }));
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const drState = await K.kvGet("dr:state:1");
+    expect(drState.status).toBe("failed");
+    expect(drState.consecutive_failures).toBe(1);
+    expect(K.emitEvent).toHaveBeenCalledWith(
+      "wake",
+      expect.objectContaining({
+        origin: "internal",
+        trigger: expect.objectContaining({
+          actor: "bootstrap_fast",
+          context: expect.objectContaining({
+            bootstrap_fast: true,
+            immediate: true,
+          }),
+        }),
+      }),
+    );
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "bootstrap_fast_wake_enqueued",
+        dr_status: "failed",
+      }),
+    );
+  });
+
+  it("retries a failed pre-bootstrap DR immediately on the next session", async () => {
+    K = makeMockK({
+      session_counter: 1,
+      session_schedule: {
+        next_session_after: new Date(Date.now() - 1000).toISOString(),
+        interval_seconds: 3600,
+        no_action_streak: 1,
+      },
+      "dr:state:1": {
+        status: "failed",
+        generation: 0,
+        consecutive_failures: 1,
+        last_failure_session: 1,
+      },
+      "prompt:deep_reflect": "Reflect deeply on the bootstrap state.",
+    }, {
+      defaults: {
+        act: { model: "test-model", effort: "low", max_output_tokens: 2000 },
+        reflect: { model: "test-model" },
+        deep_reflect: { ttl_minutes: 120 },
+        session_budget: { max_cost: 0.50 },
+        schedule: { interval_seconds: 3600 },
+        execution: { max_steps: { act: 5 } },
+      },
+    });
+    K.executeToolCall = vi.fn(async () => ({ ok: true, job_id: "job_dr_1", workdir: "/srv/swayambhu/jobs/job_dr_1" }));
+
+    await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
+
+    const drState = await K.kvGet("dr:state:1");
+    expect(drState.status).toBe("dispatched");
+    expect(drState.job_id).toBe("job_dr_1");
+    expect(drState.generation).toBe(1);
+    expect(K.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "dr_dispatched",
+        job_id: "job_dr_1",
+        generation: 1,
+      }),
+    );
+  });
+
   it("runs planning when a pending request exists even if desires are empty", async () => {
     K = makeMockK({
       "session_request:req_1": {

@@ -19,6 +19,14 @@ function resolveRunnerModel(runner, jobs = {}) {
   return jobs.runner_model || jobs.cc_model || "";
 }
 
+function normalizeJobsBaseDir(baseDir) {
+  if (baseDir === "/home/swayambhu/jobs") return "/srv/swayambhu/jobs";
+  if (typeof baseDir === "string" && baseDir.startsWith("/home/swayambhu/jobs/")) {
+    return `/srv/swayambhu/jobs/${baseDir.slice("/home/swayambhu/jobs/".length)}`;
+  }
+  return baseDir;
+}
+
 export async function execute({ type, prompt, context_keys, include_code, command, provider, secrets, fetch, kv, config, cwd, subagent = "codex" }) {
   if (!type) return { ok: false, error: "type is required (cc_analysis | subagent_task | custom)" };
   if (!prompt && type !== "custom") return { ok: false, error: "prompt is required" };
@@ -26,7 +34,7 @@ export async function execute({ type, prompt, context_keys, include_code, comman
 
   const jobs = config?.jobs || {};
   const baseUrl = jobs.base_url || "https://akash.swayambhu.dev";
-  const baseDir = jobs.base_dir || "/home/swayambhu/jobs";
+  const baseDir = normalizeJobsBaseDir(jobs.base_dir || "/srv/swayambhu/jobs");
   const maxConcurrent = jobs.max_concurrent_jobs || 2;
   const ttlMinutes = jobs.default_ttl_minutes || 120;
   const callbackBase = typeof jobs.callback_url === "string" && /^https?:\/\//.test(jobs.callback_url)

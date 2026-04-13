@@ -1757,6 +1757,30 @@ describe("start_job", () => {
     expect(record.callback_secret).toBeUndefined();
   });
 
+  it("normalizes the legacy jobs base dir to the current service root", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/srv/swayambhu/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async () => ({ ok: true, output: [{ data: "12345\r\n" }] })),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "custom",
+      command: "echo hello",
+      prompt: "test prompt",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, base_dir: "/home/swayambhu/jobs" } },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(provider.upload).toHaveBeenCalledWith(expect.objectContaining({
+      directory: "/srv/swayambhu/jobs",
+    }));
+    expect(provider.call).toHaveBeenCalledOnce();
+    expect(provider.call.mock.calls[0][0].command).toContain("/srv/swayambhu/jobs/");
+  });
+
   it("returns upload failure before calling execute", async () => {
     const provider = {
       upload: vi.fn(async () => ({ ok: false, error: "500 Internal Server Error", detail: "upload failed" })),

@@ -246,10 +246,14 @@ function isBootstrapImmediateWake(wake) {
     && wake?.context?.immediate === true;
 }
 
-function shouldQueueBootstrapImmediateWake({ desireCount, drState }) {
+function shouldQueueBootstrapImmediateWake({ desireCount, drState, retryLimit = 5 }) {
+  const status = drState?.status || "idle";
+  const lastAppliedSession = drState?.last_applied_session ?? null;
+  const consecutiveFailures = Number(drState?.consecutive_failures || 0);
   return desireCount === 0
-    && (drState?.generation || 0) === 0
-    && (drState?.status || "idle") === "idle";
+    && lastAppliedSession == null
+    && (status === "idle" || status === "failed")
+    && consecutiveFailures < retryLimit;
 }
 
 async function hasPendingBootstrapImmediateWake(K) {
@@ -2080,9 +2084,11 @@ async function drCycle(K, { phase = "post", events = [] } = {}) {
   }
 
   if (state.status === "failed") {
-    const backoff = Math.min(20, Math.pow(2, state.consecutive_failures || 1));
-    if (state.last_failure_session && sessionCount - state.last_failure_session < backoff) return { handledJobIds };
-
+    const bootstrapIncomplete = state.last_applied_session == null;
+    if (!bootstrapIncomplete) {
+      const backoff = Math.min(20, Math.pow(2, state.consecutive_failures || 1));
+      if (state.last_failure_session && sessionCount - state.last_failure_session < backoff) return { handledJobIds };
+    }
     state.status = "idle";
     state.next_due_session = sessionCount;
     await K.writeLifecycleState("dr:state:1", state);

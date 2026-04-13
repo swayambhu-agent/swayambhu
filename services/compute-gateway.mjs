@@ -17,10 +17,12 @@ const SECRET = process.env.COMPUTER_API_KEY;
 const JOBS_ROOT = process.env.JOBS_ROOT || "/srv/swayambhu/jobs";
 const ENABLE_EXECUTE = process.env.COMPUTE_ENABLE_EXECUTE === "1";
 const MAX_BODY = Number(process.env.COMPUTE_MAX_BODY_BYTES || 262144);
+const MAX_UPLOAD_BYTES = Number(process.env.COMPUTE_MAX_UPLOAD_BYTES || 52428800);
 const MAX_WAIT_SECONDS = Number(process.env.COMPUTE_MAX_WAIT_SECONDS || 300);
 const MAX_OUTPUT_BYTES = Number(process.env.COMPUTE_MAX_OUTPUT_BYTES || 1048576);
 const DEEP_REFLECT_RUNNER = process.env.DEEP_REFLECT_RUNNER || "/usr/local/bin/sway-deep-reflect-runner";
 const DEEP_REFLECT_MAX_CONCURRENT = Number(process.env.DEEP_REFLECT_MAX_CONCURRENT || 1);
+const LEGACY_JOBS_ROOT = process.env.LEGACY_JOBS_ROOT || "/home/swayambhu/jobs";
 
 if (!SECRET) {
   console.error("Missing COMPUTER_API_KEY");
@@ -42,6 +44,18 @@ async function readBody(req) {
   return body ? JSON.parse(body) : {};
 }
 
+async function readBinaryBody(req, limit = MAX_UPLOAD_BYTES) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+    if (total > limit) throw new Error(`body too large (max ${limit} bytes)`);
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
+}
+
 function json(res, status, data) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
@@ -51,6 +65,57 @@ function clampWait(rawWait) {
   const wait = Number(rawWait || 60);
   if (!Number.isFinite(wait) || wait < 1) return 60;
   return Math.min(wait, MAX_WAIT_SECONDS);
+}
+
+function isWithinRoot(candidate, root) {
+  const resolvedCandidate = path.resolve(candidate);
+  const resolvedRoot = path.resolve(root);
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+function normalizeCompatDirectory(rawDirectory) {
+  if (typeof rawDirectory !== "string" || !rawDirectory.trim()) {
+    throw new Error("directory is required");
+  }
+  let directory = path.resolve(rawDirectory.trim());
+  const legacyRoot = path.resolve(LEGACY_JOBS_ROOT);
+  const jobsRoot = path.resolve(JOBS_ROOT);
+  if (directory === legacyRoot || directory.startsWith(`${legacyRoot}${path.sep}`)) {
+    directory = path.join(jobsRoot, path.relative(legacyRoot, directory));
+  }
+  if (!isWithinRoot(directory, jobsRoot)) {
+    throw new Error(`directory must stay within ${jobsRoot}`);
+  }
+  return directory;
+}
+
+function parseMultipartUpload(body, contentType) {
+  const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || "");
+  const boundaryValue = match?.[1] || match?.[2];
+  if (!boundaryValue) throw new Error("missing multipart boundary");
+
+  const boundary = Buffer.from(`--${boundaryValue}`);
+  const headerStart = body.indexOf(boundary);
+  if (headerStart < 0) throw new Error("multipart boundary not found");
+
+  const contentHeaderStart = headerStart + boundary.length + 2; // trailing CRLF
+  const headerEnd = body.indexOf(Buffer.from("\r\n\r\n"), contentHeaderStart);
+  if (headerEnd < 0) throw new Error("multipart headers not found");
+
+  const headers = body.slice(contentHeaderStart, headerEnd).toString("utf8");
+  const filenameMatch = /filename="([^"]+)"/i.exec(headers);
+  if (!filenameMatch?.[1]) throw new Error("multipart upload missing filename");
+  const filename = path.basename(filenameMatch[1]);
+  if (!filename || filename === "." || filename === "..") throw new Error("invalid filename");
+
+  const fileStart = headerEnd + 4;
+  const endMarker = body.indexOf(Buffer.from(`\r\n--${boundaryValue}`), fileStart);
+  if (endMarker < 0) throw new Error("multipart file terminator not found");
+
+  return {
+    filename,
+    bytes: body.slice(fileStart, endMarker),
+  };
 }
 
 function sanitizeJobId(raw) {
@@ -350,6 +415,24 @@ const server = createServer(async (req, res) => {
     } catch (err) {
       console.error(`[COMPUTE] Failed to start deep_reflect job: ${err.message || String(err)}`);
       return json(res, 500, { ok: false, error: err.message || String(err) });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/files/upload") {
+    try {
+      const directory = normalizeCompatDirectory(url.searchParams.get("directory"));
+      const body = await readBinaryBody(req);
+      const { filename, bytes } = parseMultipartUpload(body, req.headers["content-type"] || "");
+      await fs.mkdir(directory, { recursive: true });
+      const targetPath = path.join(directory, filename);
+      await fs.writeFile(targetPath, bytes);
+      return json(res, 200, {
+        ok: true,
+        path: targetPath,
+        size: bytes.length,
+      });
+    } catch (err) {
+      return json(res, 400, { ok: false, error: err.message || String(err) });
     }
   }
 
