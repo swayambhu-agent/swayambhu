@@ -4,8 +4,10 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "setup:cloudflare:prod": "node scripts/cloudflare/bootstrap-prod.mjs",
+    "setup:cloudflare": "node scripts/cloudflare/bootstrap-prod.mjs",
+    "setup:cloudflare:prod": "node scripts/cloudflare/bootstrap-prod.mjs --env prod --prod",
     "seed:cloudflare:kv": "node scripts/cloudflare/seed-kv.mjs",
+    "seed:cloudflare:kv:prod": "node scripts/cloudflare/seed-kv.mjs --env prod --prod",
     "build:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --minify && npx @tailwindcss/cli -i site/patron/src/input.css -o site/patron/app.css --minify",
     "watch:dashboard": "esbuild site/patron/src/main.jsx --bundle --outfile=site/patron/app.js --sourcemap --jsx=automatic --format=esm --target=es2020 --watch"
   },

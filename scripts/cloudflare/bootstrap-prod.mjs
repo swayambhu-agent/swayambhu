@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { randomBytes } from "crypto";
 import { resolve } from "path";
 import { spawnSync } from "child_process";
+import { cloudflareTargetConfig, parseTargetEnv } from "./target-env.mjs";
 
 const root = resolve(new URL("../..", import.meta.url).pathname);
 
@@ -21,6 +22,8 @@ function parseArgs(argv) {
     runtimeEnvFile: null,
     operatorEnvFile: null,
     workersSubdomain: null,
+    env: null,
+    prod: false,
     help: false,
   };
 
@@ -38,29 +41,32 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Production Cloudflare bootstrap for Swayambhu.
+  console.log(`Cloudflare bootstrap for Swayambhu.
 
 Usage:
-  node scripts/cloudflare/bootstrap-prod.mjs
+  node scripts/cloudflare/bootstrap-prod.mjs [--env staging]
+  node scripts/cloudflare/bootstrap-prod.mjs --env prod --prod
 
 Optional flags:
-  --domain <apex-domain>              Default: swayambhu.dev
-  --api-host <hostname>               Default: api.<domain>
-  --agent-host <hostname>             Default: agent.<domain>
-  --site-project <pages-project>      Default: swayambhu-site
-  --runtime-name <worker-name>        Default: swayambhu-cns
-  --dashboard-name <worker-name>      Default: swayambhu-dashboard-api
-  --kv-title <namespace-title>        Default: swayambhu-prod-kv
+  --env <staging|prod>               Default: staging
+  --prod                             Required confirmation when using --env prod
+  --zone <cloudflare-zone>            Default: target env zone
+  --domain <hostname>                 Default: target env site hostname
+  --api-host <hostname>               Default: target env API hostname
+  --agent-host <hostname>             Default: target env agent hostname
+  --site-project <pages-project>      Default: target env Pages project
+  --runtime-name <worker-name>        Default: target env runtime worker
+  --dashboard-name <worker-name>      Default: target env dashboard worker
+  --kv-title <namespace-title>        Default: target env KV namespace title
   --access-emails <csv>               Default: ACCESS_EMAILS env or token owner email
   --access-auth-domain <auth-domain>  Required only if Zero Trust org must be created
-  --runtime-env-file <path>           Default: .env.prod, fallback .env
-  --operator-env-file <path>          Default: .env.patron.prod, fallback .env.patron
+  --runtime-env-file <path>           Default: target env file candidates
+  --operator-env-file <path>          Default: target env file candidates
   --workers-subdomain <slug>          Optional workers.dev slug override
 
 Environment:
-  Operator credentials are loaded from .env.patron.prod if present,
-  otherwise .env.patron.
-  Runtime secrets are loaded from .env.prod if present, otherwise .env.
+  Staging loads operator creds from .env.patron first and runtime secrets from .env.
+  Prod loads operator creds from .env.patron.prod first and runtime secrets from .env.prod.
 
 Required operator env vars:
   CF_API_TOKEN or CLOUDFLARE_API_TOKEN
@@ -496,17 +502,20 @@ async function main() {
     return;
   }
 
+  const { envName } = parseTargetEnv(process.argv.slice(2));
+  const target = cloudflareTargetConfig(envName);
+
   const operatorEnvFile = resolve(
     root,
     args["operator-env-file"] ||
       process.env.OPERATOR_ENV_FILE ||
-      firstExisting([".env.patron.prod", ".env.patron"])
+      firstExisting(target.operatorEnvCandidates)
   );
   const runtimeEnvFile = resolve(
     root,
     args["runtime-env-file"] ||
       process.env.RUNTIME_ENV_FILE ||
-      firstExisting([".env.prod", ".env"])
+      firstExisting(target.runtimeEnvCandidates)
   );
 
   loadEnvFile(operatorEnvFile);
@@ -524,16 +533,17 @@ async function main() {
   info(`Operator env file: ${operatorEnvFile}${existsSync(operatorEnvFile) ? "" : " (missing)"}`);
   info(`Runtime env file: ${runtimeEnvFile}${existsSync(runtimeEnvFile) ? "" : " (missing)"}`);
 
-  const domain = args.domain || process.env.SITE_DOMAIN || "swayambhu.dev";
-  const apiHost = args["api-host"] || `api.${domain}`;
-  const agentHost = args["agent-host"] || `agent.${domain}`;
-  const siteProject = args["site-project"] || process.env.SITE_PROJECT || "swayambhu-site";
-  const runtimeName = args["runtime-name"] || process.env.RUNTIME_NAME || "swayambhu-cns";
-  const dashboardName = args["dashboard-name"] || process.env.DASHBOARD_NAME || "swayambhu-dashboard-api";
-  const kvTitle = args["kv-title"] || process.env.KV_TITLE || "swayambhu-prod-kv";
+  const zoneName = args.zone || process.env.CF_ZONE_NAME || target.zoneName;
+  const domain = args.domain || process.env.SITE_DOMAIN || target.domain;
+  const apiHost = args["api-host"] || process.env.API_HOST || target.apiHost;
+  const agentHost = args["agent-host"] || process.env.AGENT_HOST || target.agentHost;
+  const siteProject = args["site-project"] || process.env.SITE_PROJECT || target.siteProject;
+  const runtimeName = args["runtime-name"] || process.env.RUNTIME_NAME || target.runtimeName;
+  const dashboardName = args["dashboard-name"] || process.env.DASHBOARD_NAME || target.dashboardName;
+  const kvTitle = args["kv-title"] || process.env.KV_TITLE || target.kvTitle;
 
   const { user } = await verifyToken(accountId);
-  const zone = await ensureZone(domain);
+  const zone = await ensureZone(zoneName);
   await ensureWorkersSubdomain(accountId, args["workers-subdomain"] || process.env.WORKERS_SUBDOMAIN);
 
   const accessEmails = csvList(
@@ -549,7 +559,7 @@ async function main() {
 
   const kvNamespaceId = await ensureKvNamespace(accountId, kvTitle);
 
-  const tmpDir = resolve(root, "tmp", "cloudflare-prod");
+  const tmpDir = resolve(root, "tmp", target.tmpDirName);
   ensureDir(tmpDir);
   const runtimeConfigPath = resolve(tmpDir, "wrangler.runtime.toml");
   const dashboardConfigPath = resolve(tmpDir, "wrangler.dashboard.toml");
@@ -559,9 +569,9 @@ async function main() {
       runtimeName,
       kvNamespaceId,
       agentHost,
-      jobsBaseUrl: `https://akash.${domain}`,
+      jobsBaseUrl: args["jobs-base-url"] || process.env.JOBS_BASE_URL || target.jobsBaseUrl,
       jobsBaseDir: "/srv/swayambhu/jobs",
-      emailRelayUrl: `https://email.${domain}`,
+      emailRelayUrl: args["email-relay-url"] || process.env.EMAIL_RELAY_URL || target.emailRelayUrl,
     })
   );
   writeFile(
@@ -599,6 +609,9 @@ async function main() {
       accountId,
       "--namespace-id",
       kvNamespaceId,
+      "--env",
+      envName,
+      ...(envName === "prod" ? ["--prod"] : []),
     ],
     {
       cwd: root,
@@ -651,7 +664,7 @@ async function main() {
       "--project-name",
       siteProject,
       "--branch",
-      "main",
+      target.pagesBranch,
       "--commit-dirty=true",
     ],
     {
@@ -668,11 +681,12 @@ async function main() {
   await ensurePagesDomain(accountId, siteProject, domain, pagesHost, zone.id);
   await waitForPagesDomainActive(accountId, siteProject, domain);
 
-  await ensureAccessApp(accountId, "swayambhu-patron", [`${domain}/patron/*`, `${apiHost}/*`], accessEmails);
+  await ensureAccessApp(accountId, target.accessAppName, [`${domain}/patron/*`, `${apiHost}/*`], accessEmails);
 
   await verifyEndpoints({ domain, apiHost, agentHost });
 
   section("Done");
+  info(`Target env: ${envName}`);
   info(`Public site: https://${domain}`);
   info(`Patron UI: https://${domain}/patron/ (Cloudflare Access)`);
   info(`Dashboard API: https://${apiHost} (Cloudflare Access)`);

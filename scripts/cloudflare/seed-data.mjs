@@ -1,13 +1,16 @@
 import { readFileSync } from "fs";
-import { resolve } from "path";
-import { pathToFileURL } from "url";
-import { root } from "./shared.mjs";
+import { resolve, dirname } from "path";
+import { pathToFileURL, fileURLToPath } from "url";
+import { cloudflareTargetConfig, parseTargetEnv } from "./target-env.mjs";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const root = resolve(__dirname, "../..");
 const importLocal = (rel) => import(pathToFileURL(resolve(root, rel)).href);
 const read = (rel) => readFileSync(resolve(root, rel), "utf8");
 const readJSON = (rel) => JSON.parse(read(rel));
 
 export async function collectSeedEntries({
+  targetEnv = "staging",
   now = new Date(),
   inferenceSecret = null,
   jobsBaseUrl = null,
@@ -15,6 +18,7 @@ export async function collectSeedEntries({
   emailRelayUrl = null,
 } = {}) {
   const entries = [];
+  const target = cloudflareTargetConfig(targetEnv);
 
   function put(key, value, format = "json", description) {
     entries.push({ key, value, format, description });
@@ -33,12 +37,12 @@ export async function collectSeedEntries({
   for (const [key, file] of Object.entries(configMap)) {
     const value = readJSON(file);
     if (key === "config:defaults") {
-      if (jobsBaseUrl) value.jobs.base_url = jobsBaseUrl;
+      if (jobsBaseUrl || target.jobsBaseUrl) value.jobs.base_url = jobsBaseUrl || target.jobsBaseUrl;
       if (jobsBaseDir) value.jobs.base_dir = jobsBaseDir;
-      if (emailRelayUrl) {
+      if (emailRelayUrl || target.emailRelayUrl) {
         value.email = {
           ...(value.email || {}),
-          relay_url: emailRelayUrl,
+          relay_url: emailRelayUrl || target.emailRelayUrl,
         };
       }
     }
@@ -160,12 +164,12 @@ export async function collectSeedEntries({
   }
 
   const defaults = readJSON("config/defaults.json");
-  if (jobsBaseUrl) defaults.jobs.base_url = jobsBaseUrl;
+  if (jobsBaseUrl || target.jobsBaseUrl) defaults.jobs.base_url = jobsBaseUrl || target.jobsBaseUrl;
   if (jobsBaseDir) defaults.jobs.base_dir = jobsBaseDir;
-  if (emailRelayUrl) {
+  if (emailRelayUrl || target.emailRelayUrl) {
     defaults.email = {
       ...(defaults.email || {}),
-      relay_url: emailRelayUrl,
+      relay_url: emailRelayUrl || target.emailRelayUrl,
     };
   }
   put("session_schedule", {
@@ -196,4 +200,14 @@ export async function collectSeedEntries({
   }
 
   return entries;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const { envName } = parseTargetEnv(process.argv.slice(2));
+  const entries = await collectSeedEntries({ targetEnv: envName });
+  console.log(JSON.stringify({
+    env: envName,
+    count: entries.length,
+    firstKeys: entries.slice(0, 10).map((entry) => entry.key),
+  }, null, 2));
 }

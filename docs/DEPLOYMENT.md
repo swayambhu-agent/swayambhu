@@ -54,11 +54,13 @@ The repo now assumes:
 - Runtime entrypoint is `index.js`
 - Static site API origins come from config files, not hardcoded `workers.dev` URLs
 - Remote KV is seeded via `scripts/cloudflare/seed-kv.mjs`
-- Prod bootstrap can be automated with `npm run setup:cloudflare:prod`
+- Staging bootstrap can be automated with `npm run setup:cloudflare`
+- Prod bootstrap requires an explicit prod target via `npm run setup:cloudflare:prod`
 
-## One-shot prod bootstrap
+## Cloudflare bootstrap
 
-For a fresh Cloudflare account with only production enabled, the bootstrap
+The bootstrap script defaults to `staging`. Production requires an explicit
+`--env prod --prod` confirmation. For a fresh Cloudflare account, the bootstrap
 script will:
 
 - verify account/token access
@@ -72,6 +74,12 @@ script will:
 - create the Cloudflare Access app protecting `/patron/*` and `api.*`
 
 Run it with:
+
+```bash
+npm run setup:cloudflare
+```
+
+For production:
 
 ```bash
 npm run setup:cloudflare:prod
@@ -133,25 +141,25 @@ source .env
 ### Staging runtime
 
 ```bash
-bash scripts/cloudflare/push-secrets.sh --env staging
+bash scripts/cloudflare/push-secrets.sh
 ```
 
 ### Production runtime
 
 ```bash
-bash scripts/cloudflare/push-secrets.sh
+bash scripts/cloudflare/push-secrets.sh --env prod --prod
 ```
 
 ### Staging dashboard
 
 ```bash
-bash scripts/cloudflare/push-secrets.sh --dashboard --env staging
+bash scripts/cloudflare/push-secrets.sh --dashboard
 ```
 
 ### Production dashboard
 
 ```bash
-bash scripts/cloudflare/push-secrets.sh --dashboard
+bash scripts/cloudflare/push-secrets.sh --dashboard --env prod --prod
 ```
 
 ### Optional governor
@@ -159,8 +167,8 @@ bash scripts/cloudflare/push-secrets.sh --dashboard
 Only set these if you are actually deploying the governor:
 
 ```bash
-bash scripts/cloudflare/push-secrets.sh --governor --env staging
 bash scripts/cloudflare/push-secrets.sh --governor
+bash scripts/cloudflare/push-secrets.sh --governor --env prod --prod
 ```
 
 ## Remote KV seeding
@@ -175,7 +183,7 @@ Requirements:
 
 - `CLOUDFLARE_API_TOKEN` or `CF_API_TOKEN`
 - `CF_ACCOUNT_ID`/`CLOUDFLARE_ACCOUNT_ID` or `--account-id`
-- explicit `--namespace-id`
+- explicit `--namespace-id`, or `CF_STAGING_KV_NAMESPACE_ID` / `CF_PROD_KV_NAMESPACE_ID`
 
 Optional:
 
@@ -235,8 +243,8 @@ npm run build:site
    - `wrangler deployments list`
    - previous dashboard deployment
    - previous static site deployment
-2. Push production secrets.
-3. Seed production KV.
+2. Push production secrets with `--env prod --prod`.
+3. Seed production KV with `--env prod --prod`.
 4. Deploy production runtime:
 
 ```bash

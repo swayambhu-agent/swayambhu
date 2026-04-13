@@ -2,33 +2,29 @@
 # Push secrets from .env to Cloudflare Workers.
 #
 # Usage:
-#   bash scripts/cloudflare/push-secrets.sh [--env staging]
-#   bash scripts/cloudflare/push-secrets.sh --dashboard [--env staging]
-#   bash scripts/cloudflare/push-secrets.sh --governor [--env staging]
+#   bash scripts/cloudflare/push-secrets.sh
+#   bash scripts/cloudflare/push-secrets.sh --dashboard
+#   bash scripts/cloudflare/push-secrets.sh --governor
+#   bash scripts/cloudflare/push-secrets.sh --env prod --prod
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-ENV_FILE="$ROOT/.env"
-
-if [ ! -f "$ENV_FILE" ]; then
-  echo "Error: .env file not found at $ENV_FILE"
-  exit 1
-fi
-
 bold() { printf "\033[1m%s\033[0m" "$*"; }
 green() { printf "\033[1;32m%s\033[0m" "$*"; }
 dim() { printf "\033[2m%s\033[0m" "$*"; }
 
 TARGET="runtime"
-ENV_NAME=""
+TARGET_ENV="staging"
+PROD_CONFIRMED=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dashboard) TARGET="dashboard" ;;
     --governor) TARGET="governor" ;;
+    --prod) PROD_CONFIRMED=1 ;;
     --env)
-      ENV_NAME="${2:-}"
+      TARGET_ENV="${2:-}"
       shift
       ;;
     *)
@@ -39,9 +35,30 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+if [ "$TARGET_ENV" != "staging" ] && [ "$TARGET_ENV" != "prod" ]; then
+  echo "Invalid --env value: $TARGET_ENV"
+  exit 1
+fi
+
+if [ "$TARGET_ENV" = "prod" ] && [ "$PROD_CONFIRMED" -ne 1 ]; then
+  echo "Prod requires explicit confirmation: pass both --env prod and --prod"
+  exit 1
+fi
+
+if [ "$TARGET_ENV" = "prod" ]; then
+  ENV_FILE="$ROOT/.env.prod"
+else
+  ENV_FILE="$ROOT/.env"
+fi
+
+if [ ! -f "$ENV_FILE" ]; then
+  echo "Error: env file not found at $ENV_FILE"
+  exit 1
+fi
+
 WRANGLER_ENV_ARGS=()
-if [ -n "$ENV_NAME" ]; then
-  WRANGLER_ENV_ARGS+=(--env "$ENV_NAME")
+if [ "$TARGET_ENV" = "staging" ]; then
+  WRANGLER_ENV_ARGS=(--env staging)
 fi
 
 set -a
@@ -50,7 +67,7 @@ set +a
 
 if [ "$TARGET" = "dashboard" ]; then
   echo ""
-  echo "Pushing secrets to $(bold 'dashboard-api') worker${ENV_NAME:+ ($ENV_NAME)}..."
+  echo "Pushing secrets to $(bold 'dashboard-api') worker ($TARGET_ENV)..."
   echo ""
   printf "  Enter patron key: "
   read -rs PATRON_KEY
@@ -69,7 +86,7 @@ push_secret_group() {
   local skipped=0
 
   echo ""
-  echo "Pushing secrets to $(bold "$title")${ENV_NAME:+ ($ENV_NAME)} from .env..."
+  echo "Pushing secrets to $(bold "$title") ($TARGET_ENV) from $ENV_FILE..."
   echo ""
 
   for secret in "$@"; do
@@ -116,5 +133,9 @@ push_secret_group "runtime" "$ROOT" \
   WALLET_PRIVATE_KEY
 
 echo "Don't forget to also push the dashboard patron key:"
-echo "  bash scripts/cloudflare/push-secrets.sh --dashboard${ENV_NAME:+ --env $ENV_NAME}"
+if [ "$TARGET_ENV" = "prod" ]; then
+  echo "  bash scripts/cloudflare/push-secrets.sh --dashboard --env prod --prod"
+else
+  echo "  bash scripts/cloudflare/push-secrets.sh --dashboard"
+fi
 echo ""
