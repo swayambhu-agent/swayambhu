@@ -14,6 +14,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
       slug: "serve",
       direction: "approach",
       description: "Serve seekers",
+      source_principles: ["care"],
       _embedding: [0.5, 0.3, 0.1],
     },
   };
@@ -31,7 +32,8 @@ describe("evaluateAction (three-tier pipeline)", () => {
     plan: {
       action: "compile research doc",
       success: "doc saved, 5+ topics",
-      relies_on: ["pattern:google-docs-accessible"],
+      serves_desires: ["desire:serve"],
+      follows_tactics: [],
       defer_if: "budget < 30%",
     },
     tool_calls: [
@@ -59,6 +61,15 @@ describe("evaluateAction (three-tier pipeline)", () => {
   });
 
   it("full pipeline: embed + NLI -> computes sigma/alpha", async () => {
+    callInference.mockResolvedValueOnce({
+      results: [
+        {
+          id: "__plan_success__",
+          label: "entailment",
+          scores: { entailment: 0.85, contradiction: 0.05, neutral: 0.10 },
+        },
+      ],
+    });
     // Tier 1: embedding
     callInference.mockResolvedValueOnce({
       embeddings: [[0.5, 0.3, 0.2]],
@@ -66,11 +77,6 @@ describe("evaluateAction (three-tier pipeline)", () => {
     // Tier 2: NLI
     callInference.mockResolvedValueOnce({
       results: [
-        {
-          id: "desire:serve",
-          label: "entailment",
-          scores: { entailment: 0.85, contradiction: 0.05, neutral: 0.10 },
-        },
         {
           id: "pattern:google-docs-accessible",
           label: "entailment",
@@ -82,24 +88,31 @@ describe("evaluateAction (three-tier pipeline)", () => {
     const result = await evaluateAction(K, ledger, desires, patterns, config);
 
     expect(result.eval_method).toBe("pipeline");
-    expect(result.alpha).toHaveProperty("serve");
-    expect(result.alpha.serve).toBeGreaterThan(0); // entailment -> positive
+    expect(result.alpha).toHaveProperty("desire:serve");
+    expect(result.alpha["desire:serve"]).toBeGreaterThan(0); // entailment -> positive
     expect(result.pattern_scores).toHaveProperty("pattern:google-docs-accessible");
     expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("entailment");
     expect(typeof result.sigma).toBe("number");
     expect(typeof result.salience).toBe("number");
-    // callInference called twice: /embed, /nli
-    expect(callInference).toHaveBeenCalledTimes(2);
-    expect(callInference.mock.calls[0][2]).toBe("/embed");
-    expect(callInference.mock.calls[1][2]).toBe("/nli");
+    expect(result.salience).toBeLessThanOrEqual(1);
+    expect(result.served_desires).toEqual(["desire:serve"]);
+    expect(result.followed_tactics).toEqual([]);
+    expect(callInference).toHaveBeenCalledTimes(3);
+    expect(callInference.mock.calls[0][2]).toBe("/nli");
+    expect(callInference.mock.calls[1][2]).toBe("/embed");
+    expect(callInference.mock.calls[2][2]).toBe("/nli");
   });
 
   it("falls back to LLM when inference unavailable", async () => {
     callInference.mockRejectedValue(new Error("Connection refused"));
 
     K.callLLM.mockResolvedValueOnce({
-      text: JSON.stringify([
-        { id: "desire:serve", direction: "entailment", confidence: 0.7 },
+      content: JSON.stringify([
+        { id: "__plan_success__", direction: "entailment", confidence: 0.7 },
+      ]),
+    });
+    K.callLLM.mockResolvedValueOnce({
+      content: JSON.stringify([
         { id: "pattern:google-docs-accessible", direction: "neutral", confidence: 0.5 },
       ]),
     });
@@ -107,24 +120,28 @@ describe("evaluateAction (three-tier pipeline)", () => {
     const result = await evaluateAction(K, ledger, desires, patterns, config);
 
     expect(result.eval_method).toBe("llm_fallback");
-    expect(K.callLLM).toHaveBeenCalledTimes(1);
-    expect(result.alpha.serve).toBeCloseTo(0.7);
+    expect(K.callLLM).toHaveBeenCalledTimes(2);
+    expect(result.alpha["desire:serve"]).toBeCloseTo(0.7);
     expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("neutral");
   });
 
   it("sends ambiguous NLI pairs to LLM Tier 3", async () => {
+    callInference.mockResolvedValueOnce({
+      results: [
+        {
+          id: "__plan_success__",
+          label: "entailment",
+          scores: { entailment: 0.85, contradiction: 0.05, neutral: 0.10 },
+        },
+      ],
+    });
     // Tier 1: embedding
     callInference.mockResolvedValueOnce({
       embeddings: [[0.5, 0.3, 0.2]],
     });
-    // Tier 2: NLI — desire is clear, pattern is ambiguous
+    // Tier 2: NLI — pattern is ambiguous
     callInference.mockResolvedValueOnce({
       results: [
-        {
-          id: "desire:serve",
-          label: "entailment",
-          scores: { entailment: 0.85, contradiction: 0.05, neutral: 0.10 },
-        },
         {
           id: "pattern:google-docs-accessible",
           label: "neutral",
@@ -134,7 +151,7 @@ describe("evaluateAction (three-tier pipeline)", () => {
     });
     // Tier 3: LLM for ambiguous pair
     K.callLLM.mockResolvedValueOnce({
-      text: JSON.stringify([
+      content: JSON.stringify([
         { id: "pattern:google-docs-accessible", direction: "entailment", confidence: 0.8 },
       ]),
     });
@@ -143,17 +160,19 @@ describe("evaluateAction (three-tier pipeline)", () => {
 
     expect(result.eval_method).toBe("pipeline");
     expect(K.callLLM).toHaveBeenCalledTimes(1);
-    // Desire resolved by NLI
-    expect(result.alpha.serve).toBeCloseTo(0.85);
-    // Pattern resolved by LLM
+    expect(result.alpha["desire:serve"]).toBeCloseTo(0.85);
     expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("entailment");
   });
 
-  it("returns tool_outcomes and patterns_relied_on", async () => {
+  it("returns tool_outcomes and served/followed plan guidance", async () => {
+    callInference.mockResolvedValueOnce({
+      results: [
+        { id: "__plan_success__", label: "entailment", scores: { entailment: 0.82, contradiction: 0.08, neutral: 0.10 } },
+      ],
+    });
     callInference.mockResolvedValueOnce({ embeddings: [[0.5, 0.3, 0.2]] });
     callInference.mockResolvedValueOnce({
       results: [
-        { id: "desire:serve", label: "neutral", scores: { entailment: 0.1, contradiction: 0.1, neutral: 0.8 } },
         { id: "pattern:google-docs-accessible", label: "entailment", scores: { entailment: 0.9, contradiction: 0.01, neutral: 0.09 } },
       ],
     });
@@ -165,7 +184,8 @@ describe("evaluateAction (three-tier pipeline)", () => {
       { tool: "search_kb", ok: true },
     ]);
     expect(result.plan_success_criteria).toBe("doc saved, 5+ topics");
-    expect(result.patterns_relied_on).toEqual(["pattern:google-docs-accessible"]);
+    expect(result.served_desires).toEqual(["desire:serve"]);
+    expect(result.followed_tactics).toEqual([]);
   });
 
   it("empty patterns → max surprise (bootstrap signal)", async () => {
@@ -180,5 +200,133 @@ describe("evaluateAction (three-tier pipeline)", () => {
     expect(result.eval_method).toBe("pipeline");
     expect(callInference).not.toHaveBeenCalled();
     expect(K.callLLM).not.toHaveBeenCalled();
+  });
+
+  it("keeps max surprise with no patterns but still evaluates desire alignment", async () => {
+    callInference.mockResolvedValueOnce({
+      results: [
+        {
+          id: "__plan_success__",
+          label: "entailment",
+          scores: { entailment: 0.8, contradiction: 0.05, neutral: 0.15 },
+        },
+      ],
+    });
+
+    const result = await evaluateAction(K, ledger, desires, {}, config);
+
+    expect(result.eval_method).toBe("pipeline");
+    expect(result.sigma).toBe(1);
+    expect(result.salience).toBe(1);
+    expect(result.alpha["desire:serve"]).toBeCloseTo(0.8);
+    expect(result.desire_axis).toBeGreaterThan(0);
+    expect(result.pattern_scores).toEqual({});
+    expect(callInference).toHaveBeenCalledTimes(1);
+    expect(K.callLLM).not.toHaveBeenCalled();
+  });
+
+  it("does not assign negative desire affinity when the served step is unmet", async () => {
+    callInference.mockResolvedValueOnce({
+      results: [
+        {
+          id: "__plan_success__",
+          label: "contradiction",
+          scores: { entailment: 0.05, contradiction: 0.84, neutral: 0.11 },
+        },
+      ],
+    });
+
+    const result = await evaluateAction(K, ledger, desires, {}, config);
+
+    expect(result.eval_method).toBe("pipeline");
+    expect(result.alpha).toEqual({});
+    expect(result.desire_axis).toBe(0);
+    expect(result.salience).toBe(1);
+  });
+
+  it("parses LLM classifier output from response.content", async () => {
+    callInference.mockRejectedValue(new Error("Connection refused"));
+
+    K.callLLM.mockResolvedValueOnce({
+      content: JSON.stringify([
+        { id: "__plan_success__", direction: "entailment", confidence: 0.9 },
+      ]),
+    });
+    K.callLLM.mockResolvedValueOnce({
+      content: JSON.stringify([
+        { id: "pattern:google-docs-accessible", direction: "contradiction", confidence: 0.4 },
+      ]),
+    });
+
+    const result = await evaluateAction(K, ledger, desires, patterns, config);
+
+    expect(result.eval_method).toBe("llm_fallback");
+    expect(result.alpha["desire:serve"]).toBeCloseTo(0.9);
+    expect(result.pattern_scores["pattern:google-docs-accessible"].direction).toBe("contradiction");
+    expect(K.callLLM).toHaveBeenCalledTimes(2);
+  });
+
+  it("threads the provided signal through inference tiers and LLM fallback", async () => {
+    const controller = new AbortController();
+
+    callInference
+      .mockResolvedValueOnce({
+        results: [
+          {
+            id: "__plan_success__",
+            label: "entailment",
+            scores: { entailment: 0.88, contradiction: 0.04, neutral: 0.08 },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        embeddings: [[0.5, 0.3, 0.2]],
+      });
+    callInference.mockResolvedValueOnce({
+      results: [
+        {
+          id: "pattern:google-docs-accessible",
+          label: "neutral",
+          scores: { entailment: 0.35, contradiction: 0.30, neutral: 0.35 },
+        },
+      ],
+    });
+
+    K.callLLM.mockResolvedValueOnce({
+      content: JSON.stringify([
+        { id: "pattern:google-docs-accessible", direction: "neutral", confidence: 0.2 },
+      ]),
+    });
+
+    await evaluateAction(K, ledger, desires, patterns, config, controller.signal);
+
+    expect(callInference).toHaveBeenNthCalledWith(
+      1,
+      config.url,
+      config.secret,
+      "/nli",
+      expect.any(Object),
+      controller.signal,
+    );
+    expect(callInference).toHaveBeenNthCalledWith(
+      2,
+      config.url,
+      config.secret,
+      "/embed",
+      expect.any(Object),
+      controller.signal,
+    );
+    expect(callInference).toHaveBeenNthCalledWith(
+      3,
+      config.url,
+      config.secret,
+      "/nli",
+      expect.any(Object),
+      controller.signal,
+    );
+    expect(K.callLLM).toHaveBeenCalledWith(expect.objectContaining({
+      step: "eval_tier3",
+      signal: controller.signal,
+    }));
   });
 });

@@ -7,6 +7,7 @@ export const meta = {
 
 const BASE = "https://akash.swayambhu.dev";
 
-export async function execute({ command, timeout, secrets, fetch, provider }) {
-  return provider.call({ command, baseUrl: BASE, timeout, secrets, fetch });
+export async function execute({ command, timeout, secrets, fetch, provider, config }) {
+  const baseUrl = config?.jobs?.base_url || BASE;
+  return provider.call({ command, baseUrl, timeout, secrets, fetch });
 }

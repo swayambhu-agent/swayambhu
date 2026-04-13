@@ -2,6 +2,7 @@
 export const EVENT_COLORS = {
   act_start: { bg: 'bg-green-900/30', border: 'border-green-700', text: 'text-green-400', dot: 'bg-green-500' },
   act_complete: { bg: 'bg-green-900/20', border: 'border-green-800', text: 'text-green-500', dot: 'bg-green-600' },
+  review_synthesized: { bg: 'bg-amber-900/20', border: 'border-amber-700', text: 'text-amber-300', dot: 'bg-amber-400' },
   llm_call: { bg: 'bg-blue-900/30', border: 'border-blue-700', text: 'text-blue-400', dot: 'bg-blue-500' },
   llm_response: { bg: 'bg-blue-900/20', border: 'border-blue-800', text: 'text-blue-400', dot: 'bg-blue-400' },
   tool_call: { bg: 'bg-purple-900/30', border: 'border-purple-700', text: 'text-purple-400', dot: 'bg-purple-500' },

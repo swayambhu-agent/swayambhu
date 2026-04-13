@@ -17,5 +17,11 @@ export async function execute({ text, channel, secrets, fetch }) {
       text,
     }),
   });
-  return resp.json();
+  const payload = await resp.json();
+  if (!resp.ok || !payload?.ok) {
+    const status = resp.status ?? "unknown";
+    const error = payload?.error || `HTTP ${status}`;
+    throw new Error(`Slack chat.postMessage failed: ${error}`);
+  }
+  return payload;
 }

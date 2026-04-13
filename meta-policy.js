@@ -31,11 +31,12 @@ export function buildMetaPolicyNoteKey(note, { sessionId, depth, index }) {
   return `review_note:${review}:${sessionId}:d${depth}:${ordinal}:${slug}`;
 }
 
-export async function persistMetaPolicyNotes(
-  K,
-  notes,
-  { sessionId, depth, source, timestamp = new Date().toISOString() },
-) {
+export async function persistMetaPolicyNotes(K, notes, {
+  sessionId,
+  depth,
+  source,
+  timestamp = new Date().toISOString(),
+}) {
   const keys = [];
   for (const [index, note] of notes.entries()) {
     const key = buildMetaPolicyNoteKey(note, { sessionId, depth, index });
@@ -44,12 +45,12 @@ export async function persistMetaPolicyNotes(
       key,
       op: "put",
       value: {
-        ...note,
-        created_at: timestamp,
-        source: source || null,
-        source_session_id: sessionId,
-        source_depth: depth,
-        source_reflect_key: `reflect:${depth}:${sessionId}`,
+      ...note,
+      created_at: timestamp,
+      source: source || null,
+      source_session_id: sessionId,
+      source_depth: depth,
+      source_reflect_key: `reflect:${depth}:${sessionId}`,
       },
     }, "deep-reflect");
     if (!result?.ok) {

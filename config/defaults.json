@@ -7,9 +7,9 @@
     "budget_hard_limit_pct": 0.85
   },
   "reflect": {
-    "model": "xiaomi/mimo-v2-pro",
+    "model": "deepseek/deepseek-v3.2",
     "effort": "medium",
-    "max_output_tokens": 1000
+    "max_output_tokens": 2000
   },
   "session_budget": {
     "max_cost": 0.15,
@@ -33,8 +33,16 @@
     "retries": 1,
     "on_fail": "skip_and_cascade"
   },
+  "debug_mode": {
+    "enabled": false,
+    "label": null,
+    "schedule_may_be_overridden": false,
+    "external_wakes_expected": false
+  },
   "schedule": {
     "interval_seconds": 21600,
+    "idle_interval_seconds": 1800,
+    "exploration_unlock_streak": 3,
     "default_effort": "low"
   },
   "memory": {
@@ -69,6 +77,33 @@
     "ttl_minutes": 60,
     "max_stale_sessions": 5
   },
+  "dr2": {
+    "enabled": false,
+    "cooldown_sessions": 3,
+    "review_runner": "codex",
+    "adversarial_runner": "claude",
+    "author_runner": "codex",
+    "review_timeout_ms": 600000,
+    "adversarial_timeout_ms": 600000,
+    "author_timeout_ms": 600000,
+    "adversarial_max_rounds": 3,
+    "timeout_minutes": 30,
+    "source_ref": "current",
+    "repo_dir": "/home/swami/swayambhu/repo",
+    "max_processed_note_keys": 50
+  },
+  "dr3": {
+    "review_runner": "codex",
+    "adversarial_runner": "claude",
+    "author_runner": "codex",
+    "review_timeout_ms": 600000,
+    "adversarial_timeout_ms": 600000,
+    "author_timeout_ms": 600000,
+    "lab_timeout_ms": 600000,
+    "adversarial_max_rounds": 3,
+    "source_ref": "current",
+    "allow_authority_widening": false
+  },
   "identity": {
     "enabled": false,
     "max_planner_items": 5,
@@ -82,15 +117,21 @@
   },
   "jobs": {
     "base_url": "https://akash.swayambhu.dev",
+    "callback_url": "https://swayambhu.dev",
     "base_dir": "/home/swayambhu/jobs",
+    "runner": "codex",
+    "runner_model": "gpt-5.4",
     "cc_model": "opus",
     "path_dirs": ["/home/swayambhu/.local/bin"],
     "default_ttl_minutes": 120,
     "max_concurrent_jobs": 2,
     "callback_advance_seconds": 30
   },
+  "email": {
+    "relay_url": "http://localhost:3500"
+  },
   "inference": {
-    "url": null,
+    "url": "http://localhost:8090",
     "relevance_threshold": 0.3,
     "ambiguity_threshold": 0.6,
     "embed_model": "bge-small-en-v1.5"

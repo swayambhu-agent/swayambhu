@@ -1,11 +1,3 @@
-import {
-  BOOTSTRAP_KEY_TIERS,
-  BOOTSTRAP_WRITE_POLICY,
-  KNOWN_WRITE_CONTEXTS,
-  mergeKeyTiers,
-  mergeWritePolicy,
-} from "./authority-policy.js";
-
 // Swayambhu Kernel — safety floor, not ceiling.
 //
 // The kernel is deliberately thin. It enforces ~10 safety invariants and
@@ -14,12 +6,20 @@ import {
 // If the agent could implement something itself via code staging, it doesn't
 // belong here.
 //
-// Policy (session flow and prompt rendering) lives in userspace.js and act.js
+// Policy (session flow, reflection) lives in userspace.js, act.js, reflect.js
 // — mutable code injected at construction via HOOKS. Tools, providers, and
 // channels are also injected. Entry point is index.js.
 //
 // The agent's identity is its KV data, not the kernel. The kernel is
 // disposable infrastructure that can be redeployed without losing anything.
+
+import {
+  BOOTSTRAP_KEY_TIERS,
+  BOOTSTRAP_WRITE_POLICY,
+  KNOWN_WRITE_CONTEXTS,
+  mergeKeyTiers,
+  mergeWritePolicy,
+} from "./authority-policy.js";
 
 class Kernel {
   constructor(env, opts = {}) {
@@ -47,9 +47,10 @@ class Kernel {
     this.lastWorkingSnapshotted = false; // Only snapshot provider once per session
     this.privilegedWriteCount = 0; // Counter for privileged writes (system + contact keys)
     this._alertConfigCache = undefined; // undefined = not loaded, null = doesn't exist
-    this.keyTiers = null;      // Loaded from kernel:key_tiers at boot; falls back to DEFAULT_KEY_TIERS
+    this.keyTiers = null;      // Loaded from kernel:key_tiers at boot; falls back to BOOTSTRAP_KEY_TIERS
     this.writePolicy = null;   // Loaded from kernel:write_policy at boot; falls back to BOOTSTRAP_WRITE_POLICY
-    this.principles = null;    // Cached generic principles (loaded at boot, policy-governed)
+    this.principles = null;    // Cached generic principles (loaded at boot, write-protected by policy)
+    // Tactics loaded by userspace, not kernel — they're agent-managed heuristics, not safety invariants
     this.patronId = null;      // Contact slug of patron (loaded at boot)
     this.patronContact = null; // Full patron contact record (loaded at boot)
     this.patronSnapshot = null;  // Last verified identity fields (loaded at boot)
@@ -57,6 +58,8 @@ class Kernel {
     this.patronIdentityDisputed = false; // True if monitored fields changed unverified
     this.touchedKeys = new Set();
     this.pulseCounter = 0;
+    this.toolProfile = env.SWAYAMBHU_LAB_PROFILE || null;
+    this._toolDenySet = null;
   }
 
   // Write tiers enforce trust boundaries:
@@ -64,11 +67,63 @@ class Kernel {
   // - kernel_only: safety state the agent must not touch (audit logs, quarantine,
   //   execution tracking). Modifying these would let the agent disable its own
   //   safety mechanisms.
-  // - protected: agent-modifiable via kvWriteGated in deep-reflect context,
+  // - lifecycle: runtime-owned coordination state. Agent cognition should not
+  //   be able to forge or rewrite scheduler / review / promotion bookkeeping.
+  // - protected: agent-modifiable via kvWriteGated under authority policy,
   //   with old values captured in karma for rollback.
-  static DEFAULT_KEY_TIERS = BOOTSTRAP_KEY_TIERS;
   static DANGER_SIGNALS = ["fatal_error", "act_parse_error", "all_providers_failed"];
   static MAX_PRIVILEGED_WRITES = 50;
+
+  static get DEFAULT_KEY_TIERS() {
+    return BOOTSTRAP_KEY_TIERS;
+  }
+
+  static mergeKeyTiers(loadedTiers) {
+    return mergeKeyTiers(loadedTiers);
+  }
+
+  static mergeWritePolicy(loadedPolicy) {
+    return mergeWritePolicy(loadedPolicy);
+  }
+
+  parseToolList(value) {
+    return new Set(
+      String(value || "")
+        .split(",")
+        .map(item => item.trim())
+        .filter(Boolean),
+    );
+  }
+
+  getDeniedTools() {
+    if (this._toolDenySet) return this._toolDenySet;
+
+    const denied = this.parseToolList(this.env.SWAYAMBHU_TOOL_DENYLIST);
+    if (this.toolProfile === "static" || this.toolProfile === "bounded_continuation") {
+      const registryTools = this.toolRegistry?.tools || [];
+      for (const tool of registryTools) {
+        const meta = this.TOOLS?.[tool.name]?.meta || {};
+        if (meta.communication) denied.add(tool.name);
+      }
+      for (const toolName of ["request_message", "computer", "start_job", "google_docs"]) {
+        denied.add(toolName);
+      }
+    }
+
+    this._toolDenySet = denied;
+    return denied;
+  }
+
+  isToolDenied(name) {
+    return this.getDeniedTools().has(name);
+  }
+
+  getToolBlockReason(name) {
+    if (this.toolProfile) {
+      return `Tool "${name}" is unavailable in ${this.toolProfile} profile`;
+    }
+    return `Tool "${name}" is disabled by policy`;
+  }
 
   // ── Key tier helpers (instance methods — use loaded tiers from KV) ──
 
@@ -84,22 +139,22 @@ class Kernel {
   }
 
   isImmutableKey(key) {
-    return this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).immutable);
+    return this._matchesTierPattern(key, (this.keyTiers || BOOTSTRAP_KEY_TIERS).immutable);
   }
 
   isKernelOnly(key) {
-    return this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).kernel_only);
+    return this._matchesTierPattern(key, (this.keyTiers || BOOTSTRAP_KEY_TIERS).kernel_only);
   }
 
   isLifecycleKey(key) {
-    return this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).lifecycle || []);
+    return this._matchesTierPattern(key, (this.keyTiers || BOOTSTRAP_KEY_TIERS).lifecycle || []);
   }
 
   isSystemKey(key) {
     return this.isImmutableKey(key)
       || this.isKernelOnly(key)
       || this.isLifecycleKey(key)
-      || this._matchesTierPattern(key, (this.keyTiers || Kernel.DEFAULT_KEY_TIERS).protected);
+      || this._matchesTierPattern(key, (this.keyTiers || BOOTSTRAP_KEY_TIERS).protected);
   }
 
   // ── SSH Ed25519 key parsing ───────────────────────────────
@@ -134,6 +189,7 @@ class Kernel {
       this.toolGrants = this._buildToolGrantsFromModules();
     }
     await this.loadPrinciples();
+    // Tactics loaded by userspace planPhase, not kernel
     await this.loadPatronContext();
     await this.ensureIdentitySeed();
   }
@@ -490,6 +546,7 @@ class Kernel {
     return {
       // LLM
       callLLM: async (opts) => kernel.callLLM(opts),
+      sessionAbortSignal: kernel.sessionAbortController?.signal || null,
 
       // KV reads — sealed keys blocked. Quarantined content (from unknown senders)
       // may contain prompt injection. The agent never sees raw sealed content;
@@ -514,7 +571,7 @@ class Kernel {
       // Agent loop
       runAgentTurn: async (opts) => kernel.runAgentTurn(opts),
       runAgentLoop: async (opts) => kernel.runAgentLoop(opts),
-      executeToolCall: async (tc) => kernel.executeToolCall(tc),
+      executeToolCall: async (tc, extraArgs) => kernel.executeToolCall(tc, extraArgs),
       buildToolDefinitions: async (extra) => kernel.buildToolDefinitions(extra),
       callHook: async (name, ctx) => kernel.callHook(name, ctx),
       executeAction: async (step) => kernel.executeAction(step),
@@ -583,7 +640,7 @@ class Kernel {
       // getSessionCount removed — userspace reads session_counter directly via kvGet
       mergeDefaults: async (defaults, overrides) => kernel.mergeDefaults(defaults, overrides),
       isSystemKey: async (key) => kernel.isSystemKey(key),
-      getSystemKeyPatterns: async () => kernel.keyTiers || Kernel.DEFAULT_KEY_TIERS,
+      getSystemKeyPatterns: async () => kernel.keyTiers || BOOTSTRAP_KEY_TIERS,
 
       // KV operation gating — context-based permissions
       // (kvWriteGated already exposed above in KV writes section)
@@ -621,6 +678,11 @@ class Kernel {
       return { ok: false, error: `Unknown kvWriteGated context "${context}"` };
     }
 
+    // Reject malformed pattern keys — LLM output sometimes uses slashes instead of colons
+    if (key.startsWith('pattern:') && key.includes('/')) {
+      return { ok: false, error: `Invalid pattern key format: ${key} — use colons, not slashes` };
+    }
+
     // 1. Always blocked — immutable keys
     if (this.isImmutableKey(key)) {
       return { ok: false, error: `Cannot write "${key}" — immutable` };
@@ -641,7 +703,7 @@ class Kernel {
       return { ok: false, error: `Code key "${key}" requires K.stageCode()` };
     }
 
-    // 5. Contact keys — allowed in all contexts (with approval gating)
+    // 5. Contact keys — allowed in all recognized contexts (with approval gating)
     if (key.startsWith("contact:") || key.startsWith("contact_platform:")) {
       return this._gateContact(op);
     }
@@ -672,15 +734,57 @@ class Kernel {
     }
 
     if (key.startsWith("contact_platform:")) {
-      if (op.op === "patch" && op.new_string?.includes('"approved"')) {
-        return { ok: false, error: `Cannot patch "approved" field on platform bindings — use the dashboard` };
+      if (op.op === "patch") {
+        const currentValue = await this.kvGet(key);
+        const currentText = typeof currentValue === "string"
+          ? currentValue
+          : (currentValue && typeof currentValue === "object" ? JSON.stringify(currentValue) : null);
+        if (typeof currentText !== "string") {
+          return { ok: false, error: `patch: key "${key}" is not patchable` };
+        }
+        if (!currentText.includes(op.old_string)) {
+          return { ok: false, error: `patch: old_string not found in "${key}"` };
+        }
+        if (currentText.indexOf(op.old_string) !== currentText.lastIndexOf(op.old_string)) {
+          return { ok: false, error: `patch: old_string matches multiple locations in "${key}"` };
+        }
+        const patchedText = currentText.replace(op.old_string, op.new_string);
+        let writeValue = patchedText;
+        try {
+          const before = JSON.parse(currentText);
+          const after = JSON.parse(patchedText);
+          if (
+            before && after
+            && typeof before === "object" && !Array.isArray(before)
+            && typeof after === "object" && !Array.isArray(after)
+            && Object.prototype.hasOwnProperty.call(after, "approved")
+            && after.approved !== before.approved
+          ) {
+            return { ok: false, error: `Cannot patch "approved" field on platform bindings — use the dashboard` };
+          }
+          writeValue = after;
+        } catch {
+          return { ok: false, error: `Platform binding patch must preserve valid JSON object structure` };
+        }
+
+        const { value: oldValue } = await this.kvGetWithMeta(key);
+        if (this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
+          return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
+        }
+        await this.kvWrite(key, writeValue, op.metadata);
+        await this.karmaRecord({
+          event: "privileged_write", key, old_value: oldValue,
+          new_value: writeValue, op: op.op,
+        });
+        this.privilegedWriteCount++;
+        return { ok: true };
       }
       if (op.op === "delete") {
         const existing = await this.kvGet(key);
         if (existing?.approved) {
           return { ok: false, error: `Deletion of approved platform bindings is patron-only` };
         }
-      } else if (op.op !== "patch") {
+      } else {
         if (op.value?.approved === true) {
           return { ok: false, error: `Setting approved: true on platform bindings is patron-only` };
         }
@@ -694,6 +798,10 @@ class Kernel {
     // Snapshot old value for karma
     const { value: oldValue } = await this.kvGetWithMeta(key);
 
+    if (this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
+      return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
+    }
+
     // Execute via raw write (bypasses system key check in kvWriteSafe)
     if (op.op === "delete") {
       await this.kv.delete(key);
@@ -702,7 +810,9 @@ class Kernel {
       if (typeof current !== "string") return { ok: false, error: `patch: key "${key}" is not a string` };
       if (!current.includes(op.old_string)) return { ok: false, error: `patch: old_string not found in "${key}"` };
       if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) return { ok: false, error: `patch: old_string matches multiple locations in "${key}"` };
-      await this.kvWrite(key, current.replace(op.old_string, op.new_string), op.metadata);
+      const patched = current.replace(op.old_string, op.new_string);
+      await this.kvWrite(key, patched, op.metadata);
+      op.value = patched;
     } else {
       await this.kvWrite(key, op.value, op.metadata);
     }
@@ -816,7 +926,6 @@ class Kernel {
     if (opRule.budget_class === "privileged" && this.privilegedWriteCount + 1 > Kernel.MAX_PRIVILEGED_WRITES) {
       return { ok: false, error: `Privileged write limit (${Kernel.MAX_PRIVILEGED_WRITES}/session) exceeded` };
     }
-
     const { value: oldValue } = await this.kvGetWithMeta(key);
     const applied = await this._applyProtectedWrite(op);
     if (applied.error) {
@@ -862,8 +971,12 @@ class Kernel {
       case "rename": {
         const { value, metadata } = await this.kvGetWithMeta(op.key);
         if (value === null) return { ok: false, error: `rename: key "${op.key}" does not exist` };
-        await this.kvWriteSafe(op.value, value, metadata);
-        await this.kvDeleteSafe(op.key);
+        try {
+          await this.kvWriteSafe(op.value, value, metadata);
+          await this.kvDeleteSafe(op.key);
+        } catch (error) {
+          return { ok: false, error: error.message };
+        }
         return { ok: true };
       }
       default:
@@ -989,6 +1102,9 @@ class Kernel {
   async runTick() {
     this.touchedKeys = new Set();
     await this.loadEagerConfig();
+    const maxDurationSeconds = this.defaults?.session_budget?.max_duration_seconds || 720;
+    this.sessionAbortController = new AbortController();
+    const sessionTimeout = setTimeout(() => this.sessionAbortController.abort(), maxDurationSeconds * 1000);
     const K = this.buildKernelInterface();
     let outcome = "clean";
 
@@ -1026,6 +1142,9 @@ class Kernel {
         error: err.message,
         stack: err.stack,
       });
+    } finally {
+      clearTimeout(sessionTimeout);
+      this.sessionAbortController = null;
     }
 
     // Always record execution outcome and release lock
@@ -1118,7 +1237,7 @@ class Kernel {
     const hardcodedPrompt = `You are Swayambhu in recovery mode. Your session hook has been reset due to repeated failures. Check your balances and report your status. Do not attempt complex operations.`;
 
     await this.loadEagerConfig();
-    this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 120 } };
+    this.defaults = { session_budget: { max_cost: 0.50, max_duration_seconds: 720 } };
     await this.karmaRecord({ event: "act_start", mode: "recovery" });
 
     const tools = this.buildToolDefinitions();
@@ -1210,6 +1329,7 @@ class Kernel {
   async executeAdapter(adapterKey, input, secretOverrides) {
     const mod = this.PROVIDERS[adapterKey];
     if (!mod) throw new Error(`Unknown adapter: ${adapterKey}`);
+    const timeoutMs = Number.isFinite(Number(mod.meta?.timeout_ms)) ? Number(mod.meta.timeout_ms) : 0;
 
     // Constitutional safety: self-contained contact check for person-targeted adapters
     // Kernel derives recipient from the actual args — does NOT trust caller metadata
@@ -1234,7 +1354,8 @@ class Kernel {
     // Providers inject secrets from their own meta.secrets, not from toolGrants
     const secrets = {};
     for (const name of (mod.meta?.secrets || [])) {
-      if (this.env[name] !== undefined) secrets[name] = this.env[name];
+      const value = await this._resolveSecretFromEnvOrKV(name);
+      if (value !== undefined) secrets[name] = value;
     }
     for (const name of (mod.meta?.kv_secrets || [])) {
       const val = await this.kvGet(`secret:${name}`);
@@ -1242,25 +1363,84 @@ class Kernel {
     }
     if (secretOverrides) Object.assign(secrets, secretOverrides);
 
-    const ctx = { ...input, secrets, fetch: (...args) => fetch(...args) };
+    const mergeSignals = (primary, fallback) => {
+      if (!primary) return fallback;
+      if (!fallback) return primary;
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any([primary, fallback]);
+      }
+      const merged = new AbortController();
+      const forwardAbort = (signal) => {
+        if (!merged.signal.aborted) merged.abort(signal.reason);
+      };
+      if (primary.aborted) forwardAbort(primary);
+      else primary.addEventListener("abort", () => forwardAbort(primary), { once: true });
+      if (fallback.aborted) forwardAbort(fallback);
+      else fallback.addEventListener("abort", () => forwardAbort(fallback), { once: true });
+      return merged.signal;
+    };
+
+    const adapterController = timeoutMs > 0 ? new AbortController() : null;
+    const ctx = {
+      ...input,
+      secrets,
+      fetch: (resource, init = {}) => fetch(resource, {
+        ...init,
+        signal: mergeSignals(init.signal, adapterController?.signal || null),
+      }),
+    };
     const fn = mod.execute || mod.call || mod.check;
     if (!fn) throw new Error(`Adapter ${adapterKey} has no callable function`);
-    return fn(ctx);
+
+    const adapterPromise = Promise.resolve().then(() => fn(ctx));
+    void adapterPromise.catch(() => {});
+
+    let timeoutId = null;
+    let timeoutPromise = null;
+    if (timeoutMs > 0) {
+      timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          adapterController?.abort(new Error(`Adapter ${adapterKey} timed out after ${timeoutMs}ms`));
+          reject(new Error(`Adapter ${adapterKey} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      });
+    }
+
+    try {
+      return await (timeoutPromise
+        ? Promise.race([adapterPromise, timeoutPromise])
+        : adapterPromise);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   }
 
   async checkBalance(args) {
-    const [providers, wallets] = await Promise.all([
+    // State-lab branches can pin visible balances in KV so replayed/A-B
+    // continuations see the same budget signals as the original branch point.
+    // This is experiment plumbing, not a kernel safety policy.
+    const [providers, wallets, overrides] = await Promise.all([
       this.kvGet("providers"),
       this.kvGet("wallets"),
+      this.kvGet("kernel:balance_overrides"),
     ]);
 
     const results = { providers: {}, wallets: {} };
     const scopeFilter = args?.scope;
+    const providerOverrides = overrides?.providers || {};
+    const walletOverrides = overrides?.wallets || {};
 
     for (const [name, config] of Object.entries(providers || {})) {
       if (!config.adapter) continue;
       const scope = config.scope || "general";
       if (scopeFilter && scope !== scopeFilter) continue;
+      if (providerOverrides[name]) {
+        results.providers[name] = {
+          ...providerOverrides[name],
+          scope: providerOverrides[name].scope || scope,
+        };
+        continue;
+      }
       try {
         const val = await this.executeAdapter(config.adapter, {}, await this._resolveSecretOverrides(config));
         results.providers[name] = { balance: val, scope };
@@ -1273,6 +1453,13 @@ class Kernel {
       if (!config.adapter) continue;
       const scope = config.scope || "general";
       if (scopeFilter && scope !== scopeFilter) continue;
+      if (walletOverrides[name]) {
+        results.wallets[name] = {
+          ...walletOverrides[name],
+          scope: walletOverrides[name].scope || scope,
+        };
+        continue;
+      }
       try {
         const val = await this.executeAdapter(config.adapter, {}, await this._resolveSecretOverrides(config));
         results.wallets[name] = { balance: val, scope };
@@ -1357,6 +1544,12 @@ class Kernel {
     return resolved;
   }
 
+  async _resolveSecretFromEnvOrKV(name) {
+    if (this.env[name] !== undefined) return this.env[name];
+    const value = await this.kvGet(`secret:${name}`);
+    return value !== null ? value : undefined;
+  }
+
   // Load tool module from statically compiled TOOLS
   async _loadTool(toolName) {
     const mod = this.TOOLS[toolName];
@@ -1368,7 +1561,42 @@ class Kernel {
 
   // Execute tool function directly (no isolate)
   async _executeTool(toolName, moduleCode, meta, ctx) {
-    ctx.fetch = (...args) => fetch(...args);
+    const timeoutMs = Number.isFinite(Number(meta?.timeout_ms)) ? Number(meta.timeout_ms) : 0;
+    const toolController = new AbortController();
+    let timeoutId = null;
+    let sessionAbortListener = null;
+
+    const sessionSignal = this.sessionAbortController?.signal || null;
+    if (sessionSignal) {
+      if (sessionSignal.aborted) {
+        toolController.abort(sessionSignal.reason);
+      } else {
+        sessionAbortListener = () => toolController.abort(sessionSignal.reason);
+        sessionSignal.addEventListener("abort", sessionAbortListener, { once: true });
+      }
+    }
+
+    ctx.signal = toolController.signal;
+    const mergeSignals = (primary, fallback) => {
+      if (!primary) return fallback;
+      if (!fallback) return primary;
+      if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+        return AbortSignal.any([primary, fallback]);
+      }
+      const merged = new AbortController();
+      const forwardAbort = (signal) => {
+        if (!merged.signal.aborted) merged.abort(signal.reason);
+      };
+      if (primary.aborted) forwardAbort(primary);
+      else primary.addEventListener("abort", () => forwardAbort(primary), { once: true });
+      if (fallback.aborted) forwardAbort(fallback);
+      else fallback.addEventListener("abort", () => forwardAbort(fallback), { once: true });
+      return merged.signal;
+    };
+    ctx.fetch = (input, init = {}) => fetch(input, {
+      ...init,
+      signal: mergeSignals(init.signal, toolController.signal),
+    });
 
     if (meta.kv_access && meta.kv_access !== "none") {
       ctx.kv = this._buildScopedKV(toolName, meta.kv_access, meta.kv_write_prefixes);
@@ -1394,7 +1622,29 @@ class Kernel {
 
     const fn = this.TOOLS[toolName].execute || this.TOOLS[toolName].call || this.TOOLS[toolName].check;
     if (!fn) throw new Error(`Tool ${toolName} has no callable function`);
-    return fn(ctx);
+
+    const toolPromise = Promise.resolve().then(() => fn(ctx));
+    void toolPromise.catch(() => {});
+    let timeoutPromise = null;
+    if (timeoutMs > 0) {
+      timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          toolController.abort(new Error(`Tool ${toolName} timed out after ${timeoutMs}ms`));
+          reject(new Error(`Tool ${toolName} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      });
+    }
+
+    try {
+      return await (timeoutPromise
+        ? Promise.race([toolPromise, timeoutPromise])
+        : toolPromise);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (sessionSignal && sessionAbortListener) {
+        sessionSignal.removeEventListener("abort", sessionAbortListener);
+      }
+    }
   }
 
   async buildToolContext(toolName, meta, input) {
@@ -1405,9 +1655,8 @@ class Kernel {
     const grant = this.toolGrants?.[toolName];
     const allowedEnvSecrets = grant?.secrets || [];
     for (const secretName of allowedEnvSecrets) {
-      if (this.env[secretName] !== undefined) {
-        secrets[secretName] = this.env[secretName];
-      }
+      const value = await this._resolveSecretFromEnvOrKV(secretName);
+      if (value !== undefined) secrets[secretName] = value;
     }
     for (const secretName of (meta.kv_secrets || [])) {
       const val = await this.kvGet(`secret:${secretName}`);
@@ -1466,7 +1715,7 @@ class Kernel {
   // breaks the provider adapter, tier 2 catches it. If tier 2 is also bad,
   // tier 3 is always there.
 
-  async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap, json }) {
+  async callLLM({ model, effort, maxTokens, systemPrompt, messages, tools, step, budgetCap, json, signal }) {
     const budget = this.defaults?.session_budget;
     const costLimit = budgetCap ?? (this.mode === 'chat' ? null : budget?.max_cost);
     if (costLimit && this.sessionCost >= costLimit)
@@ -1499,9 +1748,14 @@ class Kernel {
       ? [{ role: "system", content: fullSystemPrompt }, ...messages]
       : [...messages];
 
-    // Resolve model family + check reasoning support
+    // Resolve alias to full model ID so providers receive a canonical ID.
+    // resolveModel() returns the input unchanged if alias is not in the map,
+    // so callers using full IDs are unaffected.
+    const resolvedModel = this.resolveModel(model);
+
+    // Resolve model family + check reasoning support (look up by resolved ID)
     const modelInfo = this.modelsConfig?.models?.find(
-      m => m.id === model || m.alias === model
+      m => m.id === resolvedModel || m.alias === model
     );
     const family = modelInfo?.family || null;
     const resolvedEffort = (effort && effort !== "none" && modelInfo?.supports_reasoning)
@@ -1509,7 +1763,7 @@ class Kernel {
 
     // Standardized request — provider adapter translates this
     const request = {
-      model,
+      model: resolvedModel,
       max_tokens: maxTokens || 1000,
       messages: msgs,
       family,
@@ -1517,30 +1771,42 @@ class Kernel {
       ...(tools?.length ? { tools } : {}),
     };
 
+    // Store exact request for debugging (7-day TTL, loaded on demand by dashboard).
+    // Sidecar key keeps karma lean while preserving the full prompt.
+    const requestKey = `llm_request:${this.executionId}:${this.sessionLLMCalls}`;
+    try {
+      await this.kv.put(requestKey, JSON.stringify({
+        step, model, system_prompt: fullSystemPrompt, messages, tools: tools || [],
+      }), { expirationTtl: 604800 });
+    } catch {} // best-effort — don't fail the LLM call if request logging fails
+
     // Try cascade: dynamic adapter → last working → hardcoded fallback
-    const result = await this.callWithCascade(request, step);
+    const result = await this.callWithCascade(request, step, signal);
     const durationMs = Date.now() - startMs;
 
     if (!result.ok) {
       await this.karmaRecord({
         event: "llm_call",
-        step, model, effort,
+        step, model: resolvedModel, effort,
         ok: false,
         error: result.error,
         duration_ms: durationMs,
         provider_tier: result.tier,
+        request_key: requestKey,
       });
 
-      // Model fallback (separate from provider fallback)
+      // Model fallback (separate from provider fallback). Compare resolved IDs
+      // so an alias and its full ID don't trigger a duplicate retry.
       const fallbackModel = await this.getFallbackModel();
-      if (fallbackModel && model !== fallbackModel) {
+      const resolvedFallback = this.resolveModel(fallbackModel);
+      if (fallbackModel && resolvedModel !== resolvedFallback) {
         return this.callLLM({ model: fallbackModel, effort: "low", maxTokens,
-          systemPrompt, messages, tools, step, budgetCap });
+          systemPrompt, messages, tools, step, budgetCap, signal });
       }
       throw new Error(`LLM call failed on all providers: ${result.error}`);
     }
 
-    let cost = this.estimateCost(model, result.usage);
+    let cost = this.estimateCost(resolvedModel, result.usage);
     if (cost === null) {
       const models = this.modelsConfig?.models || [];
       const maxInput = models.length ? Math.max(...models.map(m => m.input_cost_per_mtok)) : 10;
@@ -1549,14 +1815,14 @@ class Kernel {
         + (result.usage.completion_tokens || 0) * maxOutput) / 1_000_000;
       await this.karmaRecord({
         event: "warning",
-        message: `Model "${model}" not in config:models — using pessimistic cost estimate ($${cost.toFixed(6)})`,
+        message: `Model "${resolvedModel}" not in config:models — using pessimistic cost estimate ($${cost.toFixed(6)})`,
         step,
       });
     }
 
     await this.karmaRecord({
       event: "llm_call",
-      step, model, effort,
+      step, model: resolvedModel, effort,
       ok: true,
       duration_ms: durationMs,
       provider_tier: result.tier,
@@ -1568,6 +1834,7 @@ class Kernel {
       response: result.content || null,
       tool_calls: result.toolCalls || [],
       tools_available: tools?.map(t => ({ name: t.function?.name, description: t.function?.description })) || [],
+      request_key: requestKey,
     });
 
     this.sessionCost += cost;
@@ -1582,7 +1849,7 @@ class Kernel {
     return response;
   }
 
-  async callWithCascade(request, step) {
+  async callWithCascade(request, step, signal) {
     // Tier 1: Compiled LLM provider (statically imported)
     try {
       const mod = this.PROVIDERS['provider:llm'];
@@ -1592,15 +1859,25 @@ class Kernel {
 
       const secrets = {};
       for (const name of (mod.meta?.secrets || [])) {
-        if (this.env[name] !== undefined) secrets[name] = this.env[name];
+        const value = await this._resolveSecretFromEnvOrKV(name);
+        if (value !== undefined) secrets[name] = value;
       }
 
-      const result = await fn({ ...request, secrets, fetch: (...args) => fetch(...args) });
+      const result = await fn({
+        ...request,
+        secrets,
+        signal,
+        fetch: (input, init = {}) => fetch(input, {
+          ...init,
+          signal: init.signal || signal,
+        }),
+      });
       if (!result || (typeof result.content !== "string" && !result.toolCalls?.length)) {
         throw new Error("Provider returned invalid response — missing content and tool calls");
       }
       return { ...result, ok: true, tier: "compiled" };
     } catch (err) {
+      if (err?.name === "AbortError") throw err;
       await this.karmaRecord({
         event: "provider_fallback",
         from: "compiled",
@@ -1611,15 +1888,16 @@ class Kernel {
 
     // Tier 2: Hardcoded direct OpenRouter call (nuclear fallback)
     try {
-      const result = await this._hardcodedLLMFallback(request, step);
+      const result = await this._hardcodedLLMFallback(request, step, signal);
       return result;
     } catch (err) {
+      if (err?.name === "AbortError") throw err;
       return { ok: false, error: err.message, tier: "all_failed" };
     }
   }
 
   // Minimal direct OpenRouter call — no provider module dependency
-  async _hardcodedLLMFallback(request, step) {
+  async _hardcodedLLMFallback(request, step, signal) {
     const body = {
       model: request.model,
       max_tokens: request.max_tokens,
@@ -1629,14 +1907,21 @@ class Kernel {
     if (request.tools?.length) body.tools = request.tools;
 
     const controller = new AbortController();
+    const abortFromParent = () => controller.abort(signal?.reason);
+    if (signal) {
+      if (signal.aborted) controller.abort(signal.reason);
+      else signal.addEventListener("abort", abortFromParent, { once: true });
+    }
     const timeout = setTimeout(() => controller.abort(), 60_000);
     let resp, data;
+    const openRouterApiKey = await this._resolveSecretFromEnvOrKV("OPENROUTER_API_KEY");
+    if (!openRouterApiKey) throw new Error("Missing OPENROUTER_API_KEY in env or KV");
     try {
       resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         signal: controller.signal,
         headers: {
-          "Authorization": `Bearer ${this.env.OPENROUTER_API_KEY}`,
+          "Authorization": `Bearer ${openRouterApiKey || ""}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
@@ -1644,6 +1929,7 @@ class Kernel {
       data = await resp.json();
     } finally {
       clearTimeout(timeout);
+      if (signal && !signal.aborted) signal.removeEventListener("abort", abortFromParent);
     }
 
     if (!resp.ok || data.error) {
@@ -1667,19 +1953,21 @@ class Kernel {
 
   buildToolDefinitions(extraTools = []) {
     const registry = this.toolRegistry || { tools: [] };
-    const defs = registry.tools.map(t => ({
-      type: 'function',
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: {
-          type: 'object',
-          properties: Object.fromEntries(
-            Object.entries(t.input || {}).map(([k, v]) => [k, { type: 'string', description: String(v) }])
-          ),
+    const defs = registry.tools
+      .filter(t => !this.isToolDenied(t.name))
+      .map(t => ({
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: {
+            type: 'object',
+            properties: Object.fromEntries(
+              Object.entries(t.input || {}).map(([k, v]) => [k, { type: 'string', description: String(v) }])
+            ),
+          },
         },
-      },
-    }));
+      }));
 
 
     // Built-in: verify patron identity via Ed25519 signature
@@ -1699,10 +1987,11 @@ class Kernel {
       },
     });
 
-    return [...defs, ...extraTools];
+    const filteredExtraTools = extraTools.filter((tool) => !this.isToolDenied(tool?.function?.name));
+    return [...defs, ...filteredExtraTools];
   }
 
-  async executeToolCall(toolCall) {
+  async executeToolCall(toolCall, extraArgs = {}) {
     const name = toolCall.function.name;
     let args;
     try {
@@ -1713,12 +2002,22 @@ class Kernel {
       return { error: `Invalid JSON in tool arguments for ${name}` };
     }
 
+    if (extraArgs && typeof extraArgs === 'object') {
+      args = { ...args, ...extraArgs };
+    }
+
     if (name === 'verify_patron') {
       return this.verifyPatron(args);
     }
 
     if (name === 'check_balance') {
       return this.checkBalance(args);
+    }
+
+    if (this.isToolDenied(name)) {
+      const error = this.getToolBlockReason(name);
+      await this.karmaRecord({ event: "tool_blocked_by_policy", tool: name, profile: this.toolProfile || null });
+      return { error };
     }
 
     // ── Load tool grants (for inbound gate) ──
@@ -1828,12 +2127,20 @@ class Kernel {
           .catch(err => ({ error: err.message })))
       );
 
-      // Append one tool result message per call
+      // Append one tool result message per call.
+      // Cap serialized content to prevent context explosion — large outputs (grep /proc,
+      // broad find, big file reads) inflate LLM context 30x without adding signal.
+      // If truncated, wrap in a valid JSON envelope so the message is always well-formed.
+      const MAX_TOOL_RESULT = 8000;
       for (let i = 0; i < response.toolCalls.length; i++) {
+        const serialized = JSON.stringify(toolResults[i]);
+        const content = serialized.length > MAX_TOOL_RESULT
+          ? JSON.stringify({ _truncated: true, preview: serialized.slice(0, MAX_TOOL_RESULT - 60), original_length: serialized.length })
+          : serialized;
         messages.push({
           role: 'tool',
           tool_call_id: response.toolCalls[i].id,
-          content: JSON.stringify(toolResults[i]),
+          content,
         });
       }
 
@@ -2054,17 +2361,16 @@ class Kernel {
       session:    { type: "session", format: "json" },
       tooldata:   { type: "tooldata", format: fmt },
       reflect:    { type: "reflect_output", format: "json" },
+      dr:         { type: "lifecycle", format: "json" },
+      dr2:        { type: "lifecycle", format: "json" },
       hook:       { type: "hook", format: "text" },
       doc:        { type: "doc", format: "text" },
       pattern:  { type: "pattern", format: "json" },
-      dr:         { type: "lifecycle", format: "json" },
-      dr2:        { type: "lifecycle", format: "json" },
-      dr3:        { type: "lifecycle", format: "json" },
-      identification: { type: "identification", format: "json" },
       kernel:     { type: "kernel", format: "json" },
-      review_note: { type: "review_note", format: "json" },
       sealed:     { type: "sealed", format: "json" },
       principle:  { type: "principle", format: "text" },
+      identification: { type: "identification", format: "json" },
+      review_note: { type: "review_note", format: "json" },
     };
     const finalMetadata = {
       ...defaults[prefix],
@@ -2074,26 +2380,6 @@ class Kernel {
 
     const data = typeof value === "string" ? value : JSON.stringify(value);
     await this.kv.put(key, data, { metadata: finalMetadata });
-  }
-
-  async updateIdentificationLastExercised(key, timestamp = new Date().toISOString()) {
-    if (!key.startsWith("identification:")) {
-      return { ok: false, error: `updateIdentificationLastExercised only applies to identification:* keys, got "${key}"` };
-    }
-    const existing = await this.kvGet(key);
-    if (existing === null) return { ok: false, error: `Identification not found: ${key}` };
-    if (typeof existing !== "object" || typeof existing.identification !== "string") {
-      return { ok: false, error: `Invalid identification schema at "${key}"` };
-    }
-    const updated = { ...existing, last_exercised_at: timestamp };
-    await this.kvWrite(key, updated);
-    await this.karmaRecord({
-      event: "identification_exercised",
-      key,
-      old: existing.last_exercised_at || null,
-      new: timestamp,
-    });
-    return { ok: true };
   }
 
   async loadKeys(keys) {

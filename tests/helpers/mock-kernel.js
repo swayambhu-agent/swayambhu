@@ -34,6 +34,13 @@ export function makeMockK(kvInit = {}, opts = {}) {
     kvDeleteSafe: vi.fn(async (key) => {
       kv._store.delete(key);
     }),
+    writeLifecycleState: vi.fn(async (key, value, metadata) => {
+      kv._store.set(key, typeof value === "string" ? value : JSON.stringify(value));
+      if (metadata) kv._meta.set(key, metadata);
+    }),
+    deleteLifecycleState: vi.fn(async (key) => {
+      kv._store.delete(key);
+    }),
     // kvWritePrivileged removed — functionality moved to kvWriteGated with context
 
     // Event bus
@@ -105,7 +112,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       const prefixes = [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
-        'principle:', 'tactic:', 'identification:', 'contact:', 'contact_platform:', 'sealed:',
+        'principle:', 'tactic:', 'identification:', 'review_note:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ];
       const exact = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
@@ -116,7 +123,7 @@ export function makeMockK(kvInit = {}, opts = {}) {
       prefixes: [
         'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
         'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
-        'principle:', 'tactic:', 'identification:', 'contact:', 'contact_platform:', 'sealed:',
+        'principle:', 'tactic:', 'identification:', 'review_note:', 'contact:', 'contact_platform:', 'sealed:',
         'event:', 'event_dead:',
       ],
       exact: ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'],
@@ -146,13 +153,16 @@ export function makeMockK(kvInit = {}, opts = {}) {
   const _SYSTEM_PREFIXES = [
     'prompt:', 'config:', 'tool:', 'provider:', 'secret:',
     'hook:', 'doc:', 'pattern:', 'skill:', 'task:',
-    'principle:', 'tactic:', 'identification:', 'contact:', 'contact_platform:', 'sealed:',
+    'principle:', 'tactic:', 'identification:', 'review_note:', 'contact:', 'contact_platform:', 'sealed:',
     'event:', 'event_dead:',
   ];
   const _SYSTEM_EXACT = ['providers', 'wallets', 'patron:contact', 'patron:identity_snapshot'];
   const _KERNEL_ONLY = ['kernel:', 'sealed:', 'karma:', 'event:', 'event_dead:'];
   const _KERNEL_ONLY_EXACT = ['patron:direct'];
+  const _LIFECYCLE = ['dr:', 'dr2:', 'dr3:'];
   const _CODE_PATTERNS = ['tool:', 'hook:', 'provider:', 'channel:'];
+  const _KNOWN_CONTEXTS = new Set(['act', 'reflect', 'deep-reflect', 'userspace-review', 'authority-review']);
+  const _EXPLICIT_PRIVILEGED_PREFIXES = ['config:', 'prompt:', 'pattern:', 'principle:', 'desire:', 'tactic:', 'identification:', 'review_note:'];
   function _isSystemKey(key) {
     if (_SYSTEM_EXACT.includes(key)) return true;
     return _SYSTEM_PREFIXES.some(p => key.startsWith(p));
@@ -161,44 +171,103 @@ export function makeMockK(kvInit = {}, opts = {}) {
     if (_KERNEL_ONLY_EXACT.includes(key)) return true;
     return _KERNEL_ONLY.some(p => key.startsWith(p));
   }
+  function _isLifecycle(key) { return _LIFECYCLE.some(p => key.startsWith(p)); }
   function _isCodeKey(key) { return _CODE_PATTERNS.some(p => key.startsWith(p)) && key.endsWith(':code'); }
-
-  mock.updateIdentificationLastExercised = vi.fn(async (key, timestamp) => {
-    if (!key.startsWith("identification:")) return { ok: false, error: `Not an identification key: ${key}` };
-    const existing = await mock.kvGet(key);
-    if (existing === null) return { ok: false, error: `Identification not found: ${key}` };
-    await mock.kvWriteSafe(key, { ...existing, last_exercised_at: timestamp }, { unprotected: true });
-    return { ok: true };
-  });
 
   mock.kvWriteGated = vi.fn(async (op, context) => {
     const key = op.key;
 
-    if (key === "dharma" || key.startsWith("principle:") || key === "patron:public_key") {
+    if (!_KNOWN_CONTEXTS.has(context)) {
+      return { ok: false, error: `Unknown kvWriteGated context "${context}"` };
+    }
+
+    if (key === "dharma" || key === "patron:public_key") {
       return { ok: false, error: `Cannot write "${key}" — immutable` };
     }
     if (_isKernelOnly(key)) {
       return { ok: false, error: `Cannot write kernel key "${key}"` };
     }
+    if (_isLifecycle(key)) {
+      return { ok: false, error: `Cannot write lifecycle key "${key}"` };
+    }
     if (_isCodeKey(key)) {
       return { ok: false, error: `Code key "${key}" requires K.stageCode()` };
     }
 
-    // Contact keys — allowed in all contexts
+    // Contact keys — allowed in all recognized contexts
     if (key.startsWith("contact:") || key.startsWith("contact_platform:")) {
       if (op.op === "put") await mock.kvWriteSafe(op.key, op.value, op.metadata);
       else if (op.op === "delete") await mock.kvDeleteSafe(op.key);
       return { ok: true };
     }
 
-    // System keys — deep-reflect only
+    // Mechanical protected writes allowed from act
+    if (op.op === "field_merge" && key.startsWith("pattern:")) {
+      if (!["act", "deep-reflect", "userspace-review"].includes(context)) {
+        return { ok: false, error: `Cannot write protected key "${key}" during ${context}` };
+      }
+      const fields = op.fields || {};
+      const requested = Object.keys(fields);
+      if (requested.length === 0) return { ok: false, error: `field_merge: no fields provided for "${key}"` };
+      if (requested.some((field) => field !== "strength")) {
+        return { ok: false, error: `field_merge: fields not allowed for "${key}": ${requested.join(", ")}` };
+      }
+      const existing = await mock.kvGet(key);
+      if (existing === null) return { ok: false, error: `field_merge: key_not_found "${key}"` };
+      await mock.kvWriteSafe(key, { ...existing, ...fields }, { unprotected: true });
+      return { ok: true };
+    }
+
+    if (op.op === "field_merge" && key.startsWith("identification:")) {
+      if (!["act", "deep-reflect", "userspace-review"].includes(context)) {
+        return { ok: false, error: `Cannot write protected key "${key}" during ${context}` };
+      }
+      const fields = op.fields || {};
+      const requested = Object.keys(fields);
+      const allowed = new Set(["last_exercised_at", "last_reviewed_at", "strength"]);
+      if (requested.length === 0) return { ok: false, error: `field_merge: no fields provided for "${key}"` };
+      if (requested.some((field) => !allowed.has(field))) {
+        return { ok: false, error: `field_merge: fields not allowed for "${key}": ${requested.join(", ")}` };
+      }
+      const existing = await mock.kvGet(key);
+      if (existing === null) return { ok: false, error: `field_merge: key_not_found "${key}"` };
+      await mock.kvWriteSafe(key, { ...existing, ...fields }, { unprotected: true });
+      return { ok: true };
+    }
+
+    // System keys — deep-reflect and userspace-review only
     if (_isSystemKey(key)) {
-      if (context !== "deep-reflect") {
+      if (context !== "deep-reflect" && context !== "userspace-review") {
         return { ok: false, error: `Cannot write system key "${key}" during ${context}` };
       }
-      // Allow in deep-reflect (simplified mock — real kernel has deliberation gates)
-      if (op.op === "put") await mock.kvWriteSafe(op.key, op.value, op.metadata);
-      else if (op.op === "delete") await mock.kvDeleteSafe(op.key);
+
+      if (!_EXPLICIT_PRIVILEGED_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+        return { ok: false, error: `No write policy rule for protected key "${key}"` };
+      }
+
+      const requiresDeliberation = key.startsWith("prompt:")
+        || key.startsWith("principle:")
+        || key === "config:model_capabilities";
+      const deliberation = typeof op.deliberation === "string" ? op.deliberation : "";
+      if (requiresDeliberation && deliberation.length < 200) {
+        return { ok: false, error: `Protected write to "${key}" requires deliberation (min 200 chars, got ${deliberation.length})` };
+      }
+
+      if (op.op === "put") {
+        await mock.kvWriteSafe(op.key, op.value, op.metadata);
+      } else if (op.op === "delete") {
+        await mock.kvDeleteSafe(op.key);
+      } else if (op.op === "patch") {
+        const current = await mock.kvGet(op.key);
+        if (typeof current !== "string") return { ok: false, error: `patch: key "${op.key}" is not a string` };
+        if (!current.includes(op.old_string)) return { ok: false, error: `patch: old_string not found in "${op.key}"` };
+        if (current.indexOf(op.old_string) !== current.lastIndexOf(op.old_string)) {
+          return { ok: false, error: `patch: old_string matches multiple locations in "${op.key}"` };
+        }
+        await mock.kvWriteSafe(op.key, current.replace(op.old_string, op.new_string), op.metadata);
+      } else {
+        return { ok: false, error: `Unsupported op "${op.op}" for protected key "${key}"` };
+      }
       return { ok: true };
     }
 

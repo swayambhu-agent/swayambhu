@@ -12,10 +12,44 @@ export const meta = {
   provider: "compute",
 };
 
+const esc = s => s.replace(/'/g, "'\\''");
+
+async function hydrateJobResult(job, { provider, baseUrl, secrets, fetch, kv }) {
+  const outputResult = await provider.call({
+    command: `cat '${esc(job.workdir)}/output.json' 2>/dev/null || echo '{}'`,
+    baseUrl,
+    timeout: 10,
+    secrets,
+    fetch,
+  });
+
+  let resultData = null;
+  let resultMeta = null;
+  if (!outputResult.ok) {
+    return { ok: false, error: outputResult.error || "failed to read output.json" };
+  }
+
+  const raw = Array.isArray(outputResult.output)
+    ? outputResult.output.map(o => o.data || '').join('')
+    : String(outputResult.output || '');
+  const { payload, meta } = parseJobOutput(raw);
+  resultData = payload || { raw_output: raw.slice(0, 5000) };
+  resultMeta = meta;
+
+  const resultKey = `job_result:${job.id}`;
+  await kv.put(resultKey, JSON.stringify({
+    job_id: job.id,
+    type: job.type,
+    result: resultData,
+    ...(resultMeta ? { meta: resultMeta } : {}),
+  }));
+
+  return { ok: true, resultKey };
+}
+
 export async function execute({ job_id, wait_seconds, provider, secrets, fetch, kv, config }) {
   const jobs = config?.jobs || {};
   const baseUrl = jobs.base_url || "https://akash.swayambhu.dev";
-  const esc = s => s.replace(/'/g, "'\\''");
 
   // Gather job records
   let jobRecords = [];
@@ -40,7 +74,23 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
 
   for (const job of jobRecords) {
     if (job.status !== "running") {
-      if (job.status === "completed") completed.push({ job_id: job.id, type: job.type, result_key: `job_result:${job.id}` });
+      if (job.status === "completed") {
+        const existingResultKey = job.result_key || `job_result:${job.id}`;
+        const existingResult = await kv.get(existingResultKey);
+        if (existingResult) {
+          completed.push({ job_id: job.id, type: job.type, result_key: existingResultKey });
+          continue;
+        }
+        const hydration = await hydrateJobResult(job, { provider, baseUrl, secrets, fetch, kv });
+        if (!hydration.ok) {
+          still_running.push({ job_id: job.id, type: job.type, hydration_error: hydration.error, result_pending: true });
+          continue;
+        }
+        const resultKey = hydration.resultKey;
+        job.result_key = resultKey;
+        await kv.put(`job:${job.id}`, JSON.stringify(job));
+        completed.push({ job_id: job.id, type: job.type, result_key: resultKey });
+      }
       else if (job.status === "failed") failed.push({ job_id: job.id, type: job.type, error: job.error });
       else if (job.status === "expired") expired.push({ job_id: job.id, type: job.type });
       continue;
@@ -83,34 +133,12 @@ export async function execute({ job_id, wait_seconds, provider, secrets, fetch, 
     // Job completed — read exit code and output
     const exitCode = parseInt(outputText, 10);
 
-    // Read output.json
-    let resultData = null;
-    let resultMeta = null;
-    const outputResult = await provider.call({
-      command: `cat '${esc(job.workdir)}/output.json' 2>/dev/null || echo '{}'`,
-      baseUrl,
-      timeout: 10,
-      secrets,
-      fetch,
-    });
-
-    if (outputResult.ok) {
-      const raw = Array.isArray(outputResult.output)
-        ? outputResult.output.map(o => o.data || '').join('')
-        : String(outputResult.output || '');
-      const { payload, meta } = parseJobOutput(raw);
-      resultData = payload || { raw_output: raw.slice(0, 5000) };
-      resultMeta = meta;
+    const hydration = await hydrateJobResult(job, { provider, baseUrl, secrets, fetch, kv });
+    if (!hydration.ok) {
+      still_running.push({ job_id: job.id, type: job.type, age_minutes: Math.round(age), hydration_error: hydration.error, result_pending: true });
+      continue;
     }
-
-    // Write job_result
-    const resultKey = `job_result:${job.id}`;
-    await kv.put(resultKey, JSON.stringify({
-      job_id: job.id,
-      type: job.type,
-      result: resultData,
-      ...(resultMeta ? { meta: resultMeta } : {}),
-    }));
+    const resultKey = hydration.resultKey;
 
     // Update job record
     job.status = exitCode === 0 ? "completed" : "failed";

@@ -14,7 +14,9 @@ export default function ChatTab({ patronKey, chatsRev }) {
   const refreshChats = useCallback(async () => {
     try {
       const d = await api('/chats', patronKey);
-      setChats(d.chats || []);
+      const list = d.chats || [];
+      setChats(list);
+      if (list.length > 0) setSelectedChat(prev => prev || list[0].key);
     } catch {}
   }, [patronKey]);
 

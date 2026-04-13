@@ -4,18 +4,21 @@ import { HB_NORMAL, HB_HIDDEN } from './lib/config.js';
 import LoginScreen from './components/LoginScreen.jsx';
 import TimelineTab, { ContextPanel, DraggableDivider } from './components/TimelineTab.jsx';
 import ReflectionsTab from './components/ReflectionsTab.jsx';
+import Dr2Tab from './components/Dr2Tab.jsx';
 import MindTab from './components/MindTab.jsx';
 import ChatTab from './components/ChatTab.jsx';
 import ContactsTab from './components/ContactsTab.jsx';
 import KVExplorerTab from './components/KVExplorerTab.jsx';
 import MutationsTab from './components/MutationsTab.jsx';
 import DirectMessageBar from './components/DirectMessageBar.jsx';
+import RequestsTab from './components/RequestsTab.jsx';
 
 export default function App() {
   const [patronKey, setPatronKey] = useState(() => sessionStorage.getItem('patronKey'));
   const [health, setHealth] = useState(null);
   const [mindCounts, setMindCounts] = useState(null);
   const [balances, setBalances] = useState(null);
+  const [requestSummary, setRequestSummary] = useState(null);
   const [countdown, setCountdown] = useState(null);
   const [activeTab, setActiveTab] = useState('timeline');
   const [selectedEntry, setSelectedEntry] = useState(null);
@@ -38,6 +41,7 @@ export default function App() {
     setPatronKey(null);
     setHealth(null);
     setBalances(null);
+    setRequestSummary(null);
   };
 
   // Load health + balances on auth, poll every 10s
@@ -82,12 +86,20 @@ export default function App() {
     } catch {}
   }, [patronKey]);
 
+  const loadRequestSummary = useCallback(async () => {
+    try {
+      const d = await api('/requests', patronKey);
+      setRequestSummary(d.summary || null);
+    } catch {}
+  }, [patronKey]);
+
   // ── Heartbeat: single poll loop replaces all per-tab intervals ──
   const lastPulseN = useRef(-1);
   const inflightRef = useRef({});
   const [sessionsRev, setSessionsRev] = useState(0);
   const [chatsRev, setChatsRev] = useState(0);
   const [reflectionsRev, setReflectionsRev] = useState(0);
+  const [requestsRev, setRequestsRev] = useState(0);
 
   useEffect(() => {
     if (!patronKey) return;
@@ -95,6 +107,7 @@ export default function App() {
     // Load initial data on mount
     loadHealth();
     loadMindCounts();
+    loadRequestSummary();
 
     function getInterval() {
       if (document.hidden) return HB_HIDDEN;
@@ -120,6 +133,10 @@ export default function App() {
         if (changed.has("mind"))         guard("mind", loadMindCounts);
         if (changed.has("reflections"))  setReflectionsRev(r => r + 1);
         if (changed.has("chats"))        setChatsRev(r => r + 1);
+        if (changed.has("requests"))     {
+          setRequestsRev(r => r + 1);
+          guard("requests", loadRequestSummary);
+        }
       } catch {}
     }
 
@@ -135,7 +152,7 @@ export default function App() {
       clearInterval(intervalId);
       document.removeEventListener("visibilitychange", onVisChange);
     };
-  }, [patronKey, loadHealth, loadMindCounts]);
+  }, [patronKey, loadHealth, loadMindCounts, loadRequestSummary]);
 
   // Countdown timer for next session
   useEffect(() => {
@@ -159,10 +176,12 @@ export default function App() {
 
   const tabs = [
     { id: 'timeline', label: 'Runs' },
+    { id: 'requests', label: 'Requests' },
     { id: 'chat', label: 'Chat' },
     { id: 'contacts', label: 'Contacts' },
     { id: 'kv', label: 'Index' },
-    { id: 'reflections', label: 'Deep Reflect' },
+    { id: 'reflections', label: 'DR-1' },
+    { id: 'dr2', label: 'DR-2' },
     { id: 'mutations', label: 'Modifications' },
     { id: 'mind', label: 'Mind' },
   ];
@@ -170,50 +189,56 @@ export default function App() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       {/* Header + status bar */}
-      <div className="bg-bg-panel border-b border-border px-4 py-2 flex items-center gap-4 text-xs">
-        <span className="text-accent font-bold tracking-widest text-sm">SWAYAMBHU</span>
-        <span className="text-gray-600">patron</span>
-        {health && (
-          <>
-            <span className="text-gray-600">|</span>
-            <span className="text-gray-500">Runs:</span>
-            <span className="text-accent font-semibold">{health.sessionCounter || 0}</span>
-            {countdown && (
-              <>
-                <span className="text-gray-600">|</span>
-                <span className="text-gray-500">Next run:</span>
-                <span className={`font-semibold ${countdown === 'now' ? 'text-green-400' : 'text-blue-400'}`}>
-                  {countdown}
-                </span>
-              </>
-            )}
-            <span className="text-gray-600">|</span>
-            <span className={`ml-1 px-2 py-0.5 rounded text-xs font-semibold ${
-              health.session
-                ? 'bg-green-900/30 text-green-400'
-                : countdown === 'now'
-                  ? 'bg-yellow-900/30 text-yellow-400'
-                  : 'bg-gray-800 text-gray-500'
-            }`}>{health.session ? 'In session' : countdown === 'now' ? 'Starting' : 'Idle'}</span>
-          </>
-        )}
-        {mindCounts && (
-          <div className="flex items-center gap-3 text-gray-500 border-l border-gray-800 pl-3 ml-1">
-            <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-green-400 transition">
-              <span className="text-green-400">●</span> {mindCounts.patterns}s
-            </span>
-            <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-purple-400 transition">
-              <span className="text-purple-400">●</span> {mindCounts.desires}d
-            </span>
-            <span onClick={() => setActiveTab('mind')} className="cursor-pointer hover:text-cyan-400 transition">
-              <span className="text-cyan-400">●</span> {mindCounts.experiences}ε
-            </span>
-            <span className="text-gray-600">
+      <div className="bg-bg-panel border-b border-border px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+          <span className="text-accent font-bold tracking-widest text-sm">SWAYAMBHU</span>
+          <span className="text-gray-600">patron</span>
+          {health && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-gray-600 hidden sm:inline">|</span>
+              <span className="text-gray-500">Runs:</span>
+              <span className="text-accent font-semibold">{health.sessionCounter || 0}</span>
+              {countdown && (
+                <>
+                  <span className="text-gray-600 hidden sm:inline">|</span>
+                  <span className="text-gray-500">Next run:</span>
+                  <span className={`font-semibold ${countdown === 'now' ? 'text-green-400' : 'text-blue-400'}`}>
+                    {countdown}
+                  </span>
+                </>
+              )}
+              <span className="text-gray-600 hidden sm:inline">|</span>
+              <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                health.session
+                  ? 'bg-green-900/30 text-green-400'
+                  : countdown === 'now'
+                    ? 'bg-yellow-900/30 text-yellow-400'
+                    : 'bg-gray-800 text-gray-500'
+              }`}>{health.session ? 'In session' : countdown === 'now' ? 'Starting' : 'Idle'}</span>
+            </div>
+          )}
+          {mindCounts && (
+            <button
+              type="button"
+              className="text-gray-600 cursor-pointer hover:text-gray-400 transition md:border-l md:border-gray-800 md:pl-3 md:ml-1"
+              onClick={() => setActiveTab('mind')}
+              title={`${mindCounts.patterns} patterns, ${mindCounts.desires} desires, ${mindCounts.experiences} experiences — ${mindCounts.sessionsSinceDr} sessions since last DR`}
+            >
               DR:{mindCounts.sessionsSinceDr}
-            </span>
-          </div>
-        )}
-        <div className="flex items-center gap-2 ml-auto">
+            </button>
+          )}
+          {requestSummary && (
+            <button
+              type="button"
+              className="cursor-pointer rounded-full border border-amber-900/70 bg-amber-950/20 px-2.5 py-1 text-[11px] text-amber-300 transition hover:border-amber-700 hover:text-amber-200"
+              onClick={() => setActiveTab('requests')}
+              title={`${requestSummary.pending} pending, ${requestSummary.fulfilled} fulfilled, ${requestSummary.rejected} rejected`}
+            >
+              Requests:{requestSummary.pending}
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 w-full md:w-auto md:ml-auto md:justify-end">
           {health && balances && (() => {
             const extract = (v) => typeof v === 'object' && v !== null ? v.balance : v;
             const items = [
@@ -243,20 +268,22 @@ export default function App() {
       </div>
 
       {/* Tab bar */}
-      <div className="bg-bg-panel border-b border-border px-4 flex gap-1">
-        {tabs.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-3 py-1.5 text-xs font-semibold transition border-b-2 ${
-              activeTab === tab.id
-                ? 'border-accent text-accent'
-                : 'border-transparent text-gray-500 hover:text-gray-300'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="bg-bg-panel border-b border-border px-2 sm:px-4 overflow-x-auto scrollbar-thin">
+        <div className="flex gap-1 min-w-max">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-shrink-0 px-3 py-1.5 text-xs font-semibold transition border-b-2 ${
+                activeTab === tab.id
+                  ? 'border-accent text-accent'
+                  : 'border-transparent text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Direct message bar */}
@@ -276,6 +303,9 @@ export default function App() {
         <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', width: '100%', height: '100%' }}>
           <ChatTab patronKey={patronKey} chatsRev={chatsRev} />
         </div>
+        <div style={{ display: activeTab === 'requests' ? 'flex' : 'none', width: '100%', height: '100%' }}>
+          <RequestsTab patronKey={patronKey} requestsRev={requestsRev} />
+        </div>
         <div style={{ display: activeTab === 'contacts' ? 'flex' : 'none', width: '100%', height: '100%' }}>
           <ContactsTab patronKey={patronKey} />
         </div>
@@ -284,6 +314,9 @@ export default function App() {
         </div>
         <div style={{ display: activeTab === 'reflections' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
           <ReflectionsTab patronKey={patronKey} reflectionsRev={reflectionsRev} />
+        </div>
+        <div style={{ display: activeTab === 'dr2' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
+          <Dr2Tab patronKey={patronKey} reflectionsRev={reflectionsRev} />
         </div>
         <div style={{ display: activeTab === 'mutations' ? 'block' : 'none' }} className="flex-1 p-4 overflow-hidden">
           <MutationsTab patronKey={patronKey} />

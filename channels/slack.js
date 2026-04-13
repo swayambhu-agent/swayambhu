@@ -73,8 +73,24 @@ export function resolveChatKey(inbound) {
   return inbound.chatId;
 }
 
+async function parseSlackResponse(response) {
+  const payload = typeof response?.json === "function"
+    ? await response.json()
+    : response;
+  const transportOk = typeof response?.ok === "boolean" ? response.ok : true;
+  if (!transportOk) {
+    const status = response?.status ?? "unknown";
+    const error = payload?.error ? ` (${payload.error})` : "";
+    throw new Error(`Slack chat.postMessage failed: HTTP ${status}${error}`);
+  }
+  if (!payload?.ok) {
+    throw new Error(`Slack chat.postMessage failed: ${payload?.error || "unknown_error"}`);
+  }
+  return payload;
+}
+
 export async function sendReply(chatId, text, secrets, fetchFn) {
-  await fetchFn("https://slack.com/api/chat.postMessage", {
+  const response = await fetchFn("https://slack.com/api/chat.postMessage", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -85,4 +101,5 @@ export async function sendReply(chatId, text, secrets, fetchFn) {
       text,
     }),
   });
+  return parseSlackResponse(response);
 }

@@ -17,10 +17,13 @@ import * as test_model from "../tools/test_model.js";
 import * as web_search from "../tools/web_search.js";
 import * as start_job from "../tools/start_job.js";
 import * as collect_jobs from "../tools/collect_jobs.js";
+import * as delegate_task from "../tools/delegate_task.js";
 import * as send_whatsapp from "../tools/send_whatsapp.js";
 import * as google_docs from "../tools/google_docs.js";
 import * as gnanetra from "../tools/gnanetra.js";
 import * as request_message from "../tools/request_message.js";
+import * as trigger_session from "../tools/trigger_session.js";
+import * as update_request from "../tools/update_request.js";
 
 // ── Channel modules ─────────────────────────────────────────
 import * as slack from "../channels/slack.js";
@@ -116,7 +119,8 @@ function mockKV(initial = {}) {
 const allTools = {
   send_slack, web_fetch,
   kv_manifest, kv_query, check_email, send_email, computer, test_model, web_search,
-  start_job, collect_jobs, send_whatsapp, google_docs, gnanetra, request_message,
+  start_job, collect_jobs, delegate_task, send_whatsapp, google_docs, gnanetra, request_message,
+  trigger_session, update_request,
 };
 
 const allProviders = { llm, llm_balance, wallet_balance, gmail, compute };
@@ -136,7 +140,12 @@ describe("module structure", () => {
     it(`providers/${name}.js exports meta and call/check`, () => {
       expect(mod.meta).toBeDefined();
       expect(typeof mod.meta.timeout_ms).toBe("number");
-      expect(mod.call || mod.check).toBeDefined();
+      if (name === "compute") {
+        expect(typeof mod.call).toBe("function");
+        expect(typeof mod.upload).toBe("function");
+      } else {
+        expect(mod.call || mod.check).toBeDefined();
+      }
     });
   }
 });
@@ -178,6 +187,15 @@ describe("send_slack", () => {
     const opts = f.mock.calls[0][1];
     expect(opts.headers.Authorization).toBe("Bearer xoxb-tok");
   });
+
+  it("throws when Slack rejects the message", async () => {
+    const f = mockFetch({ ok: false, error: "not_in_channel" });
+    await expect(send_slack.execute({
+      text: "hello",
+      secrets: { SLACK_BOT_TOKEN: "xoxb-tok", SLACK_CHANNEL_ID: "C123" },
+      fetch: f,
+    })).rejects.toThrow("Slack chat.postMessage failed: not_in_channel");
+  });
 });
 
 describe("web_fetch", () => {
@@ -217,12 +235,30 @@ describe("computer", () => {
     const opts = f.mock.calls[0][1];
     expect(opts.headers["CF-Access-Client-Id"]).toBe("cid");
     expect(opts.headers["Authorization"]).toBe("Bearer key");
+    const body = JSON.parse(opts.body);
+    expect(body.command).toContain("export GIT_PAGER=cat");
+    expect(body.command).toContain("export PAGER=cat");
+    expect(body.command).toContain("export GIT_TERMINAL_PROMPT=0");
+    expect(body.command).toContain("export TERM=dumb");
+    expect(body.command.endsWith("echo hello")).toBe(true);
   });
 
   it("uses custom timeout", async () => {
     const f = mockFetch({ status: "completed", exit_code: 0, output: "", id: "p1" });
     await computer.execute({ command: "ls", timeout: 120, secrets, fetch: f, provider: compute });
     expect(f.mock.calls[0][0]).toContain("wait=120");
+  });
+
+  it("uses config.jobs.base_url when provided", async () => {
+    const f = mockFetch({ status: "completed", exit_code: 0, output: "", id: "p2" });
+    await computer.execute({
+      command: "pwd",
+      secrets,
+      fetch: f,
+      provider: compute,
+      config: { jobs: { base_url: "http://127.0.0.1:8080" } },
+    });
+    expect(f.mock.calls[0][0]).toContain("http://127.0.0.1:8080/execute?wait=60");
   });
 
   it("returns error when command is missing", async () => {
@@ -246,6 +282,91 @@ describe("computer", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("500");
     expect(result.detail).toBe("server error detail");
+  });
+
+  it("provider.upload posts multipart form data to /files/upload with directory query param", async () => {
+    const f = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: (name) => name === "content-type" ? "application/json" : null },
+      json: async () => ({ path: "/tmp/uploaded/job.tar.gz", size: 4 }),
+      text: async () => JSON.stringify({ path: "/tmp/uploaded/job.tar.gz", size: 4 }),
+    }));
+
+    const result = await compute.upload({
+      filename: "job.tar.gz",
+      directory: "/tmp/uploaded",
+      bytes: new Uint8Array([1, 2, 3, 4]),
+      baseUrl: "https://test.dev",
+      secrets,
+      fetch: f,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      path: "/tmp/uploaded/job.tar.gz",
+      size: 4,
+    });
+
+    expect(f).toHaveBeenCalledOnce();
+    expect(f.mock.calls[0][0]).toBe("https://test.dev/files/upload?directory=%2Ftmp%2Fuploaded");
+    const opts = f.mock.calls[0][1];
+    expect(opts.method).toBe("POST");
+    expect(opts.headers["Content-Type"]).toBeUndefined();
+    expect(opts.headers["CF-Access-Client-Id"]).toBe("cid");
+    expect(opts.headers["Authorization"]).toBe("Bearer key");
+    expect(opts.body).toBeInstanceOf(FormData);
+    const uploadedFile = opts.body.get("file");
+    expect(uploadedFile).toBeInstanceOf(File);
+    expect(uploadedFile.name).toBe("job.tar.gz");
+    expect(uploadedFile.type).toBe("application/gzip");
+  });
+
+  it("provider.upload returns validation error when filename is missing", async () => {
+    const result = await compute.upload({
+      directory: "/tmp/uploaded",
+      bytes: new Uint8Array([1]),
+      baseUrl: "https://test.dev",
+      secrets,
+      fetch: vi.fn(),
+    });
+
+    expect(result).toEqual({ ok: false, error: "filename is required" });
+  });
+
+  it("provider.upload returns validation error when directory is missing", async () => {
+    const result = await compute.upload({
+      filename: "job.tar.gz",
+      bytes: new Uint8Array([1]),
+      baseUrl: "https://test.dev",
+      secrets,
+      fetch: vi.fn(),
+    });
+
+    expect(result).toEqual({ ok: false, error: "directory is required" });
+  });
+
+  it("provider.upload handles non-ok upload responses", async () => {
+    const f = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+      text: async () => "upload failed",
+    }));
+
+    const result = await compute.upload({
+      filename: "job.tar.gz",
+      directory: "/tmp/uploaded",
+      bytes: new Uint8Array([1, 2]),
+      baseUrl: "https://test.dev",
+      secrets,
+      fetch: f,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("500");
+    expect(result.detail).toBe("upload failed");
   });
 });
 
@@ -463,23 +584,29 @@ describe("kv_query", () => {
 // ── 6. check_email tests ──────────────────────────────────────
 
 describe("check_email", () => {
+  const EMAIL_SECRETS = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "csec", EMAIL_RELAY_SECRET: "rsec" };
+
+  function mockRelayProvider(checkResult) {
+    return {
+      checkEmail: vi.fn(async () => checkResult),
+    };
+  }
+
   it("returns empty list when no unread emails", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },        // token refresh
-      { json: { messages: [] } },                // list unread
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
+    const provider = mockRelayProvider({ emails: [], count: 0 });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
     expect(result).toEqual({ emails: [], count: 0 });
   });
 
   it("fetches unread emails with from, subject, body", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }, { id: "msg_2" }] } },
-      { json: gmailMessage({ id: "msg_1", from: "alice@test.com", subject: "Hi", body: "Hello" }) },
-      { json: gmailMessage({ id: "msg_2", from: "bob@test.com", subject: "Re: Hi", body: "Hey there" }) },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
+    const provider = mockRelayProvider({
+      emails: [
+        { id: "msg_1", from: "alice@test.com", subject: "Hi", date: "2026-03-10", body: "Hello" },
+        { id: "msg_2", from: "bob@test.com", subject: "Re: Hi", date: "2026-03-10", body: "Hey there" },
+      ],
+      count: 2,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
     expect(result.count).toBe(2);
     expect(result.emails[0].from).toBe("alice@test.com");
     expect(result.emails[0].subject).toBe("Hi");
@@ -489,385 +616,282 @@ describe("check_email", () => {
 
   it("returns full body without truncation", async () => {
     const longBody = "x".repeat(600);
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: gmailMessage({ id: "msg_1", body: longBody }) },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_1", from: "a@b.com", subject: "S", date: "2026-03-10", body: longBody }],
+      count: 1,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
     expect(result.emails[0].body).toBe(longBody);
   });
 
   it("respects max_results param", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: gmailMessage({ id: "msg_1" }) },
-    ]);
-    await check_email.execute({ max_results: 5, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    // Second call is listUnread — check the URL contains maxResults=5
-    const listUrl = f.mock.calls[1][0];
-    expect(listUrl).toContain("maxResults=5");
+    const provider = mockRelayProvider({ emails: [], count: 0 });
+    await check_email.execute({ max_results: 5, secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(provider.checkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ maxResults: 5 })
+    );
   });
 
   it("caps max_results at 20", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [] } },
-    ]);
-    await check_email.execute({ max_results: 100, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    const listUrl = f.mock.calls[1][0];
-    expect(listUrl).toContain("maxResults=20");
+    const provider = mockRelayProvider({ emails: [], count: 0 });
+    await check_email.execute({ max_results: 100, secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(provider.checkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ maxResults: 20 })
+    );
   });
 
-  it("calls markAsRead when mark_read is true", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: gmailMessage({ id: "msg_1" }) },
-      { json: {} },  // markAsRead response
-    ]);
-    await check_email.execute({ mark_read: true, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    expect(f).toHaveBeenCalledTimes(4);
-    const markUrl = f.mock.calls[3][0];
-    expect(markUrl).toContain("msg_1/modify");
+  it("passes markRead true to provider when mark_read is true", async () => {
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_1", from: "a@b.com", subject: "S", date: "2026-03-10", body: "hi" }],
+      count: 1,
+    });
+    await check_email.execute({ mark_read: true, secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(provider.checkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ markRead: true })
+    );
   });
 
-  it("does not call markAsRead when mark_read is false", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: gmailMessage({ id: "msg_1" }) },
-    ]);
-    await check_email.execute({ mark_read: false, secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    expect(f).toHaveBeenCalledTimes(3);
+  it("passes markRead false to provider when mark_read is false", async () => {
+    const provider = mockRelayProvider({ emails: [], count: 0 });
+    await check_email.execute({ mark_read: false, secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(provider.checkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ markRead: false })
+    );
   });
 
-  it("throws on token refresh failure", async () => {
-    const f = mockFetchSequence([
-      { ok: false, status: 401, json: {}, text: "Unauthorized" },
-    ]);
-    await expect(
-      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
-    ).rejects.toThrow("Gmail token refresh failed");
-  });
-
-  it("throws on list failure", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { ok: false, status: 500, json: {}, text: "Internal error" },
-    ]);
-    await expect(
-      check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
-    ).rejects.toThrow("Gmail list failed");
-  });
-
-  it("extracts body from multipart text/plain", async () => {
-    const msg = {
-      id: "msg_1", threadId: "t_1",
-      payload: {
-        mimeType: "multipart/alternative",
-        headers: [
-          { name: "From", value: "test@test.com" },
-          { name: "Subject", value: "Multi" },
-          { name: "Date", value: "Mon, 10 Mar 2026" },
-          { name: "Message-ID", value: "<m1@test>" },
-        ],
-        parts: [
-          { mimeType: "text/plain", body: { data: base64url("Plain text body") } },
-          { mimeType: "text/html", body: { data: base64url("<p>HTML body</p>") } },
-        ],
-      },
+  it("throws on gateway failure", async () => {
+    const provider = {
+      checkEmail: vi.fn(async () => { throw new Error("Email gateway /check-email failed (500): Internal error"); }),
     };
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: msg },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    expect(result.emails[0].body).toBe("Plain text body");
+    await expect(
+      check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider })
+    ).rejects.toThrow("Email gateway");
   });
 
-  it("falls back to stripped HTML when no text/plain", async () => {
-    const msg = {
-      id: "msg_1", threadId: "t_1",
-      payload: {
-        mimeType: "multipart/alternative",
-        headers: [
-          { name: "From", value: "test@test.com" },
-          { name: "Subject", value: "HTML only" },
-          { name: "Date", value: "Mon, 10 Mar 2026" },
-          { name: "Message-ID", value: "<m1@test>" },
-        ],
-        parts: [
-          { mimeType: "text/html", body: { data: base64url("<p>Hello</p><br/>World") } },
-        ],
-      },
-    };
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_1" }] } },
-      { json: msg },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
-    expect(result.emails[0].body).toContain("Hello");
-    expect(result.emails[0].body).toContain("World");
-    expect(result.emails[0].body).not.toContain("<p>");
+  it("extracts sender_email from 'Name <addr>' format", async () => {
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_1", from: "Alice <alice@test.com>", subject: "Hi", date: "2026-03-10", body: "Hello" }],
+      count: 1,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(result.emails[0].sender_email).toBe("alice@test.com");
   });
 
-  it("returns id and threadId for each email", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { messages: [{ id: "msg_42" }] } },
-      { json: gmailMessage({ id: "msg_42", threadId: "thread_7" }) },
-    ]);
-    const result = await check_email.execute({ secrets: GMAIL_SECRETS, fetch: f, provider: gmail });
+  it("uses from as sender_email when no angle brackets", async () => {
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_1", from: "plain@test.com", subject: "Hi", date: "2026-03-10", body: "Hello" }],
+      count: 1,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
+    expect(result.emails[0].sender_email).toBe("plain@test.com");
+  });
+
+  it("returns id for each email", async () => {
+    const provider = mockRelayProvider({
+      emails: [{ id: "msg_42", from: "a@b.com", subject: "S", date: "2026-03-10", body: "hi" }],
+      count: 1,
+    });
+    const result = await check_email.execute({ secrets: EMAIL_SECRETS, fetch: vi.fn(), provider });
     expect(result.emails[0].id).toBe("msg_42");
-    expect(result.emails[0].threadId).toBe("thread_7");
   });
 });
 
 // ── 7. send_email tests ───────────────────────────────────────
 
 describe("send_email", () => {
-  it("sends a new email and returns messageId + threadId", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { id: "sent_1", threadId: "new_thread" } },
-    ]);
+  const EMAIL_SECRETS = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "csec", EMAIL_RELAY_SECRET: "rsec" };
+
+  function mockSendProvider({ getMessageResult, sendResult } = {}) {
+    return {
+      getMessage: vi.fn(async () => getMessageResult || { id: "orig_1", from: "a@b.com", to: "c@d.com", subject: "Test", date: "2026-03-10", body: "hi", messageId: "<orig@test.com>" }),
+      sendMessage: vi.fn(async () => sendResult || { messageId: "<sent_1@relay>" }),
+    };
+  }
+
+  it("sends a new email and returns messageId", async () => {
+    const provider = mockSendProvider({ sendResult: { messageId: "<sent_1@relay>" } });
     const result = await send_email.execute({
       to: "bob@test.com",
       subject: "Hello",
       body: "Hi Bob",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    expect(result).toEqual({ sent: true, messageId: "sent_1", threadId: "new_thread" });
+    expect(result).toEqual({ sent: true, messageId: "<sent_1@relay>" });
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "bob@test.com", subject: "Hello", body: "Hi Bob", inReplyTo: null })
+    );
   });
 
-  it("sends correct RFC 2822 headers", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: { id: "sent_1", threadId: "t_1" } },
-    ]);
+  it("passes correct params to provider.sendMessage", async () => {
+    const provider = mockSendProvider();
     await send_email.execute({
       to: "bob@test.com",
       subject: "Test",
       body: "Body",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[1];
-    const payload = JSON.parse(sendCall[1].body);
-    // Decode raw to check headers
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("To: bob@test.com");
-    expect(decoded).toContain("Subject: Test");
-    expect(decoded).toContain("MIME-Version: 1.0");
-    expect(decoded).toContain("Content-Type: text/plain; charset=UTF-8");
-    expect(decoded).toContain("Body");
+    const call = provider.sendMessage.mock.calls[0][0];
+    expect(call.to).toBe("bob@test.com");
+    expect(call.subject).toBe("Test");
+    expect(call.body).toBe("Body");
+    expect(call.secrets).toBe(EMAIL_SECRETS);
   });
 
   it("returns error for missing 'to'", async () => {
+    const provider = mockSendProvider();
     const result = await send_email.execute({
       subject: "Hi",
       body: "test",
-      secrets: GMAIL_SECRETS,
-      fetch: mockFetch({}),
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
     expect(result.error).toContain("to");
   });
 
   it("returns error for missing 'subject' when not replying", async () => {
+    const provider = mockSendProvider();
     const result = await send_email.execute({
       to: "bob@test.com",
       body: "test",
-      secrets: GMAIL_SECRETS,
-      fetch: mockFetch({}),
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
     expect(result.error).toContain("subject");
   });
 
   it("returns error for missing 'body'", async () => {
+    const provider = mockSendProvider();
     const result = await send_email.execute({
       to: "bob@test.com",
       subject: "Hi",
-      secrets: GMAIL_SECRETS,
-      fetch: mockFetch({}),
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
     expect(result.error).toContain("body");
   });
 
   it("allows missing subject when reply_to_id is provided", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      // getMessage for reply_to_id
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Original Subject" },
-            { name: "Message-ID", value: "<orig@test.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_reply", threadId: "thread_1" } },
-    ]);
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Original Subject", messageId: "<orig@test.com>" },
+      sendResult: { messageId: "<sent_reply@relay>" },
+    });
     const result = await send_email.execute({
       to: "bob@test.com",
       body: "Reply body",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
     expect(result.sent).toBe(true);
-    expect(result.threadId).toBe("thread_1");
+    expect(result.messageId).toBe("<sent_reply@relay>");
   });
 
   it("prepends Re: to subject when replying", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Hello" },
-            { name: "Message-ID", value: "<orig@test.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_1", threadId: "thread_1" } },
-    ]);
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Hello", messageId: "<orig@test.com>" },
+    });
     await send_email.execute({
       to: "bob@test.com",
       body: "Reply",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[2];
-    const payload = JSON.parse(sendCall[1].body);
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("Subject: Re: Hello");
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "Re: Hello" })
+    );
   });
 
   it("does not double-prepend Re: if already present", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Re: Hello" },
-            { name: "Message-ID", value: "<orig@test.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_1", threadId: "thread_1" } },
-    ]);
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Re: Hello", messageId: "<orig@test.com>" },
+    });
     await send_email.execute({
       to: "bob@test.com",
       body: "Reply",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[2];
-    const payload = JSON.parse(sendCall[1].body);
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("Subject: Re: Hello");
-    expect(decoded).not.toContain("Subject: Re: Re:");
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "Re: Hello" })
+    );
   });
 
-  it("includes In-Reply-To and References headers when replying", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Test" },
-            { name: "Message-ID", value: "<unique@example.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_1", threadId: "thread_1" } },
-    ]);
+  it("passes inReplyTo from original message when replying", async () => {
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Test", messageId: "<unique@example.com>" },
+    });
     await send_email.execute({
       to: "bob@test.com",
       body: "Reply",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[2];
-    const payload = JSON.parse(sendCall[1].body);
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("In-Reply-To: <unique@example.com>");
-    expect(decoded).toContain("References: <unique@example.com>");
-    expect(payload.threadId).toBe("thread_1");
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ inReplyTo: "<unique@example.com>" })
+    );
   });
 
   it("uses explicit subject over original when replying", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { json: {
-        id: "orig_1", threadId: "thread_1",
-        payload: {
-          headers: [
-            { name: "Subject", value: "Old Subject" },
-            { name: "Message-ID", value: "<orig@test.com>" },
-          ],
-        },
-      }},
-      { json: { id: "sent_1", threadId: "thread_1" } },
-    ]);
+    const provider = mockSendProvider({
+      getMessageResult: { id: "orig_1", subject: "Old Subject", messageId: "<orig@test.com>" },
+    });
     await send_email.execute({
       to: "bob@test.com",
       subject: "New Subject",
       body: "Reply",
       reply_to_id: "orig_1",
-      secrets: GMAIL_SECRETS,
-      fetch: f,
-      provider: gmail,
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
     });
-    const sendCall = f.mock.calls[2];
-    const payload = JSON.parse(sendCall[1].body);
-    const padded = payload.raw.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = decodeURIComponent(escape(atob(padded)));
-    expect(decoded).toContain("Subject: New Subject");
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "New Subject" })
+    );
   });
 
-  it("throws on token refresh failure", async () => {
-    const f = mockFetchSequence([
-      { ok: false, status: 401, json: {}, text: "Unauthorized" },
-    ]);
-    await expect(
-      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
-    ).rejects.toThrow("Gmail token refresh failed");
+  it("sends without threading when getMessage fails", async () => {
+    const provider = {
+      getMessage: vi.fn(async () => { throw new Error("gateway down"); }),
+      sendMessage: vi.fn(async () => ({ messageId: "<sent@relay>" })),
+    };
+    const result = await send_email.execute({
+      to: "a@b.com",
+      subject: "Hi",
+      body: "test",
+      reply_to_id: "orig_1",
+      secrets: EMAIL_SECRETS,
+      fetch: vi.fn(),
+      provider,
+    });
+    expect(result.sent).toBe(true);
+    // Should send with null inReplyTo (no threading) and the provided subject
+    expect(provider.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ inReplyTo: null, subject: "Hi" })
+    );
   });
 
-  it("throws on send failure", async () => {
-    const f = mockFetchSequence([
-      { json: { access_token: "tok" } },
-      { ok: false, status: 400, json: {}, text: "Bad request" },
-    ]);
+  it("throws on gateway send failure", async () => {
+    const provider = {
+      getMessage: vi.fn(),
+      sendMessage: vi.fn(async () => { throw new Error("Email gateway /send-email failed (500): Internal error"); }),
+    };
     await expect(
-      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: GMAIL_SECRETS, fetch: f, provider: gmail })
-    ).rejects.toThrow("Gmail send failed");
+      send_email.execute({ to: "a@b.com", subject: "Hi", body: "test", secrets: EMAIL_SECRETS, fetch: vi.fn(), provider })
+    ).rejects.toThrow("Email gateway");
   });
 });
 
@@ -1513,7 +1537,7 @@ describe("channel:slack", () => {
 
   describe("sendReply", () => {
     it("calls Slack chat.postMessage API", async () => {
-      const f = vi.fn(async () => ({ ok: true }));
+      const f = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true }) }));
       const secrets = { SLACK_BOT_TOKEN: "xoxb-test" };
       await slack.sendReply("C123", "Hello!", secrets, f);
 
@@ -1526,6 +1550,15 @@ describe("channel:slack", () => {
       expect(body.channel).toBe("C123");
       expect(body.text).toBe("Hello!");
     });
+
+    it("throws when Slack returns ok:false", async () => {
+      const f = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ ok: false, error: "channel_not_found" }),
+      }));
+      await expect(slack.sendReply("C123", "Hello!", { SLACK_BOT_TOKEN: "xoxb-test" }, f))
+        .rejects.toThrow("Slack chat.postMessage failed: channel_not_found");
+    });
   });
 });
 
@@ -1535,8 +1568,11 @@ describe("start_job", () => {
   const secrets = { CF_ACCESS_CLIENT_ID: "cid", CF_ACCESS_CLIENT_SECRET: "s", COMPUTER_API_KEY: "k" };
   const config = { jobs: { base_url: "https://test.dev", base_dir: "/tmp/jobs", max_concurrent_jobs: 2, default_ttl_minutes: 60 } };
 
-  it("dispatches a custom job and writes job record", async () => {
-    const provider = { call: vi.fn(async () => ({ ok: true, output: [{ data: "12345\r\n" }] })) };
+  it("uploads tarball before execute and writes job record", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async () => ({ ok: true, output: [{ data: "12345\r\n" }] })),
+    };
     const kv = mockKV();
 
     const result = await start_job.execute({
@@ -1550,7 +1586,19 @@ describe("start_job", () => {
     expect(result.ok).toBe(true);
     expect(result.job_id).toMatch(/^j_/);
     expect(result.pid).toBe(12345);
+    expect(provider.upload).toHaveBeenCalledOnce();
     expect(provider.call).toHaveBeenCalledOnce();
+    expect(provider.upload.mock.invocationCallOrder[0]).toBeLessThan(provider.call.mock.invocationCallOrder[0]);
+
+    const uploadArgs = provider.upload.mock.calls[0][0];
+    expect(uploadArgs.baseUrl).toBe("https://test.dev");
+    expect(uploadArgs.directory).toBe("/tmp/jobs");
+    expect(uploadArgs.filename).toMatch(/^j_.*\.tar\.gz$/);
+    expect(uploadArgs.bytes).toBeInstanceOf(Uint8Array);
+
+    const executeArgs = provider.call.mock.calls[0][0];
+    expect(executeArgs.command).toContain("tar xz -f '/tmp/jobs/job.tar.gz'");
+    expect(executeArgs.command).not.toContain("base64 -d | tar xz");
 
     // Verify job record was written
     const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
@@ -1559,6 +1607,64 @@ describe("start_job", () => {
     expect(record.status).toBe("running");
     expect(record.type).toBe("custom");
     expect(record.callback_secret).toBeUndefined();
+  });
+
+  it("returns upload failure before calling execute", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: false, error: "500 Internal Server Error", detail: "upload failed" })),
+      call: vi.fn(),
+    };
+
+    const result = await start_job.execute({
+      type: "custom",
+      command: "echo hello",
+      prompt: "test prompt",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv: mockKV(), config,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Failed to upload job tarball: 500 Internal Server Error",
+      detail: "upload failed",
+    });
+    expect(provider.call).not.toHaveBeenCalled();
+  });
+
+  it("adds callback curl and stores callback secret when callback_url is configured", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "777\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "custom",
+      command: "echo hello",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, callback_url: "https://worker.example.com" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("curl -fsS --max-time 15 -X POST 'https://worker.example.com/job-complete/");
+    expect(innerScript).toContain("-H 'X-Job-Callback-Secret:");
+    expect(innerScript).toContain("node -e \"const fs=require('fs');const payload={exit_code:Number(process.argv[1])};");
+    expect(innerScript).toContain("/tmp/jobs/");
+    expect(innerScript).toContain("['/tmp/jobs/");
+    expect(innerScript).toContain("/output.json','output_base64']");
+    expect(innerScript).toContain("/lab-result.json','lab_result_base64']");
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.callback_secret).toMatch(/^cb_/);
+    expect(record.callback_url).toMatch(/^https:\/\/worker\.example\.com\/job-complete\//);
   });
 
   it("returns error when type is missing", async () => {
@@ -1583,7 +1689,10 @@ describe("start_job", () => {
   });
 
   it("packs context keys into tarball", async () => {
-    const provider = { call: vi.fn(async () => ({ ok: true, output: [{ data: "999\r\n" }] })) };
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async () => ({ ok: true, output: [{ data: "999\r\n" }] })),
+    };
     const kv = mockKV({ "config:defaults": JSON.stringify({ act: {} }), "karma:s1": JSON.stringify([]) });
 
     const result = await start_job.execute({
@@ -1596,8 +1705,40 @@ describe("start_job", () => {
     expect(result.context_files).toBe(3); // config/defaults.json, karma/s1.json, prompt.txt
   });
 
+  it("uses Codex as the default cc_analysis runner", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test prompt",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner: "codex", runner_model: "gpt-5.4", path_dirs: ["/home/swayambhu/.local/bin"] } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("codex exec - --skip-git-repo-check --ephemeral --dangerously-bypass-approvals-and-sandbox --output-last-message output.json --color never --model 'gpt-5.4'");
+    expect(innerScript).toContain("< prompt.txt > stdout.log 2>stderr.log; EXIT=$?; echo $EXIT > exit_code");
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.config.runner).toBe("codex");
+    expect(record.config.model).toBe("gpt-5.4");
+  });
+
   it("generates valid inner script for cc_analysis (no && contamination)", async () => {
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         expect(command).toContain("base64 -d | sh");
         expect(command).not.toMatch(/sh -c '[^']*&&/);
@@ -1611,15 +1752,73 @@ describe("start_job", () => {
       prompt: "test prompt",
       context_keys: [],
       provider, secrets, fetch: vi.fn(), kv,
-      config: { jobs: { ...config.jobs, cc_model: "opus", path_dirs: ["/home/swayambhu/.local/bin"] } },
+      config: { jobs: { ...config.jobs, runner: "codex", runner_model: "gpt-5.4", path_dirs: ["/home/swayambhu/.local/bin"] } },
     });
 
     expect(result.ok).toBe(true);
   });
 
+  it("supports Claude as an explicit cc_analysis fallback runner", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner: "claude", cc_model: "opus" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("claude -p \"$(cat prompt.txt)\" --output-format json --model 'opus'");
+    expect(innerScript).toContain("mkdir -p '/tmp/jobs/");
+    expect(innerScript).toContain(".claude/settings.json");
+  });
+
+  it("uses cc_model for Claude cc_analysis even when runner_model is also set", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "12345\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner: "claude", runner_model: "gpt-5.4", cc_model: "opus" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("--model 'opus'");
+    expect(innerScript).not.toContain("--model 'gpt-5.4'");
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.config.model).toBe("opus");
+  });
+
   it("injects path_dirs into inner script", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1635,15 +1834,16 @@ describe("start_job", () => {
       config: { jobs: { ...config.jobs, path_dirs: ["/opt/bin", "/usr/local/custom"] } },
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     expect(b64Match).toBeTruthy();
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("export PATH=/opt/bin:/usr/local/custom${PATH:+:$PATH}");
   });
 
-  it("escapes cc_model with quotes in inner script", async () => {
+  it("escapes runner model with quotes in inner script", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1656,18 +1856,40 @@ describe("start_job", () => {
       prompt: "test",
       context_keys: [],
       provider, secrets, fetch: vi.fn(), kv,
-      config: { jobs: { ...config.jobs, cc_model: "model'injection" } },
+      config: { jobs: { ...config.jobs, runner: "codex", runner_model: "model'injection" } },
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("--model 'model'\\''injection'");
     expect(innerScript).not.toContain("--model model'injection");
   });
 
+  it("rejects unsupported cc_analysis runners", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(),
+    };
+
+    const result = await start_job.execute({
+      type: "cc_analysis",
+      prompt: "test",
+      context_keys: [],
+      provider, secrets, fetch: vi.fn(), kv: mockKV(),
+      config: { jobs: { ...config.jobs, runner: "bad-runner" } },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Unsupported jobs.runner: bad-runner",
+    });
+    expect(provider.call).not.toHaveBeenCalled();
+  });
+
   it("filters invalid path_dirs entries", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1683,7 +1905,7 @@ describe("start_job", () => {
       config: { jobs: { ...config.jobs, path_dirs: ["/valid/path", "not-absolute", "/inject;rm -rf /", 42, "/ok"] } },
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("export PATH=/valid/path:/ok${PATH:+:$PATH}");
     expect(innerScript).not.toContain("not-absolute");
@@ -1693,6 +1915,7 @@ describe("start_job", () => {
   it("wraps custom command in subshell with absolute exit_code path", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1707,15 +1930,16 @@ describe("start_job", () => {
       provider, secrets, fetch: vi.fn(), kv, config,
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).toContain("(python3 analyze.py)");
-    expect(innerScript).toMatch(/echo \$\? > '\/tmp\/jobs\/[^']+\/exit_code'/);
+    expect(innerScript).toMatch(/EXIT=\$\?; echo \$EXIT > '\/tmp\/jobs\/[^']+\/exit_code'/);
   });
 
   it("handles non-array path_dirs gracefully", async () => {
     let capturedCommand;
     const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
       call: vi.fn(async ({ command }) => {
         capturedCommand = command;
         return { ok: true, output: [{ data: "12345\r\n" }] };
@@ -1731,9 +1955,230 @@ describe("start_job", () => {
       config: { jobs: { ...config.jobs, path_dirs: "/not/an/array" } },
     });
 
-    const b64Match = capturedCommand.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh/);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
     const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
     expect(innerScript).not.toContain("export PATH");
+  });
+
+  it("supports subagent_task jobs via Codex in a target cwd", async () => {
+    let capturedCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "24680\r\n" }] };
+      }),
+    };
+    const kv = mockKV();
+
+    const result = await start_job.execute({
+      type: "subagent_task",
+      prompt: "Do one useful thing",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "codex",
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner_model: "gpt-5.4" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("cd '/home/swami/fano/repo' || exit 1");
+    expect(innerScript).toContain("codex exec - < '/tmp/jobs/");
+    expect(innerScript).toContain("--output-last-message '/tmp/jobs/");
+    expect(innerScript).toContain("--model 'gpt-5.4'");
+    expect(innerScript).toMatch(/echo \$EXIT > '\/tmp\/jobs\/[^']+\/exit_code'/);
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.type).toBe("subagent_task");
+    expect(record.config.cwd).toBe("/home/swami/fano/repo");
+    expect(record.config.subagent).toBe("codex");
+  });
+
+  it("supports subagent_task jobs via Claude Code", async () => {
+    let capturedCommand;
+    const kv = mockKV();
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        capturedCommand = command;
+        return { ok: true, output: [{ data: "13579\r\n" }] };
+      }),
+    };
+
+    const result = await start_job.execute({
+      type: "subagent_task",
+      prompt: "Investigate the repo",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "claude-code",
+      provider, secrets, fetch: vi.fn(), kv,
+      config: { jobs: { ...config.jobs, runner_model: "gpt-5.4", cc_model: "opus" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const b64Match = capturedCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/);
+    const innerScript = Buffer.from(b64Match[1], 'base64').toString('utf8');
+    expect(innerScript).toContain("cd '/home/swami/fano/repo' || exit 1");
+    expect(innerScript).toContain("claude -p \"$(cat '/tmp/jobs/");
+    expect(innerScript).toContain("--output-format json --dangerously-skip-permissions --model 'opus'");
+    expect(innerScript).toMatch(/echo \$EXIT > '\/tmp\/jobs\/[^']+\/exit_code'/);
+
+    const jobKey = [...kv._store.keys()].find(k => k.startsWith("job:"));
+    const record = JSON.parse(kv._store.get(jobKey));
+    expect(record.config.model).toBe("opus");
+  });
+
+  it("uses runner-specific models for delegated subagents", async () => {
+    let codexCommand;
+    let claudeCommand;
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(async ({ command }) => {
+        if (!codexCommand) codexCommand = command;
+        else claudeCommand = command;
+        return { ok: true, output: [{ data: "24680\r\n" }] };
+      }),
+    };
+
+    await start_job.execute({
+      type: "subagent_task",
+      prompt: "Use codex",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "codex",
+      provider, secrets, fetch: vi.fn(), kv: mockKV(),
+      config: { jobs: { ...config.jobs, runner_model: "gpt-5.4", cc_model: "opus" } },
+    });
+
+    await start_job.execute({
+      type: "subagent_task",
+      prompt: "Use claude",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "claude-code",
+      provider, secrets, fetch: vi.fn(), kv: mockKV(),
+      config: { jobs: { ...config.jobs, runner_model: "gpt-5.4", cc_model: "opus" } },
+    });
+
+    const codexScript = Buffer.from(codexCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/)[1], 'base64').toString('utf8');
+    const claudeScript = Buffer.from(claudeCommand.match(/nohup sh -c "printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| sh" > \/dev\/null 2>&1 & echo \$!/)[1], 'base64').toString('utf8');
+
+    expect(codexScript).toContain("--model 'gpt-5.4'");
+    expect(claudeScript).toContain("--model 'opus'");
+    expect(claudeScript).not.toContain("--model 'gpt-5.4'");
+  });
+
+  it("rejects invalid cwd for subagent_task", async () => {
+    const result = await start_job.execute({
+      type: "subagent_task",
+      prompt: "test",
+      context_keys: [],
+      cwd: "relative/path",
+      provider: {}, secrets, fetch: vi.fn(), kv: mockKV(), config,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Invalid cwd for subagent_task: relative/path",
+    });
+  });
+
+  it("rejects unsupported subagents for subagent_task", async () => {
+    const provider = {
+      upload: vi.fn(async () => ({ ok: true, path: "/tmp/jobs/job.tar.gz", size: 128 })),
+      call: vi.fn(),
+    };
+
+    const result = await start_job.execute({
+      type: "subagent_task",
+      prompt: "test",
+      context_keys: [],
+      cwd: "/home/swami/fano/repo",
+      subagent: "bad-runner",
+      provider, secrets, fetch: vi.fn(), kv: mockKV(), config,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Unsupported subagent for subagent_task: bad-runner",
+    });
+    expect(provider.call).not.toHaveBeenCalled();
+  });
+});
+
+describe("delegate_task", () => {
+  it("dispatches a subagent_task job with the requested cwd", async () => {
+    const launchSpy = vi.spyOn(start_job, "execute").mockResolvedValue({
+      ok: true,
+      job_id: "j_test",
+      workdir: "/tmp/jobs/j_test",
+      pid: 123,
+    });
+
+    const result = await delegate_task.execute({
+      objective: "Inspect the repo and report back",
+      cwd: "/home/swami/fano/repo",
+      subagent: "codex",
+      context: "Focus on one meaningful next step.",
+      provider: {},
+      secrets: {},
+      fetch: vi.fn(),
+      kv: mockKV(),
+      config: {},
+    });
+
+    expect(result.ok).toBe(true);
+    expect(launchSpy).toHaveBeenCalledOnce();
+    expect(launchSpy.mock.calls[0][0]).toMatchObject({
+      type: "subagent_task",
+      cwd: "/home/swami/fano/repo",
+      subagent: "codex",
+      context_keys: [],
+    });
+    expect(launchSpy.mock.calls[0][0].prompt).toContain('"status": "completed | blocked | needs_follow_up"');
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      job_id: "j_test",
+      delegated: true,
+      result: null,
+      note: expect.stringContaining("Task launched asynchronously"),
+    }));
+    launchSpy.mockRestore();
+  });
+
+  it("ignores wait_seconds and returns immediately after launch", async () => {
+    const launchSpy = vi.spyOn(start_job, "execute").mockResolvedValue({
+      ok: true,
+      job_id: "j_wait",
+      workdir: "/tmp/jobs/j_wait",
+      pid: 456,
+    });
+    const collectSpy = vi.spyOn(collect_jobs, "execute");
+
+    const result = await delegate_task.execute({
+      objective: "Implement one improvement",
+      cwd: "/home/swami/fano/repo",
+      wait_seconds: 5,
+      provider: {},
+      secrets: {},
+      fetch: vi.fn(),
+      kv: mockKV(),
+      config: {},
+    });
+
+    expect(collectSpy).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      job_id: "j_wait",
+      delegated: true,
+      result: null,
+    }));
+
+    launchSpy.mockRestore();
+    collectSpy.mockRestore();
   });
 });
 
@@ -1790,6 +2235,83 @@ describe("collect_jobs", () => {
     const result = await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
     expect(result.still_running).toHaveLength(1);
     expect(result.still_running[0].job_id).toBe("j1");
+  });
+
+  it("hydrates missing job_result for callback-completed jobs", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1",
+        type: "subagent_task",
+        status: "completed",
+        created_at: new Date().toISOString(),
+        workdir: "/tmp/jobs/j1",
+        config: { ttl_minutes: 120 },
+      }),
+    });
+    const provider = {
+      call: vi.fn(async ({ command }) => {
+        if (command.includes("output.json")) {
+          return {
+            ok: true,
+            output: [{
+              data: JSON.stringify({
+                type: "result",
+                result: JSON.stringify({ status: "completed", summary: "Made a useful improvement" }),
+              }),
+            }],
+          };
+        }
+        return { ok: true, output: [] };
+      }),
+    };
+
+    const result = await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
+
+    expect(result.completed).toEqual([{ job_id: "j1", type: "subagent_task", result_key: "job_result:j1" }]);
+    expect(JSON.parse(kv._store.get("job_result:j1"))).toEqual({
+      job_id: "j1",
+      type: "subagent_task",
+      result: { status: "completed", summary: "Made a useful improvement" },
+      meta: {
+        session_id: null,
+        total_cost_usd: null,
+        usage: null,
+        stop_reason: null,
+        duration_ms: null,
+      },
+    });
+    expect(JSON.parse(kv._store.get("job:j1")).result_key).toBe("job_result:j1");
+  });
+
+  it("retries hydration for callback-completed jobs when output fetch fails", async () => {
+    const kv = mockKV({
+      "job:j1": JSON.stringify({
+        id: "j1",
+        type: "subagent_task",
+        status: "completed",
+        created_at: new Date().toISOString(),
+        workdir: "/tmp/jobs/j1",
+        config: { ttl_minutes: 120 },
+      }),
+    });
+    const provider = {
+      call: vi.fn(async () => ({ ok: false, error: "compute unreachable" })),
+    };
+
+    const result = await collect_jobs.execute({ provider, secrets, fetch: vi.fn(), kv, config });
+
+    expect(result.completed).toEqual([]);
+    expect(result.still_running).toEqual([{
+      job_id: "j1",
+      type: "subagent_task",
+      hydration_error: "compute unreachable",
+      result_pending: true,
+    }]);
+    expect(kv._store.has("job_result:j1")).toBe(false);
+    expect(JSON.parse(kv._store.get("job:j1"))).toEqual(expect.objectContaining({
+      id: "j1",
+      status: "completed",
+    }));
   });
 
   it("expires jobs past TTL", async () => {
@@ -1874,5 +2396,155 @@ describe("request_message", () => {
     });
     expect(result.error).toMatch(/unknown contact/i);
     expect(emitEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("update_request", () => {
+  it("updates a request and emits session_response", async () => {
+    const kv = mockKV({
+      "session_request:req_1": JSON.stringify({
+        id: "req_1",
+        source: "contact",
+        requester: {
+          type: "contact",
+          id: "swami_kevala",
+          name: "Swami Kevala",
+          platform_user_id: "U084ASKBXB7",
+        },
+        contact: "swami_kevala",
+        summary: "Review the Akash projects folder",
+        status: "pending",
+        created_at: "2026-04-07T00:00:00.000Z",
+        updated_at: "2026-04-07T00:00:00.000Z",
+        ref: "chat:slack:U084ASKBXB7",
+        result: null,
+        error: null,
+        next_session: null,
+      }),
+    });
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
+
+    const result = await update_request.execute({
+      request_id: "req_1",
+      status: "fulfilled",
+      result: "Reviewed the folder and identified next steps.",
+      kv,
+      emitEvent,
+    });
+
+    expect(result).toEqual({ ok: true, request_id: "req_1", status: "fulfilled" });
+    expect(await kv.get("session_request:req_1")).toEqual(
+      expect.objectContaining({
+        status: "fulfilled",
+        result: "Reviewed the folder and identified next steps.",
+      }),
+    );
+    expect(emitEvent).toHaveBeenCalledWith("session_response", {
+      contact: "swami_kevala",
+      requester: {
+        type: "contact",
+        id: "swami_kevala",
+        name: "Swami Kevala",
+        platform_user_id: "U084ASKBXB7",
+      },
+      ref: "session_request:req_1",
+      status: "fulfilled",
+    });
+  });
+
+  it("supports self-originated requests without requiring a contact", async () => {
+    const kv = mockKV({
+      "session_request:req_self": JSON.stringify({
+        id: "req_self",
+        source: "self",
+        requester: {
+          type: "self",
+          id: "self",
+          name: "Swayambhu",
+          platform_user_id: null,
+        },
+        contact: null,
+        summary: "Investigate a userspace inconsistency",
+        status: "pending",
+        created_at: "2026-04-07T00:00:00.000Z",
+        updated_at: "2026-04-07T00:00:00.000Z",
+        ref: null,
+        result: null,
+        error: null,
+        next_session: null,
+      }),
+    });
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
+
+    const result = await update_request.execute({
+      request_id: "req_self",
+      status: "fulfilled",
+      result: "Verified the inconsistency and wrote down the next step.",
+      kv,
+      emitEvent,
+    });
+
+    expect(result).toEqual({ ok: true, request_id: "req_self", status: "fulfilled" });
+    expect(emitEvent).toHaveBeenCalledWith("session_response", {
+      contact: null,
+      requester: {
+        type: "self",
+        id: "self",
+        name: "Swayambhu",
+        platform_user_id: null,
+      },
+      ref: "session_request:req_self",
+      status: "fulfilled",
+    });
+  });
+});
+
+describe("trigger_session", () => {
+  it("creates a generic contact-originated work request shape", async () => {
+    const kv = mockKV({
+      session_schedule: JSON.stringify({
+        next_session_after: "2099-01-01T00:00:00.000Z",
+      }),
+    });
+    const emitEvent = vi.fn(async () => ({ key: "event:test" }));
+
+    const result = await trigger_session.execute({
+      summary: "Review the shared project repo",
+      kv,
+      emitEvent,
+      _chatContext: {
+        userId: "U084ASKBXB7",
+        contact: { id: "swami_kevala", name: "Swami Kevala" },
+        convKey: "chat:slack:U084ASKBXB7",
+        chatConfig: { session_advance_seconds: 30 },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    const request = await kv.get(`session_request:${result.request_id}`);
+    expect(request).toEqual(expect.objectContaining({
+      id: result.request_id,
+      source: "contact",
+      requester: {
+        type: "contact",
+        id: "swami_kevala",
+        name: "Swami Kevala",
+        platform_user_id: "U084ASKBXB7",
+      },
+      contact: "swami_kevala",
+      contact_name: "Swami Kevala",
+      ref: "chat:slack:U084ASKBXB7",
+      status: "pending",
+    }));
+    expect(emitEvent).toHaveBeenCalledWith("session_request", expect.objectContaining({
+      contact: "swami_kevala",
+      requester: {
+        type: "contact",
+        id: "swami_kevala",
+        name: "Swami Kevala",
+        platform_user_id: "U084ASKBXB7",
+      },
+      ref: `session_request:${result.request_id}`,
+    }));
   });
 });

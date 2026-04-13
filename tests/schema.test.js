@@ -8,7 +8,7 @@ import { describe, it, expect } from "vitest";
 function validateDesire(d) {
   const errors = [];
   if (typeof d.slug !== "string" || !d.slug) errors.push("slug must be a non-empty string");
-  if (d.direction !== "approach" && d.direction !== "avoidance") errors.push("direction must be 'approach' or 'avoidance'");
+  if (d.direction !== "approach") errors.push("direction must be 'approach'");
   if (typeof d.description !== "string" || !d.description) errors.push("description must be a non-empty string");
   if (!Array.isArray(d.source_principles) || d.source_principles.length === 0) errors.push("source_principles must be a non-empty array");
   if (typeof d.created_at !== "string") errors.push("created_at must be an ISO 8601 string");
@@ -26,12 +26,18 @@ function validatePattern(s) {
 function validateExperience(e) {
   const errors = [];
   if (typeof e.timestamp !== "string") errors.push("timestamp must be an ISO 8601 string");
-  if (typeof e.action_taken !== "string") errors.push("action_taken must be a string");
-  if (typeof e.outcome !== "string") errors.push("outcome must be a string");
-  if (typeof e.surprise_score !== "number") errors.push("surprise_score must be a number");
+  if (e.action_ref !== null && typeof e.action_ref !== "string") errors.push("action_ref must be a string or null");
+  if (e.session_id !== null && typeof e.session_id !== "string") errors.push("session_id must be a string or null");
+  if (typeof e.cycle !== "number") errors.push("cycle must be a number");
+  if (typeof e.observation !== "string") errors.push("observation must be a string");
+  if (!e.desire_alignment || typeof e.desire_alignment !== "object") errors.push("desire_alignment must be an object");
+  if (!e.pattern_delta || typeof e.pattern_delta !== "object") errors.push("pattern_delta must be an object");
+  if (typeof e.pattern_delta?.sigma !== "number") errors.push("pattern_delta.sigma must be a number");
+  if (!Array.isArray(e.pattern_delta?.scores)) errors.push("pattern_delta.scores must be an array");
   if (typeof e.salience !== "number") errors.push("salience must be a number");
-  if (typeof e.narrative !== "string") errors.push("narrative must be a string");
-  if (e.embedding !== null && !Array.isArray(e.embedding)) errors.push("embedding must be a number array or null");
+  if (e.text_rendering !== undefined && typeof e.text_rendering !== "object") errors.push("text_rendering must be an object if present");
+  if (e.text_rendering?.narrative !== undefined && typeof e.text_rendering.narrative !== "string") errors.push("text_rendering.narrative must be a string if present");
+  if (e.embedding !== undefined && e.embedding !== null && !Array.isArray(e.embedding)) errors.push("embedding must be a number array or null if present");
   return errors;
 }
 
@@ -119,11 +125,21 @@ describe("Cognitive architecture schemas", () => {
     it("validates a well-formed experience", () => {
       const experience = {
         timestamp: "2026-03-20T10:00:00.000Z",
-        action_taken: "Sent a greeting to the patron",
-        outcome: "Message delivered successfully",
-        surprise_score: 0.1,
+        action_ref: "action:a_1",
+        session_id: "session_1",
+        cycle: 0,
+        observation: "A greeting message was sent and delivery succeeded.",
+        desire_alignment: {
+          top_positive: [{ desire_key: "desire:serve", score: 0.8 }],
+          top_negative: [],
+          affinity_magnitude: 0.8,
+        },
+        pattern_delta: {
+          sigma: 0.1,
+          scores: [],
+        },
         salience: 0.3,
-        narrative: "Routine greeting. No issues.",
+        text_rendering: { narrative: "Routine greeting. No issues." },
         embedding: null,
       };
       expect(validateExperience(experience)).toEqual([]);
@@ -132,11 +148,21 @@ describe("Cognitive architecture schemas", () => {
     it("accepts embedding as array of numbers", () => {
       const experience = {
         timestamp: "2026-03-20T10:00:00.000Z",
-        action_taken: "test",
-        outcome: "test",
-        surprise_score: 0.5,
+        action_ref: "action:a_2",
+        session_id: "session_2",
+        cycle: 1,
+        observation: "A test action completed successfully.",
+        desire_alignment: {
+          top_positive: [],
+          top_negative: [{ desire_key: "desire:resource-stewardship", score: 0.7 }],
+          affinity_magnitude: 0.7,
+        },
+        pattern_delta: {
+          sigma: 0.5,
+          scores: [{ pattern_key: "pattern:test", direction: "contradiction", surprise: 0.5 }],
+        },
         salience: 0.7,
-        narrative: "test",
+        text_rendering: { narrative: "test" },
         embedding: [0.1, 0.2, 0.3],
       };
       expect(validateExperience(experience)).toEqual([]);
@@ -145,10 +171,20 @@ describe("Cognitive architecture schemas", () => {
     it("rejects missing salience", () => {
       const experience = {
         timestamp: "2026-03-20T10:00:00.000Z",
-        action_taken: "test",
-        outcome: "test",
-        surprise_score: 0.5,
-        narrative: "test",
+        action_ref: "action:a_3",
+        session_id: "session_3",
+        cycle: 0,
+        observation: "test",
+        desire_alignment: {
+          top_positive: [],
+          top_negative: [],
+          affinity_magnitude: 0,
+        },
+        pattern_delta: {
+          sigma: 0.5,
+          scores: [],
+        },
+        text_rendering: { narrative: "test" },
         embedding: null,
       };
       const errors = validateExperience(experience);

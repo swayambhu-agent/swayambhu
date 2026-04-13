@@ -1,0 +1,155 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "review_role",
+    "question",
+    "hypothesis",
+    "root_constraint",
+    "why_userspace_review_cannot_fix_it",
+    "authority_effect",
+    "required_invariant_checks",
+    "evidence",
+    "proposed_changes",
+    "migration_plan",
+    "validation",
+    "promotion_recommendation",
+    "reasons_not_to_change",
+    "confidence"
+  ],
+  "properties": {
+    "review_role": {
+      "type": "string",
+      "const": "authority_review"
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "hypothesis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "root_constraint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "why_userspace_review_cannot_fix_it": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authority_effect": {
+      "type": "string",
+      "enum": [
+        "no_authority_change",
+        "authority_narrowing",
+        "authority_widening",
+        "policy_refactor_only"
+      ]
+    },
+    "required_invariant_checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind", "finding"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "enum": ["trace", "analysis", "code", "prompt", "doc"]
+          },
+          "finding": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "proposed_changes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "summary", "target_files", "rationale"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["design_change", "policy_change", "code_target", "validation_change"]
+          },
+          "summary": { "type": "string", "minLength": 1 },
+          "target_files": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "rationale": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "migration_plan": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["static_commands", "success_signals", "continuation"],
+      "properties": {
+        "static_commands": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "success_signals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "value"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["metric", "classification", "trace_property"]
+              },
+              "value": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "continuation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "max_sessions", "max_cash_cost"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "max_sessions": { "type": "integer", "minimum": 0 },
+            "max_cash_cost": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "promotion_recommendation": {
+      "type": "string",
+      "enum": ["reject", "lab_validate", "requires_elevated_approval"]
+    },
+    "reasons_not_to_change": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

@@ -52,8 +52,16 @@ export function selectExperiences(experiences, desireEmbeddings, options = {}) {
   }
 
   // 2. Score each experience
-  const scored = candidates.map(exp => {
-    const baseSalience = exp.salience || (exp.surprise_score + l1Norm(exp.affinity_vector));
+  // Skip non-canonical entries (e.g. bootstrap_state written directly by act code without
+  // going through the eval/review pipeline). Without salience + timestamp, scoring becomes
+  // unstable and can contaminate ranking order.
+  const scored = candidates
+    .filter(exp => typeof exp.salience === 'number' && typeof exp.timestamp === 'string')
+    .map(exp => {
+    const sigma = typeof exp.surprise_score === 'number'
+      ? exp.surprise_score
+      : (typeof exp.pattern_delta?.sigma === 'number' ? exp.pattern_delta.sigma : 0);
+    const baseSalience = exp.salience || sigma || l1Norm(exp.affinity_vector);
 
     // 3. Embedding similarity boost
     let similarityBoost = 0;
@@ -77,9 +85,10 @@ export function selectExperiences(experiences, desireEmbeddings, options = {}) {
 
 // ── Inference client ────────────────────────────────────
 
-export async function callInference(baseUrl, secret, path, body) {
+export async function callInference(baseUrl, secret, path, body, signal = AbortSignal.timeout(20_000)) {
   const resp = await fetch(`${baseUrl}${path}`, {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       ...(secret ? { "Authorization": `Bearer ${secret}` } : {}),

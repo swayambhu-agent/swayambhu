@@ -88,18 +88,40 @@
       }
     },
     {
+      "name": "delegate_task",
+      "description": "Launch a bounded Codex or Claude Code task in a target directory on the compute server. Prefer this over raw computer commands for multi-step repo work, investigation, and implementation. This is asynchronous: it returns a job ID immediately and later sessions handle job completion.",
+      "input": {
+        "objective": "required — concrete bounded goal for the delegated task",
+        "cwd": "required — absolute directory path on the compute server",
+        "subagent": "optional — codex | claude-code (default codex)",
+        "context": "optional — short extra context or constraints"
+      }
+    },
+    {
       "name": "request_message",
       "description": "Request that a message be sent to a contact. The communication agent decides whether and how to deliver.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "contact": { "type": "string", "description": "Contact slug (e.g. swami_kevala)" },
-          "intent": { "type": "string", "enum": ["share", "ask", "report"], "description": "Communication intent" },
-          "content": { "type": "string", "description": "What you want to communicate" }
-        },
-        "required": ["contact", "intent", "content"]
+      "input": {
+        "contact": "required — Contact slug (e.g. swami_kevala)",
+        "intent": "required — Communication intent (share|ask|report)",
+        "content": "required — What you want to communicate"
       },
-      "grants": { "kv_read": ["contact:*"] }
+      "grants": {
+        "kv_read": [
+          "contact:*"
+        ]
+      }
+    },
+    {
+      "name": "update_request",
+      "description": "Update the status of a pending session request and emit a response signal for communication delivery.",
+      "input": {
+        "request_id": "required — Request ID without the session_request: prefix",
+        "status": "required — pending|fulfilled|rejected",
+        "note": "optional — Short status note or explanation",
+        "result": "optional — Short result summary for the requester",
+        "error": "optional — Short failure explanation",
+        "next_session": "optional — ISO timestamp for the next planned work session"
+      }
     },
     {
       "name": "google_docs",

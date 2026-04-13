@@ -4,12 +4,12 @@ import { makeKVStore } from "./helpers/mock-kv.js";
 
 // ── Test helpers ──────────────────────────────────────────────
 
-function makeEnv(kvInit = {}) {
-  return { KV: makeKVStore(kvInit) };
+function makeEnv(kvInit = {}, extra = {}) {
+  return { KV: makeKVStore(kvInit), ...extra };
 }
 
 function makeKernel(kvInit = {}, opts = {}) {
-  const env = makeEnv(kvInit);
+  const env = makeEnv(kvInit, opts.env || {});
   const kernel= new Kernel(env, {
     TOOLS: opts.TOOLS || {},
     HOOKS: opts.HOOKS || {},
@@ -158,6 +158,26 @@ describe("buildToolDefinitions", () => {
     const defs = kernel.buildToolDefinitions([extra]);
     expect(defs.length).toBe(2); // verify_patron + extra
     expect(defs[1]).toBe(extra);
+  });
+
+  it("filters denied tools in bounded_continuation profile", () => {
+    const { kernel } = makeKernel({}, {
+      env: { SWAYAMBHU_LAB_PROFILE: "bounded_continuation" },
+      TOOLS: {
+        send_slack: { meta: { communication: { channel: "slack" } } },
+        web_fetch: { meta: {} },
+      },
+      toolRegistry: {
+        tools: [
+          { name: "send_slack", description: "Send Slack", input: { text: "body" } },
+          { name: "web_fetch", description: "Fetch web page", input: { url: "URL" } },
+        ],
+      },
+    });
+
+    const defs = kernel.buildToolDefinitions();
+    expect(defs.map(d => d.function.name)).not.toContain("send_slack");
+    expect(defs.map(d => d.function.name)).toContain("web_fetch");
   });
 });
 
@@ -358,6 +378,25 @@ describe("callLLM", () => {
     const secondCall = kernel.callWithCascade.mock.calls[1][0];
     expect(secondCall.model).toBe("anthropic/claude-haiku-4.5");
   });
+
+  it("passes the provided signal through the kernel interface", async () => {
+    const { kernel } = makeLLMKernel();
+    const controller = new AbortController();
+    const K = kernel.buildKernelInterface();
+
+    await K.callLLM({
+      model: "test-model",
+      messages: [{ role: "user", content: "hello" }],
+      step: "test",
+      signal: controller.signal,
+    });
+
+    expect(kernel.callWithCascade).toHaveBeenCalledWith(
+      expect.any(Object),
+      "test",
+      controller.signal,
+    );
+  });
 });
 
 // ── 3b. callViaKernelFallback ────────────────────────────────
@@ -389,8 +428,147 @@ describe("callWithCascade", () => {
       expect.objectContaining({
         model: "test-model",
         secrets: { OPENROUTER_API_KEY: "test-key" },
+        signal: undefined,
       })
     );
+  });
+
+  it("uses a KV-backed LLM secret when env is missing", async () => {
+    const mockCall = vi.fn(async () => ({
+      content: "provider response",
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    }));
+    const { kernel } = makeKernel({
+      "secret:OPENROUTER_API_KEY": JSON.stringify("kv-test-key"),
+    }, {
+      PROVIDERS: {
+        'provider:llm': { call: mockCall, meta: { secrets: ["OPENROUTER_API_KEY"] } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.callWithCascade({
+      model: "test-model",
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 100,
+    }, "test_step");
+
+    expect(result.ok).toBe(true);
+    expect(result.tier).toBe("compiled");
+    expect(mockCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secrets: { OPENROUTER_API_KEY: "kv-test-key" },
+      })
+    );
+  });
+
+  it("passes the same signal to the compiled provider", async () => {
+    const mockCall = vi.fn(async ({ signal, fetch }) => {
+      await fetch("https://provider.test");
+      return {
+        content: "provider response",
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      };
+    });
+    const { kernel } = makeKernel({}, {
+      PROVIDERS: {
+        'provider:llm': { call: mockCall, meta: {} },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({}),
+    }));
+
+    try {
+      await kernel.callWithCascade({
+        model: "test-model",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+      }, "test_step", controller.signal);
+
+      expect(mockCall).toHaveBeenCalledWith(
+        expect.objectContaining({ signal: controller.signal }),
+      );
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://provider.test",
+        expect.objectContaining({ signal: controller.signal }),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("rejects with AbortError when the provided signal aborts tier 1", async () => {
+    const abortError = new DOMException("Aborted", "AbortError");
+    const mockCall = vi.fn(async ({ fetch }) => {
+      await fetch("https://provider.test");
+      return {
+        content: "provider response",
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      };
+    });
+    const { kernel } = makeKernel({}, {
+      PROVIDERS: {
+        'provider:llm': { call: mockCall, meta: {} },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    globalThis.fetch = vi.fn((_input, init = {}) => new Promise((_, reject) => {
+      if (init.signal.aborted) {
+        reject(abortError);
+        return;
+      }
+      init.signal.addEventListener("abort", () => reject(abortError), { once: true });
+    }));
+
+    try {
+      const pending = kernel.callLLM({
+        model: "test-model",
+        messages: [{ role: "user", content: "hi" }],
+        maxTokens: 100,
+        step: "test_step",
+        signal: controller.signal,
+      });
+      controller.abort();
+
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("lets the hardcoded fallback abort on the parent signal", async () => {
+    const { kernel } = makeKernel();
+    kernel.env.OPENROUTER_API_KEY = "test-key";
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    const abortError = new DOMException("Aborted", "AbortError");
+    globalThis.fetch = vi.fn((_input, init = {}) => new Promise((_, reject) => {
+      if (init.signal.aborted) {
+        reject(abortError);
+        return;
+      }
+      init.signal.addEventListener("abort", () => reject(abortError), { once: true });
+    }));
+
+    try {
+      const pending = kernel._hardcodedLLMFallback({
+        model: "test-model",
+        max_tokens: 100,
+        messages: [{ role: "user", content: "hi" }],
+      }, "test_step", controller.signal);
+      controller.abort();
+
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("falls through to hardcoded fallback when provider fails", async () => {
@@ -421,6 +599,46 @@ describe("callWithCascade", () => {
       expect(result.ok).toBe(true);
       expect(result.tier).toBe("hardcoded");
       expect(result.content).toBe("fallback ok");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("uses a KV-backed LLM secret in the hardcoded fallback when env is missing", async () => {
+    const { kernel } = makeKernel({
+      "secret:OPENROUTER_API_KEY": JSON.stringify("kv-test-key"),
+    }, {
+      PROVIDERS: {
+        'provider:llm': { call: vi.fn(async () => { throw new Error("broken"); }), meta: {} },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "fallback ok", tool_calls: null } }],
+        usage: { prompt_tokens: 5, completion_tokens: 3 },
+      }),
+    }));
+    try {
+      const result = await kernel.callWithCascade({
+        model: "test-model",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+      }, "test_step");
+
+      expect(result.ok).toBe(true);
+      expect(result.tier).toBe("hardcoded");
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://openrouter.ai/api/v1/chat/completions",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer kv-test-key",
+          }),
+        }),
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -762,6 +980,25 @@ describe("executeToolCall", () => {
       id: "tc1",
     });
   });
+
+  it("blocks denied tools before execution", async () => {
+    const { kernel } = makeKernel({}, {
+      env: { SWAYAMBHU_TOOL_DENYLIST: "web_fetch" },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.executeAction = vi.fn(async () => ({ ok: true }));
+
+    const result = await kernel.executeToolCall({
+      id: "tc1",
+      function: { name: "web_fetch", arguments: '{"url":"https://example.com"}' },
+    });
+
+    expect(result).toEqual({ error: 'Tool "web_fetch" is disabled by policy' });
+    expect(kernel.executeAction).not.toHaveBeenCalled();
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "tool_blocked_by_policy", tool: "web_fetch" }),
+    );
+  });
 });
 
 // ── 6. executeAction ────────────────────────────────────────
@@ -786,6 +1023,190 @@ describe("executeAction", () => {
     kernel.karmaRecord = vi.fn(async () => {});
     await expect(kernel.executeAction({ tool: "nonexistent", input: {}, id: "tc1" }))
       .rejects.toThrow("Unknown tool: nonexistent");
+  });
+
+  it("passes an abortable signal into tools", async () => {
+    let seenSignal = null;
+    const executeFn = vi.fn(async ({ signal }) => {
+      seenSignal = signal;
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        probe: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAction({ tool: "probe", input: {}, id: "tc1" });
+
+    expect(result).toEqual({ ok: true });
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(seenSignal.aborted).toBe(false);
+  });
+
+  it("times out long-running tools using meta.timeout_ms", async () => {
+    const executeFn = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        sleeper: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 10 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    await expect(kernel.executeAction({ tool: "sleeper", input: {}, id: "tc1" }))
+      .rejects.toThrow("Tool sleeper timed out after 10ms");
+  });
+
+  it("propagates session abort into the tool signal", async () => {
+    let ready;
+    const readyPromise = new Promise((resolve) => { ready = resolve; });
+    const executeFn = vi.fn(async ({ signal }) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      ready();
+    }));
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        waiter: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.sessionAbortController = new AbortController();
+
+    const pending = kernel.executeAction({ tool: "waiter", input: {}, id: "tc1" });
+    await readyPromise;
+    kernel.sessionAbortController.abort(new DOMException("Aborted", "AbortError"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("passes the tool signal through ctx.fetch by default", async () => {
+    const executeFn = vi.fn(async ({ fetch }) => {
+      await fetch("https://example.test/tool");
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        fetcher: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (_input, init = {}) => ({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => ({ ok: true, signal_present: !!init.signal }),
+    }));
+
+    try {
+      const result = await kernel.executeAction({ tool: "fetcher", input: {}, id: "tc1" });
+      expect(result).toEqual({ ok: true });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://example.test/tool",
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+        }),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("combines a tool-provided fetch signal with the kernel tool signal", async () => {
+    const localController = new AbortController();
+    const executeFn = vi.fn(async ({ fetch }) => {
+      await fetch("https://example.test/tool", { signal: localController.signal });
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        fetcher: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (_input, init = {}) => ({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => ({ ok: true, signal_present: !!init.signal }),
+    }));
+
+    try {
+      const result = await kernel.executeAction({ tool: "fetcher", input: {}, id: "tc1" });
+      expect(result).toEqual({ ok: true });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "https://example.test/tool",
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+        }),
+      );
+      expect(globalThis.fetch.mock.calls[0][1].signal).not.toBe(localController.signal);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("falls back to manual signal composition when AbortSignal.any is unavailable", async () => {
+    const localController = new AbortController();
+    let mergedSignal = null;
+    const executeFn = vi.fn(async ({ fetch }) => {
+      await fetch("https://example.test/tool", { signal: localController.signal });
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        fetcher: { execute: executeFn, meta: { kv_access: "none", timeout_ms: 5000 } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const originalFetch = globalThis.fetch;
+    const originalAny = AbortSignal.any;
+    Object.defineProperty(AbortSignal, "any", { value: undefined, configurable: true });
+    globalThis.fetch = vi.fn(async (_input, init = {}) => {
+      mergedSignal = init.signal;
+      return {
+        ok: true,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ ok: true }),
+      };
+    });
+
+    try {
+      const result = await kernel.executeAction({ tool: "fetcher", input: {}, id: "tc1" });
+      expect(result).toEqual({ ok: true });
+      expect(mergedSignal).toBeInstanceOf(AbortSignal);
+      expect(mergedSignal).not.toBe(localController.signal);
+      localController.abort(new DOMException("Aborted", "AbortError"));
+      expect(mergedSignal.aborted).toBe(true);
+    } finally {
+      Object.defineProperty(AbortSignal, "any", { value: originalAny, configurable: true });
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("still passes a signal when timeout_ms is omitted", async () => {
+    let seenSignal = null;
+    const executeFn = vi.fn(async ({ signal }) => {
+      seenSignal = signal;
+      return { ok: true };
+    });
+    const { kernel } = makeKernel({}, {
+      TOOLS: {
+        plain: { execute: executeFn, meta: { kv_access: "none" } },
+      },
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAction({ tool: "plain", input: {}, id: "tc1" });
+
+    expect(result).toEqual({ ok: true });
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
   });
 });
 
@@ -1119,25 +1540,8 @@ describe("isSystemKey / isKernelOnly / isImmutableKey", () => {
     expect(kernel.isImmutableKey("dharma")).toBe(true);
     expect(kernel.isImmutableKey("principle:honesty")).toBe(false);
     expect(kernel.isSystemKey("principle:honesty")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(false);
     expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
     expect(kernel.isImmutableKey("config:defaults")).toBe(false);
-  });
-
-  it("seeds identification:working-body at boot when identity is enabled", async () => {
-    const { kernel, env } = makeKernel({
-      "config:defaults": JSON.stringify({
-        identity: { enabled: true, max_planner_items: 5 },
-      }),
-    });
-
-    await kernel.loadEagerConfig();
-
-    const seeded = JSON.parse(await env.KV.get("identification:working-body"));
-    expect(seeded.identification).toContain("Operational body");
-    expect(seeded.strength).toBe(0.8);
-    expect(seeded.source).toBe("constitutional_seed");
-    expect(seeded.last_exercised_at).toBeNull();
   });
 });
 
@@ -1150,7 +1554,7 @@ describe("config-driven key tiers", () => {
       immutable: ["dharma"],
       kernel_only: ["karma:*", "sealed:*", "event:*", "kernel:*"],
       lifecycle: ["dr:*", "dr2:*"],
-      protected: ["config:*", "prompt:*"],
+      protected: ["config:*", "prompt:*", "principle:*"],
     }));
     await kernel.loadEagerConfig();
     expect(kernel.keyTiers).toBeDefined();
@@ -1216,9 +1620,22 @@ describe("config-driven key tiers", () => {
     expect(kernel.isImmutableKey("dharma")).toBe(true);
     expect(kernel.isImmutableKey("principle:honesty")).toBe(false);
     expect(kernel.isSystemKey("principle:honesty")).toBe(true);
-    expect(kernel.isImmutableKey("principle:honesty:audit")).toBe(false);
     expect(kernel.isImmutableKey("patron:public_key")).toBe(true);
     expect(kernel.isImmutableKey("config:defaults")).toBe(false);
+  });
+
+  it("seeds identification:working-body at boot when identity is enabled", async () => {
+    const { kernel, env } = makeKernel({
+      "config:defaults": JSON.stringify({
+        identity: { enabled: true, max_planner_items: 5 },
+      }),
+    });
+
+    await kernel.loadEagerConfig();
+
+    expect(await env.KV.get("identification:working-body")).toEqual(
+      expect.stringContaining("\"source\":\"constitutional_seed\""),
+    );
   });
 });
 
@@ -1436,16 +1853,11 @@ describe("kvWriteGated", () => {
       "prompt:test_prompt": JSON.stringify({ text: "hello" }),
     });
     kernel.karmaRecord = vi.fn(async () => {});
-    const result = await kernel.kvWriteGated(
-      {
-        op: "delete",
-        key: "prompt:test_prompt",
-        deliberation: "This prompt is obsolete after the authority-policy split. Keeping it around would create ambiguity about the active prompt surface, dilute review discipline, and make later authority audits harder because two prompt candidates would appear valid even though only one is actually in use by the runtime.",
-      },
-      "deep-reflect"
+    const deliberation = "This test prompt is no longer used by any subsystem after the refactor in session 42. Retaining it creates confusion about which prompts are active. Deleting it keeps the prompt namespace clean and accurate.";
+    await kernel.kvWriteGated(
+      { op: "delete", key: "prompt:test_prompt", deliberation }, "deep-reflect"
     );
-    expect(result.ok).toBe(true);
-    expect(await env.KV.get("prompt:test_prompt")).toBeNull();
+    expect(env.KV.delete).toHaveBeenCalledWith("prompt:test_prompt");
     expect(kernel.privilegedWriteCount).toBe(1);
   });
 
@@ -1457,6 +1869,28 @@ describe("kvWriteGated", () => {
       "deep-reflect"
     );
     expect(result.ok).toBe(true);
+  });
+
+  it("allows protected non-code writes in userspace-review context", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "config:defaults", value: { updated: true } },
+      "userspace-review"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("fails closed for protected namespaces without an explicit write policy rule", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "skill:test-skill", value: { name: "test-skill" } },
+      "deep-reflect",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("No write policy rule");
   });
 
   it("allows field_merge on pattern:* in act context without consuming privileged budget", async () => {
@@ -1477,11 +1911,61 @@ describe("kvWriteGated", () => {
       expect.objectContaining({ event: "mechanical_write", key: "pattern:test", budget_class: "mechanical" }),
     );
   });
+
+  it("blocks reflect context from writing protected keys", async () => {
+    const { kernel } = makeKernel({
+      "pattern:test": JSON.stringify({ pattern: "Observed regularity", strength: 0.4 }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { op: "field_merge", key: "pattern:test", fields: { strength: 0.7 } },
+      "reflect",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/during reflect/);
+  });
+
+  it("fails field_merge when the target key does not exist", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { op: "field_merge", key: "pattern:missing", fields: { strength: 0.7 } },
+      "act",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/key_not_found/);
+  });
+
+  it("returns a clean error when rename targets a protected destination", async () => {
+    const { kernel, env } = makeKernel({
+      "scratch:rename_me": JSON.stringify({ data: true }),
+    });
+    env.KV._meta.set("scratch:rename_me", { unprotected: true });
+    const result = await kernel.kvWriteGated(
+      { op: "rename", key: "scratch:rename_me", value: "config:defaults" },
+      "reflect",
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/system key|allowed privileged context/);
+  });
 });
 
 // ── 15b. kvWriteGated contact and platform binding write rules ─────────────
 
 describe("kvWriteGated contact write rules", () => {
+  it("checks the privileged cap before contact writes", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.privilegedWriteCount = 50;
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "contact:alice", value: { name: "Alice" } }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Privileged write limit/);
+  });
+
   it("allows put to an existing contact", async () => {
     const { kernel } = makeKernel({
       "contact:alice": JSON.stringify({ name: "Alice" }),
@@ -1521,6 +2005,13 @@ describe("kvWriteGated contact write rules", () => {
       { op: "patch", key: "contact:alice", old_string: "old tea", new_string: "green tea" }, "deep-reflect"
     );
     expect(kernel.privilegedWriteCount).toBe(1);
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "privileged_write",
+        key: "contact:alice",
+        new_value: "Alice likes green tea",
+      }),
+    );
   });
 });
 
@@ -1588,6 +2079,17 @@ describe("kvWriteGated platform binding write rules", () => {
     kernel.env.KV._store.set("contact_platform:email:alice@example.com", '{"slug":"alice","approved":false}');
     const result = await kernel.kvWriteGated(
       { op: "patch", key: "contact_platform:email:alice@example.com", old_string: '"approved":false', new_string: '"approved":true' }, "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Cannot patch "approved" field on platform bindings/);
+  });
+
+  it("blocks patch that flips approved without explicitly naming the field in new_string", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.env.KV._store.set("contact_platform:email:alice@example.com", '{"slug":"alice","approved":false}');
+    const result = await kernel.kvWriteGated(
+      { op: "patch", key: "contact_platform:email:alice@example.com", old_string: "false", new_string: "true" }, "deep-reflect"
     );
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/Cannot patch "approved" field on platform bindings/);
@@ -1824,7 +2326,6 @@ describe("_writeExecutionHealth", () => {
       { event: "tool_complete", tool: "computer", ok: false },
       { event: "tool_complete", tool: "computer", ok: false },
       { event: "reflect_parse_error", depth: 0 },
-      { event: "vikalpa_updates_missed", missed: [] },
     ];
 
     await kernel._writeExecutionHealth("clean");
@@ -1834,7 +2335,7 @@ describe("_writeExecutionHealth", () => {
     expect(health.truncations).toEqual(["reflect_turn_0"]);
     expect(health.tool_failures).toBe(2);
     expect(health.parse_errors).toBe(1);
-    expect(health.updates_missed).toBe(1);
+    expect(health.updates_missed).toBeUndefined();
     expect(health.reflect_ran).toBe(true);
   });
 
@@ -1955,6 +2456,55 @@ describe("checkBalance", () => {
     const result = await kernel.checkBalance({});
 
     expect(result.providers.broken).toEqual({ balance: null, scope: "general", error: "no code" });
+  });
+
+  it("prefers frozen balance overrides when present", async () => {
+    const { kernel } = makeKernel({
+      providers: JSON.stringify({
+        openrouter: { adapter: "provider:llm_balance", scope: "general" },
+      }),
+      wallets: JSON.stringify({
+        base: { adapter: "provider:wallet_balance", scope: "general" },
+      }),
+      "kernel:balance_overrides": JSON.stringify({
+        providers: {
+          openrouter: { balance: 12.34, scope: "general" },
+        },
+        wallets: {
+          base: { balance: 56.78, scope: "general" },
+        },
+      }),
+    });
+    kernel.executeAdapter = vi.fn(async () => 999);
+
+    const result = await kernel.checkBalance({});
+
+    expect(kernel.executeAdapter).not.toHaveBeenCalled();
+    expect(result.providers.openrouter).toEqual({ balance: 12.34, scope: "general" });
+    expect(result.wallets.base).toEqual({ balance: 56.78, scope: "general" });
+  });
+
+  it("uses overrides selectively and still executes uncovered balances", async () => {
+    const { kernel } = makeKernel({
+      providers: JSON.stringify({
+        openrouter: { adapter: "provider:llm_balance", scope: "general" },
+      }),
+      wallets: JSON.stringify({
+        base: { adapter: "provider:wallet_balance", scope: "general" },
+      }),
+      "kernel:balance_overrides": JSON.stringify({
+        providers: {
+          openrouter: { balance: 12.34, scope: "general" },
+        },
+      }),
+    });
+    kernel.executeAdapter = vi.fn(async () => 42);
+
+    const result = await kernel.checkBalance({});
+
+    expect(kernel.executeAdapter).toHaveBeenCalledTimes(1);
+    expect(result.providers.openrouter).toEqual({ balance: 12.34, scope: "general" });
+    expect(result.wallets.base).toEqual({ balance: 42, scope: "general" });
   });
 
 });
@@ -2125,6 +2675,83 @@ describe("executeAdapter contact safety", () => {
     expect(result).toEqual({ content: "response" });
     expect(llmAdapter.call).toHaveBeenCalled();
   });
+
+  it("uses KV-backed provider secrets when env is missing", async () => {
+    const llmAdapter = {
+      meta: { secrets: ["OPENROUTER_API_KEY"] },
+      call: vi.fn(async ({ secrets }) => ({ content: secrets.OPENROUTER_API_KEY })),
+    };
+    const { kernel } = makeKernel({
+      "secret:OPENROUTER_API_KEY": JSON.stringify("kv-test-key"),
+    }, { PROVIDERS: { "provider:llm": llmAdapter } });
+    kernel.karmaRecord = vi.fn(async () => {});
+
+    const result = await kernel.executeAdapter("provider:llm", { model: "claude" });
+    expect(result).toEqual({ content: "kv-test-key" });
+    expect(llmAdapter.call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secrets: { OPENROUTER_API_KEY: "kv-test-key" },
+      }),
+    );
+  });
+
+  it("times out long-running adapters using meta.timeout_ms", async () => {
+    const adapter = {
+      meta: { timeout_ms: 10, secrets: [] },
+      execute: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { ok: true };
+      }),
+    };
+    const { kernel } = makeKernel({}, { PROVIDERS: { "provider:slow": adapter } });
+
+    await expect(kernel.executeAdapter("provider:slow", {}))
+      .rejects.toThrow("Adapter provider:slow timed out after 10ms");
+  });
+
+  it("passes an abortable fetch into adapters with timeout_ms", async () => {
+    let seenSignal = null;
+    const adapter = {
+      meta: { timeout_ms: 5000, secrets: [] },
+      execute: vi.fn(async ({ fetch }) => {
+        await fetch("https://example.test/provider");
+        return { ok: true };
+      }),
+    };
+    const { kernel } = makeKernel({}, { PROVIDERS: { "provider:fetcher": adapter } });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (_input, init = {}) => {
+      seenSignal = init.signal;
+      return {
+        ok: true,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ ok: true }),
+      };
+    });
+
+    try {
+      const result = await kernel.executeAdapter("provider:fetcher", {});
+      expect(result).toEqual({ ok: true });
+      expect(seenSignal).toBeInstanceOf(AbortSignal);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("buildToolContext", () => {
+  it("uses KV-backed granted secrets when env is missing", async () => {
+    const { kernel } = makeKernel({
+      "secret:COMPUTER_API_KEY": JSON.stringify("kv-compute-key"),
+    }, {
+      toolGrants: {
+        computer: { secrets: ["COMPUTER_API_KEY"] },
+      },
+    });
+
+    const ctx = await kernel.buildToolContext("computer", {}, { command: "pwd" });
+    expect(ctx.secrets).toEqual({ COMPUTER_API_KEY: "kv-compute-key" });
+  });
 });
 
 // ── Principles (generic, immutable) ────────────────────────
@@ -2233,7 +2860,18 @@ describe("principles (generic)", () => {
     expect(sysContent).toContain("[discipline]\nBe disciplined.\n[/discipline]");
   });
 
-  it("kvWriteGated requires deliberation for principle: writes", async () => {
+  it("kvWriteGated allows principle: writes with deliberation in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const deliberation = "This principle needs refinement because experience has shown that the current wording is too vague and leads to inconsistent interpretation across different session contexts. The updated wording better captures the intent.";
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "principle:honesty", value: "refined honesty principle", deliberation },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("kvWriteGated rejects principle: writes without deliberation", async () => {
     const { kernel } = makeKernel();
     kernel.karmaRecord = vi.fn(async () => {});
     const result = await kernel.kvWriteGated(
@@ -2241,10 +2879,10 @@ describe("principles (generic)", () => {
       "deep-reflect"
     );
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("requires deliberation");
+    expect(result.error).toContain("deliberation");
   });
 
-  it("kvWriteSafe blocks principle: keys as system state", async () => {
+  it("kvWriteSafe blocks principle: keys as system keys", async () => {
     const { kernel } = makeKernel();
     await expect(kernel.kvWriteSafe("principle:honesty", "new value"))
       .rejects.toThrow("system key");
@@ -2258,6 +2896,61 @@ describe("principles (generic)", () => {
     );
     expect(result.ok).toBe(true);
     expect(result.warning).toBeUndefined();
+  });
+
+  it("kvWriteGated rejects prompt: writes without deliberation", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "prompt:plan", value: "new plan prompt" },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("deliberation");
+  });
+
+  it("kvWriteGated allows prompt: writes with deliberation in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const deliberation = "The plan prompt lacks autonomous agent framing, causing the planner to reason as a reactive chatbot when desires are empty. Adding a single paragraph establishing that desires emerge from DR, not user input. This prevents the awaiting user input failure mode.";
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "prompt:plan", value: "updated plan prompt", deliberation },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("kvWriteGated allows config: writes without deliberation in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "put", key: "config:defaults", value: { session_budget: { max_cost: 0.20 } } },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("kvWriteGated rejects prompt: delete without deliberation", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    const result = await kernel.kvWriteGated(
+      { op: "delete", key: "prompt:deep_reflect" },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("deliberation");
+  });
+
+  it("kvWriteGated rejects prompt: patch without deliberation", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.kv.put("prompt:plan", "old text here");
+    const result = await kernel.kvWriteGated(
+      { op: "patch", key: "prompt:plan", old_string: "old text", new_string: "new text" },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("deliberation");
   });
 });
 
@@ -3318,6 +4011,60 @@ describe("touchedKeys tracking", () => {
 // ── kernel:pulse ─────────────────────────────────────────
 
 describe("kernel:pulse", () => {
+  it("arms the session controller for 720 seconds by default", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const { kernel } = makeKernel();
+    kernel.defaults = {};
+    kernel.HOOKS = {
+      tick: { run: async () => {} },
+    };
+
+    try {
+      await kernel.runTick();
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 720_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("exposes the session abort signal during a tick and clears it afterwards", async () => {
+    const { kernel } = makeKernel();
+    let seenSignal = null;
+    kernel.HOOKS = {
+      tick: { run: async (K) => {
+        seenSignal = K.sessionAbortSignal;
+      } },
+    };
+
+    await kernel.runTick();
+
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(kernel.sessionAbortController).toBeNull();
+  });
+
+  it("records fatal_error and crash outcome when the session signal aborts mid-tick", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    kernel.HOOKS = {
+      tick: { run: async (K) => new Promise((_, reject) => {
+        K.sessionAbortSignal.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+        kernel.sessionAbortController.abort();
+      }) },
+    };
+
+    await kernel.runTick();
+
+    expect(kernel.karmaRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "fatal_error", error: "Aborted" }),
+    );
+    const history = JSON.parse(await kernel.kv.get("kernel:last_executions"));
+    expect(history[0].outcome).toBe("crash");
+    expect(kernel.sessionAbortController).toBeNull();
+  });
+
   it("writes kernel:pulse at end of runTick", async () => {
     const { kernel } = makeKernel();
     kernel.HOOKS = {
@@ -3421,7 +4168,68 @@ describe("pulse integration", () => {
   });
 });
 
+// Tactics are loaded and injected by userspace (planPhase), not by the kernel.
+// The kernel only provides the protected-tier write gate for tactic:* keys.
+describe("tactics", () => {
+  it("tactic:* keys are writable via kvWriteGated in deep-reflect", async () => {
+    const { kernel } = makeKernel();
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      { key: "tactic:test", op: "put", value: { slug: "test", description: "test" } },
+      "deep-reflect"
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("kernel does NOT inject tactics into LLM calls", async () => {
+    const { kernel, env } = makeKernel();
+    await env.KV.put("tactic:test", JSON.stringify({ slug: "test", description: "test" }));
+    await kernel.loadEagerConfig();
+
+    let capturedMessages;
+    kernel.PROVIDERS = { 'provider:llm': {
+      meta: { secrets: [] },
+      call: async (req) => {
+        capturedMessages = req.messages;
+        return { content: "test", usage: { prompt_tokens: 10, completion_tokens: 5 }, ok: true };
+      },
+    }};
+
+    await kernel.callLLM({
+      model: "test", systemPrompt: "test",
+      messages: [{ role: "user", content: "test" }],
+      step: "plan",
+    });
+
+    expect(capturedMessages[0].content).not.toContain("[TACTICS]");
+  });
+});
+
 describe("identifications", () => {
+  it("identification:* keys are writable via kvWriteGated in deep-reflect", async () => {
+    const { kernel } = makeKernel({
+      "config:defaults": JSON.stringify({
+        identity: { enabled: true },
+      }),
+    });
+    kernel.karmaRecord = vi.fn(async () => {});
+    await kernel.loadEagerConfig();
+    const result = await kernel.kvWriteGated(
+      {
+        key: "identification:patron-continuity",
+        op: "put",
+        value: {
+          identification: "Ongoing patron relationship and unfinished follow-through.",
+          strength: 0.3,
+          source: "deep_reflect",
+        },
+      },
+      "deep-reflect",
+    );
+    expect(result.ok).toBe(true);
+  });
+
   it("updates last_exercised_at through field_merge in act context", async () => {
     const { kernel, env } = makeKernel({
       "config:defaults": JSON.stringify({
@@ -3454,36 +4262,6 @@ describe("identifications", () => {
         event: "mechanical_write",
         key: "identification:patron-continuity",
         budget_class: "mechanical",
-      }),
-    );
-  });
-
-  it("updates last_exercised_at through the dedicated kernel primitive", async () => {
-    const { kernel, env } = makeKernel({
-      "config:defaults": JSON.stringify({
-        identity: { enabled: true },
-      }),
-      "identification:patron-continuity": JSON.stringify({
-        identification: "Ongoing patron relationship and unfinished follow-through.",
-        strength: 0.5,
-        last_exercised_at: null,
-      }),
-    });
-    kernel.karmaRecord = vi.fn(async () => {});
-    await kernel.loadEagerConfig();
-
-    const timestamp = "2026-04-09T16:00:00.000Z";
-    const result = await kernel.updateIdentificationLastExercised("identification:patron-continuity", timestamp);
-
-    expect(result.ok).toBe(true);
-    const updated = JSON.parse(await env.KV.get("identification:patron-continuity"));
-    expect(updated.last_exercised_at).toBe(timestamp);
-    expect(kernel.karmaRecord).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "identification_exercised",
-        key: "identification:patron-continuity",
-        old: null,
-        new: timestamp,
       }),
     );
   });

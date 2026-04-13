@@ -17,7 +17,9 @@ const kv = await getKV();
 const toolNames = [
   "send_slack", "web_fetch", "kv_write",
   "kv_manifest", "kv_query", "computer",
-  "check_email", "send_email", "web_search",
+  "check_email", "send_email", "test_model",
+  "web_search", "start_job", "collect_jobs", "delegate_task",
+  "google_docs", "send_whatsapp", "gnanetra", "request_message", "update_request",
 ];
 
 const GRANT_FIELDS = ["secrets", "communication", "inbound", "provider"];

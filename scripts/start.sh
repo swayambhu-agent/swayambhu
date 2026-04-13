@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start Swayambhu dev environment.
-# Usage: source .env && bash scripts/start.sh [options]
+# Usage: bash scripts/start.sh [options]
 #
 # Options:
 #   --trigger               Trigger a session after services are ready
@@ -27,14 +27,52 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SPA_PORT=3001
-KERNEL_PORT=8787
-DASHBOARD_PORT=8790
+ENV_FILE="${SWAYAMBHU_ENV_FILE:-.env}"
+if [[ ! -f "$ENV_FILE" ]]; then
+  GIT_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$GIT_COMMON_DIR" ]]; then
+    SHARED_ENV_FILE="$(dirname "$GIT_COMMON_DIR")/.env"
+    if [[ -f "$SHARED_ENV_FILE" ]]; then
+      ENV_FILE="$SHARED_ENV_FILE"
+    fi
+  fi
+fi
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ENV_FILE"
+  set +a
+fi
+
+STATE_DIR="${SWAYAMBHU_PERSIST_DIR:-.wrangler/shared-state}"
+STATE_DIR="$(realpath -m "$STATE_DIR")"
+PRE_TRIGGER_SNAPSHOT_DIR="${SWAYAMBHU_PRE_TRIGGER_SNAPSHOT_DIR:-$(dirname "$STATE_DIR")/pre-trigger-snapshot}"
+PRE_TRIGGER_SNAPSHOT_DIR="$(realpath -m "$PRE_TRIGGER_SNAPSHOT_DIR")"
+RUNTIME_WORKSPACE="${SWAYAMBHU_RUNTIME_WORKSPACE:-}"
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  RUNTIME_WORKSPACE="$(realpath -m "$RUNTIME_WORKSPACE")"
+fi
+SPA_PORT="${SWAYAMBHU_SPA_PORT:-3001}"
+KERNEL_PORT="${SWAYAMBHU_KERNEL_PORT:-8787}"
+DASHBOARD_PORT="${SWAYAMBHU_DASHBOARD_PORT:-8790}"
+GOVERNOR_PORT="${SWAYAMBHU_GOVERNOR_PORT:-8791}"
+DASHBOARD_INSPECTOR_PORT="${SWAYAMBHU_DASHBOARD_INSPECTOR_PORT:-9230}"
+GOVERNOR_INSPECTOR_PORT="${SWAYAMBHU_GOVERNOR_INSPECTOR_PORT:-9231}"
+ISOLATED_START=false
+case "${SWAYAMBHU_START_ISOLATED:-false}" in
+  1|true|TRUE|yes|YES) ISOLATED_START=true ;;
+esac
+export SWAYAMBHU_PERSIST_DIR="$STATE_DIR"
 
 RESET=false
 TRIGGER=false
 SKIP_CONFIRM=false
 GOVERNOR=true
+case "${SWAYAMBHU_GOVERNOR_ENABLED:-}" in
+  0|false|FALSE|no|NO) GOVERNOR=false ;;
+  1|true|TRUE|yes|YES) GOVERNOR=true ;;
+esac
 OVERRIDES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -129,10 +167,11 @@ import { Miniflare } from 'miniflare';
 import { resolve } from 'path';
 
 const root = process.cwd();
+const stateDir = process.env.SWAYAMBHU_PERSIST_DIR || resolve(root, '.wrangler/shared-state');
 const mf = new Miniflare({
   modules: true,
   script: \"export default { fetch() { return new Response('ok'); } }\",
-  kvPersist: resolve(root, '.wrangler/shared-state/v3/kv'),
+  kvPersist: resolve(stateDir, 'v3/kv'),
   kvNamespaces: { KV: '05720444f9654ed4985fb67af4aea24d' },
 });
 const kv = await mf.getKVNamespace('KV');
@@ -167,16 +206,41 @@ process.exit(0);
 " "${OVERRIDE_ARGS[@]}"
 }
 
+kill_stale_processes() {
+  echo "=== Killing stale processes ==="
+  if $ISOLATED_START; then
+    pkill -f -- "$STATE_DIR" 2>/dev/null || true
+    pkill -9 -f -- "$STATE_DIR" 2>/dev/null || true
+    pkill -f -- "dev-serve.mjs $SPA_PORT" 2>/dev/null || true
+  else
+    pkill -f workerd 2>/dev/null || true
+    sleep 1
+    # SIGKILL any survivors (workerd can ignore SIGTERM when stuck)
+    pkill -9 -f workerd 2>/dev/null || true
+    pkill -f "dev-serve.mjs" 2>/dev/null || true
+  fi
+
+  for port in "$KERNEL_PORT" "$DASHBOARD_PORT" "$SPA_PORT" "$DASHBOARD_INSPECTOR_PORT" "$GOVERNOR_PORT" "$GOVERNOR_INSPECTOR_PORT"; do
+    while read -r pid; do
+      [[ -z "$pid" ]] && continue
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -9 "$pid" 2>/dev/null || true
+    done < <(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  done
+}
+
+mkdir -p "$(dirname "$STATE_DIR")" "$(dirname "$PRE_TRIGGER_SNAPSHOT_DIR")"
+
 # ── 1. Kill stale processes ────────────────────────────────────
-echo "=== Killing stale processes ==="
-pkill -f workerd 2>/dev/null || true
-sleep 1
-# SIGKILL any survivors (workerd can ignore SIGTERM when stuck)
-pkill -9 -f workerd 2>/dev/null || true
-pkill -f "dev-serve.mjs" 2>/dev/null || true
+kill_stale_processes
 
 # ── 2. Wait for ports to actually free ─────────────────────────
-wait_ports_free "$KERNEL_PORT,$DASHBOARD_PORT,$SPA_PORT"
+PORTS_TO_WAIT="$KERNEL_PORT,$DASHBOARD_PORT,$SPA_PORT,$DASHBOARD_INSPECTOR_PORT"
+if $GOVERNOR; then
+  PORTS_TO_WAIT="$PORTS_TO_WAIT,$GOVERNOR_PORT,$GOVERNOR_INSPECTOR_PORT"
+fi
+wait_ports_free "$PORTS_TO_WAIT"
 
 # ── 3. Reset or preserve state ─────────────────────────────────
 if $RESET; then
@@ -189,7 +253,7 @@ if $RESET; then
     echo "  - All config overrides"
     echo "  - Chat history"
     echo ""
-    echo "Everything in .wrangler/shared-state/ will be wiped and re-seeded."
+    echo "Everything in $STATE_DIR will be wiped and re-seeded."
     echo ""
     read -rp "Are you sure? Type 'yes' to continue: " confirm
     if [[ "$confirm" != "yes" ]]; then
@@ -198,8 +262,13 @@ if $RESET; then
     fi
   fi
 
+  echo "=== Archiving remote agent surfaces ==="
+  if ! node scripts/archive-remote-agent-surfaces.mjs; then
+    echo "WARNING: remote agent surface archive failed; continuing with local reset only"
+  fi
+
   echo "=== Clearing local state ==="
-  rm -rf .wrangler/shared-state
+  rm -rf "$STATE_DIR"
 
   echo "=== Seeding KV ==="
   node scripts/seed-local-kv.mjs
@@ -207,18 +276,37 @@ if $RESET; then
   apply_overrides
 else
   echo "=== Preserving existing state (use --reset-all-state to wipe) ==="
+  if $ISOLATED_START; then
+    echo "=== Preserving branch-local tool grants (isolated start) ==="
+  else
+    echo "=== Syncing tool grants from source ==="
+    node scripts/sync-tool-grants.mjs
+  fi
   echo "=== Resetting session schedule ==="
   node scripts/reset-schedule.mjs
 fi
 
 # ── 4. Start all services ─────────────────────────────────────
 echo ""
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  echo "=== Materializing runtime workspace from canonical KV ==="
+  node scripts/materialize-runtime-workspace.mjs "$RUNTIME_WORKSPACE"
+  if [[ ! -f "$RUNTIME_WORKSPACE/.materialized" ]]; then
+    echo "ERROR: runtime workspace materialization did not complete"
+    exit 1
+  fi
+fi
+
 echo "=== Starting kernel (port $KERNEL_PORT) ==="
-setsid npx wrangler dev -c wrangler.dev.toml --test-scheduled --persist-to .wrangler/shared-state &
+KERNEL_CMD=(npx wrangler dev -c wrangler.dev.toml --port "$KERNEL_PORT" --test-scheduled --persist-to "$STATE_DIR")
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  KERNEL_CMD=(npx wrangler dev "$RUNTIME_WORKSPACE/index.js" -c "$RUNTIME_WORKSPACE/wrangler.dev.toml" --cwd "$RUNTIME_WORKSPACE" --port "$KERNEL_PORT" --test-scheduled --persist-to "$STATE_DIR")
+fi
+setsid "${KERNEL_CMD[@]}" &
 PGIDS+=($!)
 
 echo "=== Starting dashboard API (port $DASHBOARD_PORT) ==="
-setsid bash -c 'cd dashboard-api && exec npx wrangler dev --port "'"$DASHBOARD_PORT"'" --inspector-port 9230 --persist-to ../.wrangler/shared-state' &
+setsid bash -c 'cd dashboard-api && exec npx wrangler dev --port "'"$DASHBOARD_PORT"'" --inspector-port "'"$DASHBOARD_INSPECTOR_PORT"'" --persist-to "'"$STATE_DIR"'"' &
 PGIDS+=($!)
 
 echo "=== Building dashboard ==="
@@ -229,9 +317,8 @@ setsid node scripts/dev-serve.mjs "$SPA_PORT" &
 PGIDS+=($!)
 
 if $GOVERNOR; then
-  GOVERNOR_PORT=8791
   echo "=== Starting governor (port $GOVERNOR_PORT) ==="
-  setsid bash -c 'cd governor && exec npx wrangler dev --port "'"$GOVERNOR_PORT"'" --inspector-port 9231 --persist-to ../.wrangler/shared-state' &
+  setsid bash -c 'cd governor && exec npx wrangler dev --var GOVERNOR_DEPLOY_MODE:local --port "'"$GOVERNOR_PORT"'" --inspector-port "'"$GOVERNOR_INSPECTOR_PORT"'" --persist-to "'"$STATE_DIR"'"' &
   PGIDS+=($!)
 fi
 
@@ -239,13 +326,16 @@ fi
 echo ""
 echo "=== Waiting for services to start... ==="
 wait_service "kernel" "http://localhost:$KERNEL_PORT" 30
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  rm -rf "${RUNTIME_WORKSPACE}.prev"
+fi
 wait_service "dashboard API" "http://localhost:$DASHBOARD_PORT" 30
 
 # ── 6. Trigger session (if requested) ─────────────────────────
 if $TRIGGER; then
   echo "=== Snapshotting state (pre-trigger) ==="
-  rm -rf .wrangler/pre-trigger-snapshot
-  cp -r .wrangler/shared-state .wrangler/pre-trigger-snapshot
+  rm -rf "$PRE_TRIGGER_SNAPSHOT_DIR"
+  cp -r "$STATE_DIR" "$PRE_TRIGGER_SNAPSHOT_DIR"
 
   echo "=== Clearing session schedule ==="
   curl -sf -X POST http://localhost:$KERNEL_PORT/__clear-schedule || true
@@ -259,6 +349,10 @@ fi
 
 echo ""
 echo "=== Running ==="
+echo "  State dir:       $STATE_DIR"
+if [[ -n "$RUNTIME_WORKSPACE" ]]; then
+  echo "  Runtime workspace: $RUNTIME_WORKSPACE"
+fi
 echo "  Kernel:      http://localhost:$KERNEL_PORT"
 echo "  Dashboard API:  http://localhost:$DASHBOARD_PORT"
 echo "  Dashboard SPA:  http://localhost:$SPA_PORT/patron/"
@@ -271,7 +365,7 @@ if $GOVERNOR; then
   echo "  Deploy:  curl -X POST http://localhost:$GOVERNOR_PORT/deploy"
   echo "  Status:  curl http://localhost:$GOVERNOR_PORT/status"
 fi
-echo "  Restore: bash scripts/restore-snapshot.sh"
+echo "  Restore: SWAYAMBHU_PERSIST_DIR=\"$STATE_DIR\" SWAYAMBHU_PRE_TRIGGER_SNAPSHOT_DIR=\"$PRE_TRIGGER_SNAPSHOT_DIR\" SWAYAMBHU_KERNEL_PORT=\"$KERNEL_PORT\" SWAYAMBHU_DASHBOARD_PORT=\"$DASHBOARD_PORT\" SWAYAMBHU_SPA_PORT=\"$SPA_PORT\" SWAYAMBHU_GOVERNOR_PORT=\"$GOVERNOR_PORT\" SWAYAMBHU_DASHBOARD_INSPECTOR_PORT=\"$DASHBOARD_INSPECTOR_PORT\" SWAYAMBHU_GOVERNOR_INSPECTOR_PORT=\"$GOVERNOR_INSPECTOR_PORT\" SWAYAMBHU_GOVERNOR_ENABLED=\"$GOVERNOR\" SWAYAMBHU_START_ISOLATED=\"$ISOLATED_START\" bash scripts/restore-snapshot.sh"
 echo "  Stop:    Ctrl+C"
 echo ""
 

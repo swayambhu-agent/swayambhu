@@ -4,6 +4,23 @@ import { formatTime } from '../lib/format.js';
 import { eventColor } from '../lib/colors.js';
 import { JsonTree } from './ui/JsonView.jsx';
 
+function summarizeEntry(entry) {
+  if (entry.summary) return entry.summary;
+  if (entry.type === 'review_synthesized') return entry.observation || 'Synthetic review recorded';
+  if (entry.type === 'plan_no_action') return entry.reason || 'No action chosen';
+  if (entry.type === 'experience_written') {
+    const salience = typeof entry.salience === 'number' ? `salience ${entry.salience}` : null;
+    const sigma = typeof entry.sigma === 'number' ? `sigma ${entry.sigma}` : null;
+    return [entry.key, salience, sigma].filter(Boolean).join(' · ');
+  }
+  if (entry.type === 'act_complete') {
+    const cycles = typeof entry.cycles_run === 'number' ? `${entry.cycles_run} cycles` : null;
+    const cost = typeof entry.total_cost === 'number' ? `$${entry.total_cost.toFixed(4)}` : null;
+    return [cycles, cost].filter(Boolean).join(' · ');
+  }
+  return null;
+}
+
 // ── Draggable Divider ─────────────────────────────────────
 function DraggableDivider({ onDrag }) {
   const handleMouseDown = useCallback((e) => {
@@ -28,6 +45,36 @@ function DraggableDivider({ onDrag }) {
 }
 
 // ── Context Panel ─────────────────────────────────────────
+function PromptViewer({ patronKey, requestKey }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const load = async () => {
+    if (data) { setOpen(!open); return; }
+    setLoading(true);
+    try {
+      const d = await api(`/kv/${encodeURIComponent(requestKey)}`, patronKey);
+      setData(d?.value || d || null);
+    } catch { setData({ error: "prompt data expired or unavailable" }); }
+    setLoading(false);
+    setOpen(true);
+  };
+
+  return (
+    <div className="mb-3">
+      <button onClick={load} className="text-[10px] text-accent hover:underline">
+        {loading ? "loading..." : open ? "▾ hide prompt" : "▸ show prompt"}
+      </button>
+      {open && data && (
+        <div className="mt-1 border border-border rounded p-2 bg-bg">
+          <JsonTree data={data} defaultOpen={false} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ContextPanel({ patronKey, selectedEntry }) {
   if (!selectedEntry) {
     return (
@@ -66,6 +113,7 @@ function ContextPanel({ patronKey, selectedEntry }) {
 
       {/* Collapsible JSON tree */}
       <div className="flex-1 overflow-y-auto scrollbar-thin p-4 text-xs font-mono">
+        {entry.request_key && <PromptViewer patronKey={patronKey} requestKey={entry.request_key} />}
         <JsonTree data={entry} defaultOpen={true} />
       </div>
     </div>
@@ -85,7 +133,7 @@ function TimelineTab({ patronKey, onSelectEntry, sessionsRev }) {
   const refreshSessions = useCallback(async () => {
     try {
       const d = await api('/sessions', patronKey);
-      const list = (d.sessions || []).filter(s => s.type !== 'deep_reflect').reverse();
+      const list = (d.sessions || []).filter(s => s.type === 'act').reverse();
       if (list.length > 0) {
         setSessions(list);
         setSelectedSession(prev => prev || list[0].id);
@@ -204,10 +252,17 @@ function TimelineTab({ patronKey, onSelectEntry, sessionsRev }) {
           value={selectedSession || ''}
           onChange={(e) => setSelectedSession(e.target.value)}
           className="bg-bg border border-border rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-accent"
+          title={selectedSession || ''}
         >
-          {sessions.map(s => (
-            <option key={s.id} value={s.id}>{s.id}</option>
-          ))}
+          {sessions.map(s => {
+            // Parse timestamp from execution ID (x_{epoch_ms}_{suffix})
+            const parts = s.id.split('_');
+            const epoch = parts.length >= 2 ? parseInt(parts[1], 10) : NaN;
+            const label = !isNaN(epoch)
+              ? new Date(epoch).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+              : s.id;
+            return <option key={s.id} value={s.id}>{label}</option>;
+          })}
         </select>
         <button
           onClick={toggleWatch}
@@ -279,7 +334,9 @@ function TimelineTab({ patronKey, onSelectEntry, sessionsRev }) {
                 </div>
                 {entry.tool && <span className="text-purple-300 ml-4">{entry.tool}</span>}
                 {entry.model && <span className="text-blue-300 ml-4">{entry.model}</span>}
-                {entry.summary && <p className="text-gray-400 ml-4 mt-1 truncate">{entry.summary}</p>}
+                {summarizeEntry(entry) && (
+                  <p className="text-gray-400 ml-4 mt-1 truncate">{summarizeEntry(entry)}</p>
+                )}
                 {entry.error && <p className="text-red-300 ml-4 mt-1 truncate">{entry.error}</p>}
               </div>
             );
