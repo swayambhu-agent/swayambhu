@@ -105,7 +105,7 @@
     "allow_authority_widening": false
   },
   "identity": {
-    "enabled": false,
+    "enabled": true,
     "max_planner_items": 5,
     "environment_roots": ["/home/swami", "/home/swayambhu"],
     "working_body_prefixes": [

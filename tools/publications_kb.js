@@ -27,11 +27,10 @@ function buildHeaders() {
 async function postJson(fetchFn, path, payload) {
   let response;
   try {
-    response = await fetchFn(`https://${ORIGIN_HOST}${path}`, {
+    response = await fetchFn(`https://${ORIGIN_IP}${path}`, {
       method: "POST",
       headers: buildHeaders(),
       body: JSON.stringify(payload),
-      cf: { resolveOverride: ORIGIN_IP },
     });
   } catch (error) {
     return { success: false, error: `fetch failed: ${error.message || String(error)}` };

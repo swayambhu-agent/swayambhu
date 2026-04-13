@@ -22,6 +22,12 @@ function statusTone(status) {
   return 'border-amber-800 bg-amber-950/20 text-amber-300';
 }
 
+function renderSummary(value) {
+  if (!value) return '(no summary)';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
 function RequestSummaryBar({ summary, onFilter, activeFilter }) {
   const pills = [
     ['all', 'All', summary.total, 'text-gray-300 border-gray-700 bg-bg-card'],
@@ -126,7 +132,7 @@ export default function RequestsTab({ patronKey, requestsRev }) {
                       </span>
                       <span className="ml-auto text-[10px] text-gray-500">{ageLabel(item.updated_at)}</span>
                     </div>
-                    <div className="text-xs font-semibold text-gray-100">{item.summary || '(no summary)'}</div>
+                    <div className="text-xs font-semibold text-gray-100">{renderSummary(item.summary)}</div>
                     <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-500">
                       <span>{item.requester_name || item.requester?.id || item.source || 'unknown requester'}</span>
                       {item.next_session && <span>next {item.next_session}</span>}
@@ -157,7 +163,7 @@ export default function RequestsTab({ patronKey, requestsRev }) {
                 </span>
                 <span className="text-[11px] text-gray-500">{selected.id}</span>
               </div>
-              <h2 className="text-lg font-semibold text-gray-100">{selected.summary || '(no summary)'}</h2>
+              <h2 className="text-lg font-semibold text-gray-100">{renderSummary(selected.summary)}</h2>
               <div className="mt-3 grid gap-3 text-xs text-gray-400 md:grid-cols-2 xl:grid-cols-4">
                 <div>
                   <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">Requester</div>

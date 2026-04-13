@@ -5,7 +5,10 @@ import { eventColor } from '../lib/colors.js';
 import { JsonTree } from './ui/JsonView.jsx';
 
 function summarizeEntry(entry) {
-  if (entry.summary) return entry.summary;
+  if (entry.summary) {
+    if (typeof entry.summary === 'string') return entry.summary;
+    return JSON.stringify(entry.summary);
+  }
   if (entry.type === 'review_synthesized') return entry.observation || 'Synthetic review recorded';
   if (entry.type === 'plan_no_action') return entry.reason || 'No action chosen';
   if (entry.type === 'experience_written') {

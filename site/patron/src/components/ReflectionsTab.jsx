@@ -31,6 +31,13 @@ function affinityItems(exp, limit = 2) {
     .slice(0, limit);
 }
 
+function renderTextish(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value, null, 2);
+}
+
 function formatTimestamp(ts) {
   if (!ts) return null;
   return new Date(ts).toLocaleString(undefined, {
@@ -235,12 +242,12 @@ function ReflectionsTab({ patronKey, reflectionsRev }) {
               {drData.execution?.note_to_future_self && (
                 <div style={{ fontSize: 12, color: '#f59e0b', lineHeight: 1.6, padding: 12, marginBottom: 12, background: 'rgba(245,158,11,0.06)', borderRadius: 6, borderLeft: '3px solid #f59e0b' }}>
                   <div style={{ fontSize: 10, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Note to future self</div>
-                  {drData.execution.note_to_future_self}
+                  <pre className="whitespace-pre-wrap break-words font-sans">{renderTextish(drData.execution.note_to_future_self)}</pre>
                 </div>
               )}
               {drData.execution?.reflection ? (
                 <div style={{ fontSize: 12, color: '#d4d4d4', lineHeight: 1.6, padding: 12, background: 'rgba(255,255,255,0.03)', borderRadius: 6, borderLeft: '3px solid #a78bfa' }}>
-                  {drData.execution.reflection}
+                  <pre className="whitespace-pre-wrap break-words font-sans">{renderTextish(drData.execution.reflection)}</pre>
                 </div>
               ) : (
                 <div className="text-xs text-gray-600">No reflection text</div>
