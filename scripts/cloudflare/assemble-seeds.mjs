@@ -1,7 +1,11 @@
 import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { pathToFileURL, fileURLToPath } from "url";
-import { cloudflareTargetConfig, parseTargetEnv } from "./target-env.mjs";
+import {
+  cloudflareTargetConfig,
+  confirmProdInteractive,
+  parseTargetEnv,
+} from "./target-env.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "../..");
@@ -204,6 +208,7 @@ export async function collectSeedEntries({
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { envName } = parseTargetEnv(process.argv.slice(2));
+  await confirmProdInteractive(envName, "seed assembly");
   const entries = await collectSeedEntries({ targetEnv: envName });
   console.log(JSON.stringify({
     env: envName,

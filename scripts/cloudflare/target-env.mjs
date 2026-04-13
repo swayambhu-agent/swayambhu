@@ -24,6 +24,31 @@ export function parseTargetEnv(argv, { defaultEnv = "staging" } = {}) {
   return { envName, prodConfirmed };
 }
 
+export async function confirmProdInteractive(envName, label = "operation") {
+  if (envName !== "prod") return;
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(`prod ${label} requires an interactive terminal confirmation`);
+  }
+
+  const { createInterface } = await import("readline/promises");
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(
+      `You are targeting prod for ${label}. Type 'yes' to continue: `
+    );
+    if (answer.trim() !== "yes") {
+      throw new Error("prod confirmation aborted");
+    }
+  } finally {
+    rl.close();
+  }
+}
+
 export function cloudflareTargetConfig(envName) {
   if (envName === "prod") {
     return {

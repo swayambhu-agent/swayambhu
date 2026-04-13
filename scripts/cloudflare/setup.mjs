@@ -4,7 +4,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { randomBytes } from "crypto";
 import { resolve } from "path";
 import { spawnSync } from "child_process";
-import { cloudflareTargetConfig, parseTargetEnv } from "./target-env.mjs";
+import {
+  cloudflareTargetConfig,
+  confirmProdInteractive,
+  parseTargetEnv,
+} from "./target-env.mjs";
 
 const root = resolve(new URL("../..", import.meta.url).pathname);
 
@@ -503,6 +507,7 @@ async function main() {
   }
 
   const { envName } = parseTargetEnv(process.argv.slice(2));
+  await confirmProdInteractive(envName, "Cloudflare setup");
   const target = cloudflareTargetConfig(envName);
 
   const operatorEnvFile = resolve(

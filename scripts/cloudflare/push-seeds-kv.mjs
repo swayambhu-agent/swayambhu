@@ -2,7 +2,7 @@
 // Seed a remote Cloudflare KV namespace using the same manifest as local dev.
 
 import { collectSeedEntries } from "./assemble-seeds.mjs";
-import { parseTargetEnv } from "./target-env.mjs";
+import { confirmProdInteractive, parseTargetEnv } from "./target-env.mjs";
 
 function parseArgs(argv) {
   const out = { dryRun: false };
@@ -30,6 +30,7 @@ function chunk(items, size) {
 
 const args = parseArgs(process.argv.slice(2));
 const { envName } = parseTargetEnv(process.argv.slice(2));
+await confirmProdInteractive(envName, "Cloudflare KV push");
 const accountId = args["account-id"] || process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
 const namespaceId =
   args["namespace-id"] ||

@@ -46,6 +46,15 @@ if [ "$TARGET_ENV" = "prod" ] && [ "$PROD_CONFIRMED" -ne 1 ]; then
 fi
 
 if [ "$TARGET_ENV" = "prod" ]; then
+  printf "You are targeting prod for Cloudflare secrets. Type 'yes' to continue: "
+  read -r PROD_ACK
+  if [ "$PROD_ACK" != "yes" ]; then
+    echo "Prod confirmation aborted"
+    exit 1
+  fi
+fi
+
+if [ "$TARGET_ENV" = "prod" ]; then
   ENV_FILE="$ROOT/.env.prod"
 else
   ENV_FILE="$ROOT/.env"
