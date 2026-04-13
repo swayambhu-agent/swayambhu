@@ -17,9 +17,24 @@
         "max_output_tokens": 2000
       },
       "communication": "Feel free to discuss absolutely anything. Nothing is off limits."
+    },
+    "sravanth_valluru": {
+      "name": "Sravanth Valluru",
+      "relationship": "",
+      "about": "Full-time volunteer at Isha. English Publications Lead",
+      "timezone": "Asia/Kolkata",
+      "location": "Isha Yoga Center, Coimbatore",
+      "chat": {
+        "model": "sonnet",
+        "effort": "high",
+        "max_cost_per_conversation": 1.00,
+        "max_output_tokens": 2000
+      },
+      "communication": ""
     }
   },
   "platform_bindings": {
-    "slack:U084ASKBXB7": { "slug": "swami_kevala", "approved": true }
+    "slack:U084ASKBXB7": { "slug": "swami_kevala", "approved": true },
+    "slack:U0ASG28R72N": { "slug": "sravanth_valluru", "approved": true }
   }
 }
