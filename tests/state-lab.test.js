@@ -6,16 +6,10 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVE_KERNEL_PORT,
   ACTIVE_UI_PORT,
-  applyWorkspaceCandidateChange,
   allocateBranchPorts,
-  buildLabBranchName,
   buildStartEnv,
-  loadLabHypothesis,
-  overlayWorkspaceFromSourceState,
-  resolveLabWorkspacePath,
   runStaticValidation,
   sanitizeName,
-  shouldCopyWorkspacePath,
 } from "../scripts/state-lab.mjs";
 import {
   compareContinuationSummaries,
@@ -26,6 +20,14 @@ import {
   retargetStaticCommandToWorkspace,
   summarizeBatchSummary,
 } from "../lib/state-lab/validation.js";
+import {
+  applyWorkspaceCandidateChange,
+  buildLabBranchName,
+  loadLabHypothesis,
+  overlayWorkspaceFromSourceState,
+  resolveLabWorkspacePath,
+  shouldCopyWorkspacePath,
+} from "../lib/state-lab/workspace.js";
 import { getKV, dispose, root as REPO_ROOT } from "../scripts/shared.mjs";
 
 describe("state-lab helpers", () => {
@@ -157,6 +159,20 @@ describe("state-lab helpers", () => {
     }
   });
 
+  it("rejects empty old_string workspace patches", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "state-lab-empty-patch-"));
+    try {
+      await writeFile(join(workspace, "userspace.js"), "const value = 1;\n", "utf8");
+      await expect(applyWorkspaceCandidateChange(workspace, {
+        path: "userspace.js",
+        old_string: "",
+        new_string: "patched",
+      })).rejects.toThrow("old_string must be non-empty");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("overlays branch code-key state into a prepared workspace before lab patches apply", async () => {
     const base = await mkdtemp(join(tmpdir(), "state-lab-overlay-"));
     const stateDir = join(base, "state");
@@ -191,6 +207,35 @@ describe("state-lab helpers", () => {
       expect(await readFile(join(workspace, "userspace.js"), "utf8")).toContain("patched userspace");
     } finally {
       await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects prompt overlay paths that escape the workspace", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "state-lab-overlay-fetch-"));
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+      const text = String(url);
+      if (text.includes(`/kv/${encodeURIComponent("kernel:source_map")}`)) {
+        return new Response(JSON.stringify({ value: { evil_prompt: "prompt:../escape" } }), { status: 200 });
+      }
+      if (text.includes(`/kv/${encodeURIComponent("prompt:../escape")}`)) {
+        return new Response(JSON.stringify({ value: "escape\n" }), { status: 200 });
+      }
+      if (text.includes("/kv?prefix=")) {
+        return new Response(JSON.stringify({ keys: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ value: null }), { status: 200 });
+    };
+
+    try {
+      await expect(overlayWorkspaceFromSourceState({
+        workspaceDir: workspace,
+        stateDir: join(workspace, "unused-state"),
+        dashboardPort: 9999,
+      })).rejects.toThrow("Overlay prompt path escapes prompts dir");
+    } finally {
+      global.fetch = originalFetch;
+      await rm(workspace, { recursive: true, force: true });
     }
   });
 
