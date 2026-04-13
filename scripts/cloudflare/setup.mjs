@@ -604,7 +604,7 @@ async function main() {
   run(
     "node",
     [
-      "scripts/cloudflare/seed-kv.mjs",
+      "scripts/cloudflare/push-kv.mjs",
       "--account-id",
       accountId,
       "--namespace-id",

@@ -53,7 +53,7 @@ The repo now assumes:
 
 - Runtime entrypoint is `index.js`
 - Static site API origins come from config files, not hardcoded `workers.dev` URLs
-- Remote KV is seeded via `scripts/cloudflare/seed-kv.mjs`
+- Remote KV is pushed via `scripts/cloudflare/push-kv.mjs`
 - Staging bootstrap can be automated with `npm run setup:cloudflare`
 - Prod bootstrap requires an explicit prod target via `npm run setup:cloudflare:prod`
 
@@ -176,7 +176,7 @@ bash scripts/cloudflare/push-secrets.sh --governor --env prod --prod
 Remote KV seeding is now handled by:
 
 ```bash
-node scripts/cloudflare/seed-kv.mjs --account-id <cf-account-id> --namespace-id <kv-namespace-id>
+node scripts/cloudflare/push-kv.mjs --account-id <cf-account-id> --namespace-id <kv-namespace-id>
 ```
 
 Requirements:
@@ -193,7 +193,7 @@ Dry run:
 
 ```bash
 CLOUDFLARE_API_TOKEN=... \
-node scripts/cloudflare/seed-kv.mjs \
+node scripts/cloudflare/push-kv.mjs \
   --account-id <cf-account-id> \
   --namespace-id <kv-namespace-id> \
   --dry-run
