@@ -143,7 +143,9 @@ async function compatExecute(command, waitSeconds) {
   const id = `exec_${Date.now()}_${randomUUID().slice(0, 8)}`;
 
   return await new Promise((resolve) => {
-    const child = spawn("bash", ["-lc", command], {
+    // Use a non-login shell so compatibility probes don't emit profile noise
+    // that corrupts structured command output such as exit-code checks.
+    const child = spawn("bash", ["-c", command], {
       cwd: JOBS_ROOT,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
