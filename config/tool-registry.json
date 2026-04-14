@@ -113,10 +113,10 @@
     },
     {
       "name": "update_request",
-      "description": "Update the status of a pending session request and emit a response signal for communication delivery.",
+      "description": "Update the status of a durable work thread and emit a response signal for communication delivery.",
       "input": {
         "request_id": "required — Request ID without the session_request: prefix",
-        "status": "required — pending|fulfilled|rejected",
+        "status": "required — active|blocked|fulfilled|rejected|superseded|expired",
         "note": "optional — Short status note or explanation",
         "result": "optional — Short result summary for the requester",
         "error": "optional — Short failure explanation",

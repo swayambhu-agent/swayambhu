@@ -1,19 +1,31 @@
+import { upsertWorkThread } from "../lib/work-threads.js";
+
 export const meta = {
   kv_access: "read_all",
-  kv_write_prefixes: ["session_request:", "session_schedule"],
+  kv_write_prefixes: ["session_request:", "session_request_lease:", "session_schedule"],
   timeout_ms: 5000,
   secrets: [],
 };
 
-// Chat-only tool: signal that the conversation has an actionable request.
-// Creates a session_request KV key (source of truth) and emits a
-// session_request event (signal). The request contract is generic:
-// it can represent work requested by any contact, and the same schema
-// can later support self-originated work with a different source.
-export async function execute({ summary, kv, emitEvent, _chatContext }) {
+// Chat-only tool: signal that the conversation has an actionable work thread.
+// The first rollout keeps the session_request:* storage prefix and public tool
+// name for compatibility, but the semantics are now "upsert work thread".
+export async function execute({
+  summary,
+  request_id,
+  intent = "auto",
+  contract_type,
+  completion_condition,
+  timebound_duration_hours,
+  timebound_until_at,
+  allow_early_completion,
+  kv,
+  emitEvent,
+  _chatContext,
+}) {
   if (!_chatContext) return { error: "trigger_session can only be called from chat" };
 
-  const { userId, contact, convKey, chatConfig } = _chatContext;
+  const { userId, contact, convKey, chatConfig, latestInboundSentTs } = _chatContext;
   const contactSlug = contact?.id || userId;
   const requester = {
     type: "contact",
@@ -22,31 +34,29 @@ export async function execute({ summary, kv, emitEvent, _chatContext }) {
     platform_user_id: userId || null,
   };
 
-  // Create session_request KV key — source of truth
-  const id = `req_${Date.now()}`;
-  const request = {
-    id,
-    source: "contact",
+  const upsert = await upsertWorkThread(kv, {
     requester,
-    contact: contactSlug,
-    contact_name: requester.name,
-    platform_user_id: requester.platform_user_id,
+    conversation_ref: convKey,
     summary: summary || "(no summary)",
-    status: "pending",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    ref: convKey,
-    result: null,
-    error: null,
-    next_session: null,
-  };
-  await kv.put(`session_request:${id}`, request);
+    request_id,
+    intent,
+    contract_type,
+    completion_condition,
+    timebound_duration_hours,
+    timebound_until_at,
+    allow_early_completion,
+    idempotency_key: `${convKey}:${latestInboundSentTs || Date.now()}:${summary || "(no summary)"}`,
+  });
+
+  if (!upsert.ok) {
+    return upsert;
+  }
 
   // Emit event — signal for sessionTrigger handler
   await emitEvent("session_request", {
     contact: contactSlug,
     requester,
-    ref: `session_request:${id}`,
+    ref: `session_request:${upsert.request_id}`,
   });
 
   // Advance session schedule
@@ -64,5 +74,5 @@ export async function execute({ summary, kv, emitEvent, _chatContext }) {
     }
   }
 
-  return { ok: true, request_id: id };
+  return { ok: true, request_id: upsert.request_id, created: upsert.created };
 }

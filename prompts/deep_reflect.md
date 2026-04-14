@@ -64,7 +64,7 @@ This is not the same as:
 - `tactic` — how to act
 
 Read `identification/`, `experience/`, `action/`, `desire/`, `principle/`,
-`dharma`, and carry-forward continuity. Use `action/` as the primary source
+`dharma`, and continuation continuity. Use `action/` as the primary source
 for exercised care. When reading `desire/`, use it only as a persistence
 signal — slug, timestamps, and whether it persisted or was fulfilled/retired.
 Do not use desire descriptions as candidate identification text.
@@ -299,7 +299,7 @@ Example:
   in userspace.js and the cognitive architecture's stance that inaction
   is a valid choice." }
 
-## Carry-forward hygiene
+## Continuation hygiene
 
 `last_reflect.carry_forward` is the structured continuity cache for session planning. Review it explicitly on every deep-reflect run.
 
@@ -307,12 +307,13 @@ Example:
 - Merge duplicates or near-duplicates into a single clearer item.
 - Mark stale items `expired` if their `expires_at` is in the past.
 - Remove items that are already `done`, `dropped`, or no longer worth carrying.
-- Keep at most 5 items with `status: "active"`. Prefer 3 when possible.
+- Keep at most 5 items with `status: "active"` or `status: "blocked"`. Prefer 3 when possible.
 - If recent actions discovered a legitimate outward surface that has not yet
   been exhausted, keep one concrete continuation alive rather than dropping the
   discovery after first inspection.
 - Refresh `updated_at` and `expires_at` when you intentionally keep an item alive.
 - Include `desire_key` when you can ground the item to a specific `desire:*` key; omit it when that would be fake precision.
+- Every actionable continuation must reference a parent `request_id`. Do not keep free-floating actionable continuity.
 
 ## M operator: Meta-policy notes
 
@@ -355,13 +356,16 @@ Respond with ONLY a JSON object:
   "carry_forward": [
     {
       "id": "{{existing_or_new_id}}",
+      "request_id": "req_123",
       "item": "Concrete next step or continuation",
       "why": "Why this still matters",
       "priority": "high|medium|low",
-      "status": "active|done|dropped|expired",
+      "status": "active|blocked|done|dropped|expired",
       "created_at": "ISO8601",
       "updated_at": "ISO8601",
       "expires_at": "ISO8601",
+      "blocked_on": "optional blocker",
+      "wake_condition": "optional event that makes it actionable again",
       "desire_key": "desire:optional_link"
     }
   ],

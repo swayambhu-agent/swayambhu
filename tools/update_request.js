@@ -7,7 +7,23 @@ export const meta = {
   secrets: [],
 };
 
-export async function execute({ request_id, status, note, result, error, next_session, kv, emitEvent }) {
+export async function execute({
+  request_id,
+  status,
+  note,
+  result,
+  error,
+  next_session,
+  contract_type,
+  completion_condition,
+  timebound_duration_hours,
+  timebound_until_at,
+  superseded_by,
+  allow_early_completion,
+  intent,
+  kv,
+  emitEvent,
+}) {
   if (!request_id || !status) {
     return { error: "request_id and status are required" };
   }
@@ -29,6 +45,13 @@ export async function execute({ request_id, status, note, result, error, next_se
     result,
     error,
     next_session,
+    contract_type,
+    completion_condition,
+    timebound_duration_hours,
+    timebound_until_at,
+    superseded_by,
+    allow_early_completion,
+    intent,
     kv,
     emitEvent,
   });

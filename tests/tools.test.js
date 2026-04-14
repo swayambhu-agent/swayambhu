@@ -2663,7 +2663,6 @@ describe("update_request", () => {
         type: "self",
         id: "self",
         name: "Swayambhu",
-        platform_user_id: null,
       },
       ref: "session_request:req_self",
       status: "fulfilled",
@@ -2706,7 +2705,7 @@ describe("trigger_session", () => {
       contact: "swami_kevala",
       contact_name: "Swami Kevala",
       ref: "chat:slack:U084ASKBXB7",
-      status: "pending",
+      status: "active",
     }));
     expect(emitEvent).toHaveBeenCalledWith("session_request", expect.objectContaining({
       contact: "swami_kevala",

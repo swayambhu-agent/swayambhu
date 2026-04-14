@@ -17,9 +17,14 @@ function ageLabel(ts) {
 }
 
 function statusTone(status) {
+  if (status === 'active' || status === 'pending') return 'border-sky-800 bg-sky-950/20 text-sky-300';
+  if (status === 'blocked') return 'border-orange-800 bg-orange-950/20 text-orange-300';
+  if (status === 'stale') return 'border-yellow-800 bg-yellow-950/20 text-yellow-300';
   if (status === 'fulfilled') return 'border-emerald-800 bg-emerald-950/20 text-emerald-300';
+  if (status === 'expired') return 'border-gray-700 bg-gray-900/40 text-gray-300';
+  if (status === 'superseded') return 'border-violet-800 bg-violet-950/20 text-violet-300';
   if (status === 'rejected') return 'border-rose-800 bg-rose-950/20 text-rose-300';
-  return 'border-amber-800 bg-amber-950/20 text-amber-300';
+  return 'border-gray-700 bg-bg-card text-gray-300';
 }
 
 function renderSummary(value) {
@@ -31,14 +36,19 @@ function renderSummary(value) {
 function RequestSummaryBar({ summary, onFilter, activeFilter }) {
   const pills = [
     ['all', 'All', summary.total, 'text-gray-300 border-gray-700 bg-bg-card'],
-    ['pending', 'Pending', summary.pending, 'text-amber-300 border-amber-800 bg-amber-950/20'],
+    ['open', 'Open', summary.open, 'text-sky-300 border-sky-800 bg-sky-950/20'],
+    ['active', 'Active', summary.active, 'text-sky-300 border-sky-800 bg-sky-950/20'],
+    ['blocked', 'Blocked', summary.blocked, 'text-orange-300 border-orange-800 bg-orange-950/20'],
+    ['stale', 'Stale', summary.stale, 'text-yellow-300 border-yellow-800 bg-yellow-950/20'],
     ['fulfilled', 'Fulfilled', summary.fulfilled, 'text-emerald-300 border-emerald-800 bg-emerald-950/20'],
+    ['expired', 'Expired', summary.expired, 'text-gray-300 border-gray-700 bg-gray-900/40'],
     ['rejected', 'Rejected', summary.rejected, 'text-rose-300 border-rose-800 bg-rose-950/20'],
+    ['closed', 'Closed', summary.closed, 'text-violet-300 border-violet-800 bg-violet-950/20'],
   ];
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border bg-bg-panel px-4 py-3 text-xs">
-      <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500">Work Requests</div>
+      <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500">Work Threads</div>
       <div className="flex flex-wrap gap-2 md:ml-auto">
         {pills.map(([id, label, count, tone]) => (
           <button
@@ -56,7 +66,21 @@ function RequestSummaryBar({ summary, onFilter, activeFilter }) {
 }
 
 export default function RequestsTab({ patronKey, requestsRev }) {
-  const [data, setData] = useState({ summary: { total: 0, pending: 0, fulfilled: 0, rejected: 0 }, requests: [] });
+  const [data, setData] = useState({
+    summary: {
+      total: 0,
+      open: 0,
+      active: 0,
+      blocked: 0,
+      stale: 0,
+      fulfilled: 0,
+      expired: 0,
+      rejected: 0,
+      superseded: 0,
+      closed: 0,
+    },
+    requests: [],
+  });
   const [selectedId, setSelectedId] = useState(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -80,6 +104,8 @@ export default function RequestsTab({ patronKey, requestsRev }) {
 
   const visibleRequests = useMemo(() => {
     if (statusFilter === 'all') return data.requests || [];
+    if (statusFilter === 'open') return (data.requests || []).filter((item) => ['active', 'blocked', 'stale', 'pending'].includes(item.status));
+    if (statusFilter === 'closed') return (data.requests || []).filter((item) => ['fulfilled', 'expired', 'rejected', 'superseded'].includes(item.status));
     return (data.requests || []).filter((item) => item.status === statusFilter);
   }, [data.requests, statusFilter]);
 
@@ -106,14 +132,25 @@ export default function RequestsTab({ patronKey, requestsRev }) {
     <div className="flex h-full overflow-hidden">
       <div className="flex w-[360px] flex-shrink-0 flex-col border-r border-border">
         <RequestSummaryBar
-          summary={data.summary || { total: 0, pending: 0, fulfilled: 0, rejected: 0 }}
+          summary={data.summary || {
+            total: 0,
+            open: 0,
+            active: 0,
+            blocked: 0,
+            stale: 0,
+            fulfilled: 0,
+            expired: 0,
+            rejected: 0,
+            superseded: 0,
+            closed: 0,
+          }}
           activeFilter={statusFilter}
           onFilter={setStatusFilter}
         />
         <div className="flex-1 overflow-y-auto scrollbar-thin p-3">
           {visibleRequests.length === 0 ? (
             <div className="rounded border border-dashed border-border p-4 text-xs text-gray-500">
-              No requests in this filter.
+              No work threads in this filter.
             </div>
           ) : (
             <div className="space-y-2">
@@ -152,7 +189,7 @@ export default function RequestsTab({ patronKey, requestsRev }) {
       <div className="flex-1 overflow-y-auto scrollbar-thin bg-bg-panel/40 p-4">
         {!selected ? (
           <div className="flex h-full items-center justify-center text-sm text-gray-500">
-            Select a request to inspect its state.
+            Select a work thread to inspect its state.
           </div>
         ) : (
           <div className="space-y-4 fade-in">
@@ -161,6 +198,11 @@ export default function RequestsTab({ patronKey, requestsRev }) {
                 <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] ${statusTone(selected.status)}`}>
                   {selected.status}
                 </span>
+                {selected.contract_type && (
+                  <span className="rounded-full border border-border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-gray-400">
+                    {selected.contract_type}
+                  </span>
+                )}
                 <span className="text-[11px] text-gray-500">{selected.id}</span>
               </div>
               <h2 className="text-lg font-semibold text-gray-100">{renderSummary(selected.summary)}</h2>
@@ -180,6 +222,24 @@ export default function RequestsTab({ patronKey, requestsRev }) {
                 <div>
                   <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">Conversation Ref</div>
                   <div className="break-all">{selected.ref || '—'}</div>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 text-xs text-gray-400 md:grid-cols-2 xl:grid-cols-4">
+                <div>
+                  <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">Completion Condition</div>
+                  <div>{selected.completion_condition || '—'}</div>
+                </div>
+                <div>
+                  <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">Timebound Duration</div>
+                  <div>{selected.timebound_duration_hours ? `${selected.timebound_duration_hours}h` : '—'}</div>
+                </div>
+                <div>
+                  <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">Timebound Until</div>
+                  <div>{formatDateTime(selected.timebound_until_at)}</div>
+                </div>
+                <div>
+                  <div className="mb-1 text-[10px] uppercase tracking-wider text-gray-600">Superseded By</div>
+                  <div>{selected.superseded_by || '—'}</div>
                 </div>
               </div>
             </div>
@@ -206,7 +266,7 @@ export default function RequestsTab({ patronKey, requestsRev }) {
             )}
 
             <section className="rounded-2xl border border-border bg-bg-panel p-5">
-              <div className="mb-3 text-[10px] uppercase tracking-[0.2em] text-gray-500">Raw Request</div>
+              <div className="mb-3 text-[10px] uppercase tracking-[0.2em] text-gray-500">Raw Work Thread</div>
               <JsonTree data={selected} defaultOpen />
             </section>
           </div>

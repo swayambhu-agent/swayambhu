@@ -9,6 +9,8 @@ import { renderActPrompt, buildToolSet, formatDesires, formatCircumstances, deri
 import { executeReflect } from './reflect.js';
 import { parseJobOutput } from './lib/parse-job-output.js';
 import { applyRequestUpdate, SESSION_REQUEST_STATUSES } from './lib/session-requests.js';
+import { collectActiveContinuationRequestIds, migrateLegacyCarryForward, reconcileContinuationsAgainstThreads } from "./lib/continuations.js";
+import { isOpenWorkThreadStatus, loadPlannerWorkThreads, reconcileWorkThreadLifecycle, normalizeWorkThread, listWorkThreads } from "./lib/work-threads.js";
 import { writeReasoningArtifacts } from "./lib/reasoning.js";
 import { normalizeMetaPolicyNotes, persistMetaPolicyNotes } from "./meta-policy.js";
 
@@ -45,41 +47,11 @@ async function loadIdentifications(K) {
 }
 
 async function loadPendingRequests(K, defaults, events = []) {
-  const scheduleIntervalMs = (defaults?.schedule?.interval_seconds || 21600) * 1000;
-  const staleAfterMs = Math.max(60 * 60 * 1000, scheduleIntervalMs);
-  const now = Date.now();
-  const referencedKeys = new Set(
-    (events || [])
-      .filter(event => event?.ref?.startsWith("session_request:"))
-      .map(event => event.ref)
-  );
-
-  const list = await K.kvList({ prefix: "session_request:" });
-  const requests = [];
-  for (const entry of list.keys) {
-    const request = await K.kvGet(entry.name);
-    if (!request) continue;
-    if (request.status === "fulfilled" || request.status === "rejected") continue;
-
-    const updatedMs = request.updated_at ? new Date(request.updated_at).getTime() : 0;
-    const ageMs = updatedMs ? Math.max(0, now - updatedMs) : null;
-    requests.push({
-      ...request,
-      key: entry.name,
-      from_event: referencedKeys.has(entry.name),
-      stale: ageMs !== null ? ageMs >= staleAfterMs : false,
-      age_hours: ageMs !== null ? Number((ageMs / 3_600_000).toFixed(1)) : null,
-    });
-  }
-
-  requests.sort((a, b) => {
-    if (a.from_event !== b.from_event) return a.from_event ? -1 : 1;
-    if (a.stale !== b.stale) return a.stale ? -1 : 1;
-    return new Date(a.updated_at || a.created_at || 0).getTime()
-      - new Date(b.updated_at || b.created_at || 0).getTime();
-  });
-
-  return requests.slice(0, 5);
+  const lastReflect = await K.kvGet("last_reflect");
+  const migratedCarryForward = await migrateLegacyCarryForward(K, lastReflect?.carry_forward || []);
+  const activeRequestIds = collectActiveContinuationRequestIds(migratedCarryForward);
+  await reconcileWorkThreadLifecycle(K, { defaults, activeRequestIds });
+  return loadPlannerWorkThreads(K, defaults, events);
 }
 
 // ── Plan prompt vars ────────────────────────────────────────
@@ -417,6 +389,7 @@ function buildMechanicalRequestFallback({ review, ledger }) {
 async function autoReconcileRequests(K, {
   pendingRequests,
   respondedRequestIds,
+  carryForwardItems,
   plan,
   ledger,
   review,
@@ -444,8 +417,20 @@ async function autoReconcileRequests(K, {
     id: request.id,
     summary: request.summary,
     status: request.status,
+    contract_type: request.contract_type || "one_shot",
+    completion_condition: request.completion_condition || "deliver_requested_output",
+    timebound_duration_hours: request.timebound_duration_hours ?? null,
+    timebound_until_at: request.timebound_until_at ?? null,
     stale: request.stale || false,
     from_event: request.from_event || false,
+    active_continuations: (carryForwardItems || [])
+      .filter((item) => item.request_id === request.id && (item.status === "active" || item.status === "blocked"))
+      .map((item) => ({
+        id: item.id,
+        item: item.item,
+        status: item.status,
+        blocked_on: item.blocked_on || null,
+      })),
   }));
   const ledgerSummary = {
     action: plan?.action || null,
@@ -469,12 +454,13 @@ async function autoReconcileRequests(K, {
   } : null;
 
   const systemPrompt = [
-    "You reconcile durable work requests after an act session.",
-    "Decide whether each request is now fulfilled, still pending, or rejected.",
-    "Be conservative about rejection. Use fulfilled when the requester-facing ask appears satisfied even if optional follow-up ideas remain.",
-    "Return JSON only: {\"updates\":[{\"request_id\":\"...\",\"status\":\"fulfilled|pending|rejected\",\"result\":\"... optional ...\",\"note\":\"... optional ...\"}]}",
+    "You reconcile durable work threads after an act session.",
+    "Decide whether each thread should now be fulfilled, remain active, become blocked, remain stale, or be rejected.",
+    "Respect contract_type and completion_condition. Do not mark timebound best-effort work fulfilled before its bound unless explicit early completion was already resolved upstream.",
+    "Be conservative about rejection.",
+    "Return JSON only: {\"updates\":[{\"request_id\":\"...\",\"status\":\"active|blocked|stale|fulfilled|rejected\",\"result\":\"... optional ...\",\"note\":\"... optional ...\"}]}",
     "If status is fulfilled, prefer result over note.",
-    "If status is pending, prefer note over result.",
+    "If status is active, blocked, or stale, prefer note over result.",
     "Keep result/note concise and requester-facing. Do not mention internal prompts or tool names unless useful.",
   ].join("\n");
 
@@ -512,7 +498,7 @@ async function autoReconcileRequests(K, {
     const modelUpdate = updates.find((update) => update?.request_id === request.id);
     const status = SESSION_REQUEST_STATUSES.has(modelUpdate?.status)
       ? modelUpdate.status
-      : "pending";
+      : "active";
     const fallback = buildMechanicalRequestFallback({ review, ledger });
     const result = typeof modelUpdate?.result === "string" && modelUpdate.result.trim()
       ? modelUpdate.result.trim().slice(0, 1000)
@@ -521,7 +507,7 @@ async function autoReconcileRequests(K, {
         : undefined;
     const note = typeof modelUpdate?.note === "string" && modelUpdate.note.trim()
       ? modelUpdate.note.trim().slice(0, 1000)
-      : status === "pending"
+      : status === "active" || status === "blocked" || status === "stale"
         ? fallback
         : undefined;
 
@@ -895,7 +881,7 @@ async function planPhase(K, { desires, patterns, identifications, circumstances,
     sections.push("");
   }
   if (carryForwardItems?.length) {
-    sections.push("[CARRY-FORWARD]", "(operational continuity only — use as facts or pending commitments, not as conclusions)");
+    sections.push("[CONTINUATIONS]", "(internal continuity attached to durable work threads — use as facts or pending commitments, not as conclusions)");
     for (const item of carryForwardItems) {
       sections.push(formatCarryForwardPlannerLine(item));
     }
@@ -910,12 +896,13 @@ async function planPhase(K, { desires, patterns, identifications, circumstances,
     sections.push("");
   }
   if (pendingRequests?.length) {
-    sections.push("[PENDING REQUESTS]", "(durable work contracts currently awaiting execution or update)");
+    sections.push("[WORK THREADS]", "(durable work contracts currently awaiting execution, unblock, or closure)");
     for (const request of pendingRequests) {
       const stale = request.stale ? " [stale]" : "";
       const age = request.age_hours != null ? ` (${request.age_hours}h old)` : "";
       const note = request.note ? ` — ${request.note}` : "";
-      sections.push(`- ${request.id}: ${request.summary}${stale}${age}${note}`);
+      const contract = request.contract_type ? ` [${request.contract_type}]` : "";
+      sections.push(`- ${request.id} (${request.status})${contract}: ${request.summary}${stale}${age}${note}`);
     }
     sections.push("");
   }
@@ -932,7 +919,7 @@ async function planPhase(K, { desires, patterns, identifications, circumstances,
       "be keeping you idle, but prolonged inaction is itself a failure mode.",
       "Re-evaluate whether your blocked dependency is still the right path.",
       "Consider: sending a follow-up, exploring alternative approaches, or",
-      "updating the carry-forward plan to reflect changed circumstances.",
+      "updating the continuation plan to reflect changed circumstances.",
       "Do NOT cite a tactic as justification for continued inaction beyond",
       "this threshold.",
       "",
@@ -951,7 +938,7 @@ async function planPhase(K, { desires, patterns, identifications, circumstances,
       sections.push(line);
     }
   } else {
-    sections.push("", "[SESSION STATE]", "This is the start of the session. No tools have been called yet. Any tool outputs referenced in carry-forward or patterns are from prior sessions.");
+    sections.push("", "[SESSION STATE]", "This is the start of the session. No tools have been called yet. Any tool outputs referenced in continuations or patterns are from prior sessions.");
   }
   sections.push(
     "",
@@ -1614,18 +1601,24 @@ async function actCycle(K, { crashData, balances, events }) {
   let patterns = await loadPatterns(K);
   const identifications = defaults?.identity?.enabled === true ? await loadIdentifications(K) : {};
 
-  // 2c. Load carry-forward items from last session's reflect output
+  // 2c. Load continuations from last session's reflect output
   const lastReflect = await K.kvGet("last_reflect");
   const priorityRank = { high: 0, medium: 1, low: 2 };
   const normalizeDate = (s) => { const d = new Date(s); return isNaN(d.getTime()) ? null : d.toISOString(); };
-  const carryForwardItems = (lastReflect?.carry_forward || [])
+  const migratedCarryForward = await migrateLegacyCarryForward(K, lastReflect?.carry_forward || []);
+  const openThreadsForContinuations = (await listWorkThreads(K))
+    .map((thread) => normalizeWorkThread(thread, thread.key));
+  const carryForwardItems = reconcileContinuationsAgainstThreads({
+    continuations: migratedCarryForward,
+    threads: openThreadsForContinuations,
+  })
     .map(item => ({
       ...item,
       expires_at: item.expires_at ? normalizeDate(item.expires_at) : undefined,
       created_at: item.created_at ? normalizeDate(item.created_at) : undefined,
       updated_at: item.updated_at ? normalizeDate(item.updated_at) : undefined,
     }))
-    .filter(item => item.status === "active")
+    .filter(item => item.status === "active" || item.status === "blocked")
     .filter(item => !item.expires_at || new Date(item.expires_at).getTime() >= Date.now())
     .sort((a, b) => {
       const priorityDelta = (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
@@ -1833,6 +1826,7 @@ async function actCycle(K, { crashData, balances, events }) {
         await autoReconcileRequests(K, {
           pendingRequests,
           respondedRequestIds,
+          carryForwardItems,
           plan,
           ledger,
           review,
@@ -2856,7 +2850,24 @@ export async function applyDrResults(K, state, output) {
   }
 
   const prevLastReflect = await K.kvGet("last_reflect");
-  const carry_forward = output.carry_forward || prevLastReflect?.carry_forward || [];
+  const prevCarryForward = await migrateLegacyCarryForward(K, prevLastReflect?.carry_forward || []);
+  const migratedOutputCarryForward = await migrateLegacyCarryForward(K, output.carry_forward || [], {
+    now: new Date().toISOString(),
+  });
+  const activeRequestIds = new Set([
+    ...collectActiveContinuationRequestIds(prevCarryForward),
+    ...collectActiveContinuationRequestIds(migratedOutputCarryForward),
+  ]);
+  const canListWorkThreads = typeof K?.kvList === "function" || typeof K?.list === "function";
+  let carry_forward = output.carry_forward ? migratedOutputCarryForward : prevCarryForward;
+  if (canListWorkThreads) {
+    await reconcileWorkThreadLifecycle(K, { defaults, activeRequestIds });
+    const allThreads = await listWorkThreads(K);
+    carry_forward = reconcileContinuationsAgainstThreads({
+      continuations: carry_forward,
+      threads: allThreads,
+    });
+  }
 
   await K.kvWriteSafe(`reflect:1:${executionId}`, {
     reflection: output.reflection,

@@ -24,8 +24,16 @@ provide both:
 - a concise summary of the work
 - a short natural acknowledgement for the human
 
+When you queue work, decide the thread relationship explicitly:
+- continue an existing open work thread
+- open a clearly new parallel work thread
+- reopen an expired timebound thread only when the human explicitly extends it
+
+Do not rely on "there is only one open thread" as a reason to continue it.
+If continuation vs new work is genuinely ambiguous, choose `clarify`.
+
 Do not browse KV or investigate in chat.
-If there is already pending work and the human sends only a brief acknowledgement
+If there is already open work and the human sends only a brief acknowledgement
 or encouragement, prefer `discard` over sending another polite acknowledgement.
 
 ## Internal Agent Updates
@@ -56,7 +64,7 @@ You might:
 
 ## Request status
 
-If request status is injected into your context, you may translate it into
+If work-thread status is injected into your context, you may translate it into
 natural language. Never expose internal key names or statuses.
 
 ## Rules

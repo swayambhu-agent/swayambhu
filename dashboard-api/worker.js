@@ -123,7 +123,16 @@ function buildOperatorOutputsFromKarma(drKarma = []) {
 }
 
 function requestStatusRank(status) {
-  return ({ pending: 0, fulfilled: 1, rejected: 2 }[status] ?? 9);
+  return ({
+    active: 0,
+    blocked: 1,
+    stale: 2,
+    fulfilled: 3,
+    expired: 4,
+    rejected: 5,
+    superseded: 6,
+    pending: 7,
+  }[status] ?? 9);
 }
 
 async function resolveRequesterName(env, request) {
@@ -439,19 +448,26 @@ export default {
         requestKeys.map(async (k) => {
           const value = await env.KV.get(k.name, "json");
           if (!value) return null;
+          const status = value.status === "pending" ? "active" : (value.status || "active");
           return {
             key: k.name,
             id: value.id || k.name.replace("session_request:", ""),
             source: value.source || null,
-            status: value.status || "pending",
+            status,
             summary: value.summary || "",
             note: value.note || null,
             result: value.result || null,
             error: value.error || null,
-            ref: value.ref || null,
+            ref: value.conversation_ref || value.ref || null,
+            conversation_ref: value.conversation_ref || value.ref || null,
             next_session: value.next_session || null,
             requester: value.requester || null,
             requester_name: await resolveRequesterName(env, value),
+            contract_type: value.contract_type || "one_shot",
+            completion_condition: value.completion_condition || null,
+            timebound_duration_hours: value.timebound_duration_hours ?? null,
+            timebound_until_at: value.timebound_until_at || null,
+            superseded_by: value.superseded_by || null,
             created_at: value.created_at || null,
             updated_at: value.updated_at || value.created_at || null,
           };
@@ -468,9 +484,15 @@ export default {
 
       const summary = {
         total: filtered.length,
-        pending: filtered.filter((item) => item.status === "pending").length,
+        open: filtered.filter((item) => ["active", "blocked", "stale", "pending"].includes(item.status)).length,
+        active: filtered.filter((item) => item.status === "active" || item.status === "pending").length,
+        blocked: filtered.filter((item) => item.status === "blocked").length,
+        stale: filtered.filter((item) => item.status === "stale").length,
         fulfilled: filtered.filter((item) => item.status === "fulfilled").length,
+        expired: filtered.filter((item) => item.status === "expired").length,
         rejected: filtered.filter((item) => item.status === "rejected").length,
+        superseded: filtered.filter((item) => item.status === "superseded").length,
+        closed: filtered.filter((item) => ["fulfilled", "expired", "rejected", "superseded"].includes(item.status)).length,
       };
 
       return reply({ summary, requests: filtered });

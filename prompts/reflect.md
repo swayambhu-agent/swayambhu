@@ -60,6 +60,7 @@ Respond with a single JSON object. Nothing outside the JSON.
   "carry_forward_updates": [
     {
       "id": "dr1:cf1",
+      "request_id": "req_123",
       "status": "done",
       "updated_at": "{{now_iso}}",
       "result": "what happened"
@@ -72,6 +73,7 @@ Respond with a single JSON object. Nothing outside the JSON.
     },
     {
       "id": "session_6:cf1",
+      "request_id": "req_123",
       "status": "active",
       "updated_at": "{{now_iso}}",
       "why": "why this is still worth carrying",
@@ -82,6 +84,7 @@ Respond with a single JSON object. Nothing outside the JSON.
   "new_carry_forward": [
     {
       "id": "{{session_id}}:cf1",
+      "request_id": "req_123",
       "item": "Concrete next step act can execute",
       "why": "Why this matters",
       "priority": "high|medium|low",
@@ -119,13 +122,17 @@ This is how you write to your own memory. Common uses: update a project state, s
 
 ### note_to_future_self
 
-This is unstructured orientation between sessions. Use it for tone, caution, or context that does not belong in structured carry-forward items. Do not use it as a substitute for operational follow-up; actionable continuity belongs in `carry_forward`.
+This is unstructured orientation between sessions. Use it for tone, caution, or context that does not belong in structured continuations. Do not use it as a substitute for operational follow-up; actionable continuity belongs in `carry_forward` and must stay attached to a parent work thread.
 
-### Checking carry-forward
+### Checking carry-forward / continuations
 
 If `last_reflect` contains a `carry_forward` array with active items, check whether this session's karma shows progress on any of them. Update via `carry_forward_updates` — each `id` must be copied exactly from an existing entry in the list; do not invent new IDs here. To add new items, use `new_carry_forward`. Update via `carry_forward_updates`:
 - `done` — the item was completed this session. Include `result` and `updated_at`.
 - `dropped` — the item is no longer relevant. Include `reason` and `updated_at`.
-- `active` — the item is still live but should be refreshed. Include any changed `why`, `priority`, `desire_key`, `blocked_on`, `wake_condition`, `updated_at`, and `expires_at`. When an item is blocked or waiting, record who or what it is blocked on in `blocked_on` and the event that would make it actionable again in `wake_condition`.
+- `active` — the item is still live and actionable. Include `request_id`, plus any changed `why`, `priority`, `desire_key`, `blocked_on`, `wake_condition`, `updated_at`, and `expires_at`.
+- `blocked` — the item remains live but progress depends on a blocker. Include `request_id`, `blocked_on`, `wake_condition`, `updated_at`, and `expires_at`.
+- `expired` — the continuation aged out without further action.
 
-You can also create new carry-forward items via `new_carry_forward` when this session revealed something that needs follow-up. Each item must use this schema: `id`, `item`, `why`, `priority`, `status`, `created_at`, `updated_at`, `expires_at`, optional `desire_key`, optional `blocked_on`, optional `wake_condition`. Session data includes `active_desire_keys`; only set `desire_key` when it exactly matches one of those keys, otherwise omit it. If this session opened or deepened a legitimate non-self surface and that surface still has a clear next step, prefer carrying that thread forward before switching to a new working-body or internal-maintenance thread. Each carry-forward item must describe one concrete thread only. Do not write menus like “either X or Y or Z” into a single item; if several threads are possible, choose one. Default to a 7-day TTL by setting `expires_at` to 7 days from now unless you have a reason to use a shorter horizon. Keep at most 5 items active at once; prefer merging or replacing instead of growing a backlog.
+Every active or blocked continuation must reference a parent `request_id`. If the session revealed a caution or reminder that does not belong to a durable work thread, put it in `note_to_future_self` instead.
+
+You can also create new carry-forward items via `new_carry_forward` when this session revealed something that needs follow-up. Each item must use this schema: `id`, `request_id`, `item`, `why`, `priority`, `status`, `created_at`, `updated_at`, `expires_at`, optional `desire_key`, optional `blocked_on`, optional `wake_condition`. Session data includes `active_desire_keys`; only set `desire_key` when it exactly matches one of those keys, otherwise omit it. If this session opened or deepened a legitimate non-self surface that already has a matching work thread, prefer carrying that thread forward before switching to a new working-body or internal-maintenance thread. Each continuation must describe one concrete next step only. Do not write menus like “either X or Y or Z” into a single item; if several threads are possible, choose one. Default to a 7-day TTL by setting `expires_at` to 7 days from now unless you have a reason to use a shorter horizon. Keep at most 5 items active or blocked at once; prefer merging or replacing instead of growing a backlog.

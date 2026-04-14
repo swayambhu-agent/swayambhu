@@ -13,7 +13,7 @@ describe("reflect prompt contract", () => {
     expect(prompt).toContain("active_desire_keys");
     expect(prompt).toContain("non-self surface");
     expect(prompt).toContain("7-day TTL");
-    expect(prompt).toContain("at most 5 items active");
+    expect(prompt).toContain("at most 5 items active or blocked");
     expect(prompt).toContain("blocked_on");
     expect(prompt).toContain("wake_condition");
   });
@@ -174,6 +174,7 @@ describe("executeReflect carry-forward merge", () => {
 
     const newItem = lastReflect.carry_forward.find(item => item.id === "s_test:cf1");
     expect(newItem.status).toBe("active");
+    expect(newItem.request_id).toEqual(expect.any(String));
     expect(newItem.created_at).toBe("2026-04-05T12:00:00.000Z");
     expect(newItem.updated_at).toBe("2026-04-05T12:00:00.000Z");
     expect(newItem.expires_at).toBe("2026-04-12T12:00:00.000Z");
@@ -497,10 +498,24 @@ describe("applyReflectOutput deep-reflect carry-forward writeback", () => {
     await applyReflectOutput(K, state, 1, output, {});
 
     const storedReflect = await K.kvGet("reflect:1:s_dr");
-    expect(storedReflect.carry_forward).toEqual(output.carry_forward);
+    expect(storedReflect.carry_forward).toEqual([
+      expect.objectContaining({
+        id: "s_prev:cf1",
+        item: "Keep this",
+        status: "active",
+      }),
+    ]);
+    expect(storedReflect.carry_forward[0].request_id).toEqual(expect.any(String));
 
     const lastReflect = await K.kvGet("last_reflect");
-    expect(lastReflect.carry_forward).toEqual(output.carry_forward);
+    expect(lastReflect.carry_forward).toEqual([
+      expect.objectContaining({
+        id: "s_prev:cf1",
+        item: "Keep this",
+        status: "active",
+      }),
+    ]);
+    expect(lastReflect.carry_forward[0].request_id).toEqual(expect.any(String));
     expect(lastReflect.was_deep_reflect).toBe(true);
 
     expect(K.karmaRecord).toHaveBeenCalledWith({

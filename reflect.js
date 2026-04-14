@@ -6,6 +6,8 @@
 // getMaxSteps and getReflectModel logic inlined (cognitive policy, not kernel).
 
 import { selectExperiences } from './memory.js';
+import { applyContinuationUpdates, migrateLegacyCarryForward, reconcileContinuationsAgainstThreads, collectActiveContinuationRequestIds } from "./lib/continuations.js";
+import { listWorkThreads, loadPlannerWorkThreads, reconcileWorkThreadLifecycle, normalizeWorkThread } from "./lib/work-threads.js";
 
 // ── Validation helpers ─────────────────────────────────────
 
@@ -92,11 +94,24 @@ export async function executeReflect(K, state, step) {
   });
 
   const lastReflect = await K.kvGet("last_reflect");
+  const migratedCarryForward = await migrateLegacyCarryForward(K, lastReflect?.carry_forward || []);
+  const defaultsSnapshot = typeof K.getDefaults === "function" ? await K.getDefaults() : state.defaults;
+  const activeRequestIds = collectActiveContinuationRequestIds(migratedCarryForward);
+  await reconcileWorkThreadLifecycle(K, { defaults: defaultsSnapshot, activeRequestIds });
+  const openWorkThreads = (await loadPlannerWorkThreads(K, defaultsSnapshot, []))
+    .map((thread) => ({
+      id: thread.id,
+      summary: thread.summary,
+      status: thread.status,
+      contract_type: thread.contract_type,
+      completion_condition: thread.completion_condition,
+    }));
   const initialContext = JSON.stringify({
     karma,
     sessionCost,
     active_desire_keys: Object.keys(state.desires || {}),
-    carry_forward: lastReflect?.carry_forward || [],
+    work_threads: openWorkThreads,
+    carry_forward: migratedCarryForward,
   });
 
   const output = isBootstrapNoActionSession({
@@ -170,100 +185,19 @@ export async function executeReflect(K, state, step) {
   const nowIso = new Date().toISOString();
   const defaultExpiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
   const validDesireKeys = new Set(Object.keys(state.desires || {}));
-
-  let carry_forward = (prevLastReflect?.carry_forward || []).map(item => ({ ...item }));
-  if (output.carry_forward_updates) {
-    const missedCarryForward = [];
-    for (const update of output.carry_forward_updates) {
-      // Skip updates with truncated/invalid date fields — preserve existing valid data
-      if (update.expires_at && !isValidISODate(update.expires_at)) continue;
-      if (update.updated_at && !isValidISODate(update.updated_at)) continue;
-      const existing = carry_forward.find(item => item.id === update.id);
-      if (!existing) {
-        missedCarryForward.push(update);
-        continue;
-      }
-      let desireKeyUpdate = null;
-      if ("desire_key" in update) {
-        desireKeyUpdate = normalizeCarryForwardDesireKey(update.desire_key, validDesireKeys);
-        if (!desireKeyUpdate.valid) {
-          await K.karmaRecord({
-            event: "carry_forward_invalid_desire_key_ignored",
-            source: "update",
-            id: update.id,
-            desire_key: desireKeyUpdate.attempted,
-          });
-        }
-      }
-      Object.assign(existing, {
-        ...("item" in update ? { item: update.item } : {}),
-        ...("why" in update ? { why: update.why } : {}),
-        ...("priority" in update ? { priority: update.priority } : {}),
-        ...("status" in update ? { status: update.status } : {}),
-        ...("updated_at" in update ? { updated_at: update.updated_at } : { updated_at: nowIso }),
-        ...("expires_at" in update ? { expires_at: update.expires_at } : {}),
-        ...("result" in update ? { result: update.result } : {}),
-        ...("reason" in update ? { reason: update.reason } : {}),
-        ...("blocked_on" in update ? { blocked_on: update.blocked_on } : {}),
-        ...("wake_condition" in update ? { wake_condition: update.wake_condition } : {}),
-      });
-      if (!existing.blocked_on) delete existing.blocked_on;
-      if (!existing.wake_condition) delete existing.wake_condition;
-      if (desireKeyUpdate?.valid) {
-        if (desireKeyUpdate.clear) delete existing.desire_key;
-        else existing.desire_key = desireKeyUpdate.value;
-      }
-      if (update.status === "done") existing.done_session = sessionId;
-    }
-    if (missedCarryForward.length) {
-      await K.karmaRecord({ event: "carry_forward_updates_missed", missed: missedCarryForward });
-    }
-  }
-  if (output.new_carry_forward) {
-    for (const item of output.new_carry_forward) {
-      const { desire_key: _rawDesireKey, ...itemWithoutDesireKey } = item;
-      const desireKeyResult = normalizeCarryForwardDesireKey(item.desire_key, validDesireKeys);
-      if (!desireKeyResult.valid) {
-        await K.karmaRecord({
-          event: "carry_forward_invalid_desire_key_ignored",
-          source: "new",
-          id: item.id,
-          desire_key: desireKeyResult.attempted,
-        });
-      }
-      const normalizedDesireKey = desireKeyResult.valid ? desireKeyResult.value : undefined;
-      // Dedup: skip if an active item with the same desire_key already exists
-      const existingActive = normalizedDesireKey &&
-        carry_forward.find(cf =>
-          cf.status === "active" &&
-          cf.desire_key === normalizedDesireKey &&
-          cf.id !== item.id
-        );
-      if (existingActive) {
-        await K.karmaRecord({
-          event: "carry_forward_dedup_skipped",
-          new_id: item.id,
-          existing_id: existingActive.id,
-          desire_key: normalizedDesireKey,
-        });
-        continue;
-      }
-      carry_forward.push({
-        ...itemWithoutDesireKey,
-        ...(normalizedDesireKey ? { desire_key: normalizedDesireKey } : {}),
-        status: item.status || "active",
-        created_at: item.created_at || nowIso,
-        updated_at: item.updated_at || nowIso,
-        expires_at: item.expires_at || defaultExpiresAt,
-      });
-    }
-  }
-
-  carry_forward = carry_forward.map(item => {
-    if (item.status === "active" && item.expires_at && new Date(item.expires_at).getTime() < Date.now()) {
-      return { ...item, status: "expired", updated_at: nowIso };
-    }
-    return item;
+  const previousCarryForward = await migrateLegacyCarryForward(K, prevLastReflect?.carry_forward || []);
+  const openThreads = await listWorkThreads(K);
+  const carry_forward = await applyContinuationUpdates({
+    previous: previousCarryForward,
+    carry_forward_updates: output.carry_forward_updates,
+    new_carry_forward: output.new_carry_forward,
+    validDesireKeys,
+    sessionId,
+    openThreads,
+    workThreadStore: K,
+    karmaRecord: K.karmaRecord.bind(K),
+    now: nowIso,
+    defaultExpiresAt,
   });
 
   const activeCount = carry_forward.filter(item => item.status === "active").length;
@@ -514,17 +448,25 @@ export async function gatherReflectContext(K, state, depth, context) {
 
   // Add to template vars
   templateVars.experiences = selectedExperiences;
+  const lastReflect = await K.kvGet("last_reflect");
+  const migratedCarryForward = await migrateLegacyCarryForward(K, lastReflect?.carry_forward || []);
+  const activeRequestIds = collectActiveContinuationRequestIds(migratedCarryForward);
+  await reconcileWorkThreadLifecycle(K, { defaults, activeRequestIds });
+  templateVars.work_threads = await loadPlannerWorkThreads(K, defaults, context?.events || []);
+  templateVars.carry_forward = migratedCarryForward;
 
   return { userMessage: "Begin.", templateVars };
 }
 
 export async function applyReflectOutput(K, state, depth, output, context) {
   const sessionId = await K.getExecutionId();
+  const defaultsSnapshot = typeof K.getDefaults === "function" ? await K.getDefaults() : state.defaults;
+  const prevLastReflect = depth === 1 ? await K.kvGet("last_reflect") : null;
+  const nowIsoValue = new Date().toISOString();
 
   // 0. Detect parse failure — preserve previous last_reflect state
   if (output.raw !== undefined) {
     if (depth === 1) {
-      const prevLastReflect = await K.kvGet("last_reflect");
       await K.kvWriteSafe("last_reflect", {
         ...prevLastReflect,
         _parse_error: {
@@ -583,11 +525,26 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     const sessionCount = (await K.kvGet("session_counter")) || 0;
     await K.kvWriteSafe(`reflect:schedule:${depth}`, {
       ...schedule,
-      last_reflect: new Date().toISOString(),
+      last_reflect: nowIsoValue,
       last_reflect_session: sessionCount,
       last_reflect_session_id: sessionId,
     });
   }
+
+  const previousCarryForward = await migrateLegacyCarryForward(K, prevLastReflect?.carry_forward || []);
+  const migratedOutputCarryForward = await migrateLegacyCarryForward(K, output.carry_forward || [], {
+    now: nowIsoValue,
+  });
+  const previousActiveRequestIds = collectActiveContinuationRequestIds(previousCarryForward);
+  const outputActiveRequestIds = collectActiveContinuationRequestIds(migratedOutputCarryForward);
+  const activeRequestIds = new Set([...previousActiveRequestIds, ...outputActiveRequestIds]);
+  await reconcileWorkThreadLifecycle(K, { defaults: defaultsSnapshot, activeRequestIds });
+  const allThreads = await listWorkThreads(K);
+  const normalizedCarryForward = reconcileContinuationsAgainstThreads({
+    continuations: output.carry_forward ? migratedOutputCarryForward : previousCarryForward,
+    threads: allThreads,
+    now: nowIsoValue,
+  });
 
   // 3. Store output as reflect:{depth}:{sessionId}
   const reflectRecord = {
@@ -595,18 +552,17 @@ export async function applyReflectOutput(K, state, depth, output, context) {
     note_to_future_self: output.note_to_future_self,
     depth,
     session_id: sessionId,
-    timestamp: new Date().toISOString(),
+    timestamp: nowIsoValue,
   };
   if (output.sankalpas) reflectRecord.sankalpas = output.sankalpas;
-  if (output.carry_forward) reflectRecord.carry_forward = output.carry_forward;
+  if (output.carry_forward || normalizedCarryForward.length > 0) reflectRecord.carry_forward = normalizedCarryForward;
   await K.kvWriteSafe(`reflect:${depth}:${sessionId}`, reflectRecord);
 
   // 4. Only depth 1: write last_reflect and session_schedule
   if (depth === 1) {
     // Track carry-forward items dropped by deep reflect
-    const prevLastReflect = await K.kvGet("last_reflect");
-    const prevCarryForward = prevLastReflect?.carry_forward || [];
-    const newCarryForwardIds = new Set((output.carry_forward || []).map(item => item.id));
+    const prevCarryForward = previousCarryForward;
+    const newCarryForwardIds = new Set(normalizedCarryForward.map(item => item.id));
     const droppedCarryForward = prevCarryForward.filter(item => item.id && !newCarryForwardIds.has(item.id));
     if (droppedCarryForward.length) {
       await K.karmaRecord({
@@ -617,7 +573,7 @@ export async function applyReflectOutput(K, state, depth, output, context) {
 
     await K.kvWriteSafe("last_reflect", {
       session_summary: output.reflection,
-      carry_forward: output.carry_forward || [],
+      carry_forward: normalizedCarryForward,
       was_deep_reflect: true,
       depth,
       session_id: sessionId,

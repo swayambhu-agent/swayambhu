@@ -1,4 +1,10 @@
+import {
+  isOpenWorkThreadStatus,
+  loadConversationWorkThreads,
+  reconcileWorkThreadLifecycle,
+} from "./lib/work-threads.js";
 import { resolveRequestContact } from "./lib/session-requests.js";
+import { collectActiveContinuationRequestIds, migrateLegacyCarryForward } from "./lib/continuations.js";
 
 // Swayambhu Communication — unified turn processor.
 // All communication flows through runTurn: one brain, one state, one prompt.
@@ -114,50 +120,70 @@ const TRIGGER_SESSION_TOOL = {
   type: "function",
   function: {
     name: "trigger_session",
-    description: "Signal that the conversation has an actionable request. Only call when you have enough detail to act on.",
+    description: "Upsert a durable work thread for the conversation. Only call when you have enough detail to act on.",
     parameters: {
       type: "object",
       properties: {
         summary: { type: "string", description: "What the session should work on" },
+        request_id: { type: "string", description: "Existing thread ID to continue or reopen" },
+        intent: {
+          type: "string",
+          description: "auto | continue | new_parallel | reopen",
+        },
+        contract_type: {
+          type: "string",
+          description: "one_shot | timebound",
+        },
+        completion_condition: {
+          type: "string",
+          description: "deliver_requested_output | best_effort_by_timebound",
+        },
+        timebound_duration_hours: { type: "number", description: "Timebound duration in hours" },
+        timebound_until_at: { type: "string", description: "ISO8601 end time for a timebound thread" },
+        allow_early_completion: { type: "boolean", description: "Only for explicit early wrap-up approved by the contact" },
       },
       required: ["summary"],
     },
   },
 };
 
-async function loadConversationRequests(K, conversationId, contact) {
-  const list = await K.kvList({ prefix: "session_request:" });
-  const requests = [];
-  const contactId = contact?.id || null;
-
-  for (const entry of list.keys) {
-    const request = await K.kvGet(entry.name);
-    if (!request) continue;
-    const requestContact = resolveRequestContact(request);
-    if (request.ref !== conversationId && requestContact !== contactId) continue;
-
-    requests.push({
-      id: request.id,
-      summary: request.summary,
-      status: request.status,
-      updated_at: request.updated_at,
-      note: request.note || null,
-      result: request.result || null,
-      error: request.error || null,
-      next_session: request.next_session || null,
-    });
+function cleanupPendingThreadResolution(conv, nowIso = new Date().toISOString()) {
+  const resolution = conv?.pending_thread_resolution;
+  if (!resolution?.expires_at) return conv;
+  const expiry = new Date(resolution.expires_at).getTime();
+  const now = new Date(nowIso).getTime();
+  if (Number.isFinite(expiry) && expiry <= now) {
+    delete conv.pending_thread_resolution;
   }
+  return conv;
+}
 
+function buildPendingThreadResolutionBlock(resolution) {
+  if (!resolution?.candidates?.length) return "";
+  return "\n\n[THREAD AMBIGUITY]\n"
+    + "The previous message could refer to more than one open work thread.\n"
+    + resolution.candidates.map((candidate) =>
+      `- ${candidate.id} — ${candidate.summary} (${candidate.status})`,
+    ).join("\n")
+    + "\nResolve this by continuing one thread, opening a clearly new parallel task, or asking a clarification question.";
+}
+
+async function loadConversationRequests(K, conversationId, contact, defaults) {
+  const lastReflect = await K.kvGet("last_reflect");
+  const carryForward = await migrateLegacyCarryForward(K, lastReflect?.carry_forward || []);
+  const activeRequestIds = collectActiveContinuationRequestIds(carryForward);
+  await reconcileWorkThreadLifecycle(K, { defaults, activeRequestIds });
+
+  const requests = await loadConversationWorkThreads(K, { conversationId, contact, limit: 20 });
   requests.sort((a, b) =>
     new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime(),
   );
-
   return requests.slice(0, 5);
 }
 
 function buildRequestStatusBlock(requests) {
   if (!requests?.length) return "";
-  return "\n\n[REQUEST STATUS]\n"
+  return "\n\n[WORK THREAD STATUS]\n"
     + requests.map((request) => {
       const detail = request.result || request.note || request.error || "";
       const nextSession = request.next_session ? ` Next session: ${request.next_session}.` : "";
@@ -248,6 +274,7 @@ function makeEmptyConversation() {
     karma: [],
     inbound_cost: 0,
     internal_cost: 0,
+    pending_thread_resolution: null,
     created_at: new Date().toISOString(),
     turn_count: 0,
   };
@@ -331,7 +358,32 @@ function normalizeInboundDecision(decision, fallbackSummary) {
     const ack = typeof decision?.ack === "string" && decision.ack.trim()
       ? decision.ack.trim()
       : "";
-    if (summary && ack) return { action: "queue_work", summary, ack, reason: "request_queued" };
+    const rawIntent = typeof decision?.thread_intent === "string"
+      ? decision.thread_intent.trim()
+      : (typeof decision?.intent === "string" ? decision.intent.trim() : "auto");
+    if (summary && ack) {
+      return {
+        action: "queue_work",
+        summary,
+        ack,
+        reason: "request_queued",
+        request_id: typeof decision?.request_id === "string" && decision.request_id.trim()
+          ? decision.request_id.trim()
+          : undefined,
+        intent: ["continue", "new_parallel", "reopen", "auto"].includes(rawIntent) ? rawIntent : "auto",
+        contract_type: decision?.contract_type === "timebound" ? "timebound" : (decision?.contract_type === "one_shot" ? "one_shot" : undefined),
+        completion_condition: decision?.completion_condition === "best_effort_by_timebound"
+          ? "best_effort_by_timebound"
+          : (decision?.completion_condition === "deliver_requested_output" ? "deliver_requested_output" : undefined),
+        timebound_duration_hours: Number.isFinite(Number(decision?.timebound_duration_hours))
+          ? Number(decision.timebound_duration_hours)
+          : undefined,
+        timebound_until_at: typeof decision?.timebound_until_at === "string" && decision.timebound_until_at.trim()
+          ? decision.timebound_until_at.trim()
+          : undefined,
+        allow_early_completion: decision?.allow_early_completion === true,
+      };
+    }
   }
   if (action === "discard") {
     return {
@@ -355,11 +407,13 @@ function fallbackQueueDecision(turns) {
     summary,
     ack: buildQueuedWorkAcknowledgement(summary),
     reason: "triage_fallback_queue",
+    intent: "auto",
   };
 }
 
 async function runInboundTurn(K, conversationId, turns) {
   let conv = await K.kvGet(conversationId) || makeEmptyConversation();
+  conv = cleanupPendingThreadResolution(conv);
   if (conv.inbound_cost === undefined) conv.inbound_cost = conv.total_cost || 0;
   if (conv.internal_cost === undefined) conv.internal_cost = 0;
 
@@ -370,16 +424,17 @@ async function runInboundTurn(K, conversationId, turns) {
   const contact = turns[0]?.reply_target?.platform
     ? await K.resolveContact(turns[0].reply_target.platform, turns[0].reply_target.channel)
     : null;
-  const relatedRequests = await loadConversationRequests(K, conversationId, contact);
-  const hasPendingRequest = relatedRequests.some((request) => request.status === "pending");
+  const relatedRequests = await loadConversationRequests(K, conversationId, contact, defaults);
+  const hasPendingRequest = relatedRequests.some((request) => isOpenWorkThreadStatus(request.status));
 
   appendInboundTurns(conv, inboundTurns);
   const requestStatusBlock = buildRequestStatusBlock(relatedRequests);
+  const ambiguityBlock = buildPendingThreadResolutionBlock(conv.pending_thread_resolution);
   const chatPrompt = await K.kvGet("prompt:communication") || "You are in a live communication session. Respond conversationally.";
   const contactContext = contact ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}` : "";
   const modeInstruction = "\n\n[TURN MODE]\nYou are handling a live inbound human message. Chat is triage, not execution. Decide whether to reply conversationally, ask a clarifying question, queue substantive work for the work/session layer, or discard.";
-  const outputInstruction = "\n\n[OUTPUT]\nRespond with ONLY valid JSON in this shape:\n{\"action\":\"reply|clarify|queue_work|discard\",\"message\":\"...\",\"summary\":\"...\",\"ack\":\"...\",\"reason\":\"...\"}\nRules:\n- Use `reply` for direct conversational answers that do not accept work.\n- Use `clarify` when missing detail is needed before work can be queued or answered well.\n- Use `queue_work` when the contact is asking for substantive work. Provide both a concise `summary` for the work contract and a short natural `ack` for the human.\n- The `ack` should sound context-aware and conversational, not templated. Do not expose internal mechanics.\n- Use `discard` only for true no-op acknowledgements or messages that need no reply.\n- Never expose internal mechanics.";
-  const systemPrompt = (chatPrompt + contactContext + requestStatusBlock + modeInstruction + outputInstruction).trim();
+  const outputInstruction = "\n\n[OUTPUT]\nRespond with ONLY valid JSON in this shape:\n{\"action\":\"reply|clarify|queue_work|discard\",\"message\":\"...\",\"summary\":\"...\",\"ack\":\"...\",\"reason\":\"...\",\"thread_intent\":\"continue|new_parallel|auto|reopen\",\"request_id\":\"optional\",\"contract_type\":\"one_shot|timebound\",\"completion_condition\":\"deliver_requested_output|best_effort_by_timebound\",\"timebound_duration_hours\":8,\"timebound_until_at\":\"ISO8601\",\"allow_early_completion\":false}\nRules:\n- Use `reply` for direct conversational answers that do not accept work.\n- Use `clarify` when missing detail is needed before work can be queued or answered well.\n- Use `queue_work` when the contact is asking for substantive work. Provide both a concise `summary` for the work contract and a short natural `ack` for the human.\n- If the message clearly continues one existing thread, use `thread_intent: \"continue\"` and include `request_id` when you can identify it.\n- If the message clearly opens a different task, use `thread_intent: \"new_parallel\"`.\n- For timeboxed or duration-based requests, set `contract_type: \"timebound\"` and provide exactly one of `timebound_duration_hours` or `timebound_until_at`.\n- Use `best_effort_by_timebound` for bounded exploration or best-effort work over a fixed window.\n- Only set `allow_early_completion: true` when the human explicitly says the work can stop early or wrap now.\n- The `ack` should sound context-aware and conversational, not templated. Do not expose internal mechanics.\n- Use `discard` only for true no-op acknowledgements or messages that need no reply.\n- Never expose internal mechanics.";
+  const systemPrompt = (chatPrompt + contactContext + requestStatusBlock + ambiguityBlock + modeInstruction + outputInstruction).trim();
 
   let outcome = null;
   let requestQueued = false;
@@ -438,16 +493,41 @@ async function runInboundTurn(K, conversationId, turns) {
         contact,
         convKey: conversationId,
         chatConfig: chatDefaults,
+        latestInboundSentTs: inboundTurns.at(-1)?.metadata?.sentTs || null,
       };
       const tc = {
         id: `tc_${Date.now()}`,
         function: {
           name: "trigger_session",
-          arguments: JSON.stringify({ summary: normalized.summary }),
+          arguments: JSON.stringify({
+            summary: normalized.summary,
+            request_id: normalized.request_id,
+            intent: normalized.intent,
+            contract_type: normalized.contract_type,
+            completion_condition: normalized.completion_condition,
+            timebound_duration_hours: normalized.timebound_duration_hours,
+            timebound_until_at: normalized.timebound_until_at,
+            allow_early_completion: normalized.allow_early_completion,
+          }),
         },
       };
       const result = await K.executeToolCall(tc, { _chatContext: chatContext }).catch(err => ({ error: err.message }));
       if (result?.error) {
+        if (result.error === "ambiguous_open_threads") {
+          conv.pending_thread_resolution = {
+            raw_message: inboundTurns.at(-1)?.content || "",
+            candidate_thread_ids: (result.candidates || []).map((candidate) => candidate.id),
+            candidates: result.candidates || [],
+            created_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + 24 * 3600_000).toISOString(),
+            resolution_mode: "clarify_required",
+          };
+          outcome = {
+            action: "sent",
+            message: `I have a couple of active threads here. Did you mean ${result.candidates?.map((candidate) => `"${candidate.summary}"`).join(" or ")}, or is this a new task?`,
+            reason: "thread_clarification_required",
+          };
+        } else {
         await K.karmaRecord({
           event: "comms_trigger_session_failed",
           conversation: conversationId,
@@ -458,8 +538,10 @@ async function runInboundTurn(K, conversationId, turns) {
           message: "I couldn't queue that just now. Please try again shortly.",
           reason: "request_queue_failed",
         };
+        }
       } else {
         requestQueued = true;
+        if (conv.pending_thread_resolution) delete conv.pending_thread_resolution;
         await K.karmaRecord({
           event: "comms_request_queued",
           conversation: conversationId,
@@ -532,8 +614,8 @@ export async function trySuppressTrivialAcknowledgement(K, conversationId, turns
   const contact = turns[0]?.reply_target?.platform
     ? await K.resolveContact(turns[0].reply_target.platform, turns[0].reply_target.channel)
     : null;
-  const relatedRequests = await loadConversationRequests(K, conversationId, contact);
-  const hasPendingRequest = relatedRequests.some((request) => request.status === "pending");
+  const relatedRequests = await loadConversationRequests(K, conversationId, contact, defaults);
+  const hasPendingRequest = relatedRequests.some((request) => isOpenWorkThreadStatus(request.status));
 
   if (!hasPendingRequest || !isTrivialAcknowledgement(inboundTurns[0]?.content)) {
     return { used: false };
@@ -571,6 +653,7 @@ export async function runTurn(K, conversationId, turns) {
 
   // 1. Load conversation state
   let conv = await K.kvGet(conversationId) || makeEmptyConversation();
+  conv = cleanupPendingThreadResolution(conv);
   if (!conv.karma) conv.karma = [];
   if (conv.inbound_cost === undefined) conv.inbound_cost = conv.total_cost || 0;
   if (conv.internal_cost === undefined) conv.internal_cost = 0;
@@ -596,9 +679,10 @@ export async function runTurn(K, conversationId, turns) {
     : null;
   const contactContext = contact ? `\n\nYou are chatting with:\n${JSON.stringify(contact)}` : "";
   const relatedRequests = hasInbound
-    ? await loadConversationRequests(K, conversationId, contact)
+    ? await loadConversationRequests(K, conversationId, contact, defaults)
     : [];
   const requestStatusBlock = hasInbound ? buildRequestStatusBlock(relatedRequests) : "";
+  const ambiguityBlock = hasInbound ? buildPendingThreadResolutionBlock(conv.pending_thread_resolution) : "";
   const modeInstruction = hasInbound
     ? "\n\n[TURN MODE]\nYou are handling a live inbound human message. This is triage, not execution. Do not inspect KV or perform work inside chat. If the contact is asking for substantive work, use trigger_session. If more detail is needed before queuing work, use clarify. If the message is purely conversational or status-related, use reply."
     : "\n\n[TURN MODE]\nYou are handling internal agent updates for an existing conversation. You may inspect lightweight request state and decide whether to send, hold, or discard.";
@@ -611,13 +695,13 @@ export async function runTurn(K, conversationId, turns) {
       ).join("\n") + "\n\nDecide whether to send, hold, or discard each update. Use the send tool to message the contact, hold to defer, or discard to drop."
     : "";
 
-  const systemPrompt = (chatPrompt + contactContext + requestStatusBlock + modeInstruction + agentUpdates).trim();
+  const systemPrompt = (chatPrompt + contactContext + requestStatusBlock + ambiguityBlock + modeInstruction + agentUpdates).trim();
 
   // Append inbound turns to message history
   const inboundTurns = sorted.filter(t => t.source === "inbound");
   appendInboundTurns(conv, inboundTurns);
 
-  const hasPendingRequest = relatedRequests.some((request) => request.status === "pending");
+  const hasPendingRequest = relatedRequests.some((request) => isOpenWorkThreadStatus(request.status));
   // 5. Build tools
   const tools = hasInbound
     ? [REPLY_TOOL, CLARIFY_TOOL, DISCARD_TOOL, TRIGGER_SESSION_TOOL]
@@ -707,6 +791,7 @@ export async function runTurn(K, conversationId, turns) {
       contact,
       convKey: conversationId,
       chatConfig: chatDefaults,
+      latestInboundSentTs: inboundTurns.at(-1)?.metadata?.sentTs || null,
     };
     const results = [];
     const executedToolCalls = [];
@@ -721,6 +806,7 @@ export async function runTurn(K, conversationId, turns) {
       if (tc2.function?.name === "trigger_session" && !result?.error) {
         const tc2Args = parseToolArgs(tc2.function?.arguments);
         requestQueued = true;
+        if (conv.pending_thread_resolution) delete conv.pending_thread_resolution;
         await K.karmaRecord({
           event: "comms_request_queued",
           conversation: conversationId,
@@ -734,16 +820,32 @@ export async function runTurn(K, conversationId, turns) {
         break;
       }
       if (tc2.function?.name === "trigger_session" && result?.error) {
-        await K.karmaRecord({
-          event: "comms_trigger_session_failed",
-          conversation: conversationId,
-          error: result.error,
-        });
-        outcome = {
-          action: "sent",
-          message: "I couldn't queue that just now. Please try again shortly.",
-          reason: "request_queue_failed",
-        };
+        if (result.error === "ambiguous_open_threads") {
+          conv.pending_thread_resolution = {
+            raw_message: inboundTurns.at(-1)?.content || "",
+            candidate_thread_ids: (result.candidates || []).map((candidate) => candidate.id),
+            candidates: result.candidates || [],
+            created_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + 24 * 3600_000).toISOString(),
+            resolution_mode: "clarify_required",
+          };
+          outcome = {
+            action: "sent",
+            message: `I have a couple of active threads here. Did you mean ${result.candidates?.map((candidate) => `"${candidate.summary}"`).join(" or ")}, or is this a new task?`,
+            reason: "thread_clarification_required",
+          };
+        } else {
+          await K.karmaRecord({
+            event: "comms_trigger_session_failed",
+            conversation: conversationId,
+            error: result.error,
+          });
+          outcome = {
+            action: "sent",
+            message: "I couldn't queue that just now. Please try again shortly.",
+            reason: "request_queue_failed",
+          };
+        }
         break;
       }
     }

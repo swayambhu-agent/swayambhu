@@ -1379,12 +1379,11 @@ describe("session plan phase", () => {
     await run(K, { crashData: null, balances: {}, events: [], schedule: {} });
 
     const planCall = K.callLLM.mock.calls[0][0];
-    expect(planCall.messages[0].content).toContain("[CARRY-FORWARD]");
-    expect(planCall.messages[0].content).toContain("operational continuity only");
+    expect(planCall.messages[0].content).toContain("[CONTINUATIONS]");
+    expect(planCall.messages[0].content).toContain("internal continuity attached to durable work threads");
     expect(planCall.messages[0].content).toContain("Follow up with the patron about scheduling");
     expect(planCall.messages[0].content).toContain("(supports desire:d_help)");
     expect(planCall.messages[0].content).not.toContain("Keeps the conversation moving");
-    expect(planCall.messages[0].content).not.toContain("[CARRY-FORWARD TASKS]");
   });
 
   it("keeps carry-forward prose out of the planner while preserving operational facts", async () => {
@@ -1606,8 +1605,8 @@ describe("session plan phase", () => {
 
     const planContent = K.callLLM.mock.calls[0][0].messages[0].content;
     const carryForwardBlock = planContent
-      .split("[CARRY-FORWARD]\n")[1]
-      .split("\n\n[CIRCUMSTANCES]")[0];
+      .split("[CONTINUATIONS]\n")[1]
+      .split("\n\n[WORK THREADS]")[0];
     const lines = carryForwardBlock
       .split("\n")
       .filter(line => line.startsWith("- "));
@@ -2586,11 +2585,13 @@ describe("applyDrResults key filter", () => {
     const reflectRecord = await K.kvGet("reflect:1:test_execution");
     const lastReflect = await K.kvGet("last_reflect");
     expect(reflectRecord.carry_forward).toEqual([
-      { id: "s_prev:cf1", item: "Keep this", status: "active" },
+      expect.objectContaining({ id: "s_prev:cf1", item: "Keep this", status: "active" }),
     ]);
     expect(lastReflect.carry_forward).toEqual([
-      { id: "s_prev:cf1", item: "Keep this", status: "active" },
+      expect.objectContaining({ id: "s_prev:cf1", item: "Keep this", status: "active" }),
     ]);
+    expect(reflectRecord.carry_forward[0].request_id).toEqual(expect.any(String));
+    expect(lastReflect.carry_forward[0].request_id).toEqual(expect.any(String));
     expect(lastReflect.note_to_future_self).toBe("New note");
   });
 
@@ -2616,11 +2617,13 @@ describe("applyDrResults key filter", () => {
     const reflectRecord = await K.kvGet("reflect:1:test_execution");
     const lastReflect = await K.kvGet("last_reflect");
     expect(reflectRecord.carry_forward).toEqual([
-      { id: "s_new:cf1", item: "New item", status: "active" },
+      expect.objectContaining({ id: "s_new:cf1", item: "New item", status: "active" }),
     ]);
     expect(lastReflect.carry_forward).toEqual([
-      { id: "s_new:cf1", item: "New item", status: "active" },
+      expect.objectContaining({ id: "s_new:cf1", item: "New item", status: "active" }),
     ]);
+    expect(reflectRecord.carry_forward[0].request_id).toEqual(expect.any(String));
+    expect(lastReflect.carry_forward[0].request_id).toEqual(expect.any(String));
   });
 
   it("writes DR reasoning artifacts through lib/reasoning.js", async () => {

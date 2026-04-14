@@ -217,9 +217,15 @@ describe("dashboard API", () => {
     const body = await fetchJson("/requests", env);
     expect(body.summary).toEqual({
       total: 3,
-      pending: 1,
+      open: 1,
+      active: 1,
+      blocked: 0,
+      stale: 0,
       fulfilled: 1,
+      expired: 0,
       rejected: 1,
+      superseded: 0,
+      closed: 2,
     });
     expect(body.requests.map((item) => item.id)).toEqual([
       "req_pending",

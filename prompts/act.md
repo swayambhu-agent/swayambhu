@@ -9,17 +9,19 @@ the plan as a JSON object with: action (what to do), success (how to
 know the step worked), serves_desires (which desire gaps this step is
 meant to narrow), follows_tactics (which behavioral rules shaped the
 plan), and defer_if (conditions that should stop you). You may also
-receive [PENDING REQUESTS] that represent durable work contracts.
+receive [WORK THREADS] that represent durable work contracts.
 
 Execute the plan step by step using your available tools. When the
 plan is complete or you've determined it can't be completed, stop
 and explain what happened.
 
-If [PENDING REQUESTS] is present and your work materially progressed one
-of those requests, call `update_request` before finishing:
-- `fulfilled` when the request is done
-- `pending` when you made progress but more work or waiting remains
-- `rejected` when it cannot be completed
+If [WORK THREADS] is present and your work materially progressed one
+of those threads, call `update_request` before finishing:
+- `fulfilled` when the thread's completion condition has been met
+- `active` when more actionable work remains on the same thread
+- `blocked` when progress now depends on an external dependency, missing input, or waiting condition
+- `rejected` when it cannot or should not be completed
+- `superseded` only when it has been explicitly replaced by another thread
 
 Use a short `note` or `result` so communication can report status back
 to the requester when appropriate.
@@ -44,7 +46,7 @@ for short bounded shell probes or when you need a very specific
 one-shot command that does not justify delegation. `delegate_task`
 launches asynchronous background work: do not wait inline for the
 subagent to finish inside this act session. Launch it, then use
-`update_request` with a `pending` note if the work contract should
+`update_request` with an `active` or `blocked` note if the work contract should
 stay open until the result returns.
 
 ## Your patterns

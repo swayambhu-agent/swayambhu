@@ -339,7 +339,7 @@ describe("runTurn", () => {
 
   it("injects related request status into inbound system prompt", async () => {
     K.callLLM = vi.fn(async (opts) => {
-      expect(opts.systemPrompt).toContain("[REQUEST STATUS]");
+      expect(opts.systemPrompt).toContain("[WORK THREAD STATUS]");
       expect(opts.systemPrompt).toContain("req_123");
       expect(opts.systemPrompt).toContain("Investigate the Akash project");
       return makeLLMResponse("{\"action\":\"reply\",\"message\":\"I'm waiting on that request.\"}");
@@ -349,8 +349,8 @@ describe("runTurn", () => {
       id: "req_123",
       contact: "swami_kevala",
       summary: "Investigate the Akash project",
-      status: "pending",
-      updated_at: "2026-04-07T12:00:00.000Z",
+      status: "active",
+      updated_at: new Date().toISOString(),
       ref: "chat:slack:U084ASKBXB7",
       result: null,
       note: "Queued earlier",

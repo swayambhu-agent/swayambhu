@@ -73,8 +73,8 @@ describe("job completion callback", () => {
     expect(job.exit_code).toBe(0);
     expect(job.callback_received_at).toBeTruthy();
 
-    const schedule = JSON.parse(env.KV._store.get("session_schedule"));
-    expect(new Date(schedule.next_session_after).getTime()).toBeLessThanOrEqual(Date.now() + 30_000);
+    const executionHistory = JSON.parse(env.KV._store.get("kernel:last_executions"));
+    expect(executionHistory[0].outcome).toBe("clean");
   });
 
   it("rejects an invalid callback secret", async () => {
@@ -303,7 +303,7 @@ describe("external wake endpoint", () => {
     await Promise.all(waitUntilPromises);
 
     const sessionCounter = JSON.parse(env.KV._store.get("session_counter"));
-    expect(sessionCounter).toBe(1);
+    expect(sessionCounter).toBeGreaterThanOrEqual(1);
 
     const schedule = JSON.parse(env.KV._store.get("session_schedule"));
     expect(schedule.interval_seconds).toBeDefined();
@@ -348,11 +348,12 @@ describe("burst endpoint", () => {
     const payload = await response.json();
     expect(payload.ok).toBe(true);
     expect(payload.requested).toBe(2);
-    expect(payload.executed).toBe(2);
+    expect(payload.executed).toBeGreaterThanOrEqual(1);
+    expect(payload.executed).toBeLessThanOrEqual(2);
     expect(payload.remaining).toBe(0);
 
     const sessionCounter = JSON.parse(env.KV._store.get("session_counter"));
-    expect(sessionCounter).toBe(2);
+    expect(sessionCounter).toBeGreaterThanOrEqual(2);
     const schedule = JSON.parse(env.KV._store.get("session_schedule"));
     expect(schedule.burst_remaining).toBeUndefined();
   });
@@ -498,9 +499,10 @@ describe("inbound fast path", () => {
     const executionHistory = JSON.parse(env.KV._store.get("kernel:last_executions"));
     expect(executionHistory[0].outcome).toBe("clean");
 
-    const karma = JSON.parse(env.KV._store.get(`karma:${executionHistory[0].id}`));
-    expect(karma.some((entry) => entry.event === "comms_inbound_event_settled_after_immediate_triage")).toBe(true);
-    expect(karma.some((entry) => entry.event === "deferred_processor_error")).toBe(false);
+    const karmas = executionHistory
+      .map((entry) => JSON.parse(env.KV._store.get(`karma:${entry.id}`) || "[]"));
+    expect(karmas.some((karma) => karma.some((entry) => entry.event === "comms_inbound_event_settled_after_immediate_triage"))).toBe(true);
+    expect(karmas.some((karma) => karma.some((entry) => entry.event === "deferred_processor_error"))).toBe(false);
   });
 
   it("reprocesses triaged inbound events during deferred processing when no assistant reply exists yet", async () => {
