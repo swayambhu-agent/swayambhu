@@ -175,6 +175,28 @@ describe("runTurn", () => {
     expect(conv2.internal_cost).toBeGreaterThan(0);
   });
 
+  it("continues handling inbound turns even when the stored conversation cost is already over the old cap", async () => {
+    K.callLLM = vi.fn(async () => makeLLMResponse('{"action":"reply","message":"Still here."}'));
+    await K.kvWriteSafe("chat:slack:U084ASKBXB7", {
+      messages: [{ role: "assistant", content: "Earlier reply" }],
+      inbound_cost: 0.75,
+      internal_cost: 0.1,
+      turn_count: 1,
+      reply_target: { platform: "slack", channel: "U084ASKBXB7", thread_ts: null },
+    });
+
+    const result = await runTurn(K, "chat:slack:U084ASKBXB7", [makeInboundTurn("Are you there?")]);
+
+    expect(result.action).toBe("sent");
+    expect(result.message).toBe("Still here.");
+    expect(K.executeAdapter).toHaveBeenCalledWith("slack", {
+      text: "Still here.",
+      channel: "U084ASKBXB7",
+    });
+    const conv = await K.kvGet("chat:slack:U084ASKBXB7");
+    expect(conv.inbound_cost).toBeGreaterThan(0.75);
+  });
+
   it("sorts internal turns before inbound turns", async () => {
     let capturedMessages;
     let capturedSystemPrompt;

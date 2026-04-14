@@ -365,10 +365,6 @@ async function runInboundTurn(K, conversationId, turns) {
 
   const defaults = await K.getDefaults();
   const chatDefaults = defaults?.chat || {};
-  const maxCost = chatDefaults.max_cost_per_conversation || 0.50;
-  if (conv.inbound_cost >= maxCost) {
-    return { action: "error", error: "budget_exhausted", retryable: false };
-  }
 
   const inboundTurns = turns.filter((turn) => turn.source === "inbound");
   const contact = turns[0]?.reply_target?.platform
@@ -585,12 +581,6 @@ export async function runTurn(K, conversationId, turns) {
 
   // Determine source type for this batch
   const costKey = hasInbound ? "inbound_cost" : "internal_cost";
-
-  // Budget check
-  const maxCost = chatDefaults.max_cost_per_conversation || 0.50;
-  if (conv[costKey] >= maxCost) {
-    return { action: "error", error: "budget_exhausted", retryable: false };
-  }
 
   // 3. Sort: internal first, then inbound
   const sorted = [...turns].sort((a, b) => {
