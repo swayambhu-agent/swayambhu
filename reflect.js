@@ -8,6 +8,7 @@
 import { selectExperiences } from './memory.js';
 import { applyContinuationUpdates, migrateLegacyCarryForward, reconcileContinuationsAgainstThreads, collectActiveContinuationRequestIds } from "./lib/continuations.js";
 import { listWorkThreads, loadPlannerWorkThreads, reconcileWorkThreadLifecycle, normalizeWorkThread } from "./lib/work-threads.js";
+import { applyModelKvOperations } from "./lib/kv-operation-boundary.js";
 
 // ── Validation helpers ─────────────────────────────────────
 
@@ -221,23 +222,10 @@ export async function executeReflect(K, state, step) {
   await K.kvWriteSafe(`reflect:0:${sessionId}`, sessionReflectRecord);
 
   if (output.kv_operations) {
-    const blocked = [];
-    for (const op of output.kv_operations) {
-      // Schema gate for experience keys — same validation as userspace.js
-      if (op.key?.startsWith('experience:') && op.op === 'put') {
-        const required = ['observation', 'desire_alignment', 'pattern_delta', 'salience'];
-        const missing = required.filter(f => !op.value?.[f]);
-        if (missing.length > 0) {
-          await K.karmaRecord({ event: 'experience_schema_rejected', key: op.key, missing, source: 'reflect' });
-          continue;
-        }
-      }
-      const result = await K.kvWriteGated(op, "reflect");
-      if (!result.ok) blocked.push({ key: op.key, error: result.error });
-    }
-    if (blocked.length) {
-      await K.karmaRecord({ event: "kv_writes_blocked", blocked });
-    }
+    await applyModelKvOperations(K, output.kv_operations, {
+      source: "reflect",
+      context: "reflect",
+    });
   }
 
   if (output.next_session_config && Object.keys(output.next_session_config).length > 0) {
@@ -500,23 +488,10 @@ export async function applyReflectOutput(K, state, depth, output, context) {
 
   // 1. KV operations (context-based gating — deep-reflect can write system keys)
   if (output.kv_operations?.length) {
-    const blocked = [];
-    for (const op of output.kv_operations) {
-      // Schema gate for experience keys — same validation as userspace.js
-      if (op.key?.startsWith('experience:') && op.op === 'put') {
-        const required = ['observation', 'desire_alignment', 'pattern_delta', 'salience'];
-        const missing = required.filter(f => !op.value?.[f]);
-        if (missing.length > 0) {
-          await K.karmaRecord({ event: 'experience_schema_rejected', key: op.key, missing, source: 'deep-reflect' });
-          continue;
-        }
-      }
-      const result = await K.kvWriteGated(op, "deep-reflect");
-      if (!result.ok) blocked.push({ key: op.key, error: result.error });
-    }
-    if (blocked.length) {
-      await K.karmaRecord({ event: "kv_writes_blocked", blocked });
-    }
+    await applyModelKvOperations(K, output.kv_operations, {
+      source: "deep-reflect",
+      context: "deep-reflect",
+    });
   }
 
   // 2. Schedule

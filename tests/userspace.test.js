@@ -2530,7 +2530,35 @@ describe("applyDrResults key filter", () => {
     expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
       event: "dr_apply_blocked",
       blocked: [{ key: "identification:patron-continuity", error: "identity_review_disabled" }],
-      applied: -1,
+      applied: 0,
+    }));
+  });
+
+  it("rejects malformed deep-reflect kv_operations without partial writes", async () => {
+    const writes = [];
+    const K = mockK(writes);
+
+    await applyDrResults(K, {}, {
+      kv_operations: [
+        { key: "pattern:good", op: "put", value: { pattern: "x", strength: 0.5 } },
+        { key: "pattern:bad", operation: "set", value: { pattern: "y", strength: 0.4 } },
+      ],
+      reflection: "test",
+    });
+
+    expect(writes).toHaveLength(0);
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "kv_operation_batch_rejected",
+      source: "deep-reflect",
+    }));
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "dr_apply_blocked",
+      applied: 0,
+      blocked: expect.arrayContaining([
+        expect.objectContaining({
+          key: "pattern:bad",
+        }),
+      ]),
     }));
   });
 

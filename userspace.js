@@ -11,6 +11,7 @@ import { parseJobOutput } from './lib/parse-job-output.js';
 import { applyRequestUpdate, SESSION_REQUEST_STATUSES } from './lib/session-requests.js';
 import { collectActiveContinuationRequestIds, migrateLegacyCarryForward, reconcileContinuationsAgainstThreads } from "./lib/continuations.js";
 import { isOpenWorkThreadStatus, loadPlannerWorkThreads, reconcileWorkThreadLifecycle, normalizeWorkThread, listWorkThreads } from "./lib/work-threads.js";
+import { applyModelKvOperations } from "./lib/kv-operation-boundary.js";
 import { writeReasoningArtifacts } from "./lib/reasoning.js";
 import { normalizeMetaPolicyNotes, persistMetaPolicyNotes } from "./meta-policy.js";
 
@@ -1955,14 +1956,6 @@ function looksLikeReplacementSource(code) {
   return false;
 }
 
-function toPrivilegedOp(op) {
-  return op.op === "delete"
-    ? { key: op.key, op: "delete" }
-    : op.op === "patch"
-    ? { key: op.key, op: "patch", old_string: op.old_string, new_string: op.new_string, deliberation: op.deliberation }
-    : { key: op.key, op: "put", value: op.value, ...(op.deliberation ? { deliberation: op.deliberation } : {}) };
-}
-
 function trimProcessedNoteKeys(keys, limit) {
   const max = Math.max(1, Number(limit || 50));
   return Array.isArray(keys) ? keys.slice(-max) : [];
@@ -2567,16 +2560,18 @@ async function applyDr2ValidatedChanges(K, output) {
   const kvOps = Array.isArray(changes.kv_operations) ? changes.kv_operations : [];
   const codeStageRequests = Array.isArray(changes.code_stage_requests) ? changes.code_stage_requests : [];
   const blocked = [];
-  let appliedKv = 0;
   let stagedCode = 0;
 
-  for (const op of kvOps) {
-    const result = await K.kvWriteGated(toPrivilegedOp(op), "userspace-review");
-    if (!result?.ok) {
-      blocked.push({ key: op.key, error: result?.error || "unknown error" });
-      continue;
-    }
-    appliedKv += 1;
+  const kvResult = await applyModelKvOperations(K, kvOps, {
+    source: "userspace-review",
+    context: "userspace-review",
+  });
+  blocked.push(...kvResult.blocked);
+  if (kvResult.batchRejected) {
+    blocked.push(...kvResult.rejected.map((entry) => ({
+      key: entry.raw_op_excerpt?.key || entry.raw?.key || null,
+      error: entry.error,
+    })));
   }
 
   for (const req of codeStageRequests) {
@@ -2604,13 +2599,13 @@ async function applyDr2ValidatedChanges(K, output) {
 
   await K.karmaRecord({
     event: "dr2_validated_changes_applied",
-    applied_kv: appliedKv,
+    applied_kv: kvResult.applied,
     staged_code: stagedCode,
     blocked,
     review_note_key: output.review_note_key || null,
   });
 
-  return { appliedKv, stagedCode, blocked };
+  return { appliedKv: kvResult.applied, stagedCode, blocked };
 }
 
 async function dr2Cycle(K, { phase = "post", events = [] } = {}) {
@@ -2822,13 +2817,20 @@ export async function applyDrResults(K, state, output) {
       blocked.push({ key: op.key, error: "identity_review_disabled" });
     }
   }
-  for (const op of ops) {
-    const result = await K.kvWriteGated(toPrivilegedOp(op), "deep-reflect");
-    if (!result.ok) blocked.push({ key: op.key, error: result.error });
+  const kvResult = await applyModelKvOperations(K, ops, {
+    source: "deep-reflect",
+    context: "deep-reflect",
+  });
+  blocked.push(...kvResult.blocked);
+  if (kvResult.batchRejected) {
+    blocked.push(...kvResult.rejected.map((entry) => ({
+      key: entry.raw_op_excerpt?.key || entry.raw?.key || null,
+      error: entry.error,
+    })));
   }
 
   if (blocked.length > 0) {
-    await K.karmaRecord({ event: "dr_apply_blocked", blocked, applied: ops.length - blocked.length });
+    await K.karmaRecord({ event: "dr_apply_blocked", blocked, applied: kvResult.applied });
   }
 
   if (output.reasoning_artifacts?.length) {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { validateWithSchema } from "../lib/runtime-validation.js";
 
 // ── Schema validators ──────────────────────────────────────
 // Lightweight validation for cognitive architecture entities.
@@ -20,24 +21,6 @@ function validatePattern(s) {
   const errors = [];
   if (typeof s.pattern !== "string" || !s.pattern) errors.push("pattern must be a non-empty string");
   if (typeof s.strength !== "number" || s.strength < 0 || s.strength > 1) errors.push("strength must be a number between 0 and 1");
-  return errors;
-}
-
-function validateExperience(e) {
-  const errors = [];
-  if (typeof e.timestamp !== "string") errors.push("timestamp must be an ISO 8601 string");
-  if (e.action_ref !== null && typeof e.action_ref !== "string") errors.push("action_ref must be a string or null");
-  if (e.session_id !== null && typeof e.session_id !== "string") errors.push("session_id must be a string or null");
-  if (typeof e.cycle !== "number") errors.push("cycle must be a number");
-  if (typeof e.observation !== "string") errors.push("observation must be a string");
-  if (!e.desire_alignment || typeof e.desire_alignment !== "object") errors.push("desire_alignment must be an object");
-  if (!e.pattern_delta || typeof e.pattern_delta !== "object") errors.push("pattern_delta must be an object");
-  if (typeof e.pattern_delta?.sigma !== "number") errors.push("pattern_delta.sigma must be a number");
-  if (!Array.isArray(e.pattern_delta?.scores)) errors.push("pattern_delta.scores must be an array");
-  if (typeof e.salience !== "number") errors.push("salience must be a number");
-  if (e.text_rendering !== undefined && typeof e.text_rendering !== "object") errors.push("text_rendering must be an object if present");
-  if (e.text_rendering?.narrative !== undefined && typeof e.text_rendering.narrative !== "string") errors.push("text_rendering.narrative must be a string if present");
-  if (e.embedding !== undefined && e.embedding !== null && !Array.isArray(e.embedding)) errors.push("embedding must be a number array or null if present");
   return errors;
 }
 
@@ -142,7 +125,8 @@ describe("Cognitive architecture schemas", () => {
         text_rendering: { narrative: "Routine greeting. No issues." },
         embedding: null,
       };
-      expect(validateExperience(experience)).toEqual([]);
+      const result = validateWithSchema("experience-record", experience);
+      expect(result.ok).toBe(true);
     });
 
     it("accepts embedding as array of numbers", () => {
@@ -165,7 +149,8 @@ describe("Cognitive architecture schemas", () => {
         text_rendering: { narrative: "test" },
         embedding: [0.1, 0.2, 0.3],
       };
-      expect(validateExperience(experience)).toEqual([]);
+      const result = validateWithSchema("experience-record", experience);
+      expect(result.ok).toBe(true);
     });
 
     it("rejects missing salience", () => {
@@ -187,9 +172,9 @@ describe("Cognitive architecture schemas", () => {
         text_rendering: { narrative: "test" },
         embedding: null,
       };
-      const errors = validateExperience(experience);
-      expect(errors.length).toBeGreaterThan(0);
-      expect(errors[0]).toMatch(/salience/);
+      const result = validateWithSchema("experience-record", experience);
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("salience");
     });
   });
 });

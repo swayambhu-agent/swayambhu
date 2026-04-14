@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime/kv-operation.schema.json",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "key", "value"],
+      "properties": {
+        "op": { "const": "put" },
+        "key": { "type": "string", "minLength": 1 },
+        "value": true,
+        "metadata": {
+          "type": "object"
+        },
+        "deliberation": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "key"],
+      "properties": {
+        "op": { "const": "delete" },
+        "key": { "type": "string", "minLength": 1 },
+        "metadata": {
+          "type": "object"
+        },
+        "deliberation": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "key", "old_string", "new_string"],
+      "properties": {
+        "op": { "const": "patch" },
+        "key": { "type": "string", "minLength": 1 },
+        "old_string": { "type": "string" },
+        "new_string": { "type": "string" },
+        "metadata": {
+          "type": "object"
+        },
+        "deliberation": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "key", "fields"],
+      "properties": {
+        "op": { "const": "field_merge" },
+        "key": { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "object",
+          "minProperties": 1
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "deliberation": { "type": "string" }
+      }
+    }
+  ]
+}

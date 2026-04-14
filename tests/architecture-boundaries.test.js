@@ -19,4 +19,21 @@ describe("runtime/operator boundaries", () => {
       expect(source, `${relativePath} should not depend on scripts/operator`).not.toContain("scripts/operator/");
     }
   });
+
+  it("routes model-produced KV operations through the shared boundary helpers", async () => {
+    const reflectSource = await readFile(new URL("../reflect.js", import.meta.url), "utf8");
+    const userspaceSource = await readFile(new URL("../userspace.js", import.meta.url), "utf8");
+
+    expect(reflectSource).toContain('import { applyModelKvOperations } from "./lib/kv-operation-boundary.js";');
+    expect(reflectSource).toContain("await applyModelKvOperations(K, output.kv_operations");
+    expect(reflectSource).not.toContain('K.kvWriteGated(op, "reflect")');
+    expect(reflectSource).not.toContain('K.kvWriteGated(op, "deep-reflect")');
+
+    expect(userspaceSource).toContain('import { applyModelKvOperations } from "./lib/kv-operation-boundary.js";');
+    expect(userspaceSource).toContain("const kvResult = await applyModelKvOperations(K, kvOps");
+    expect(userspaceSource).toContain("const kvResult = await applyModelKvOperations(K, ops");
+    expect(userspaceSource).not.toContain("function toPrivilegedOp(op)");
+    expect(userspaceSource).not.toContain('K.kvWriteGated(toPrivilegedOp(op), "userspace-review")');
+    expect(userspaceSource).not.toContain('K.kvWriteGated(toPrivilegedOp(op), "deep-reflect")');
+  });
 });

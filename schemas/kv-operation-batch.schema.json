@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime/kv-operation-batch.schema.json",
+  "type": "array",
+  "maxItems": 50,
+  "items": {
+    "type": "object"
+  }
+}

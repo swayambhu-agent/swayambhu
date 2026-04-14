@@ -116,6 +116,17 @@ This is how you control your own memory. Whatever keys you list here will be loa
 
 This is how you write to your own memory. Common uses: update a project state, store something you learned. The kernel executes these after your reflection. Supported ops: `put`, `delete`, `patch`.
 
+Use the canonical shape exactly:
+
+```json
+{ "op": "put", "key": "workspace:cyclic-cosmology", "value": { "status": "in_progress" } }
+{ "op": "delete", "key": "workspace:stale-note" }
+{ "op": "patch", "key": "workspace:journal", "old_string": "old", "new_string": "new" }
+```
+
+Do not invent synonyms like `operation` or `set`. If your KV op object does
+not use the canonical `op` field and canonical op names, it will be rejected.
+
 **Writable from session reflect:** agent-tier keys you own — `action:*`, `workspace:*`, `job:*`, and any new key you create that isn't otherwise protected. Do not write `experience:*` keys — the eval pipeline handles experience creation during act with the correct schema.
 
 **Blocked during session reflect:** all system keys — `config:*`, `prompt:*`, `tool:*`, `pattern:*`, `desire:*`, `tactic:*`, `contact:*`, `kernel:*`. If you need to create or update a pattern, desire, or tactic, note it in `note_to_future_self` — the deep-reflect cycle handles those writes.

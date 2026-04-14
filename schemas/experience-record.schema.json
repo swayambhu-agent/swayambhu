@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime/experience-record.schema.json",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "action_ref",
+    "session_id",
+    "cycle",
+    "observation",
+    "desire_alignment",
+    "pattern_delta",
+    "salience"
+  ],
+  "properties": {
+    "timestamp": { "type": "string" },
+    "action_ref": { "type": ["string", "null"] },
+    "session_id": { "type": ["string", "null"] },
+    "cycle": { "type": "number" },
+    "observation": { "type": "string" },
+    "desire_alignment": { "type": "object" },
+    "pattern_delta": {
+      "type": "object",
+      "required": ["sigma", "scores"],
+      "properties": {
+        "sigma": { "type": "number" },
+        "scores": { "type": "array" }
+      }
+    },
+    "salience": { "type": "number" },
+    "text_rendering": { "type": "object" },
+    "embedding": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "array",
+          "items": { "type": "number" }
+        }
+      ]
+    }
+  }
+}

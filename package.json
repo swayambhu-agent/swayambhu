@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@tailwindcss/cli": "^4.2.2",
+    "ajv": "^8.17.1",
     "esbuild": "^0.28.0",
     "highlight.js": "^11.11.1",
     "marked": "^17.0.5",

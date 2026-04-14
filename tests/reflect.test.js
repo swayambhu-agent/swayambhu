@@ -18,6 +18,16 @@ describe("reflect prompt contract", () => {
     expect(prompt).toContain("wake_condition");
   });
 
+  it("teaches the canonical KV-op shape and strict rejection of aliases", () => {
+    const prompt = readFileSync(new URL("../prompts/reflect.md", import.meta.url), "utf8");
+
+    expect(prompt).toContain('{ "op": "put", "key": "workspace:cyclic-cosmology"');
+    expect(prompt).toContain('{ "op": "delete", "key": "workspace:stale-note" }');
+    expect(prompt).toContain('{ "op": "patch", "key": "workspace:journal"');
+    expect(prompt).toContain("Do not invent synonyms like `operation` or `set`");
+    expect(prompt).not.toContain("field_merge");
+  });
+
   it("describes deep-reflect carry-forward hygiene", () => {
     const prompt = readFileSync(new URL("../prompts/deep_reflect.md", import.meta.url), "utf8");
 
@@ -433,6 +443,40 @@ describe("executeReflect carry-forward merge", () => {
     expect(record.reflection).toBe("Session 1 had no active desires. No action was taken. A bootstrap experience was written.");
     expect(record.note_to_future_self).toBe("No action until desire exists.");
   });
+
+  it("persists reflect output even when malformed kv_operations are rejected", async () => {
+    const K = makeReflectK(
+      { carry_forward: [] },
+      {
+        session_summary: "Session summary",
+        note_to_future_self: "Keep going",
+        next_act_context: { load_keys: [], reason: "none" },
+        kv_operations: [
+          {
+            operation: "set",
+            key: "workspace:cyclic-cosmology",
+            value: { status: "in_progress" },
+          },
+        ],
+      },
+    );
+
+    await executeReflect(K, state, state.defaults.reflect);
+
+    const lastReflect = await K.kvGet("last_reflect");
+    const record = await K.kvGet("reflect:0:s_test");
+    expect(lastReflect.session_summary).toBe("Session summary");
+    expect(record.reflection).toBe("Session summary");
+    expect(await K.kvGet("workspace:cyclic-cosmology")).toBeNull();
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "kv_operation_schema_rejected",
+      source: "reflect",
+    }));
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "kv_operation_batch_rejected",
+      source: "reflect",
+    }));
+  });
 });
 
 describe("applyReflectOutput deep-reflect carry-forward writeback", () => {
@@ -528,5 +572,49 @@ describe("applyReflectOutput deep-reflect carry-forward writeback", () => {
         },
       ],
     });
+  });
+
+  it("stores deep-reflect output even when kv_operations are batch-rejected", async () => {
+    const K = makeMockK(
+      {
+        last_reflect: {
+          carry_forward: [],
+        },
+        session_counter: 4,
+      },
+      {
+        executionId: "s_dr",
+      },
+    );
+
+    const state = {
+      refreshDefaults: vi.fn(async () => {}),
+    };
+
+    await applyReflectOutput(K, state, 1, {
+      reflection: "Deep reflect summary",
+      note_to_future_self: "Watch this",
+      kv_operations: [
+        {
+          operation: "set",
+          key: "pattern:test",
+          value: { pattern: "bad", strength: 0.5 },
+        },
+      ],
+    }, {});
+
+    expect(await K.kvGet("pattern:test")).toBeNull();
+    expect(await K.kvGet("reflect:1:s_dr")).toEqual(expect.objectContaining({
+      reflection: "Deep reflect summary",
+      note_to_future_self: "Watch this",
+    }));
+    expect(await K.kvGet("last_reflect")).toEqual(expect.objectContaining({
+      session_summary: "Deep reflect summary",
+      was_deep_reflect: true,
+    }));
+    expect(K.karmaRecord).toHaveBeenCalledWith(expect.objectContaining({
+      event: "kv_operation_batch_rejected",
+      source: "deep-reflect",
+    }));
   });
 });
